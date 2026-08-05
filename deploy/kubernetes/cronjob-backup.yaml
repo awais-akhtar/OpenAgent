@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openagent-backup
+  namespace: openagent
+spec:
+  schedule: "0 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: trigger-backup
+              image: curlimages/curl:8.8.0
+              imagePullPolicy: IfNotPresent
+              args:
+                - -fsS
+                - -X
+                - POST
+                - http://openagent.openagent.svc.cluster.local:8765/api/enterprise/backups
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi

@@ -1,0 +1,65 @@
+[project]
+name = "openagent-ai"
+version = "0.13.0"
+description = "Privacy-first self-hosted AI operating system."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Awais Akhtar" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+voice = [
+  "faster-whisper>=1.0.0",
+  "vosk>=0.3.45",
+]
+rag = [
+  "faiss-cpu>=1.8,<2",
+  "chromadb>=1,<2",
+]
+media = [
+  "Pillow>=11,<13",
+  "pypdf>=5,<7",
+  "pypdfium2>=4,<6",
+  "reportlab>=4,<5",
+]
+security = [
+  "webauthn>=3,<4",
+]
+full = [
+  "faster-whisper>=1.0.0",
+  "vosk>=0.3.45",
+  "faiss-cpu>=1.8,<2",
+  "chromadb>=1,<2",
+  "Pillow>=11,<13",
+  "pypdf>=5,<7",
+  "pypdfium2>=4,<6",
+  "reportlab>=4,<5",
+  "webauthn>=3,<4",
+]
+
+[project.scripts]
+openagent = "openagent.__main__:main"
+openagent-desktop = "openagent.desktop:main"
+openagent-workbench = "openagent.workbench:main"
+openagent-hard-check = "openagent.hard_check:main"
+openagent-worker = "openagent.worker:main"
+openagent-production-proof = "openagent.production_proof:main"
+
+[tool.setuptools.packages.find]
+include = ["openagent*"]
+
+[tool.setuptools.data-files]
+"web" = [
+  "web/index.html",
+  "web/styles.css",
+  "web/styles.scss",
+  "web/app.js",
+  "web/manifest.json",
+  "web/sw.js",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

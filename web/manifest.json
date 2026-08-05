@@ -1,0 +1,39 @@
+{
+  "name": "OpenAgent",
+  "short_name": "OpenAgent",
+  "description": "Privacy-first self-hosted AI operating system. Your data stays local.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080b0f",
+  "theme_color": "#080b0f",
+  "lang": "en",
+  "scope": "/",
+  "orientation": "any",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Chat",
+      "url": "/?view=chat",
+      "description": "Start a new local chat session"
+    },
+    {
+      "name": "Knowledge Base",
+      "url": "/?view=knowledge",
+      "description": "Open knowledge management"
+    }
+  ]
+}

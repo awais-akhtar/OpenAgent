@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install OpenAgent test dependencies
+        run: python -m pip install -e ".[full]" build
+
+      - name: Full test suite (umbrella gate)
+        run: python -m unittest discover -s tests
+
+      - name: Security regression gate (auth, scopes, enforcement, privacy)
+        run: python -m unittest tests.test_auth tests.test_auth_enforcement tests.test_security_privacy -v
+
+      - name: Route contract gate (server + web UI compatibility)
+        run: python -m unittest tests.test_server tests.test_web_ui -v
+
+      - name: New-subsystem regression gate (docs, calendar sync, comms resilience, model lifecycle)
+        run: python -m unittest tests.test_documents tests.test_calendar_sync tests.test_communication_resilience tests.test_local_ai_lifecycle -v
+
+      - name: Compile package
+        run: python -m compileall openagent
+
+      - name: Production proof gate
+        run: openagent-production-proof --queue-jobs 200
+
+      - name: Build release artifacts
+        run: python -m build
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install OpenAgent browser dependencies
+        run: |
+          python -m pip install -e ".[media,security]"
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Browser E2E and accessibility smoke
+        run: npm run test:e2e

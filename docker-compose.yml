@@ -1,0 +1,14 @@
+services:
+  openagent:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - openagent-data:/data
+    environment:
+      OPENAGENT_HOME: /data
+    restart: unless-stopped
+
+volumes:
+  openagent-data:
+

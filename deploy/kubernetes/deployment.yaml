@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openagent
+  namespace: openagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openagent
+  template:
+    metadata:
+      labels:
+        app: openagent
+    spec:
+      containers:
+        - name: openagent
+          image: ghcr.io/awais-akhtar/openagent:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - openagent
+          args:
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8765"
+            - --data-dir
+            - /data
+          envFrom:
+            - configMapRef:
+                name: openagent-config
+          ports:
+            - containerPort: 8765
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8765
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8765
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openagent-data
