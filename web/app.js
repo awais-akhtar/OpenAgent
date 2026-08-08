@@ -21,6 +21,7 @@ const MODULES = [
   { id: "vault",       label: "Encrypted Vault",     text: "Zero-knowledge local vault for secrets and credentials." },
   { id: "scraper",     label: "Web Scraper",         text: "Privacy-first URL scraping and scheduled ingestion." },
   { id: "finetune",    label: "Fine-Tuning",         text: "Dataset curation, LoRA adapters, training job management." },
+  { id: "science",     label: "Scientific AI",       text: "Local scientific computing, engineering optimisation, verification, and materials discovery." },
 ];
 
 const PALETTE_COMMANDS = [
@@ -39,6 +40,7 @@ const PALETTE_COMMANDS = [
   { label: "Models",                 icon: "🧠", group: "Navigate", action: () => setView("models") },
   { label: "Security",               icon: "🔒", group: "Navigate", action: () => setView("security") },
   { label: "Adaptive Engine",        icon: "⚙", group: "Navigate", action: () => setView("engine") },
+  { label: "Scientific AI",          icon: "🔬", group: "Navigate", action: () => setView("science") },
   { label: "Developer",              icon: "⚙️", group: "Navigate", action: () => setView("developer") },
   { label: "Settings",               icon: "🔧", group: "Navigate", action: () => setView("settings") },
   { label: "Calendar",               icon: "📅", group: "Navigate", action: () => setView("calendar") },
@@ -127,6 +129,7 @@ const state = {
   engineRoles: [],
   engineRoleOptions: { roles: [], providers: [], models: [] },
   engineRuns: [],
+  science: { status: {}, busy: false },
   selectedEngineRole: "chat",
   theme: "dark",
   authToken: (() => { try { return sessionStorage.getItem("oa-auth-token") || ""; } catch (e) { return ""; } })(),
@@ -333,6 +336,7 @@ const VIEW_LOADERS = {
   vault:          () => loadVaultEntries().catch(() => {}),
   scraper:        () => loadScraperJobs().catch(() => {}),
   finetune:       () => Promise.allSettled([loadFinetuneStatus(), loadAdapters()]),
+  science:        () => loadScienceStatus().catch(() => {}),
 };
 
 function setView(view) {
@@ -345,6 +349,38 @@ function setView(view) {
   // Auto-load view-specific data
   const loader = VIEW_LOADERS[view];
   if (loader) loader();
+}
+
+function setScienceSection(section) {
+  state.science.section = section;
+  qsa("[data-science-section]").forEach(link => link.classList.toggle("active", link.dataset.scienceSection === section));
+  qsa("[data-science-capability]").forEach(card => card.classList.toggle("active", card.dataset.scienceCapability === section));
+  const details = {
+    agents: ["Scientific Agents", "Break a question into steps, select local tools, execute bounded work, inspect the result, and retry with traceback feedback when a repair function is supplied."],
+    computing: ["Scientific Computing", "Run deterministic solvers and transparent surrogate baselines. FNO, DeepONet, PINN, and operator-learning contracts are available for richer local backends."],
+    engineering: ["Engineering Optimisation", "Define variables, bounds, objectives, and physical constraints, then compare feasible candidates with a visible method and evidence trail."],
+    multimodal: ["Multimodal Science", "Combine paper or note text, equations, tables, sensor CSV, numerical images, and simulation output into one typed evidence context."],
+    verification: ["Scientific Verification", "Check finite values, residuals, units, equations, and engineering constraints before a result is marked reviewable."],
+    materials: ["Materials Discovery", "Fit a transparent property predictor, rank candidate materials, estimate uncertainty, and choose the next experiment for review."],
+  };
+  const detail = details[section] || details.agents;
+  const detailEl = qs("#scienceSectionDetail");
+  if (detailEl) detailEl.innerHTML = `<h3>${detail[0]}</h3><p>${detail[1]}</p>`;
+  renderScienceWorkspace(section);
+}
+
+function renderScienceWorkspace(section) {
+  const workspace = qs("#scienceSectionWorkspace");
+  if (!workspace) return;
+  const views = {
+    agents: `<div class="form-grid"><label class="field"><span>Memory category</span><select id="scienceMemoryCategory"><option>assumption</option><option>equation</option><option>property</option><option>boundary condition</option><option>experiment</option></select></label><label class="field"><span>Name</span><input id="scienceMemoryName" placeholder="Young modulus"></label><label class="field"><span>Value</span><input id="scienceMemoryValue" placeholder="210"></label><label class="field"><span>Unit</span><input id="scienceMemoryUnit" placeholder="GPa"></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-memory">Save scientific memory</button><button class="btn btn-soft" data-science-action="load-memory">Load project memory</button></div>`,
+    computing: `<div class="form-grid"><label class="field"><span>Simulator</span><select id="scienceSimulator"><option value="fenics">FEniCS</option><option value="openfoam">OpenFOAM</option><option value="comsol">COMSOL</option><option value="lammps">LAMMPS</option></select></label><label class="field"><span>Temperature (K)</span><input id="scienceSimulationTemperature" type="number" value="350"></label><label class="field"><span>Duration (s)</span><input id="scienceSimulationDuration" type="number" value="10"></label><label class="field"><span>Conductivity</span><input id="scienceSimulationConductivity" type="number" value="1.5" step="0.1"></label></div><div class="toolbar"><button class="btn btn-primary" data-science-action="simulate">Run simulation example</button></div><label class="field"><span>Approved local Python</span><textarea id="sciencePythonCode" rows="5">print(math.sqrt(16))</textarea></label><div class="toolbar"><button class="btn btn-soft" data-science-action="execute-code">Execute with profiling and repair</button></div>`,
+    engineering: `<div class="toolbar"><button class="btn btn-primary" data-science-prompt="optimise a cantilever beam for minimum mass subject to stress and deflection limits">Optimise beam</button><button class="btn btn-soft" data-science-prompt="optimise a heat exchanger and verify the engineering constraints">Optimise heat exchanger</button><button class="btn btn-soft" data-science-prompt="optimise a lighter bridge design and verify stress and deflection">Optimise bridge</button></div>`,
+    multimodal: `<label class="field"><span>Local evidence files</span><input id="scienceEvidenceFiles" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,image/*"></label><p class="muted">PDFs, notes, sensor CSV, simulation JSON, and images are combined locally.</p><div class="toolbar"><button class="btn btn-primary" data-science-action="analyse-evidence">Analyse evidence</button></div>`,
+    verification: `<label class="field"><span>Result JSON</span><textarea id="scienceVerificationPayload" rows="10">{"text":"Stress is within the stated limit [1].","values":[125000000],"units":{"stress":"Pa"},"residuals":[0.0],"equations":[{"expression":"stress = force/area","symbols":{"stress":125000000,"force":250000,"area":0.002}}],"citations":["design calculation"],"evidence_terms":["stress","limit"],"constraints":[{"name":"stress","passed":true}]}</textarea></label><div class="toolbar"><button class="btn btn-primary" data-science-action="verify">Run verification</button></div>`,
+    materials: `<div class="form-grid"><label class="field"><span>Dataset</span><input id="scienceMaterialsFile" type="file" accept=".csv,.json"></label><label class="field"><span>Target property</span><input id="scienceMaterialsTarget" value="strength"></label><label class="field"><span>Dataset name</span><input id="scienceMaterialsName" value="Public materials dataset"></label><label class="field"><span>Objective</span><select id="scienceMaterialsObjective"><option value="maximize">Maximise target</option><option value="minimize">Minimise target</option></select></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-materials">Store dataset</button><button class="btn btn-primary" data-science-action="analyse-materials">Analyse and rank</button></div>`,
+  };
+  workspace.innerHTML = views[section] || views.agents;
 }
 
 // =============================================
@@ -5787,8 +5823,28 @@ function initKeyboardShortcuts() {
 
 function initNavigation() {
   document.addEventListener("click", e => {
+    const sciencePrompt = e.target.closest("[data-science-prompt]");
+    if (sciencePrompt) {
+      const goal = qs("#scienceGoal");
+      if (goal) goal.value = sciencePrompt.dataset.sciencePrompt;
+      runScienceWorkflow();
+      return;
+    }
+    const scienceAction = e.target.closest("[data-science-action]");
+    if (scienceAction) {
+      runScienceAction(scienceAction.dataset.scienceAction).catch(error => {
+        renderScienceSteps(["Prepare input", "Run local operation", "Verify output", "Render result"], 0, error.message);
+        toast("Scientific operation failed", error.message);
+      });
+      return;
+    }
+    const scienceCapability = e.target.closest("[data-science-capability]");
+    if (scienceCapability) {
+      setScienceSection(scienceCapability.dataset.scienceCapability);
+      return;
+    }
     const viewLink = e.target.closest("[data-view-link]");
-    if (viewLink) { setView(viewLink.dataset.viewLink); return; }
+    if (viewLink) { setView(viewLink.dataset.viewLink); if (viewLink.dataset.scienceSection) setScienceSection(viewLink.dataset.scienceSection); return; }
     const viewJump = e.target.closest("[data-view-jump]");
     if (viewJump) { setView(viewJump.dataset.viewJump); return; }
     const command = e.target.closest("[data-command]");
@@ -5820,8 +5876,11 @@ function toggleNavGroup(toggle) {
   const collapsed = toggle.classList.toggle("collapsed");
   toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
   let node = toggle.nextElementSibling;
-  while (node && !node.classList.contains("nav-group-toggle")) {
-    if (node.classList.contains("nav-link")) {
+  while (node) {
+    const isGroup = node.classList.contains("nav-group-toggle");
+    const belongsToGroup = node.dataset.navParent === toggle.dataset.navGroup;
+    if (isGroup && !belongsToGroup) break;
+    if (node.classList.contains("nav-link") || (isGroup && belongsToGroup)) {
       node.classList.toggle("nav-group-hidden", collapsed);
     }
     node = node.nextElementSibling;
@@ -6039,6 +6098,8 @@ async function init() {
   qs("#engineOrchestrationMode")?.addEventListener("change", updateEngineModeVisibility);
   qs("#runEngineCollaboration")?.addEventListener("click", runEngineCollaboration);
   qs("#refreshEngineRuns")?.addEventListener("click", () => loadEngineWorkspace());
+  qs("#runScienceWorkflow")?.addEventListener("click", runScienceWorkflow);
+  qs("#refreshScienceStatus")?.addEventListener("click", loadScienceStatus);
   qs("#registerUltraModel")?.addEventListener("click", registerUltraModel);
   qs("#planUltraModel")?.addEventListener("click", planUltraModel);
   qs("#calibrateUltraModel")?.addEventListener("click", calibrateUltraModel);
@@ -6119,6 +6180,261 @@ async function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+// =============================================
+// Scientific AI
+// =============================================
+
+async function loadScienceStatus() {
+  try {
+    const payload = await api("/api/science/status");
+    state.science.status = payload;
+    const badge = qs("#scienceBadge");
+    if (badge) {
+      badge.textContent = payload.status === "ready" ? "Ready" : "Needs attention";
+      badge.className = `badge ${payload.status === "ready" ? "badge-success" : "badge-error"}`;
+    }
+    const grid = qs("#scienceWorkflowGrid");
+    if (grid) {
+      const workflows = payload.workflows || [];
+      grid.innerHTML = workflows.map(item => `<article class="metric-card"><span>${escapeHtml(item.label)}</span><strong>Local</strong></article>`).join("");
+    }
+    const capabilities = [
+      ["agents", "Scientific Agents", "Planning, tool calling, execution, analysis, and repair-ready workflows."],
+      ["computing", "Scientific Computing", "Solvers, surrogates, operator-learning interfaces, and reproducible runs."],
+      ["engineering", "Engineering Optimisation", "Design variables, constraints, objective scoring, and ranked candidates."],
+      ["multimodal", "Multimodal Science", "Text, sensor tables, images, simulation output, and evidence fusion."],
+      ["verification", "Scientific Verification", "Numeric, residual, unit, equation, and constraint checks."],
+      ["materials", "Materials Discovery", "Property prediction, candidate ranking, and next-experiment selection."],
+    ];
+    const capabilityGrid = qs("#scienceCapabilityGrid");
+    if (capabilityGrid) capabilityGrid.innerHTML = capabilities.map(([id, label, text]) => `<button class="science-capability" data-science-capability="${id}" type="button"><strong>${label}</strong><span>${text}</span></button>`).join("");
+    setScienceSection(state.science.section || "agents");
+  } catch (error) {
+    const badge = qs("#scienceBadge");
+    if (badge) { badge.textContent = "Unavailable"; badge.className = "badge badge-error"; }
+    console.warn("scienceStatus", error);
+  }
+}
+
+async function runScienceWorkflow() {
+  const goal = qs("#scienceGoal")?.value.trim() || "Plan a reproducible scientific investigation";
+  const output = qs("#scienceResult");
+  const button = qs("#runScienceWorkflow");
+  state.science.busy = true;
+  renderScienceSteps(["Planning the scientific workflow", "Running local tools", "Checking numerical and physical constraints", "Preparing the reviewable report"], 1);
+  if (button) { button.disabled = true; button.textContent = "Running locally…"; }
+  if (output) output.textContent = "Preparing the local scientific workflow…";
+  try {
+    const payload = await api("/api/science/run", {
+      method: "POST",
+      body: JSON.stringify({ project: getProject(), goal }),
+    });
+    const run = payload.run || {};
+    renderScienceSteps(["Planning the scientific workflow", "Running local tools", "Checking numerical and physical constraints", "Preparing the reviewable report"], 4);
+    renderSciencePayload(payload);
+    toast("Scientific workflow complete", run.metadata?.science?.status || "Result verified locally");
+  } catch (error) {
+    renderScienceSteps(["Planning the scientific workflow", "Running local tools", "Checking numerical and physical constraints", "Preparing the reviewable report"], 0, error.message);
+    if (output) output.textContent = `Scientific workflow failed: ${error.message}`;
+    toast("Scientific workflow failed", error.message);
+  } finally {
+    state.science.busy = false;
+    if (button) { button.disabled = false; button.textContent = "Run locally"; }
+  }
+}
+
+function renderScienceSteps(steps, completedCount, failure = "") {
+  const container = qs("#scienceRunSteps");
+  if (!container) return;
+  const runningIndex = failure ? -1 : completedCount < steps.length ? completedCount : -1;
+  container.innerHTML = steps.map((step, index) => {
+    let status = index < completedCount ? "complete" : index === runningIndex ? "running" : "";
+    if (failure && index === Math.max(0, completedCount)) status = "failed";
+    return `<div class="science-step ${status}">${escapeHtml(step)}${failure && index === Math.max(0, completedCount) ? `: ${escapeHtml(failure)}` : ""}</div>`;
+  }).join("");
+}
+
+async function runScienceAction(action) {
+  const steps = ["Prepare local input", "Run scientific operation", "Verify output", "Render evidence"];
+  renderScienceSteps(steps, 1);
+  let payload;
+  if (action === "save-memory") {
+    payload = await api("/api/science/memory", { method: "POST", body: JSON.stringify({
+      project: getProject(), category: qs("#scienceMemoryCategory")?.value,
+      name: qs("#scienceMemoryName")?.value, value: qs("#scienceMemoryValue")?.value,
+      unit: qs("#scienceMemoryUnit")?.value,
+    }) });
+  } else if (action === "load-memory") {
+    payload = await api(`/api/science/memory?project=${encodeURIComponent(getProject())}`);
+  } else if (action === "simulate") {
+    payload = await api("/api/science/simulate", { method: "POST", body: JSON.stringify({
+      project: getProject(), simulator: qs("#scienceSimulator")?.value,
+      inputs: { temperature: Number(qs("#scienceSimulationTemperature")?.value || 350), duration: Number(qs("#scienceSimulationDuration")?.value || 10), conductivity: Number(qs("#scienceSimulationConductivity")?.value || 1.5) },
+    }) });
+  } else if (action === "execute-code") {
+    payload = await api("/api/science/execute", { method: "POST", body: JSON.stringify({ project: getProject(), approved: true, retries: 2, code: qs("#sciencePythonCode")?.value || "" }) });
+  } else if (action === "verify") {
+    const verification = JSON.parse(qs("#scienceVerificationPayload")?.value || "{}");
+    payload = await api("/api/science/verify", { method: "POST", body: JSON.stringify({ project: getProject(), ...verification }) });
+  } else if (action === "save-materials" || action === "analyse-materials") {
+    const records = await readMaterialsDataset();
+    const target = qs("#scienceMaterialsTarget")?.value.trim() || "strength";
+    const endpoint = action === "save-materials" ? "/api/science/materials/datasets" : "/api/science/materials/analyse";
+    const body = action === "save-materials"
+      ? { project: getProject(), name: qs("#scienceMaterialsName")?.value, target, records, source: "local-upload" }
+      : { project: getProject(), target, records, maximize: qs("#scienceMaterialsObjective")?.value !== "minimize" };
+    payload = await api(endpoint, { method: "POST", body: JSON.stringify(body) });
+  } else if (action === "analyse-evidence") {
+    payload = await analyseScienceEvidence();
+  } else {
+    throw new Error(`Unknown scientific action: ${action}`);
+  }
+  renderScienceSteps(steps, 4);
+  renderSciencePayload(payload);
+}
+
+async function readMaterialsDataset() {
+  const file = qs("#scienceMaterialsFile")?.files?.[0];
+  if (!file) throw new Error("Choose a local CSV or JSON materials dataset first.");
+  const text = await file.text();
+  if (file.name.toLowerCase().endsWith(".json")) {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error("The materials JSON file must contain an array of records.");
+    return parsed;
+  }
+  return parseScienceCsv(text);
+}
+
+function parseScienceCsv(text) {
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 2) throw new Error("The CSV needs a header and at least one data row.");
+  const headers = lines[0].split(",").map(value => value.trim());
+  return lines.slice(1).map(line => {
+    const values = line.split(",");
+    return Object.fromEntries(headers.map((header, index) => {
+      const raw = (values[index] || "").trim();
+      const numeric = Number(raw);
+      return [header, raw !== "" && Number.isFinite(numeric) ? numeric : raw];
+    }));
+  });
+}
+
+async function analyseScienceEvidence() {
+  const files = Array.from(qs("#scienceEvidenceFiles")?.files || []);
+  if (!files.length) throw new Error("Choose at least one local evidence file.");
+  const body = { project: getProject(), goal: qs("#scienceGoal")?.value || "Explain the supplied scientific evidence", documents: [], text: [], sensor_csv: [], images: [], simulations: [] };
+  for (const file of files) {
+    const lower = file.name.toLowerCase();
+    if (file.type.startsWith("image/")) {
+      body.images.push(await sampleScienceImage(file));
+    } else if (lower.endsWith(".csv")) {
+      body.sensor_csv.push({ name: file.name, content: await file.text() });
+    } else if (lower.endsWith(".json")) {
+      body.simulations.push({ name: file.name, content: JSON.parse(await file.text()) });
+    } else if (lower.endsWith(".pdf")) {
+      body.documents.push({ name: file.name, media_type: file.type || "application/pdf", base64: await fileBase64(file) });
+    } else {
+      body.text.push({ name: file.name, content: await file.text() });
+    }
+  }
+  return api("/api/science/multimodal", { method: "POST", body: JSON.stringify(body) });
+}
+
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",", 2)[1] || "");
+    reader.onerror = () => reject(reader.error || new Error("Could not read the file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function sampleScienceImage(file) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+    image.onload = () => {
+      const width = Math.min(64, image.naturalWidth || 1);
+      const height = Math.min(64, image.naturalHeight || 1);
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0, width, height);
+      const rgba = context.getImageData(0, 0, width, height).data;
+      const values = [];
+      for (let index = 0; index < rgba.length; index += 4) values.push((rgba[index] + rgba[index + 1] + rgba[index + 2]) / 3);
+      URL.revokeObjectURL(url);
+      resolve({ name: file.name, width, height, values });
+    };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not decode ${file.name}.`)); };
+    image.src = url;
+  });
+}
+
+function renderSciencePayload(payload) {
+  const summary = qs("#scienceResultSummary");
+  const checks = qs("#scienceVerificationList");
+  const table = qs("#scienceResultTable");
+  const output = qs("#scienceResult");
+  const chart = qs("#scienceResultChart");
+  const planList = qs("#sciencePlanList");
+  const terminal = qs("#scienceExecutionTimeline");
+  if (summary) summary.innerHTML = "";
+  if (checks) checks.innerHTML = "";
+  if (table) table.innerHTML = "";
+  if (chart) chart.classList.remove("visible");
+  if (planList) planList.innerHTML = "";
+  if (terminal) terminal.innerHTML = "";
+
+  const analysis = payload.analysis || payload.run?.metadata?.science?.result || payload.simulation || payload.execution || payload.verification || payload.context || payload;
+  const verification = payload.analysis?.verification || payload.verification?.scientific || payload.run?.metadata?.science?.verification;
+  const plan = payload.run?.metadata?.science?.plan;
+  const execution = analysis.execution || (payload.execution?.lifecycle ? payload.execution : null);
+  const summaryValues = [
+    ["Status", analysis.status || (verification?.passed ? "passed" : "complete")],
+    ["Project", getProject()],
+    ["Local operation", "Yes"],
+  ];
+  if (summary) summary.innerHTML = summaryValues.map(([label, value]) => `<div class="science-summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("");
+  const findings = verification?.findings || [];
+  if (checks) checks.innerHTML = findings.map(item => `<div class="science-check ${item.passed ? "pass" : "fail"}"><div><strong>${escapeHtml(item.check || "check")}</strong><div class="muted">${escapeHtml(item.message || "")}</div></div></div>`).join("");
+  if (planList && plan?.steps?.length) {
+    planList.innerHTML = `<div class="science-record-heading">Problem plan</div>${plan.steps.map((step, index) => `<div class="science-plan-row"><span>${index + 1}</span><div>${escapeHtml(step)}</div></div>`).join("")}`;
+  }
+  if (terminal && execution) {
+    const lifecycle = execution.lifecycle || [];
+    terminal.innerHTML = `<div class="science-record-heading">Execution terminal</div>${lifecycle.map(item => `<div class="science-terminal-row ${item.status === "complete" ? "complete" : item.status === "captured" ? "failed" : ""}"><span>${escapeHtml(item.stage || "event")}</span><div>${escapeHtml(item.message || "")}</div>${item.attempt ? `<small>Attempt ${Number(item.attempt)}</small>` : ""}</div>`).join("")}<div class="science-profile-grid"><div><span>Attempts</span><strong>${Number(execution.attempts || 0)}</strong></div><div><span>Repairs</span><strong>${Number(execution.repairs || 0)}</strong></div><div><span>Execution</span><strong>${Number(execution.elapsed_ms || 0).toFixed(1)} ms</strong></div><div><span>Peak memory</span><strong>${formatBytes(Number(execution.peak_memory_bytes || 0))}</strong></div></div>`;
+  }
+
+  const ranked = analysis.ranked_candidates || [];
+  if (table && ranked.length) {
+    table.innerHTML = `<table class="data-table"><thead><tr><th>Candidate</th><th>Prediction</th><th>Uncertainty</th></tr></thead><tbody>${ranked.map((item, index) => `<tr><td>${index + 1}</td><td>${Number(item.prediction).toFixed(4)}</td><td>${Number(item.uncertainty).toFixed(4)}</td></tr>`).join("")}</tbody></table>`;
+  }
+  if (analysis.chart?.length) drawScienceChart(analysis.chart);
+  if (output) output.textContent = payload.run?.response || formatStructuredOutput(analysis);
+}
+
+function drawScienceChart(points) {
+  const canvas = qs("#scienceResultChart");
+  const context = canvas?.getContext("2d");
+  if (!canvas || !context || !points.length) return;
+  canvas.classList.add("visible");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const values = points.map(point => Number(point.prediction) || 0);
+  const maximum = Math.max(...values, 1);
+  const barWidth = Math.max(12, (canvas.width - 60) / points.length - 12);
+  context.font = "12px system-ui";
+  points.forEach((point, index) => {
+    const height = (values[index] / maximum) * 180;
+    const x = 40 + index * (barWidth + 12);
+    const y = 220 - height;
+    context.fillStyle = "#19c37d";
+    context.fillRect(x, y, barWidth, height);
+    context.fillStyle = "#9aa7a0";
+    context.fillText(String(index + 1), x + barWidth / 2 - 3, 242);
+  });
+}
 
 // =============================================
 // Calendar System

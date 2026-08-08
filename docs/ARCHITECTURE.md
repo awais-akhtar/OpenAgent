@@ -28,6 +28,11 @@ flowchart TB
   Tools --> Audit
   Models --> Audit
   Connectors --> Audit
+  Science[Scientific AI]
+  Science --> Context
+  Science --> Tools
+  Science --> Knowledge
+  Science --> Audit
 ```
 
 ## Layer Responsibilities
@@ -72,6 +77,13 @@ Integrates email, calendar, chat, CRM, files, and external APIs. Connectors must
 
 Cross-cutting controls for secrets, approvals, tool execution, logs, rollback, and user-visible history.
 
+### Scientific AI
+
+The scientific layer is a vertical capability on top of the existing runtime.
+Its planner selects typed local tools, its memory records assumptions and
+measurements, and its verifier checks the result before a report is returned.
+It does not create a separate model gateway or bypass the normal audit path.
+
 ## Data Boundary
 
 OpenAgent's default boundary is the user's machine or self-hosted infrastructure. Data should not leave that boundary unless the user configures a provider and approves the action.
@@ -82,4 +94,3 @@ OpenAgent's default boundary is the user's machine or self-hosted infrastructure
 2. Add model and retrieval capabilities behind explicit interfaces.
 3. Add actions only with permissions and audit logs.
 4. Make advanced automation possible without weakening local ownership.
-

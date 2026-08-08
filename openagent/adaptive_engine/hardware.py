@@ -23,7 +23,10 @@ def accelerator_source_root(accelerator_python: str, fallback: Path) -> Path:
     """Resolve the code root without exposing the host virtualenv to the worker."""
 
     candidates: list[Path] = []
-    configured = os.environ.get("OPENAGENT_SOURCE_ROOT", "").strip()
+    configured = (
+        os.environ.get("OPENAGENT_ENGINE_SOURCE_ROOT", "").strip()
+        or os.environ.get("OPENAGENT_SOURCE_ROOT", "").strip()
+    )
     if configured:
         candidates.append(Path(configured).expanduser())
     if accelerator_python:
@@ -113,7 +116,11 @@ class HardwareProfiler:
 
     def __init__(self, data_dir: str | Path, *, accelerator_python: str = "") -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
-        self.accelerator_python = accelerator_python or os.environ.get("OPENAGENT_ACCELERATOR_PYTHON", "")
+        self.accelerator_python = (
+            accelerator_python
+            or os.environ.get("OPENAGENT_ENGINE_ACCELERATOR_PYTHON", "")
+            or os.environ.get("OPENAGENT_ACCELERATOR_PYTHON", "")
+        )
         package_root = Path(__file__).resolve().parents[2]
         self.project_root = accelerator_source_root(self.accelerator_python, package_root)
         self._cached: HardwareProfile | None = None
@@ -334,7 +341,12 @@ class HardwareProfiler:
             return {"available": False, "providers": []}
 
     def _llama_runtime(self) -> dict[str, Any]:
-        executable = os.environ.get("OPENAGENT_LLAMA_SERVER", "").strip() or shutil.which("llama-server") or ""
+        executable = (
+            os.environ.get("OPENAGENT_ENGINE_LLAMA_SERVER", "").strip()
+            or os.environ.get("OPENAGENT_LLAMA_SERVER", "").strip()
+            or shutil.which("llama-server")
+            or ""
+        )
         if not executable:
             return {"available": False, "devices": [], "backends": []}
         devices: list[str] = []
@@ -368,7 +380,10 @@ class HardwareProfiler:
             memory_gb=float(memory.get("available_gb", 0)),
             unified_memory=True,
             compute_tops=max(0.5, (os.cpu_count() or 1) * 0.10),
-            memory_bandwidth_gbps=float(os.environ.get("OPENAGENT_MEMORY_BANDWIDTH_GBPS", 25)),
+            memory_bandwidth_gbps=float(
+                os.environ.get("OPENAGENT_ENGINE_MEMORY_BANDWIDTH_GBPS")
+                or os.environ.get("OPENAGENT_MEMORY_BANDWIDTH_GBPS", 25)
+            ),
             precisions=("fp32", "fp16", "bf16", "int8", "int4", "int3", "int2"),
             supported_ops=_all_ops(),
             backends=tuple(backends),
@@ -405,7 +420,10 @@ class HardwareProfiler:
             memory_gb=round(memory_gb, 3),
             unified_memory=integrated,
             compute_tops=12.0 if "arc" in name_lower else 8.0,
-            memory_bandwidth_gbps=float(os.environ.get("OPENAGENT_GPU_BANDWIDTH_GBPS", 60 if integrated else 200)),
+            memory_bandwidth_gbps=float(
+                os.environ.get("OPENAGENT_ENGINE_GPU_BANDWIDTH_GBPS")
+                or os.environ.get("OPENAGENT_GPU_BANDWIDTH_GBPS", 60 if integrated else 200)
+            ),
             precisions=("fp32", "fp16", "bf16", "int8", "int4"),
             supported_ops=tuple(op for op in _all_ops() if op not in {"tokenization", "sampling"}),
             backends=tuple(dict.fromkeys(backends)),
@@ -427,7 +445,10 @@ class HardwareProfiler:
             memory_gb=round(npu_memory or float(memory.get("available_gb", 0)) * 0.35, 3),
             unified_memory=True,
             compute_tops=8.0,
-            memory_bandwidth_gbps=float(os.environ.get("OPENAGENT_NPU_BANDWIDTH_GBPS", 40)),
+            memory_bandwidth_gbps=float(
+                os.environ.get("OPENAGENT_ENGINE_NPU_BANDWIDTH_GBPS")
+                or os.environ.get("OPENAGENT_NPU_BANDWIDTH_GBPS", 40)
+            ),
             precisions=("fp16", "int8", "int4", "nf4"),
             supported_ops=("embedding", "rms_norm", "layer_norm", "matmul", "attention", "rope", "softmax", "activation", "conv2d", "reshape", "transpose", "residual_add"),
             backends=("openvino",) if ov_device else (),

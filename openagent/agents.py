@@ -8,6 +8,7 @@ from typing import Protocol
 from .context import ContextEngine
 from .model_gateway import ModelGateway
 from .models import AgentResponse, AuditEvent
+from .science.agent import ScientificAgent
 from .storage import OpenAgentStore
 
 
@@ -294,6 +295,7 @@ class AgentRegistry:
                     "Document deployment boundaries.",
                 ],
             ),
+            "scientific": ScientificAgent(self.context, gateway=gateway),
         }
 
     def specs(self) -> list[dict[str, str]]:
@@ -312,7 +314,11 @@ class AgentRegistry:
             known = ", ".join(sorted(self._agents))
             raise ValueError(f"Unknown agent '{agent_id}'. Known agents: {known}")
         response = agent.run(goal, project=project)
-        if self.gateway is not None:
+        # Scientific workflows already execute typed numerical tools and run
+        # scientific verification. Do not add an unrelated language-model
+        # round trip after the calculation; this keeps the path deterministic
+        # and usable on CPU-only machines.
+        if self.gateway is not None and agent_id != "scientific":
             response = self._run_through_engine(agent, response, project=project)
         run = self.store.save_agent_run(response, project=project)
         self.store.add_audit_event(

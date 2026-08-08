@@ -16,6 +16,8 @@ venv/
 env/
 .python*/
 .runtime-installers/
+.runtime/
+.local-data/
 .agents/
 .codex/
 

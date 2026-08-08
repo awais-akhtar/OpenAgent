@@ -51,6 +51,7 @@ class AgentTests(unittest.TestCase):
                     "communication",
                     "security",
                     "operations",
+                    "scientific",
                 },
             )
 

@@ -54,6 +54,13 @@
       <button class="nav-link nav-group-hidden" data-view-link="knowledge"><span class="nav-icon">📚</span><span>Knowledge</span></button>
       <button class="nav-link nav-group-hidden" data-view-link="workspace"><span class="nav-icon">🗂</span><span>Workspace</span></button>
       <button class="nav-link nav-group-hidden" data-view-link="automation"><span class="nav-icon">⚡</span><span>Automation</span></button>
+      <button class="nav-group-label nav-group-toggle nav-science-toggle collapsed" data-nav-group="science" aria-expanded="false"><span class="nav-icon">🔬</span>Scientific AI</button>
+      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="agents"><span class="nav-icon">🧪</span><span>Scientific Agents</span></button>
+      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="computing"><span class="nav-icon">∑</span><span>Scientific Computing</span></button>
+      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="engineering"><span class="nav-icon">📐</span><span>Engineering Optimisation</span></button>
+      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="multimodal"><span class="nav-icon">🖼</span><span>Multimodal Science</span></button>
+      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="verification"><span class="nav-icon">✓</span><span>Scientific Verification</span></button>
+      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="materials"><span class="nav-icon">⚗</span><span>Materials Discovery</span></button>
       <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="platform" aria-expanded="false">Platform</button>
       <button class="nav-link nav-group-hidden" data-view-link="assistant"><span class="nav-icon">📋</span><span>Assistant</span></button>
       <button class="nav-link nav-group-hidden" data-view-link="communications"><span class="nav-icon">📡</span><span>Comms</span></button>
@@ -1301,6 +1308,41 @@
           </div>
           <div id="engineRunFeed" class="stack-list" style="margin-top:12px"></div>
           <div id="engineRunOutput" class="engine-run-output" aria-live="polite"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ===== SCIENTIFIC AI ===== -->
+    <section class="view" id="view-science" data-view-panel="science" aria-label="Scientific AI">
+      <div class="split-layout">
+        <article class="card">
+          <div class="card-header">
+            <div><p class="eyebrow">Local scientific workflows</p><h2>Scientific AI</h2><p class="muted">Numerical computing, engineering design, multimodal evidence, verification, and materials discovery.</p></div>
+            <span id="scienceBadge" class="badge badge-soft">Checking</span>
+          </div>
+          <div id="scienceWorkflowGrid" class="metric-grid" aria-live="polite"></div>
+          <div id="scienceCapabilityGrid" class="science-capability-grid" aria-label="Scientific AI capabilities"></div>
+          <div id="scienceSectionDetail" class="science-section-detail" aria-live="polite"></div>
+          <div id="scienceSectionWorkspace" class="science-section-workspace"></div>
+          <div id="scienceRunSteps" class="science-run-steps" aria-live="polite" aria-label="Scientific workflow progress"></div>
+          <div class="form-stack" style="margin-top:16px">
+            <label class="field"><span>Scientific request</span><textarea id="scienceGoal" rows="5" placeholder="Try: optimise a cantilever beam for minimum mass, subject to stress and deflection limits."></textarea></label>
+            <div class="toolbar">
+              <button id="runScienceWorkflow" class="btn btn-primary">Run locally</button>
+              <button id="refreshScienceStatus" class="btn btn-soft">Refresh</button>
+            </div>
+          </div>
+          <p class="privacy-note" id="sciencePrivacyBoundary">Scientific inputs and results remain local. No network research or provider call is performed by this module.</p>
+        </article>
+        <article class="card">
+          <div class="card-header"><div><p class="eyebrow">Verification record</p><h3>Evidence and checks</h3></div><span class="badge badge-success">Reviewable</span></div>
+          <div id="scienceResultSummary" class="science-result-summary"></div>
+          <div id="sciencePlanList" class="science-plan-list" aria-live="polite"></div>
+          <div id="scienceVerificationList" class="science-verification-list"></div>
+          <div id="scienceExecutionTimeline" class="science-execution-timeline" aria-live="polite"></div>
+          <div id="scienceResultTable" class="table-wrap"></div>
+          <canvas id="scienceResultChart" class="science-result-chart" width="720" height="260" aria-label="Scientific result chart"></canvas>
+          <pre id="scienceResult" class="output" aria-live="polite">Run a scientific workflow to see its method, result, and verification findings.</pre>
         </article>
       </div>
     </section>

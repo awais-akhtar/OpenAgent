@@ -26,7 +26,7 @@ The repository contains a runnable local-first implementation: a native desktop 
 - Persistent local conversations and chat memory
 - Stage 1 model gateway with offline local, Ollama, llama.cpp, and OpenAI-compatible providers
 - Model routing, fallback, streaming, provider privacy warnings, and local embeddings
-- Built-in starter agents:
+- Built-in agents:
   - Executive Agent
   - Research Agent
   - Coding Agent
@@ -38,6 +38,7 @@ The repository contains a runnable local-first implementation: a native desktop 
   - Communication Agent
   - Security Agent
   - Operations Agent
+  - Scientific Agent
 - Basic local workflow engine
 - Audit log for chat, agent, and workflow actions
 - Stage 2 knowledge engine with document ingestion, chunking, FTS search, vector search, source attribution, entity extraction, graph relationships, compression, and replay
@@ -56,6 +57,8 @@ The repository contains a runnable local-first implementation: a native desktop 
 - Ultra-scale sharded GGUF orchestration with honest 200B feasibility math, resident/out-of-core/private-RPC plans, safe loopback `llama-server` lifecycle, warm prompt/KV caches, speculative decoding, and grounded output rejection
 - Adaptive CPU/GPU/NPU compiler with GGUF, SafeTensors, ONNX, and OpenVINO frontends; graph/tensor/kernel IR; transfer-aware prefill/decode planning; mixed-precision budgeting; paged KV metadata; deadline batching; vendor compilation; exact-model differential calibration; and a persistent network-free OpenVINO hardware worker
 - Advanced Engine workspace with persistent model roles, per-role identity prompts, live provider/model assignment, native direct token streaming, custom model sequences, and an audited reasoning-code-supervisor revision loop
+- Scientific AI workspace with local heat-equation computation, operator surrogates, constrained engineering optimisation, multimodal scientific evidence, numerical verification, and materials discovery helpers
+- Scientific AI tooling with project-scoped scientific memory, five-stage problem planning, traceback-driven self-correction, SymPy equation checks, simulator adapters, operator-learning interfaces, experiment planning, bounded code execution, runtime and memory profiles, and a collapsible workbench navigation
 - Private PhD Application Studio with reusable academic data, local CV/SOP evidence uploads, position tracking, approval-gated professor and lab research, evidence-grounded document generation, revision history, local quality review, and DOCX/PDF/ZIP exports
 - Stage 13 full local product runtime with submitted-audio STT, local voiceprint clone records, generated WAV voice audio, browser/form automation, approved desktop file automation, and real PWA/mobile/desktop package directories
 - Stage 14 native Windows desktop installability with a standard-library desktop shell, local status command, Start Menu/Desktop launcher scripts, and hard-audit proof that no browser is required
@@ -283,6 +286,37 @@ set OPENAGENT_OPENAI_MODEL=gpt-4o-mini
 - `docs/` - architecture, roadmap, privacy, and agent design
 - `tests/` - standard-library regression tests
 - `Dockerfile` and `docker-compose.yml` - self-hosted deployment skeleton
+
+## Documentation
+
+The README is a starting point; the design and operational details live in the
+linked documents below.
+
+- [Architecture](docs/ARCHITECTURE.md) - system layers, data flow, and module boundaries
+- [Scientific AI](docs/SCIENTIFIC_AI.md) - scientific agents, tools, memory, verification, multimodal work, materials discovery, and experiment planning
+- [Scientific Agents](docs/science/SCIENTIFIC_AGENTS.md) - planning, local evidence, bounded execution, self-correction, profiling, and audit
+- [Scientific Computing](docs/science/SCIENTIFIC_COMPUTING.md) - reference solvers, operator-learning interfaces, simulation adapters, and benchmarks
+- [Engineering Optimisation](docs/science/ENGINEERING_OPTIMISATION.md) - constrained beam and heat-exchanger workflows
+- [Multimodal Science](docs/science/MULTIMODAL_SCIENCE.md) - local PDF, text, table, image, equation, and simulation evidence fusion
+- [Scientific Verification](docs/science/SCIENTIFIC_VERIFICATION.md) - numeric, equation, unit, constraint, citation, and consistency checks
+- [Materials Discovery](docs/science/MATERIALS_DISCOVERY.md) - local datasets, prediction, ranking, experiment selection, tables, and charts
+- [Roadmap](docs/ROADMAP.md) - staged implementation plan
+- [Vision coverage](docs/VISION_COVERAGE.md) - feature-by-feature coverage map
+- [Workspace and assistant](docs/WORKSPACE_ASSISTANT.md) - workspace, chat, assistant, and knowledge workflows
+- [Knowledge engine](docs/KNOWLEDGE_ENGINE.md) - ingestion, retrieval, graph, and source attribution
+- [Advanced RAG and CPU engine](docs/ADVANCED_RAG_AND_CPU_ENGINE.md) - local retrieval and CPU execution controls
+- [Adaptive execution engine](docs/ADAPTIVE_EXECUTION_ENGINE.md) - model compilation, hardware planning, and runtime boundaries
+- [Model gateway](docs/MODEL_GATEWAY.md) - provider routing, fallback, and privacy decisions
+- [Multi-agent runtime](docs/MULTI_AGENT_RUNTIME.md) - delegation, approvals, parallel work, and verification
+- [Workflows](docs/WORKFLOWS.md) - triggers, actions, queues, and rollback
+- [Communication hub](docs/COMMUNICATION_HUB.md) - local connectors, inbox, drafts, and approvals
+- [PhD Application Studio](docs/PHD_APPLICATION_STUDIO.md) - private evidence, position research, and document generation
+- [Semantic media and voice](docs/SEMANTIC_MEDIA_VOICE.md) - media ingestion, voice sessions, and local transcription
+- [Production runtime](docs/PRODUCTION_RUNTIME.md) - production policies, queues, audit anchoring, and packaging
+- [Lifecycle completion](docs/LIFECYCLE_COMPLETION.md) - durable research, image, document, identity, model, and proof controls
+- [Privacy and security](docs/PRIVACY_SECURITY.md) - local ownership, secrets, approvals, and egress controls
+- [Windows desktop](docs/WINDOWS_DESKTOP.md) - install, launch, stable port, and desktop lifecycle
+- [Developer platform](docs/DEVELOPER_PLATFORM.md) - APIs, SDKs, webhooks, plugins, and MCP
 
 ## Project Status
 

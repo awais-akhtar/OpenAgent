@@ -59,6 +59,8 @@ from ..phd_workspace import PhDWorkspace
 from ..production_runtime import ProductionRuntime, ProductionRuntimeError
 from ..research import ResearchEngine
 from ..research_lifecycle import ResearchLifecycle
+from ..science.agent import ScientificAgent
+from ..science.service import ScientificService
 from ..safe_terminal import SafeTerminal
 from ..scheduler import Scheduler
 from ..skill_ecosystem import SkillEcosystem
@@ -80,6 +82,7 @@ from .mcp_runtime_routes import MCPRuntimeRouteDependencies, handle_get as handl
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
 from .phd_routes import PhDRouteDependencies, handle_delete as handle_phd_delete, handle_get as handle_phd_get, handle_patch as handle_phd_patch, handle_post as handle_phd_post
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
+from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
 from .skill_routes import SkillRouteDependencies, handle_get as handle_skill_get, handle_post as handle_skill_post
 from .terminal_routes import TerminalRouteDependencies, handle_get as handle_terminal_get, handle_post as handle_terminal_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
@@ -338,6 +341,8 @@ def build_http_server(
     backup_restore = BackupRestoreManager(store)
     scraper = WebScraper(store)
     phd_workspace = PhDWorkspace(store, gateway=gateway, scraper=scraper)
+    scientific_agent = ScientificAgent(context, gateway=gateway)
+    scientific_service = ScientificService(store)
     fine_tuning = FineTuningManager(store)
     mission_control = MissionControl(store, gateway)
     personal_os = PersonalOS(store)
@@ -431,6 +436,7 @@ def build_http_server(
         add_module("voice", "Voice runtime", lambda: voice.status(project=project))
         add_module("research", "Research engine", lambda: research_engine.status(project=project))
         add_module("phd", "PhD application workspace", lambda: phd_workspace.status(project=project))
+        add_module("science", "Scientific AI", lambda: {"status": "ready", "privacy_boundary": "Local scientific computation only."})
         add_module("agents", "Multi-agent system", lambda: {"agents": agents.specs(), "marketplace": multi_agent.marketplace()})
         add_module("knowledge", "Knowledge and RAG", lambda: knowledge.status(project=project))
         add_module("memory", "Semantic memory", lambda: semantic_memory.status(project=project))
@@ -568,6 +574,14 @@ def build_http_server(
             query_owner=query_owner,
             payload_owner=payload_owner,
             read_json=read_json,
+        )
+
+    def science_route_dependencies(read_json) -> ScienceRouteDependencies:
+        return ScienceRouteDependencies(
+            agent=scientific_agent,
+            run_agent=lambda goal, project="default": agents.run("scientific", goal, project=project),
+            read_json=read_json,
+            service=scientific_service,
         )
 
     def conversation_route_dependencies(read_json, query_owner, payload_owner) -> ConversationRouteDependencies:
@@ -719,6 +733,10 @@ def build_http_server(
             )
             if scheduler_route is not None:
                 self.send_json(scheduler_route.payload, status=scheduler_route.status)
+                return
+            science_route = handle_science_get(parsed.path, parsed.query, science_route_dependencies(self.read_json))
+            if science_route is not None:
+                self.send_json(science_route.payload, status=science_route.status)
                 return
             conversation_route = handle_conversation_get(
                 parsed.path,
@@ -1927,6 +1945,10 @@ def build_http_server(
             )
             if scheduler_route is not None:
                 self.send_json(scheduler_route.payload, status=scheduler_route.status)
+                return
+            science_route = handle_science_post(parsed.path, science_route_dependencies(self.read_json))
+            if science_route is not None:
+                self.send_json(science_route.payload, status=science_route.status)
                 return
             conversation_route = handle_conversation_post(
                 parsed.path,

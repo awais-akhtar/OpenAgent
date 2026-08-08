@@ -18,6 +18,11 @@ rag = [
   "faiss-cpu>=1.8,<2",
   "chromadb>=1,<2",
 ]
+science = [
+  "numpy>=1.26,<3",
+  "scipy>=1.12,<2",
+  "sympy>=1.12,<2",
+]
 media = [
   "Pillow>=11,<13",
   "pypdf>=5,<7",
@@ -32,6 +37,9 @@ full = [
   "vosk>=0.3.45",
   "faiss-cpu>=1.8,<2",
   "chromadb>=1,<2",
+  "numpy>=1.26,<3",
+  "scipy>=1.12,<2",
+  "sympy>=1.12,<2",
   "Pillow>=11,<13",
   "pypdf>=5,<7",
   "pypdfium2>=4,<6",

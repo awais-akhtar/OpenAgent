@@ -9,6 +9,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from .. import __version__ as openagent_version
 from ..models import AuditEvent, utc_now
 from ..storage import OpenAgentStore
 from .autotune import DeviceAutoTuner
@@ -203,7 +204,7 @@ class AdaptiveExecutionEngine:
             "status": "ready",
             "project": project,
             "engine": "adaptive-compiler-runtime",
-            "version": "0.1.0",
+            "version": openagent_version,
             "hardware_profile": profile.to_dict(),
             "backends": [item.to_dict() for item in self.backends.capabilities(profile)],
             "inventory": dict(counts) if counts else {},
@@ -1002,6 +1003,22 @@ class AdaptiveExecutionEngine:
 
     def _direct_target(self, devices: tuple[DeviceProfile, ...], requested: str) -> tuple[DeviceProfile, str]:
         clean = requested.strip()
+        if clean.lower() in {"auto", "auto:0"}:
+            preferred = next(
+                (
+                    item
+                    for kind in ("gpu", "npu", "cpu")
+                    for item in devices
+                    if item.kind == kind and "openvino" in item.backends
+                ),
+                None,
+            )
+            if preferred is None:
+                raise AdaptiveRuntimeError("No OpenVINO CPU, GPU, or NPU target is available for AUTO selection.")
+            target = openvino_device_id(preferred)
+            if not target:
+                raise AdaptiveRuntimeError(f"OpenVINO did not expose {preferred.name}")
+            return preferred, target
         device = next(
             (
                 item for item in devices

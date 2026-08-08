@@ -67,6 +67,8 @@ and styled DOCX/PDF/Markdown/ZIP exports. See
 - Image ingestion with local header understanding
 - Audio and video metadata ingestion
 - Built-in starter agent registry
+- Scientific Agent with local numerical tools and reviewable verification records
+- Scientific AI workflows for heat equations, engineering optimisation, multimodal evidence, and materials discovery
 - Agent permissions
 - Agent-to-agent delegation
 - Parallel agent execution

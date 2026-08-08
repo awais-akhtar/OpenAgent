@@ -68,6 +68,7 @@ DOMAIN_ROUTE_MODULES: tuple[str, ...] = (
     "conversation_routes",
     "identity_routes",
     "phd_routes",
+    "science_routes",
 )
 
 
