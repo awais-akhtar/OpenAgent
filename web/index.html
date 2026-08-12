@@ -8,9 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260812-chat-codeq-10">
+  <link rel="manifest" href="/manifest.json?v=20260812-codeq-autonomy-12">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260812-chat-codeq-10">
+  <link rel="stylesheet" href="/styles.css?v=20260812-codeq-autonomy-12">
   <script>
     // Apply saved theme immediately to prevent flash
     (function() {
@@ -187,7 +187,7 @@
 
         <div id="codebaseIde" class="codebase-ide" hidden>
           <aside class="codebase-files" aria-label="Repository files">
-            <div class="codebase-pane-head"><span>Explorer</span><button id="scanCodebase" class="icon-button" title="Rescan repository" aria-label="Rescan repository">↻</button></div>
+            <div class="codebase-pane-head"><span>Explorer</span><div class="codebase-explorer-actions"><button id="newCodebaseFile" class="icon-button" title="New file" aria-label="New file">＋</button><button id="newCodebaseFolder" class="icon-button" title="New folder" aria-label="New folder">▱</button><button id="renameCodebasePath" class="icon-button" title="Rename or move selected item" aria-label="Rename selected item">✎</button><button id="deleteCodebasePath" class="icon-button" title="Delete selected item" aria-label="Delete selected item">×</button><button id="scanCodebase" class="icon-button" title="Rescan repository" aria-label="Rescan repository">↻</button></div></div>
             <div id="codebaseMapSummary" class="codebase-map-summary"></div>
             <div id="codebaseFileTree" class="codebase-file-tree"></div>
           </aside>
@@ -223,7 +223,7 @@
             <div id="codebaseAutonomySummary" class="codebase-autonomy-summary">
               <strong>Fully autonomous</strong>
               <span>CodeQ selects architecture, models, specialists, iteration budget, and validation from your request and repository.</span>
-              <small>File changes, local dependencies, builds, tests, repairs, and local Git work run automatically inside the protected copy. Publishing and production access stay outside the boundary.</small>
+              <small>CodeQ edits and validates in a protected workspace. After every completion check and independent review pass, the changed files are saved to the folder you selected.</small>
             </div>
             </details>
             <div class="codebase-tabs" role="tablist">
@@ -1510,11 +1510,11 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260812-chat-codeq-10" type="module"></script>
+<script src="/app.js?v=20260812-codeq-autonomy-12" type="module"></script>
 <script>
   // Register service worker for PWA offline support
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260812-chat-codeq-10').catch(function() {});
+    navigator.serviceWorker.register('/sw.js?v=20260812-codeq-autonomy-12').catch(function() {});
   }
 </script>
 

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from openagent.codebase.repository import RepositoryBoundaryError, RepositoryIntelligence
+from openagent.codebase.profiles import check_artifact_contract, classify_request
 from openagent.codebase.sandbox import SandboxManager
 from openagent.codebase.service import CodebaseService
 from openagent.codebase.tools import CodebaseTools, ToolPolicy
@@ -114,6 +115,46 @@ class ApprovalLoopGateway(FakeGateway):
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
 
 
+class FastApiCreationGateway(FakeGateway):
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "foundation" in user:
+            payload = {"summary": "created service foundation", "actions": [
+                {"tool": "write_file", "arguments": {"path": "pyproject.toml", "content": "[project]\nname='inventory-service'\nversion='0.1.0'\nrequires-python='>=3.11'\n"}},
+                {"tool": "write_file", "arguments": {"path": "main.py", "content": "from inventory import create_item\n\nif __name__ == '__main__':\n    print(create_item('demo'))\n"}},
+            ], "done": True}
+        elif "complete user-requested behavior" in user:
+            payload = {"summary": "implemented inventory behavior", "actions": [{"tool": "write_file", "arguments": {"path": "inventory.py", "content": "def create_item(name: str) -> dict[str, str]:\n    value = name.strip()\n    if not value:\n        raise ValueError('name is required')\n    return {'name': value}\n"}}], "done": True}
+        elif "add focused automated tests" in user:
+            payload = {"summary": "added service tests", "actions": [{"tool": "write_file", "arguments": {"path": "test_inventory.py", "content": "import unittest\nfrom inventory import create_item\n\nclass InventoryTests(unittest.TestCase):\n    def test_create(self):\n        self.assertEqual({'name': 'desk'}, create_item(' desk '))\n\nif __name__ == '__main__':\n    unittest.main()\n"}}], "done": True}
+        else:
+            payload = {"summary": "validated service", "actions": [{"tool": "run_tests", "arguments": {"command": ["python", "-m", "unittest", "discover", "-v"]}}], "done": True}
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
+class ParallelPlanningGateway(FakeGateway):
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "project manager" in system:
+            payload = {"tasks": [
+                {"id": "T1", "title": "Implement backend module", "agent": "backend", "depends_on": []},
+                {"id": "T2", "title": "Implement frontend module", "agent": "frontend", "depends_on": []},
+            ]}
+        elif "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "final acceptance auditor" in system:
+            payload = {"status": "passed", "missing_tasks": [], "evidence": ["validation passed"]}
+        elif "backend module" in user:
+            payload = {"summary": "backend complete", "actions": [{"tool": "write_file", "arguments": {"path": "backend.py", "content": "VALUE = 'backend'\n"}}], "done": True}
+        else:
+            payload = {"summary": "frontend complete", "actions": [{"tool": "write_file", "arguments": {"path": "frontend.js", "content": "export const ready = true;\n"}}], "done": True}
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
 class RepositoryIntelligenceTests(unittest.TestCase):
     def test_scan_context_and_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -135,6 +176,48 @@ class RepositoryIntelligenceTests(unittest.TestCase):
             self.assertEqual("app.py", repo.select_context("password reset")[0]["path"])
             with self.assertRaises(RepositoryBoundaryError):
                 repo.resolve("../outside.txt")
+
+    def test_project_profiles_cover_multiple_product_and_stack_types(self) -> None:
+        empty = {"file_count": 0, "languages": [], "framework": ""}
+        cases = {
+            "Build a FastAPI inventory service": ("service", "fastapi", "python"),
+            "Create a Rust command line backup tool": ("command-line application", "rust", "rust"),
+            "Make a Flutter mobile app": ("mobile application", "flutter", "dart"),
+            "Build a desktop application with Electron": ("desktop application", "electron", "javascript"),
+            "Create a Go web service": ("service", "go", "go"),
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                profile = classify_request(prompt, empty)
+                self.assertEqual(expected, (profile["kind"], profile["framework"], profile["language"]))
+
+        default = classify_request("Build an inventory management product", empty)
+        self.assertEqual(("web application", "react"), (default["kind"], default["framework"]))
+        full_stack = classify_request("Build a login system with PostgreSQL, Google login, and a dashboard", empty)
+        self.assertEqual("full-stack", full_stack["architecture"])
+
+    def test_greenfield_contract_rejects_single_file_react_substitution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "index.html").write_text("<div id='root'></div>", encoding="utf-8")
+            profile = classify_request("Build a React application", {"file_count": 0, "languages": [], "framework": ""})
+            missing = check_artifact_contract(root, profile)
+            self.assertTrue(any("package.json" in item for item in missing))
+            self.assertTrue(any("src/App" in item for item in missing))
+
+    def test_full_stack_contract_requires_a_server_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "package.json").write_text("{}", encoding="utf-8")
+            (root / "index.html").write_text("<div id='root'></div>", encoding="utf-8")
+            (root / "src" / "App.jsx").write_text("export default function App() {}", encoding="utf-8")
+            (root / "src" / "main.jsx").write_text("", encoding="utf-8")
+            profile = classify_request("Build a login system with PostgreSQL and a dashboard", {"file_count": 0, "languages": [], "framework": ""})
+            self.assertTrue(any("server implementation" in item for item in check_artifact_contract(root, profile)))
+            (root / "server").mkdir()
+            (root / "server" / "app.py").write_text("print('ready')", encoding="utf-8")
+            self.assertFalse(any("server implementation" in item for item in check_artifact_contract(root, profile)))
 
 
 class SandboxAndPolicyTests(unittest.TestCase):
@@ -248,6 +331,74 @@ class SandboxAndPolicyTests(unittest.TestCase):
 
 
 class CodebaseServiceTests(unittest.TestCase):
+    def test_independent_specialist_tasks_generate_in_parallel_and_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "README.md").write_text("existing project\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), ParallelPlanningGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Mixed", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Add backend and worker modules", max_iterations=8)
+            run = service.wait_for_run(run["id"], timeout=25)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue((source / "backend.py").is_file())
+            self.assertTrue((source / "frontend.js").is_file())
+            events = {item["type"] for item in service.events(run["id"])}
+            self.assertIn("agents.parallel.started", events)
+            self.assertIn("agents.parallel.completed", events)
+
+    def test_explorer_operations_sync_workspace_and_selected_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "README.md").write_text("existing project\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Explorer", source_path=str(source))
+            service.mutate_path(project["id"], action="create_directory", path="src")
+            service.mutate_path(project["id"], action="create_file", path="src/app.py")
+            service.write_file(project["id"], "src/app.py", "print('ready')\n")
+            service.mutate_path(project["id"], action="rename", path="src/app.py", destination="src/main.py")
+            workspace = Path(project["workspace"]["workspace_path"])
+            self.assertEqual("print('ready')\n", (source / "src" / "main.py").read_text(encoding="utf-8"))
+            self.assertTrue((workspace / "src" / "main.py").is_file())
+            service.mutate_path(project["id"], action="delete", path="src/main.py")
+            self.assertFalse((source / "src" / "main.py").exists())
+            self.assertFalse((workspace / "src" / "main.py").exists())
+            with self.assertRaises(PermissionError):
+                service.mutate_path(project["id"], action="create_file", path=".env")
+
+    def test_review_material_contains_new_untracked_file_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "README.md").write_text("existing project\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Review", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Add a feature", max_iterations=4)
+            run = service.wait_for_run(run["id"], timeout=20)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            material = service._review_material(run)
+            self.assertIn("recorded file: feature.py", material)
+            self.assertIn("+VALUE = 42", material)
+
+    def test_greenfield_non_react_service_builds_tests_and_publishes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            service = CodebaseService(OpenAgentStore(base / "data"), FastApiCreationGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Inventory", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Build a FastAPI inventory service", max_iterations=12)
+            run = service.wait_for_run(run["id"], timeout=25)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue((source / "inventory.py").is_file())
+            self.assertTrue((source / "test_inventory.py").is_file())
+            self.assertTrue(any(item["kind"] == "runtime" and item["status"] == "passed" for item in run["validation"]))
+            self.assertIn("source.publish.completed", {item["type"] for item in service.events(run["id"])})
+
     def test_native_folder_picker_returns_resolved_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = CodebaseService(OpenAgentStore(Path(directory) / "data"), FakeGateway())  # type: ignore[arg-type]
@@ -290,7 +441,8 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertIn("run.completed", event_types)
             self.assertIn("tool.completed", event_types)
             self.assertIn("agent.handoff", event_types)
-            self.assertFalse((source / "feature.py").exists())
+            self.assertEqual("VALUE = 42\n", (source / "feature.py").read_text(encoding="utf-8"))
+            self.assertIn("source.publish.completed", event_types)
 
     def test_failed_validation_creates_repair_task_and_revalidates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -383,22 +535,29 @@ class CodebaseServiceTests(unittest.TestCase):
             # resolve call must not create a third tool invocation.
             self.assertEqual(2, tool_call_count)
 
-    def test_empty_login_project_repairs_missing_browser_url_and_creates_page(self) -> None:
+    def test_empty_login_project_honours_react_and_publishes_verified_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             source = base / "source"
             source.mkdir()
             service = CodebaseService(OpenAgentStore(base / "data"), EmptyLoginPageGateway())  # type: ignore[arg-type]
             project = service.create_project(name="Login", source_path=str(source))
-            run = service.create_run(codebase_project_id=project["id"], prompt="Make a responsive login page", max_iterations=8)
+            run = service.create_run(codebase_project_id=project["id"], prompt="make a login page responsive, with React", max_iterations=8)
             run = service.wait_for_run(run["id"], timeout=15)
             self.assertEqual("completed", run["status"], run.get("error"))
             self.assertEqual([], run["approvals"])
             workspace = Path(project["workspace"]["workspace_path"])
-            self.assertIn("Sign in", (workspace / "index.html").read_text(encoding="utf-8"))
-            self.assertIn("@media", (workspace / "styles.css").read_text(encoding="utf-8"))
+            self.assertIn('"react"', (workspace / "package.json").read_text(encoding="utf-8"))
+            self.assertIn("useState", (workspace / "src" / "App.jsx").read_text(encoding="utf-8"))
+            self.assertIn("@media", (workspace / "src" / "styles.css").read_text(encoding="utf-8"))
+            self.assertEqual(
+                (workspace / "src" / "App.jsx").read_text(encoding="utf-8"),
+                (source / "src" / "App.jsx").read_text(encoding="utf-8"),
+            )
+            self.assertTrue((source / "package.json").is_file())
             event_types = {item["type"] for item in service.events(run["id"])}
             self.assertIn("model.action_replaced", event_types)
+            self.assertIn("source.publish.completed", event_types)
 
     def test_inline_python_is_self_corrected_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

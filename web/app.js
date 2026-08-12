@@ -156,6 +156,7 @@ const state = {
     selectedProject: null,
     selectedFile: "",
     selectedFileHash: "",
+    selectedTreePath: "",
     openFiles: [],
     fileBuffers: {},
     activeRunId: "",
@@ -164,6 +165,8 @@ const state = {
     events: [],
     streamController: null,
     pollTimer: null,
+    liveEditToken: 0,
+    liveEditQueue: Promise.resolve(),
   },
   selectedEngineRole: "chat",
   theme: "dark",
@@ -1580,7 +1583,7 @@ async function createCodebaseProject() {
       }),
     });
     state.codebase.selectedProjectId = payload.project.id;
-    toast("Repository ready", "A copied workspace and agent branch were created.");
+    toast("Repository ready", "CodeQ will work in a protected copy and publish verified files to this folder.");
     await loadCodebaseProjects();
     await selectCodebaseProject(payload.project.id);
   } catch (error) {
@@ -1658,10 +1661,10 @@ function renderCodebaseMap(project) {
     `<span title="${escapeHtml(workspace.workspace_path || "")}">${escapeHtml(workspace.sandbox_backend || "local")} sandbox · ${escapeHtml(workspace.branch || "agent branch")}</span>`,
   ].filter(Boolean).join("<br>");
   const boundary = qs("#codebaseBoundary");
-  if (boundary) boundary.textContent = `Protected copy: ${workspace.workspace_path || "local workspace"}. Source remains unchanged.`;
+  if (boundary) boundary.textContent = `Protected workspace: ${workspace.workspace_path || "local workspace"}. Verified changes publish to ${project.source_path || "the selected folder"}.`;
   const git = map.git || {};
   if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = `⑂ ${git.repository ? (git.branch || "detached") : (workspace.branch || "agent workspace")}`;
-  if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = `${workspace.sandbox_backend || "local"} · source protected`;
+  if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = `${workspace.sandbox_backend || "local"} · verified publish`;
   const repositoryState = qs("#codebaseRepositoryState");
   if (repositoryState) repositoryState.textContent = git.repository
     ? `${git.branch || "detached"} · ${(git.commit || "no commit").slice(0, 10)} · ${git.dirty ? `${(git.changes || []).length} changed` : "clean"}`
@@ -1684,8 +1687,112 @@ function renderCodebaseTree(entries) {
     .filter(item => item.path !== ".openagent" && !item.path.startsWith(".openagent/"))
     .sort((a, b) => a.path.localeCompare(b.path));
   root.innerHTML = visible.length ? visible.slice(0, 5000).map(item =>
-    `<button class="codebase-file-item ${item.type === "directory" ? "directory" : ""}" ${item.type === "file" ? `data-codebase-file="${escapeHtml(item.path)}"` : "disabled"} title="${escapeHtml(item.path)}" style="padding-left:${7 + Math.min(item.path.split("/").length - 1, 8) * 10}px"><span>${item.type === "directory" ? "▾" : "◇"}</span><span>${escapeHtml(item.path.split("/").pop())}</span></button>`
+    `<button class="codebase-file-item ${item.type === "directory" ? "directory" : ""} ${item.path === state.codebase.selectedTreePath ? "active" : ""}" data-codebase-path="${escapeHtml(item.path)}" data-codebase-kind="${escapeHtml(item.type)}" ${item.type === "file" ? `data-codebase-file="${escapeHtml(item.path)}"` : ""} title="${escapeHtml(item.path)}" style="padding-left:${7 + Math.min(item.path.split("/").length - 1, 8) * 10}px"><span>${item.type === "directory" ? "▾" : "◇"}</span><span>${escapeHtml(item.path.split("/").pop())}</span></button>`
   ).join("") : emptyState("No readable files found in this workspace.");
+  qsa("[data-codebase-path]", root).forEach(node => node.addEventListener("click", () => {
+    state.codebase.selectedTreePath = node.dataset.codebasePath;
+    qsa("[data-codebase-path]", root).forEach(item => item.classList.toggle("active", item === node));
+    if (node.dataset.codebaseKind === "file") openCodebaseFile(node.dataset.codebasePath);
+  }));
+}
+
+function codebaseParentPath(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  if (parts.length && !String(path).endsWith("/")) parts.pop();
+  return parts.join("/");
+}
+
+async function mutateCodebasePath(action) {
+  if (!state.codebase.selectedProjectId) return;
+  const selected = state.codebase.selectedTreePath || state.codebase.selectedFile;
+  let path = selected;
+  let destination = "";
+  if (action === "create_file" || action === "create_directory") {
+    const parent = selected && qs(`[data-codebase-path="${CSS.escape(selected)}"]`)?.dataset.codebaseKind === "directory" ? selected : codebaseParentPath(selected);
+    const name = window.prompt(action === "create_file" ? "New file name" : "New folder name", "");
+    if (!name?.trim()) return;
+    path = [parent, name.trim()].filter(Boolean).join("/");
+  } else {
+    if (!selected) { toast("Select a file or folder first"); return; }
+    if (action === "rename") {
+      destination = window.prompt("New path", selected) || "";
+      if (!destination.trim() || destination.trim() === selected) return;
+    }
+    if (action === "delete" && !window.confirm(`Delete ${selected} from the workspace and selected folder?`)) return;
+  }
+  try {
+    await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/paths`, {
+      method: "POST",
+      body: JSON.stringify({ action, path, destination }),
+    });
+    if (action === "delete" || action === "rename") closeCodebaseFile(selected);
+    state.codebase.selectedTreePath = destination || (action.startsWith("create_") ? path : "");
+    await refreshCodebaseTree();
+    if (action === "create_file") await openCodebaseFile(path);
+    toast("Explorer updated", destination || path);
+  } catch (error) {
+    toast("Explorer action failed", error.message);
+  }
+}
+
+async function refreshCodebaseTree() {
+  if (!state.codebase.selectedProjectId) return;
+  const payload = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/tree`);
+  renderCodebaseTree(payload.entries || []);
+}
+
+async function revealCodebaseAgentFile(path) {
+  if (!path || !state.codebase.selectedProjectId) return;
+  try {
+    const payload = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/file?path=${encodeURIComponent(path)}`);
+    const existing = state.codebase.fileBuffers[path];
+    if (existing?.dirty) return;
+    const content = payload.file.content || "";
+    state.codebase.fileBuffers[path] = { content, sha256: payload.file.sha256 || "", dirty: false };
+    if (!state.codebase.openFiles.includes(path)) state.codebase.openFiles.push(path);
+    state.codebase.selectedFile = path;
+    state.codebase.selectedFileHash = payload.file.sha256 || "";
+    qs("#codebaseEditorPath").textContent = path;
+    if (qs("#codebaseEditorTab")) qs("#codebaseEditorTab").textContent = path.split("/").pop();
+    if (qs("#codebaseLanguageStatus")) qs("#codebaseLanguageStatus").textContent = codebaseLanguage(path);
+    if (qs("#saveCodebaseFile")) qs("#saveCodebaseFile").disabled = false;
+    renderCodebaseTabs();
+    qsa("[data-codebase-file]").forEach(node => node.classList.toggle("active", node.dataset.codebaseFile === path));
+    animateCodebaseAgentEdit(path, content);
+    refreshCodebaseTree().catch(() => {});
+  } catch (_) {}
+}
+
+function animateCodebaseAgentEdit(path, content) {
+  const editor = qs("#codebaseEditor");
+  if (!editor || state.codebase.selectedFile !== path) return;
+  const token = ++state.codebase.liveEditToken;
+  editor.classList.add("agent-writing");
+  editor.value = "";
+  let offset = 0;
+  const chunk = Math.max(12, Math.ceil(content.length / 90));
+  function paint() {
+    if (token !== state.codebase.liveEditToken || state.codebase.selectedFile !== path) return;
+    offset = Math.min(content.length, offset + chunk);
+    editor.value = content.slice(0, offset);
+    updateCodebaseLineNumbers();
+    editor.scrollTop = editor.scrollHeight;
+    if (offset < content.length) requestAnimationFrame(paint);
+    else editor.classList.remove("agent-writing");
+  }
+  requestAnimationFrame(paint);
+}
+
+function handleCodebaseLiveEvent(event) {
+  if (event.type === "tool.completed" && event.payload?.result?.path && ["write_file", "patch_file", "move_file"].includes(event.payload?.tool)) {
+    state.codebase.liveEditQueue = state.codebase.liveEditQueue
+      .catch(() => {})
+      .then(() => revealCodebaseAgentFile(event.payload.result.path));
+  }
+  if (event.type === "source.publish.completed") {
+    refreshCodebaseTree().catch(() => {});
+    toast("Saved to selected folder", `${event.payload?.files?.length || 0} verified file(s) published.`);
+  }
 }
 
 function updateCodebaseLineNumbers() {
@@ -1995,12 +2102,22 @@ function renderCodebaseEvents() {
 function codeqEventLabel(event) {
   const labels = {
     "repository.analysed": "Repository understood",
+    "specialists.parallel.started": "Specialists reviewing in parallel",
+    "specialists.parallel.completed": "Architecture contract ready",
+    "agents.parallel.started": "Independent agents generating in parallel",
+    "agents.parallel.completed": "Parallel work coordinated",
+    "agent.parallel.recompute": "Overlapping edit scheduled safely",
     "plan.created": "Implementation plan ready",
     "agent.handoff": "Specialist assigned",
     "task.completed": "Step completed",
     "task.continued": "Continuing implementation",
     "repair.requested": "Repairing automatically",
+    "completion.audit.completed": "Whole project audited",
+    "completion.audit.needs_work": "Missing work added to the plan",
     "autonomy.redirected": "Unsafe action replaced automatically",
+    "source.publish.started": "Publishing verified files",
+    "source.publish.file": "Saving file to selected folder",
+    "source.publish.completed": "Selected folder updated",
     "run.completed": "Work completed and verified",
     "run.failed": "Run needs attention",
     "run.cancelled": "Run stopped",
@@ -2124,6 +2241,7 @@ async function startCodebaseEventStream(runId) {
           if (event.type === "stream.heartbeat") return;
           if (Number(event.sequence) > state.codebase.eventCursor) state.codebase.eventCursor = Number(event.sequence);
           if (event.type !== "stream.closed") state.codebase.events.push(event);
+          handleCodebaseLiveEvent(event);
           renderCodebaseEvents();
         } catch (_) {}
       });
@@ -2134,6 +2252,7 @@ async function startCodebaseEventStream(runId) {
       (payload.events || []).forEach(event => {
         state.codebase.eventCursor = Math.max(state.codebase.eventCursor, Number(event.sequence || 0));
         state.codebase.events.push(event);
+        handleCodebaseLiveEvent(event);
       });
       renderCodebaseEvents();
     }
@@ -7407,6 +7526,10 @@ async function init() {
   qs("#codebaseFolderPicker")?.addEventListener("click", () => pickCodebaseFolder(true));
   qs("#codebaseProjectSelect")?.addEventListener("change", event => selectCodebaseProject(event.target.value));
   qs("#scanCodebase")?.addEventListener("click", scanCodebaseProject);
+  qs("#newCodebaseFile")?.addEventListener("click", () => mutateCodebasePath("create_file"));
+  qs("#newCodebaseFolder")?.addEventListener("click", () => mutateCodebasePath("create_directory"));
+  qs("#renameCodebasePath")?.addEventListener("click", () => mutateCodebasePath("rename"));
+  qs("#deleteCodebasePath")?.addEventListener("click", () => mutateCodebasePath("delete"));
   qs("#saveCodebaseFile")?.addEventListener("click", saveCodebaseFile);
   qs("#codebaseEditor")?.addEventListener("input", () => { rememberCurrentCodebaseBuffer(); renderCodebaseTabs(); updateCodebaseLineNumbers(); });
   qs("#codebaseEditor")?.addEventListener("scroll", updateCodebaseLineNumbers);

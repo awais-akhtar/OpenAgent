@@ -354,11 +354,20 @@ class RepositoryIntelligence:
                 commands["browser"] = f"npm run {candidate}"
                 break
         names = {path.name.lower() for path in files}
-        if "pyproject.toml" in names or "pytest.ini" in names or "conftest.py" in names:
+        python_dependencies = set(self._dependencies(package).get("python", []))
+        pyproject_text = ""
+        pyproject = self.root / "pyproject.toml"
+        if pyproject.is_file():
+            pyproject_text = pyproject.read_text(encoding="utf-8", errors="replace").lower()
+        if "pytest" in python_dependencies or "pytest.ini" in names or "conftest.py" in names or "[tool.pytest" in pyproject_text:
             commands.setdefault("test", "python -m pytest")
-        if "pyproject.toml" in names:
+        elif any(path.name.lower().startswith("test_") and path.suffix.lower() == ".py" for path in files):
+            commands.setdefault("test", "python -m unittest discover -v")
+        if "build" in python_dependencies or "[build-system]" in pyproject_text:
             commands.setdefault("build", "python -m build")
+        if "ruff" in python_dependencies or "[tool.ruff" in pyproject_text or "ruff.toml" in names or ".ruff.toml" in names:
             commands.setdefault("lint", "python -m ruff check .")
+        if "mypy" in python_dependencies or "[tool.mypy" in pyproject_text or "mypy.ini" in names:
             commands.setdefault("typecheck", "python -m mypy .")
         if "cargo.toml" in names:
             commands.update({"test": "cargo test", "build": "cargo build", "lint": "cargo clippy"})

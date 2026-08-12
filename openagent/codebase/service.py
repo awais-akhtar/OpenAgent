@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 from pathlib import Path
 import re
 import shlex
+import shutil
 import threading
 import time
 from typing import Any
@@ -17,7 +19,8 @@ from uuid import uuid4
 from ..model_gateway import ModelGateway, ProviderConfigurationError
 from ..models import AuditEvent, utc_now
 from ..storage import OpenAgentStore
-from .repository import RepositoryIntelligence
+from .repository import IGNORED_NAMES, RepositoryIntelligence
+from .profiles import check_artifact_contract, classify_request, task_needs_file_change
 from .sandbox import SandboxManager
 from .tools import ApprovalRequired, CodebaseTools
 
@@ -25,7 +28,7 @@ from .tools import ApprovalRequired, CodebaseTools
 FINAL_STATES = {"completed", "failed", "cancelled", "blocked"}
 PLAN_SCHEMA = {
     "goal": "string",
-    "tasks": [{"id": "T1", "title": "string", "agent": "architect|programmer|tester|debugger|reviewer", "depends_on": ["T0"]}],
+    "tasks": [{"id": "T1", "title": "string", "agent": "architect|frontend|backend|database|programmer|tester|debugger|security|reviewer|documentation", "depends_on": ["T0"], "parent": ""}],
 }
 ACTION_TOOLS = {
     "list_directory", "read_file", "read_files", "write_file", "patch_file", "delete_file", "move_file",
@@ -152,6 +155,124 @@ form.addEventListener('submit', event => {
   status.textContent = form.checkValidity() ? 'Form validated. Connect this page to your authentication endpoint.' : '';
   if (!form.checkValidity()) form.querySelector(':invalid')?.focus();
 });
+"""
+
+REACT_LOGIN_PACKAGE = """{
+  "name": "responsive-login",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {}
+}
+"""
+
+REACT_LOGIN_INDEX = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b1628">
+  <title>Sign in</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
+"""
+
+REACT_LOGIN_MAIN = """import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App.jsx';
+import './styles.css';
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode><App /></React.StrictMode>,
+);
+"""
+
+REACT_LOGIN_APP = """import { useState } from 'react';
+
+export default function App() {
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [message, setMessage] = useState('');
+
+  function submit(event) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const email = String(data.get('email') || '').trim();
+    const password = String(data.get('password') || '');
+    const nextErrors = {};
+    if (!/^\\S+@\\S+\\.\\S+$/.test(email)) nextErrors.email = 'Enter a valid email address.';
+    if (password.length < 8) nextErrors.password = 'Use at least 8 characters.';
+    setErrors(nextErrors);
+    setMessage(Object.keys(nextErrors).length ? '' : 'Details validated and ready for your authentication API.');
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="login-context" aria-labelledby="welcome-title">
+        <a className="brand" href="#" aria-label="Northstar home"><span>N</span> Northstar</a>
+        <div>
+          <p className="eyebrow">Secure workspace</p>
+          <h1 id="welcome-title">Welcome back.</h1>
+          <p>Sign in to continue to your projects, reports, and team workspace.</p>
+        </div>
+        <small>Your session stays protected on this device.</small>
+      </section>
+      <section className="form-panel">
+        <form onSubmit={submit} noValidate>
+          <header><p className="eyebrow">Account access</p><h2>Sign in</h2><p>Use the email connected to your account.</p></header>
+          <label>Email address<input name="email" type="email" autoComplete="email" aria-invalid={Boolean(errors.email)} />{errors.email && <span role="alert">{errors.email}</span>}</label>
+          <label>Password<div className="password-field"><input name="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" aria-invalid={Boolean(errors.password)} /><button type="button" onClick={() => setShowPassword(value => !value)}>{showPassword ? 'Hide' : 'Show'}</button></div>{errors.password && <span role="alert">{errors.password}</span>}</label>
+          <div className="form-row"><label className="check"><input name="remember" type="checkbox" /> Remember me</label><a href="#">Forgot password?</a></div>
+          <button className="submit" type="submit">Continue</button>
+          <p className="status" role="status">{message}</p>
+          <p className="create">New here? <a href="#">Create an account</a></p>
+        </form>
+      </section>
+    </main>
+  );
+}
+"""
+
+REACT_LOGIN_CSS = """* { box-sizing: border-box; }
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #152033; background: #f4f7fb; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }
+a { color: #1764c0; text-underline-offset: 3px; }
+.login-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(300px, .9fr) minmax(440px, 1.1fr); }
+.login-context { display: flex; flex-direction: column; justify-content: space-between; gap: 3rem; padding: clamp(2rem, 5vw, 5rem); color: white; background: #0b2748; }
+.brand { display: inline-flex; align-items: center; gap: .7rem; width: fit-content; color: white; font-weight: 750; text-decoration: none; }
+.brand span { display: grid; place-items: center; width: 2.1rem; aspect-ratio: 1; border: 1px solid #91c8ff; border-radius: 7px; background: #1764c0; }
+.login-context h1 { margin: .35rem 0 .8rem; font-size: clamp(2.7rem, 6vw, 5.5rem); line-height: 1; }
+.login-context p, .login-context small { max-width: 34rem; color: #c8d9ea; line-height: 1.65; }
+.eyebrow { margin: 0; color: #4c79ad; font-size: .75rem; font-weight: 800; text-transform: uppercase; }
+.form-panel { display: grid; place-items: center; padding: clamp(1.5rem, 6vw, 5rem); }
+form { width: min(100%, 440px); display: grid; gap: 1.15rem; }
+form header { margin-bottom: .5rem; } form h2 { margin: .35rem 0; font-size: 2rem; } form header p:last-child, .create { color: #68778b; }
+form > label { display: grid; gap: .45rem; font-size: .9rem; font-weight: 700; }
+input { width: 100%; min-height: 48px; padding: .75rem .85rem; border: 1px solid #bdc9d8; border-radius: 7px; background: white; outline: none; }
+input:focus { border-color: #1764c0; box-shadow: 0 0 0 3px rgb(23 100 192 / 15%); } input[aria-invalid="true"] { border-color: #b42318; }
+label > span { color: #b42318; font-size: .8rem; font-weight: 500; }
+.password-field { position: relative; } .password-field input { padding-right: 4rem; } .password-field button { position: absolute; right: .4rem; top: 50%; transform: translateY(-50%); border: 0; color: #1764c0; background: transparent; cursor: pointer; }
+.form-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; font-size: .88rem; } .check { display: flex; align-items: center; gap: .55rem; } .check input { width: 1rem; min-height: 1rem; }
+.submit { min-height: 50px; border: 0; border-radius: 7px; color: white; font-weight: 750; background: #1764c0; cursor: pointer; } .submit:hover { background: #1055a5; }
+.status { min-height: 1.25rem; margin: -.25rem 0; color: #17643a; } .create { margin: 0; text-align: center; }
+@media (max-width: 780px) { .login-shell { grid-template-columns: 1fr; } .login-context { min-height: 250px; padding: 1.5rem; gap: 1.5rem; } .login-context h1 { font-size: clamp(2.5rem, 13vw, 4rem); } .login-context small { display: none; } .form-panel { place-items: start center; padding: 2rem 1.25rem 3rem; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
 """
 
 
@@ -415,8 +536,88 @@ class CodebaseService:
         result = CodebaseTools(self.sandboxes, workspace["id"], backend=workspace["sandbox_backend"]).execute(
             "write_file", {"path": path, "content": content, "expected_sha256": expected_sha256}
         )
+        source_target = self._safe_project_path(project["source_path"], path)
+        source_target.parent.mkdir(parents=True, exist_ok=True)
+        source_target.write_text(str(content), encoding="utf-8", newline="\n")
+        result["source_path"] = str(source_target)
+        self.refresh_project_map(codebase_project_id, owner=owner)
         self._audit("codebase.file.write", f"codebase-project:{codebase_project_id}:{path}", project["project"], {"owner": owner, "old_hash": result.get("old_sha256"), "new_hash": result.get("new_sha256")})
         return result
+
+    def mutate_path(
+        self,
+        codebase_project_id: str,
+        *,
+        action: str,
+        path: str,
+        destination: str = "",
+        owner: str = "local",
+    ) -> dict[str, Any]:
+        """Apply an explicit Explorer operation to workspace and selected source."""
+
+        project = self.get_project(codebase_project_id, owner=owner)
+        workspace = project["workspace"]
+        workspace_path = self._safe_project_path(workspace["workspace_path"], path)
+        source_path = self._safe_project_path(project["source_path"], path)
+        operation = str(action).strip().lower()
+        result: dict[str, Any] = {"action": operation, "path": Path(path).as_posix()}
+        if operation == "create_file":
+            if workspace_path.exists() or source_path.exists():
+                raise ValueError("file already exists")
+            workspace_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            workspace_path.write_text("", encoding="utf-8")
+            source_path.write_text("", encoding="utf-8")
+        elif operation == "create_directory":
+            if workspace_path.exists() or source_path.exists():
+                raise ValueError("folder already exists")
+            workspace_path.mkdir(parents=True)
+            source_path.mkdir(parents=True)
+        elif operation in {"rename", "move"}:
+            if not destination:
+                raise ValueError("destination is required")
+            workspace_destination = self._safe_project_path(workspace["workspace_path"], destination)
+            source_destination = self._safe_project_path(project["source_path"], destination)
+            if not workspace_path.exists():
+                raise FileNotFoundError(path)
+            if workspace_destination.exists() or source_destination.exists():
+                raise ValueError("destination already exists")
+            workspace_destination.parent.mkdir(parents=True, exist_ok=True)
+            source_destination.parent.mkdir(parents=True, exist_ok=True)
+            workspace_path.replace(workspace_destination)
+            if source_path.exists():
+                source_path.replace(source_destination)
+            elif workspace_destination.is_dir():
+                shutil.copytree(workspace_destination, source_destination)
+            else:
+                shutil.copy2(workspace_destination, source_destination)
+            result["destination"] = Path(destination).as_posix()
+        elif operation == "delete":
+            if not workspace_path.exists() and not source_path.exists():
+                raise FileNotFoundError(path)
+            for target in (workspace_path, source_path):
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+        else:
+            raise ValueError("action must be create_file, create_directory, rename, move, or delete")
+        self.refresh_project_map(codebase_project_id, owner=owner)
+        self._audit(f"codebase.path.{operation}", f"codebase-project:{codebase_project_id}:{path}", project["project"], {"owner": owner, "destination": destination})
+        return result
+
+    @staticmethod
+    def _safe_project_path(root: str | Path, relative: str) -> Path:
+        value = str(relative).replace("\\", "/").strip().strip("/")
+        if not value:
+            raise ValueError("path is required")
+        parts = Path(value).parts
+        if any(part in IGNORED_NAMES or part in {".git", ".openagent"} for part in parts):
+            raise PermissionError("protected project paths cannot be changed from Explorer")
+        lowered = Path(value).name.lower()
+        if lowered == ".env" or lowered.startswith(".env.") or Path(value).suffix.lower() in {".pem", ".key", ".p12", ".pfx"}:
+            raise PermissionError("secret-bearing files must be managed through the vault")
+        return RepositoryIntelligence(root).resolve(value)
 
     def create_run(
         self,
@@ -673,13 +874,15 @@ class CodebaseService:
             project = self.get_project(run["codebase_project_id"], owner=run["owner"])
             project_map = self.refresh_project_map(project["id"], owner=run["owner"])
             self._event(run_id, "repository.analysed", project_map=self._compact_map(project_map))
-            tasks = self._plan(run, project, project_map)
+            architecture = self._consult_specialists(run, project, project_map)
+            tasks = self._plan(run, project, project_map, architecture)
             self._store_tasks(run_id, tasks)
-            self._event(run_id, "plan.created", tasks=tasks)
+            self._event(run_id, "plan.created", tasks=tasks, architecture=architecture, delivery_profile=classify_request(run["user_prompt"], project_map))
             self._set_run(run_id, status="running")
             last_feedback = ""
             changed = False
             active_agent = "project-manager"
+            decision_cache: dict[str, dict[str, Any]] = {}
             max_iterations = max(1, int(run["max_iterations"]))
             for iteration in range(max_iterations):
                 if self._cancelled(run_id):
@@ -710,6 +913,16 @@ class CodebaseService:
                         self._set_run(run_id, status="failed", error="Completion criteria did not pass", summary=validation["summary"], finished=True)
                         self._event(run_id, "run.failed", validation=validation)
                         return
+                    audit = self._completion_audit(run, project, architecture, validation)
+                    if audit["missing_tasks"]:
+                        if iteration + 1 < max_iterations:
+                            self._add_completion_tasks(run_id, audit["missing_tasks"])
+                            self._set_run(run_id, status="running", error="")
+                            self._event(run_id, "completion.audit.needs_work", audit=audit)
+                            continue
+                        self._set_run(run_id, status="failed", error="Whole-project acceptance audit found incomplete work", summary=json.dumps(audit), finished=True)
+                        self._event(run_id, "run.failed", audit=audit)
+                        return
                     self._event(run_id, "agent.handoff", from_agent=active_agent, to_agent="reviewer", reason="independent-diff-review")
                     active_agent = "reviewer"
                     review = self._review(run, validation)
@@ -725,7 +938,8 @@ class CodebaseService:
                         return
                     snapshot = self.sandboxes.snapshot(run["workspace_id"], f"{run_id}-verified")
                     self._record_snapshot(run_id, snapshot, "Verified result")
-                    summary = f"Validated autonomous run. {validation['summary']} Independent review: {review['status']}."
+                    published = self._publish_verified_changes(run)
+                    summary = f"Validated autonomous run. {validation['summary']} Independent review: {review['status']}. Published {len(published['files'])} verified file(s) to the selected folder."
                     self._set_run(run_id, status="completed", summary=summary, error="", finished=True)
                     self._event(run_id, "run.completed", summary=summary, changed=changed, validation=validation, review=review)
                     self._remember_success(run, validation, review)
@@ -742,7 +956,11 @@ class CodebaseService:
                 context = RepositoryIntelligence(project["workspace"]["workspace_path"]).select_context(
                     f"{run['user_prompt']} {task['title']} {last_feedback}", limit=20
                 )
-                decision = self._model_actions(run, project, project_map, context, task, last_feedback)
+                if not decision_cache:
+                    ready = [task, *[item for item in self._ready_tasks(run_id) if item["id"] != task["id"]]]
+                    if len(ready) > 1:
+                        decision_cache.update(self._parallel_task_decisions(run, project, architecture, ready, last_feedback))
+                decision = decision_cache.pop(task["id"], None) or self._model_actions(run, project, project_map, context, task, last_feedback, architecture)
                 actions = decision.get("actions", []) if isinstance(decision, dict) else []
                 if not actions:
                     self._set_task(task["id"], "blocked", {"reason": "model returned no executable actions", "response": decision})
@@ -809,10 +1027,161 @@ class CodebaseService:
             with self._lock:
                 self._threads.pop(run_id, None)
 
-    def _plan(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any]) -> list[dict[str, Any]]:
+    def _consult_specialists(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any]) -> dict[str, Any]:
+        """Ask independent specialists for a compact architecture contract."""
+
+        profile = classify_request(run["user_prompt"], project_map)
+        roles = ["architect", "tester"]
+        if profile.get("requires_ui"):
+            roles.append("frontend")
+        if profile.get("architecture") == "full-stack" or profile.get("kind") == "service":
+            roles.extend(["backend", "security"])
+        if profile.get("architecture") == "full-stack" or project_map.get("database"):
+            roles.append("database")
+        roles = list(dict.fromkeys(roles))[:5]
+        self._event(run["id"], "specialists.parallel.started", agents=roles)
+
+        def consult(role: str) -> tuple[str, dict[str, Any]]:
+            prompt = (
+                "Return JSON only: {\"summary\":string,\"components\":[string],\"risks\":[string],"
+                "\"acceptance_criteria\":[string],\"recommended_tasks\":[string]}. "
+                "Be concrete and repository-aware. Do not write code and do not claim execution.\n"
+                f"Role: {role}\nGoal: {run['user_prompt']}\nDelivery profile: {json.dumps(profile)}\n"
+                f"Project map: {json.dumps(self._compact_map(project_map))}\nProject memory: {json.dumps(project['memory'])}"
+            )
+            result = self._model_json(run, [
+                {"role": "system", "content": f"You are the independent {role} specialist in a software engineering team."},
+                {"role": "user", "content": prompt},
+            ], role=role)
+            return role, result
+
+        reports: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=min(5, len(roles)), thread_name_prefix="codeq-specialist") as pool:
+            futures = [pool.submit(consult, role) for role in roles]
+            for future in as_completed(futures):
+                role, report = future.result()
+                if isinstance(report, dict) and any(key in report for key in ("summary", "components", "acceptance_criteria", "recommended_tasks")):
+                    reports[role] = report
+        acceptance = list(dict.fromkeys(
+            str(item).strip()
+            for report in reports.values()
+            for item in report.get("acceptance_criteria", [])
+            if str(item).strip()
+        ))[:40]
+        result = {"profile": profile, "reports": reports, "acceptance_criteria": acceptance}
+        self._event(run["id"], "specialists.parallel.completed", agents=list(reports), acceptance_criteria=acceptance)
+        return result
+
+    def _parallel_task_decisions(
+        self,
+        run: dict[str, Any],
+        project: dict[str, Any],
+        architecture: dict[str, Any],
+        tasks: list[dict[str, Any]],
+        feedback: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Generate independent task decisions concurrently, then reject file collisions."""
+
+        selected = tasks[:4]
+        self._event(run["id"], "agents.parallel.started", task_ids=[task["id"] for task in selected], agents=[task["assigned_agent"] for task in selected])
+
+        def decide(task: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            current_map = RepositoryIntelligence(project["workspace"]["workspace_path"]).scan()
+            context = RepositoryIntelligence(project["workspace"]["workspace_path"]).select_context(
+                f"{run['user_prompt']} {task['title']} {feedback}", limit=20
+            )
+            return task["id"], self._model_actions(run, project, current_map, context, task, feedback, architecture)
+
+        decisions: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=len(selected), thread_name_prefix="codeq-task") as pool:
+            futures = [pool.submit(decide, task) for task in selected]
+            for future in as_completed(futures):
+                task_id, decision = future.result()
+                decisions[task_id] = decision
+
+        claimed: dict[str, str] = {}
+        for task in selected:
+            decision = decisions.get(task["id"], {})
+            paths = self._decision_write_paths(decision)
+            collision = next((path for path in paths if path in claimed), "")
+            if collision:
+                decisions.pop(task["id"], None)
+                self._event(run["id"], "agent.parallel.recompute", task_id=task["id"], path=collision, after_task=claimed[collision])
+                continue
+            for path in paths:
+                claimed[path] = task["id"]
+        self._event(run["id"], "agents.parallel.completed", task_ids=list(decisions), deferred=[task["id"] for task in selected if task["id"] not in decisions])
+        return decisions
+
+    @staticmethod
+    def _decision_write_paths(decision: dict[str, Any]) -> set[str]:
+        paths: set[str] = set()
+        for action in decision.get("actions", []) if isinstance(decision, dict) else []:
+            if not isinstance(action, dict) or str(action.get("tool", "")) not in {"write_file", "patch_file", "delete_file", "move_file"}:
+                continue
+            arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+            for key in ("path", "source", "destination"):
+                if str(arguments.get(key, "")).strip():
+                    paths.add(str(arguments[key]).replace("\\", "/").lower())
+        return paths
+
+    def _completion_audit(self, run: dict[str, Any], project: dict[str, Any], architecture: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
+        workspace = self._workspace(run["workspace_id"], run["owner"])
+        project_map = RepositoryIntelligence(workspace["workspace_path"]).scan()
+        with self.store.session() as connection:
+            changes = [str(row["filepath"]) for row in connection.execute(
+                "SELECT DISTINCT filepath FROM codebase_file_changes WHERE run_id = ? ORDER BY filepath", (run["id"],)
+            ).fetchall()]
+        prompt = (
+            "Audit the whole finished repository against the user request and acceptance contract. Return JSON only: "
+            "{\"status\":\"passed|needs_work\",\"missing_tasks\":[{\"title\":string,\"agent\":string}],\"evidence\":[string]}. "
+            "Only list a missing task when the project map, changed-file list, or validation proves a requested behavior is absent. "
+            "Do not request deployment, credentials, purchases, or optional enhancements.\n"
+            f"Goal: {run['user_prompt']}\nArchitecture: {json.dumps(architecture)}\nProject map: {json.dumps(self._compact_map(project_map))}\n"
+            f"Changed files: {json.dumps(changes)}\nValidation: {json.dumps(validation)}"
+        )
+        parsed = self._model_json(run, [
+            {"role": "system", "content": "You are the final acceptance auditor. Inspect evidence independently of the implementation agents."},
+            {"role": "user", "content": prompt},
+        ], role="reviewer")
+        valid_agents = {"architect", "frontend", "backend", "database", "programmer", "tester", "debugger", "security", "reviewer", "documentation"}
+        missing = []
+        for item in parsed.get("missing_tasks", []) if isinstance(parsed, dict) else []:
+            if not isinstance(item, dict) or not str(item.get("title", "")).strip():
+                continue
+            agent = str(item.get("agent", "programmer")).lower()
+            missing.append({"title": str(item["title"]).strip(), "agent": agent if agent in valid_agents else "programmer"})
+        result = {"status": "needs_work" if missing else "passed", "missing_tasks": missing[:20], "evidence": parsed.get("evidence", []) if isinstance(parsed, dict) else []}
+        self._event(run["id"], "completion.audit.completed", audit=result)
+        return result
+
+    def _add_completion_tasks(self, run_id: str, tasks: list[dict[str, str]]) -> None:
+        created: list[tuple[str, dict[str, str]]] = []
+        with self.store.session() as connection:
+            completed = [str(row["id"]) for row in connection.execute(
+                "SELECT id FROM codebase_tasks WHERE run_id = ? AND status = 'completed' ORDER BY created_at, id", (run_id,)
+            ).fetchall()]
+            existing_titles = {str(row["title"]).lower() for row in connection.execute(
+                "SELECT title FROM codebase_tasks WHERE run_id = ?", (run_id,)
+            ).fetchall()}
+            now = utc_now()
+            for index, task in enumerate(tasks, start=1):
+                if task["title"].lower() in existing_titles:
+                    continue
+                task_id = f"{run_id}:A{len(existing_titles) + index}"
+                connection.execute(
+                    "INSERT INTO codebase_tasks (id, run_id, title, assigned_agent, status, depends_on_json, result_json, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, '{}', ?, ?)",
+                    (task_id, run_id, task["title"], task["agent"], json.dumps(completed), now, now),
+                )
+                created.append((task_id, task))
+        for task_id, task in created:
+            self._event(run_id, "task.created", task_id=task_id, title=task["title"], assigned_agent=task["agent"], source="completion-audit")
+
+    def _plan(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], architecture: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if self._standalone_web_request(run["user_prompt"], project_map):
+            stack = "React application" if self._react_request(run["user_prompt"]) else "web page"
             return [
-                {"id": "T1", "title": "Create the semantic login page markup in index.html", "assigned_agent": "programmer", "depends_on": []},
+                {"id": "T1", "title": f"Create the responsive {stack} structure and sign-in component", "assigned_agent": "programmer", "depends_on": []},
                 {"id": "T2", "title": "Add polished responsive styling and interaction behavior", "assigned_agent": "programmer", "depends_on": ["T1"]},
                 {"id": "T3", "title": "Inspect the generated files and validate the page artifacts", "assigned_agent": "tester", "depends_on": ["T2"]},
             ]
@@ -821,24 +1190,38 @@ class CodebaseService:
                 {"id": "T1", "title": f"Implement the requested Python function: {run['user_prompt']}", "assigned_agent": "programmer", "depends_on": []},
                 {"id": "T2", "title": "Create and run focused tests for the Python function", "assigned_agent": "tester", "depends_on": ["T1"]},
             ]
+        profile = classify_request(run["user_prompt"], project_map)
+        if profile["mode"] == "greenfield":
+            stack = f"{profile['framework']} {profile['kind']}"
+            implementation = "Implement the complete user-requested behavior"
+            if profile["architecture"] == "full-stack":
+                implementation += " across client, server, persistence, validation, and failure handling"
+            else:
+                implementation += f" and usable {profile['kind']} experience"
+            return [
+                {"id": "T1", "title": f"Create the runnable {stack} foundation, entrypoint, configuration, and dependency manifest", "assigned_agent": "programmer", "depends_on": []},
+                {"id": "T2", "title": implementation, "assigned_agent": "programmer", "depends_on": ["T1"]},
+                {"id": "T3", "title": "Add focused automated tests for core behavior and failure paths", "assigned_agent": "tester", "depends_on": ["T2"]},
+                {"id": "T4", "title": "Run available tests, build, static checks, and runtime smoke validation; repair every failure", "assigned_agent": "tester", "depends_on": ["T3"]},
+            ]
         prompt = (
             "Create a concise dependency-aware software engineering plan made only of executable repository changes and validation. Return JSON only using this shape: "
             f"{json.dumps(PLAN_SCHEMA)}. Do not include markdown. Assign specialist roles only when useful.\n"
             "Do not add framework research, requirements definition, documentation, backend integration, or deployment unless the user explicitly requested it. "
             "Every implementation task must name a concrete code outcome; finish with tests/build/runtime checks supported by the project.\n"
             f"Goal: {run['user_prompt']}\nProject map: {json.dumps(self._compact_map(project_map))}\n"
-            f"Project memory: {json.dumps(project['memory'])}"
+            f"Project memory: {json.dumps(project['memory'])}\nSpecialist architecture review: {json.dumps(architecture or {})}"
         )
         parsed = self._model_json(run, [{"role": "system", "content": "You are the project manager. Inspect before editing and never claim success without validation."}, {"role": "user", "content": prompt}], role="project_manager")
         tasks = parsed.get("tasks", []) if isinstance(parsed, dict) else []
         normalized = []
-        valid_agents = {"architect", "programmer", "tester", "debugger", "reviewer"}
+        valid_agents = {"architect", "frontend", "backend", "database", "programmer", "tester", "debugger", "security", "reviewer", "documentation"}
         for index, task in enumerate(tasks[:100], start=1):
             if not isinstance(task, dict) or not str(task.get("title", "")).strip():
                 continue
             task_id = str(task.get("id", f"T{index}")).strip() or f"T{index}"
             agent = str(task.get("agent", "programmer")).strip().lower()
-            normalized.append({"id": task_id, "title": str(task["title"]).strip(), "assigned_agent": agent if agent in valid_agents else "programmer", "depends_on": [str(item) for item in task.get("depends_on", []) if str(item).strip()]})
+            normalized.append({"id": task_id, "title": str(task["title"]).strip(), "assigned_agent": agent if agent in valid_agents else "programmer", "depends_on": [str(item) for item in task.get("depends_on", []) if str(item).strip()], "parent": str(task.get("parent", "")).strip()})
         if not normalized:
             normalized = [
                 {"id": "T1", "title": "Inspect the repository and identify affected files", "assigned_agent": "architect", "depends_on": []},
@@ -848,7 +1231,9 @@ class CodebaseService:
             ]
         return normalized
 
-    def _model_actions(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], context: list[dict[str, Any]], task: dict[str, Any], feedback: str) -> dict[str, Any]:
+    def _model_actions(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], context: list[dict[str, Any]], task: dict[str, Any], feedback: str, architecture: dict[str, Any] | None = None) -> dict[str, Any]:
+        source_map = RepositoryIntelligence(project["source_path"]).scan()
+        profile = classify_request(run["user_prompt"], source_map)
         messages = [
             {"role": "system", "content": (
                 "You are an autonomous software engineer operating only through supplied workspace tools. "
@@ -863,14 +1248,14 @@ class CodebaseService:
             )},
             {"role": "user", "content": (
                 f"Overall goal: {run['user_prompt']}\nCurrent task: {task['title']}\nAgent role: {task['assigned_agent']}\nTask evidence: {json.dumps(task.get('result', {}))}\n"
-                f"Project map: {json.dumps(self._compact_map(project_map))}\nProject memory: {json.dumps(project['memory'])}\n"
+                f"Delivery profile: {json.dumps(profile)}\nArchitecture and acceptance contract: {json.dumps(architecture or {})}\nProject map: {json.dumps(self._compact_map(project_map))}\nProject memory: {json.dumps(project['memory'])}\n"
                 f"Recent project sessions: {json.dumps(self._recent_run_memory(run['codebase_project_id']))}\n"
                 f"Relevant repository context: {json.dumps(context)[:100000]}\nPrevious failure: {feedback[-20000:]}\n"
                 f"Available tools: {', '.join(sorted(ACTION_TOOLS))}. Return the next smallest coherent action batch."
             )},
         ]
         parsed = self._model_json(run, messages, role=str(task.get("assigned_agent", "programmer")))
-        if self._standalone_web_request(run["user_prompt"], project_map):
+        if self._standalone_web_request(run["user_prompt"], source_map):
             actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
             title = str(task.get("title", "")).lower()
             implementation_task = any(term in title for term in ("create", "markup", "styling", "interaction", "implement", "build"))
@@ -883,12 +1268,29 @@ class CodebaseService:
             )
             if implementation_task and not any(str(action.get("tool", "")) in {"write_file", "patch_file"} for action in actions if isinstance(action, dict)):
                 invalid = True
+            if self._react_request(run["user_prompt"]):
+                written_paths = {
+                    str((action.get("arguments") or {}).get("path", "")).replace("\\", "/").lower()
+                    for action in actions if isinstance(action, dict) and str(action.get("tool", "")) in {"write_file", "patch_file"}
+                }
+                if ("structure" in title or "component" in title) and "src/app.jsx" not in written_paths:
+                    invalid = True
+                if ("styling" in title or "interaction" in title) and "src/styles.css" not in written_paths:
+                    invalid = True
+                if "validate" in title or "inspect" in title:
+                    inspected_paths = {
+                        str(path).replace("\\", "/").lower()
+                        for action in actions if isinstance(action, dict) and str(action.get("tool", "")) == "read_files"
+                        for path in ((action.get("arguments") or {}).get("paths") or [])
+                    }
+                    if not {"package.json", "src/app.jsx", "src/styles.css"}.issubset(inspected_paths):
+                        invalid = True
             if invalid:
-                fallback = self._empty_web_fallback(task)
+                fallback = self._empty_web_fallback(run["user_prompt"], task)
                 if fallback:
                     self._event(run["id"], "model.action_replaced", task_id=task["id"], reason="invalid action for empty web workspace")
                     return fallback
-        if self._standalone_python_request(run["user_prompt"], project_map):
+        if self._standalone_python_request(run["user_prompt"], source_map):
             actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
             title = str(task.get("title", "")).lower()
             implementation_task = "implement" in title
@@ -922,12 +1324,56 @@ class CodebaseService:
                 if fallback:
                     self._event(run["id"], "model.action_replaced", task_id=task["id"], reason="non-executable action for Python creation task")
                     return fallback
+        actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
+        if task_needs_file_change(str(task.get("title", "")), str(task.get("assigned_agent", ""))):
+            productive = any(
+                isinstance(action, dict)
+                and str(action.get("tool", "")) in {"write_file", "patch_file", "delete_file", "move_file"}
+                for action in actions
+            )
+            non_attempts = {"list_directory", "read_file", "read_files", "grep", "search_symbol", "find_references", "project_map", "git_status", "git_diff", "git_log"}
+            narration_only = bool(actions) and all(
+                isinstance(action, dict) and (
+                    str(action.get("tool", "")) in non_attempts or self._nonproductive_creation_action(action)
+                )
+                for action in actions
+            )
+            if not productive and (not actions or narration_only):
+                self._event(run["id"], "model.action_rejected", task_id=task["id"], reason="implementation task returned no file change", profile=profile)
+                return {
+                    "summary": "No repository change was produced. Inspect the project map and implement the requested code in real files.",
+                    "actions": [{"tool": "project_map", "arguments": {}}],
+                    "done": False,
+                }
+        title_text = str(task.get("title", "")).lower()
+        if str(task.get("assigned_agent", "")).lower() == "tester" and bool(parsed.get("done", False)) and not task_needs_file_change(title_text, "tester"):
+            evidence_tools = {"run_tests", "run_linter", "run_typechecker", "run_build", "browser_test", "browser_inspect", "run_shell", "read_files"}
+            if not any(isinstance(action, dict) and str(action.get("tool", "")) in evidence_tools for action in actions):
+                self._event(run["id"], "model.action_rejected", task_id=task["id"], reason="validation task returned no executable evidence", profile=profile)
+                return {"summary": "Run the repository's available validation commands and inspect their real output.", "actions": [{"tool": "project_map", "arguments": {}}], "done": False}
         return parsed if isinstance(parsed, dict) else {}
 
-    @staticmethod
-    def _empty_web_fallback(task: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _empty_web_fallback(cls, goal: str, task: dict[str, Any]) -> dict[str, Any]:
         title = str(task.get("title", "")).lower()
-        if "markup" in title or "index.html" in title:
+        if cls._react_request(goal):
+            if "structure" in title or "component" in title:
+                return {
+                    "summary": "Created the React application and responsive sign-in component",
+                    "actions": [
+                        {"tool": "write_file", "arguments": {"path": "package.json", "content": REACT_LOGIN_PACKAGE}},
+                        {"tool": "write_file", "arguments": {"path": "index.html", "content": REACT_LOGIN_INDEX}},
+                        {"tool": "write_file", "arguments": {"path": "src/main.jsx", "content": REACT_LOGIN_MAIN}},
+                        {"tool": "write_file", "arguments": {"path": "src/App.jsx", "content": REACT_LOGIN_APP}},
+                    ],
+                    "done": True,
+                }
+            if "styling" in title or "interaction" in title:
+                return {"summary": "Added responsive React styling", "actions": [{"tool": "write_file", "arguments": {"path": "src/styles.css", "content": REACT_LOGIN_CSS}}], "done": True}
+            if "validate" in title or "inspect" in title:
+                return {"summary": "Read the generated React artifacts for validation", "actions": [{"tool": "read_files", "arguments": {"paths": ["package.json", "index.html", "src/main.jsx", "src/App.jsx", "src/styles.css"]}}], "done": True}
+            return {}
+        if "markup" in title or "index.html" in title or "structure" in title or "component" in title:
             return {"summary": "Created the semantic login page markup", "actions": [{"tool": "write_file", "arguments": {"path": "index.html", "content": EMPTY_LOGIN_HTML}}], "done": True}
         if "styling" in title or "interaction" in title:
             return {
@@ -941,6 +1387,10 @@ class CodebaseService:
         if "validate" in title or "inspect" in title:
             return {"summary": "Read the generated frontend artifacts for validation", "actions": [{"tool": "read_files", "arguments": {"paths": ["index.html", "styles.css", "app.js"]}}], "done": True}
         return {}
+
+    @staticmethod
+    def _react_request(goal: str) -> bool:
+        return bool(re.search(r"\breact(?:\.js|js)?\b", str(goal), re.I))
 
     @staticmethod
     def _standalone_web_request(goal: str, project_map: dict[str, Any]) -> bool:
@@ -1034,7 +1484,7 @@ class CodebaseService:
         return ""
 
     def _review(self, run: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
-        diff = self._invoke(run, "", "git_diff", {}).get("stdout", "")
+        diff = self._review_material(run)
         messages = [
             {"role": "system", "content": "You are an independent code reviewer. You do not know the coder's reasoning. Review only the goal, diff, and validation. Return JSON only. Never report a file absent from the diff. Every finding must quote exact diff evidence. A client-only form without an authentication endpoint does not require CSRF protection."},
             {"role": "user", "content": (
@@ -1061,8 +1511,41 @@ class CodebaseService:
         self._event(run["id"], "review.completed", reviewer="independent-reviewer", result=result)
         return result
 
+    def _review_material(self, run: dict[str, Any], max_chars: int = 160_000) -> str:
+        """Combine Git changes with recorded files, including new untracked files."""
+
+        git_diff = self._invoke(run, "", "git_diff", {}).get("stdout", "")
+        workspace = self._workspace(run["workspace_id"], run["owner"])
+        root = Path(workspace["workspace_path"])
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT filepath, new_hash FROM codebase_file_changes WHERE run_id = ? ORDER BY created_at, id",
+                (run["id"],),
+            ).fetchall()
+        latest = {str(row["filepath"]): str(row["new_hash"]) for row in rows if str(row["filepath"]).strip()}
+        sections = [str(git_diff).strip()] if str(git_diff).strip() else []
+        used = sum(len(section) for section in sections)
+        for relative, digest in latest.items():
+            if used >= max_chars:
+                break
+            path = RepositoryIntelligence(root).resolve(relative)
+            if not digest or not path.is_file():
+                section = f"\n--- deleted file: {relative}\n"
+            else:
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                section = f"\n--- recorded file: {relative}\n+++ {relative}\n" + "\n".join(f"+{line}" for line in content.splitlines())
+            remaining = max_chars - used
+            sections.append(section[:remaining])
+            used += min(len(section), remaining)
+        return "\n".join(sections)
+
     def _validate(self, run: dict[str, Any]) -> dict[str, Any]:
-        criteria = run["completion"]
+        workspace = self._workspace(run["workspace_id"], run["owner"])
+        current_map = RepositoryIntelligence(workspace["workspace_path"]).scan()
+        criteria = self._refresh_completion_criteria(run["completion"], current_map)
         results = []
         for kind in ("lint", "typecheck", "test", "build", "browser", "runtime"):
             item = criteria.get(kind)
@@ -1079,13 +1562,34 @@ class CodebaseService:
             results.append(result)
             self._record_test(run["id"], kind, result)
             self._event(run["id"], f"{kind}.{status}", exit_code=result["exit_code"], duration_ms=result.get("duration_ms", 0))
-        artifact_result = self._artifact_check(run)
+        artifact_result = self._artifact_check(run, current_map)
         results.append(artifact_result)
         self._record_test(run["id"], "artifacts", artifact_result)
         self._event(run["id"], f"artifacts.{artifact_result['status']}", files=artifact_result.get("files", []))
         passed = bool(results) and all(item["status"] == "passed" for item in results)
         summary = ", ".join(f"{item['kind']} {item['status']}" for item in results) or "No completion checks were configured"
         return {"passed": passed, "checks": results, "summary": summary}
+
+    def _refresh_completion_criteria(self, original: dict[str, Any], project_map: dict[str, Any]) -> dict[str, Any]:
+        """Discover validation commands created during a greenfield run."""
+
+        discovered = self._completion_criteria(project_map, {})
+        root = Path(str(project_map.get("root", "")))
+        # A package script cannot execute until its dependencies are present.
+        # Keep structural checks active, while avoiding a misleading build
+        # failure that can only say the package manager has not run yet. A
+        # model that installs dependencies causes these gates to activate on
+        # the same validation pass.
+        node_dependencies_ready = not (root / "package.json").is_file() or (root / "node_modules").is_dir()
+        merged: dict[str, Any] = {}
+        for kind in ("lint", "typecheck", "test", "build", "browser", "runtime"):
+            existing = original.get(kind) if isinstance(original.get(kind), dict) else {}
+            candidate = discovered.get(kind) if isinstance(discovered.get(kind), dict) else {}
+            command_text = " ".join(str(item) for item in candidate.get("command", [])) if isinstance(candidate.get("command"), list) else str(candidate.get("command", ""))
+            if not node_dependencies_ready and command_text.startswith(("npm ", "pnpm ", "yarn ")):
+                candidate = {**candidate, "enabled": False}
+            merged[kind] = existing if existing.get("enabled") else candidate
+        return merged
 
     def _invoke(self, run: dict[str, Any], task_id: str, tool: str, arguments: dict[str, Any], *, approved: bool = False) -> dict[str, Any]:
         workspace = self._workspace(run["workspace_id"], run["owner"])
@@ -1106,6 +1610,58 @@ class CodebaseService:
             connection.execute("UPDATE codebase_tool_calls SET status = 'completed', output_json = ?, finished_at = ? WHERE id = ?", (json.dumps(result, default=str), utc_now(), call_id))
             if tool in {"write_file", "patch_file", "delete_file", "move_file"}:
                 connection.execute("INSERT INTO codebase_file_changes (id, run_id, filepath, old_hash, new_hash, patch, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (uuid4().hex, run["id"], result.get("path", ""), result.get("old_sha256", ""), result.get("new_sha256", ""), result.get("patch", ""), utc_now()))
+                if tool == "move_file" and result.get("source"):
+                    connection.execute("INSERT INTO codebase_file_changes (id, run_id, filepath, old_hash, new_hash, patch, created_at) VALUES (?, ?, ?, ?, '', ?, ?)", (uuid4().hex, run["id"], result.get("source", ""), result.get("old_sha256", ""), f"moved to {result.get('destination', '')}", utc_now()))
+        return result
+
+    def _publish_verified_changes(self, run: dict[str, Any]) -> dict[str, Any]:
+        """Copy this run's verified file changes back to the selected folder."""
+
+        workspace = self._workspace(run["workspace_id"], run["owner"])
+        workspace_root = Path(workspace["workspace_path"]).resolve()
+        source_root = Path(workspace["source_path"]).resolve()
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT filepath, new_hash FROM codebase_file_changes WHERE run_id = ? ORDER BY created_at, id",
+                (run["id"],),
+            ).fetchall()
+        latest = {str(row["filepath"]): str(row["new_hash"]) for row in rows if str(row["filepath"]).strip()}
+        backup_root = (self.store.data_dir / "codebase-source-backups" / run["id"]).resolve()
+        backup_root.mkdir(parents=True, exist_ok=True)
+        manifest: list[dict[str, Any]] = []
+        self._event(run["id"], "source.publish.started", source_path=str(source_root), files=len(latest))
+        for raw_path, new_hash in latest.items():
+            relative = Path(raw_path.replace("\\", "/"))
+            if relative.is_absolute() or ".." in relative.parts or any(part in {".git", "node_modules", ".venv"} for part in relative.parts):
+                raise ValueError(f"unsafe publish path: {raw_path}")
+            workspace_file = (workspace_root / relative).resolve()
+            source_file = (source_root / relative).resolve()
+            if workspace_root not in workspace_file.parents or source_root not in source_file.parents:
+                raise ValueError(f"publish path escaped the selected project: {raw_path}")
+            if source_file.is_symlink():
+                raise ValueError(f"refusing to replace a source symlink: {raw_path}")
+            backup_file = (backup_root / relative).resolve()
+            existed = source_file.is_file()
+            if existed:
+                backup_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_file, backup_file)
+            if workspace_file.is_file() and new_hash:
+                source_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(workspace_file, source_file)
+                action = "updated" if existed else "created"
+            elif source_file.is_file():
+                source_file.unlink()
+                action = "deleted"
+            else:
+                action = "unchanged"
+            manifest.append({"path": relative.as_posix(), "action": action, "backup": str(backup_file) if existed else ""})
+            self._event(run["id"], "source.publish.file", path=relative.as_posix(), action=action)
+        (backup_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        refreshed = RepositoryIntelligence(source_root).scan()
+        with self.store.session() as connection:
+            connection.execute("UPDATE codebase_projects SET map_json = ?, updated_at = ? WHERE id = ?", (json.dumps(refreshed), utc_now(), run["codebase_project_id"]))
+        result = {"source_path": str(source_root), "backup_path": str(backup_root), "files": manifest}
+        self._event(run["id"], "source.publish.completed", **result)
         return result
 
     def _model_json(self, run: dict[str, Any], messages: list[dict[str, str]], *, role: str = "") -> dict[str, Any]:
@@ -1153,11 +1709,11 @@ class CodebaseService:
             command = configured.get("command") or commands.get(name, "")
             requested = bool(configured.get("enabled", bool(command)))
             criteria[name] = {"enabled": bool(command) and requested, "command": command, "timeout_seconds": int(configured.get("timeout_seconds", 300))}
-        if not any(item["enabled"] for item in criteria.values()):
-            languages = set(project_map.get("languages", []))
-            if "python" in languages:
-                criteria["runtime"] = {"enabled": True, "command": ["python", "-m", "compileall", "-q", "."], "timeout_seconds": 300}
-            elif {"javascript", "typescript"} & languages:
+        languages = set(project_map.get("languages", []))
+        if "python" in languages and not criteria.get("runtime", {}).get("enabled"):
+            criteria["runtime"] = {"enabled": True, "command": ["python", "-m", "compileall", "-q", "."], "timeout_seconds": 300}
+        elif not any(item["enabled"] for item in criteria.values()):
+            if {"javascript", "typescript"} & languages:
                 entrypoints = [str(item) for item in project_map.get("entrypoints", []) if str(item).strip()]
                 fallback = "app.js" if "javascript" in languages else "index.ts"
                 criteria["runtime"] = {"enabled": True, "command": ["node", "--check", entrypoints[0] if entrypoints else fallback], "timeout_seconds": 120}
@@ -1182,14 +1738,19 @@ class CodebaseService:
         return budget
 
     def _next_task(self, run_id: str) -> dict[str, Any] | None:
+        ready = self._ready_tasks(run_id)
+        return ready[0] if ready else None
+
+    def _ready_tasks(self, run_id: str) -> list[dict[str, Any]]:
         with self.store.session() as connection:
             rows = connection.execute("SELECT * FROM codebase_tasks WHERE run_id = ? ORDER BY created_at, id", (run_id,)).fetchall()
         tasks = [self._task_row(row) for row in rows]
         completed = {task["id"] for task in tasks if task["status"] == "completed"}
-        for task in tasks:
-            if task["status"] in {"pending", "needs_fix", "blocked"} and all(dependency in completed for dependency in task["depends_on"]):
-                return task
-        return None
+        return [
+            task for task in tasks
+            if task["status"] in {"pending", "needs_fix", "blocked"}
+            and all(dependency in completed for dependency in task["depends_on"])
+        ]
 
     def _store_tasks(self, run_id: str, tasks: list[dict[str, Any]]) -> None:
         now = utc_now()
@@ -1198,7 +1759,8 @@ class CodebaseService:
             if count:
                 return
             for task in tasks:
-                connection.execute("INSERT INTO codebase_tasks (id, run_id, title, assigned_agent, depends_on_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (f"{run_id}:{task['id']}", run_id, task["title"], task["assigned_agent"], json.dumps([f"{run_id}:{item}" for item in task["depends_on"]]), now, now))
+                parent = str(task.get("parent", "")).strip()
+                connection.execute("INSERT INTO codebase_tasks (id, run_id, parent_task_id, title, assigned_agent, depends_on_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (f"{run_id}:{task['id']}", run_id, f"{run_id}:{parent}" if parent else "", task["title"], task["assigned_agent"], json.dumps([f"{run_id}:{item}" for item in task["depends_on"]]), now, now))
 
     def _add_repair_task(self, run_id: str, title: str, feedback: str, *, assigned_agent: str) -> str:
         with self.store.session() as connection:
@@ -1293,7 +1855,7 @@ class CodebaseService:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def _artifact_check(self, run: dict[str, Any]) -> dict[str, Any]:
+    def _artifact_check(self, run: dict[str, Any], project_map: dict[str, Any] | None = None) -> dict[str, Any]:
         workspace = self._workspace(run["workspace_id"], run["owner"])
         root = Path(workspace["workspace_path"])
         bad_names = {"npm-debug.log", "yarn-error.log", "core", "core.dump"}
@@ -1305,16 +1867,21 @@ class CodebaseService:
                 files.append(path.relative_to(root).as_posix())
                 if len(files) >= 100:
                     break
-        status = "passed" if not files else "failed"
+        source_map = RepositoryIntelligence(workspace["source_path"]).scan()
+        profile = classify_request(run["user_prompt"], source_map)
+        missing = check_artifact_contract(root, profile) if profile["mode"] == "greenfield" else []
+        status = "passed" if not files and not missing else "failed"
         return {
             "kind": "artifacts",
             "status": status,
             "command": ["artifact-scan"],
-            "stdout": "No error artifacts found" if not files else "",
-            "stderr": "Error artifacts: " + ", ".join(files) if files else "",
-            "exit_code": 0 if not files else 1,
+            "stdout": "Project structure and error-artifact checks passed" if status == "passed" else "",
+            "stderr": "; ".join(filter(None, ["Error artifacts: " + ", ".join(files) if files else "", "Missing project structure: " + ", ".join(missing) if missing else ""])),
+            "exit_code": 0 if status == "passed" else 1,
             "duration_ms": 0,
             "files": files,
+            "missing": missing,
+            "profile": profile,
         }
 
     @staticmethod

@@ -1,20 +1,23 @@
 # Autonomous Software Engineering
 
-CodeQ turns a software request into a controlled engineering run. It is a full-width primary workspace directly below **Chat** in the sidebar and works against a copied repository workspace. The original repository is not modified by autonomous tools. The `/api/codebase/*` namespace remains stable for integrations and older clients.
+CodeQ turns a software request into a controlled engineering run. It is a full-width primary workspace directly below **Chat** in the sidebar and works against a copied repository workspace. Autonomous tools do not touch the selected folder during implementation; verified changes are published there only after the completion gates pass. The `/api/codebase/*` namespace remains stable for integrations and older clients.
 
 ## How a run works
 
 ```mermaid
 flowchart TD
     U["User goal"] --> R["Repository intelligence"]
-    R --> P["Structured task graph"]
+    R --> A["Parallel architecture, frontend, backend, data, security, and test review"]
+    A --> P["Structured task graph"]
     P --> O["Project manager"]
     O --> T["Permission-aware tools"]
     T --> S["Copied local, Docker, or configured hosted workspace"]
     S --> V["Build, test, lint, typecheck, runtime checks"]
     V -->|failure| D["Traceback and command feedback"]
     D --> O
-    V -->|pass| C["Independent diff review"]
+    V -->|pass| W["Whole-project acceptance audit"]
+    W -->|missing work| P
+    W -->|complete| C["Independent diff review"]
     C -->|blocking finding| O
     C -->|pass| F["Verified snapshot and project memory"]
 ```
@@ -25,7 +28,9 @@ The controller does not treat a generated patch as success. A run reaches `compl
 
 CodeQ uses the repository map and the request together. An existing application is inspected before changes are proposed; selected source regions, symbols, dependencies, routes, tests, and stored project commands become the working context. A new or effectively empty folder follows a bootstrap path that creates concrete artifacts first and validates them immediately. Empty directories do not make a workspace look like an established codebase.
 
-The project manager chooses the smallest useful set of roles for each run. A narrow function can stay with one programmer and one tester. A larger change may add architecture, debugging, and independent review tasks. Plans are stored as dependency-aware records, so agents hand off evidence and tool results rather than holding an open-ended group conversation. Abstract tasks such as choosing a framework or writing process documentation are not added unless the request actually requires them.
+The project manager chooses the smallest useful set of roles for each run. A narrow function can stay with one programmer and one tester. A larger product can involve architecture, frontend, backend, database, security, testing, debugging, review, and documentation specialists. Independent specialists examine the request and repository concurrently and produce a shared architecture and acceptance contract. The project manager then creates the dependency graph from that contract.
+
+Tasks without dependencies can generate their next action batches concurrently. File mutations are applied in a stable order. If two agents propose changes to the same path, the later decision is discarded and regenerated against the updated repository. This preserves parallel analysis and code generation without accepting last-writer-wins corruption. Parent task identifiers and dependencies remain durable, so a model can create focused sub-work instead of starting an unbounded agent conversation.
 
 Lightweight local models occasionally use a correct tool with a different argument name, such as `query` instead of `symbol`. CodeQ normalizes a bounded set of these aliases before validation. It also catches narration masquerading as execution, including an `echo` or process launch that only says a file is being created. For small Python and standalone web requests, the controller replaces that action with file creation and focused tests. The replacement is visible as `model.action_replaced` in the run history.
 
@@ -49,6 +54,8 @@ Context selection ranks filenames and matching source regions. Large generated d
 
 Each codebase project has a workspace record containing its source path, sandbox backend, workspace path and agent branch. The local backend copies the project below the OpenAgent data directory. The Docker backend mounts that copied workspace into `/workspace`, disables container networking and applies CPU and memory limits. A hosted backend can be connected through `OPENAGENT_HOSTED_SANDBOX_COMMAND`; the adapter receives the versioned `openagent.sandbox.v1` JSON protocol over standard input and must return structured command evidence as JSON.
 
+The folder selected by the user is the delivery target. CodeQ never edits it while a run is incomplete: tools operate in the protected working copy, snapshots preserve recovery points, and validation plus independent review run there. Once every gate passes, CodeQ copies only that run's changed files back to the selected folder. Existing destination files are backed up under `codebase-source-backups/<run-id>` before replacement. A failed, cancelled, or blocked run does not publish source changes.
+
 OpenAgent creates a snapshot before an autonomous run and another after successful verification. Snapshot extraction rejects paths that leave the restore directory. Run history, resume and snapshot restoration are available under **Run settings and history** in CodeQ.
 
 The local backend is process isolation plus a strict filesystem boundary; it is not an operating-system security boundary. Use Docker or a separately hardened worker for untrusted repositories. This distinction is intentional and reflected in the UI.
@@ -66,7 +73,7 @@ Commands run without shell interpolation. System administration executables are 
 
 ## Agents and communication
 
-One project manager owns the loop. It can assign bounded tasks to architect, programmer, tester, debugger and reviewer roles. Architecture, coding/debugging and review roles can be routed to different models from the interface. The roles communicate through task records, tool results and structured findings rather than unrestricted conversations.
+One project manager owns the loop. It can assign bounded tasks to architect, frontend, backend, database, programmer, tester, debugger, security, reviewer, and documentation roles. Each role can use the run's default model or a role-specific model policy. The roles communicate through task records, tool results, repository state, and structured findings rather than unrestricted conversations.
 
 The reviewer receives the goal and Git diff, not the coder's reasoning. Findings use a stable shape:
 
@@ -92,7 +99,7 @@ Project memory records the detected stack, commands, preferences, recent run out
 
 ## IDE and browser evidence
 
-CodeQ is a full-height IDE surface with a compact workspace title bar, hierarchical Explorer, closable multi-file tabs, breadcrumb, line-numbered code canvas, docked terminal, Git output, agent rail, and branch, workspace, cursor, encoding, and language status. **Open folder** launches the operating-system folder chooser directly. The selected repository is then copied into the configured OpenAgent data directory before tools can edit it. Unsaved buffers remain associated with their tabs while the user moves between files.
+CodeQ is a full-height IDE surface with a compact workspace title bar, hierarchical Explorer, closable multi-file tabs, breadcrumb, line-numbered code canvas, docked terminal, Git output, agent rail, and branch, workspace, cursor, encoding, and language status. **Open folder** launches the operating-system folder chooser directly. Explorer controls create files and folders, rename or move the selected path, and delete it after confirmation. These explicit IDE operations keep the copied workspace and selected folder synchronized; protected metadata, dependency, environment, cache, and build directories cannot be changed through the Explorer. Unsaved buffers remain associated with their tabs while the user moves between files.
 
 The CodeQ rail keeps the request, task progress, live events, validation evidence, and recovery state in one conversation-like feed. Previous requests can be copied or returned to the editor. **Send** and **Stop** share one control position, and a connection interruption is reconciled against durable run history before the interface reports that a run failed to start. The collapsed history area contains previous runs and a concise autonomy summary; provider routing, specialist models, iteration budget, and completion gates are inferred automatically from the request and repository. Terminal, test, Git, and browser actions used before an autonomous request are attached to a durable interactive IDE session, so exploratory work remains traceable without forcing the user to start an agent run.
 
@@ -100,22 +107,24 @@ An autonomous run receives a task-sized controller budget from 24 to 200 iterati
 
 The `browser_inspect` tool opens a supplied loopback HTTP application with Playwright, performs a bounded sequence of selector, role or test-id actions, captures page and JavaScript console errors, and stores a full-page screenshot below `.openagent/browser-artifacts`. It requires a complete HTTP URL; a missing URL is returned to the agent for repair. Loopback navigation is automatic. External navigation is outside the default private boundary, so the controller receives repair feedback and chooses a local alternative instead of stopping for repeated approval.
 
-For a small standalone web workspace, invalid model actions are replaced with bounded file operations that establish a semantic HTML, CSS, and JavaScript baseline. Small Python function requests receive the same treatment: source is written to a file, focused unit tests are created, and `unittest` runs inside the copied workspace. The normal artifact scan and independent review still decide completion. These recovery paths let lightweight local models recover from malformed tool calls without turning an approval dialog into a substitute for implementation.
+CodeQ classifies a new request by product type, language, and framework before it creates the task graph. The profile covers browser applications, services, command-line tools, libraries, desktop and mobile applications, games, and data projects across the repository-native stack or an explicitly requested stack. New projects receive foundation, implementation, test, and validation tasks; existing projects continue to use repository-aware planning. Structural delivery contracts prevent a React request becoming one HTML file, a Rust request completing without `Cargo.toml`, or a Go service completing without a module and entrypoint.
 
-Routine reads, edits, tests, builds, local managed processes, and loopback browser checks run automatically inside the copied workspace. CodeQ asks for approval when an action changes a durable boundary or may contact an external system, such as deleting files, installing dependencies, committing, or opening a public URL. Pushes, deployments, purchases, DNS changes, and production database operations are outside autonomous scope. This separation is what allows ordinary engineering work to continue unattended without giving a model unrestricted control of the host machine.
+Small malformed-model recovery remains available where a deterministic result is honest: standalone browser pages, Vite/React sign-in work, and focused Python functions. Every other project stays in the general model-tool-repair loop. Narration-only implementation steps and validation steps without executable evidence are rejected and retried instead of being marked complete. Completion commands are rediscovered after greenfield files are created, so generated test and build scripts become real gates once their toolchain and dependencies are present.
+
+Routine reads, edits, tests, builds, local managed processes, and loopback browser checks run automatically inside the copied workspace. Publishing verified file changes to the explicitly selected folder is part of successful completion; external URLs, pushes, deployments, purchases, DNS changes, and production database operations remain outside autonomous scope. This separation lets ordinary engineering work continue unattended without giving a model unrestricted control of the host machine.
 
 ## Live events
 
 The endpoint `GET /api/codebase/runs/{id}/events/stream` emits server-sent events. Event types include:
 
 - `run.created`, `run.completed`, `run.failed` and `run.cancelled`;
-- `repository.analysed` and `plan.created`;
+- `repository.analysed`, parallel-specialist lifecycle events, and `plan.created`;
 - `agent.started`, `agent.thinking`, `agent.handoff`, `task.created`, `task.completed`, `task.continued` and `repair.requested`;
 - `tool.started`, `tool.completed` and `tool.failed`;
 - `command.stdout` and `command.stderr`;
 - validation start/pass/fail, process lifecycle and browser-evidence events;
 - `approval.required` and `approval.resolved`;
-- snapshot and independent-review events.
+- whole-project acceptance-audit, snapshot, source-publish, and independent-review events.
 
 The web workspace consumes the stream with authenticated `fetch` and falls back to the durable event endpoint if a stream is interrupted.
 
@@ -128,6 +137,7 @@ Primary routes:
 - `GET /api/codebase/projects`
 - `GET /api/codebase/projects/{id}/tree`
 - `GET|POST /api/codebase/projects/{id}/file`
+- `POST /api/codebase/projects/{id}/paths`
 - `POST /api/codebase/projects/{id}/scan`
 - `POST /api/codebase/projects/{id}/tools`
 - `POST /api/codebase/runs`

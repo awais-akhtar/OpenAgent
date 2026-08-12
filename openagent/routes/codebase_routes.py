@@ -26,6 +26,7 @@ ROUTES = (
     ("POST", "/api/codebase/folder-picker"),
     ("POST", "/api/codebase/projects/{id}/scan"),
     ("POST", "/api/codebase/projects/{id}/file"),
+    ("POST", "/api/codebase/projects/{id}/paths"),
     ("POST", "/api/codebase/projects/{id}/tools"),
     ("POST", "/api/codebase/runs"),
     ("POST", "/api/codebase/runs/{id}/cancel"),
@@ -119,6 +120,15 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
         if path.startswith("/api/codebase/projects/") and path.endswith("/file"):
             project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/file")).strip("/")
             return JsonRouteResult({"change": deps.codebase.write_file(project_id, str(payload.get("path", "")).strip(), str(payload.get("content", "")), owner=owner, expected_sha256=str(payload.get("expected_sha256", "")).strip())})
+        if path.startswith("/api/codebase/projects/") and path.endswith("/paths"):
+            project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/paths")).strip("/")
+            return JsonRouteResult({"change": deps.codebase.mutate_path(
+                project_id,
+                action=str(payload.get("action", "")).strip(),
+                path=str(payload.get("path", "")).strip(),
+                destination=str(payload.get("destination", "")).strip(),
+                owner=owner,
+            )})
         if path.startswith("/api/codebase/projects/") and path.endswith("/tools"):
             project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/tools")).strip("/")
             return JsonRouteResult(deps.codebase.invoke_project_tool(project_id, str(payload.get("tool", "")).strip(), payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}, owner=owner, approved=deps.parse_bool(payload.get("approved"), default=False)))
