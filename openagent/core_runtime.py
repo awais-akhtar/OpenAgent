@@ -18,6 +18,7 @@ CPU_MODEL_STACK = {
     "extraction": "llama3.2:3b",
     "low_code": "deepseek-coder:1.3b",
     "high_research": "qwen2.5:7b",
+    "vision": "qwen2.5vl:3b",
     "voice": "faster-whisper:base.en",
 }
 

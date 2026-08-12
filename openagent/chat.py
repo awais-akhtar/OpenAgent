@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import re
 import secrets
 from typing import Any, Iterator
 
 from .context import ContextEngine
-from .model_gateway import ModelGateway
+from .media import MediaManager
+from .model_gateway import ModelGateway, ModelResult, ProviderUnavailableError
 from .models import AuditEvent, ChatMessage, utc_now
 from .storage import OpenAgentStore
 
@@ -19,6 +21,7 @@ class ChatService:
         self.store = store
         self.context = ContextEngine(store)
         self.gateway = gateway or ModelGateway()
+        self.media = MediaManager(store)
         self.initialize()
 
     def initialize(self) -> None:
@@ -58,6 +61,7 @@ class ChatService:
         allow_external: bool = False,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, object]:
+        attachments = self._resolve_attachments(attachments)
         conversation, user_message = self._record_user_message(
             content,
             conversation_id=conversation_id,
@@ -65,11 +69,11 @@ class ChatService:
             attachments=attachments,
         )
         messages = self._build_model_messages(conversation["id"], project, query=content, attachments=attachments)
-        result = self.gateway.complete(
-            messages,
-            provider_id=provider,
-            model=model,
-            allow_external=allow_external,
+        effective_attachments = attachments or self._historical_attachments(
+            self.store.list_chat_messages(str(conversation["id"]), limit=5000), None,
+        )
+        result = self._complete_with_attachments(
+            messages, attachments=effective_attachments, provider=provider, model=model, allow_external=allow_external,
         )
         assistant_message = self._record_assistant_message(
             conversation,
@@ -103,6 +107,7 @@ class ChatService:
         allow_external: bool = False,
         attachments: list[dict[str, Any]] | None = None,
     ) -> Iterator[dict[str, object]]:
+        attachments = self._resolve_attachments(attachments)
         conversation, user_message = self._record_user_message(
             content,
             conversation_id=conversation_id,
@@ -119,6 +124,25 @@ class ChatService:
         }
 
         messages = self._build_model_messages(conversation["id"], project, query=content, attachments=attachments)
+        effective_attachments = attachments or self._historical_attachments(
+            self.store.list_chat_messages(str(conversation["id"]), limit=5000), None,
+        )
+        attachment_context = self._attachment_context(effective_attachments)
+        if attachment_context:
+            result = self._complete_with_attachments(
+                messages, attachments=effective_attachments, provider=provider, model=model, allow_external=allow_external,
+            )
+            yield {
+                "type": "chunk", "provider": result.provider, "model": result.model,
+                "content": result.content, "done": True, "metadata": result.metadata,
+            }
+            assistant_message = self._record_assistant_message(
+                conversation, result.content, provider=result.provider, model=result.model,
+                metadata=result.metadata, project=project,
+            )
+            yield {"type": "message", "message": assistant_message, "done": True}
+            return
+
         parts: list[str] = []
         chunk_provider = provider
         chunk_model = model or ""
@@ -273,7 +297,12 @@ class ChatService:
     ) -> list[dict[str, str]]:
         snapshot = self.context.snapshot(project=project, limit=40)
         terms = ", ".join(item["term"] for item in snapshot["top_terms"][:8]) or "none yet"
-        evidence = self.context.search(query, project=project, limit=6) if query.strip() else []
+        history = self.store.list_chat_messages(conversation_id, limit=5000)
+        attachment_text = self._attachment_context(attachments)
+        historical_attachments = self._historical_attachments(history, attachments)
+        historical_attachment_text = self._attachment_context(historical_attachments)
+        has_file_evidence = bool(attachment_text or historical_attachment_text)
+        evidence = self.context.search(query, project=project, limit=6) if query.strip() and not has_file_evidence else []
         evidence_text = "\n".join(
             f"- {item.get('title') or item.get('type') or 'Local source'}: {str(item.get('content', ''))[:700]}"
             for item in evidence
@@ -283,16 +312,22 @@ class ChatService:
             "You are OpenAgent, a self-hosted privacy-first AI operating system. "
             "Respect local-first boundaries. "
             f"Project: {project}. Memory events: {snapshot['event_count']}. Top terms: {terms}. "
-            "Use retrieved local evidence when it is relevant, but never pretend it is current web research."
+            "Use retrieved local evidence when it is relevant, but never pretend it is current web research. "
+            "Infer the user's intent when spelling or grammar is imperfect and ask only when ambiguity changes the answer."
         )
         if evidence_text:
             system += f"\n\nRetrieved local knowledge for this request:\n{evidence_text}"
-        attachment_text = self._attachment_context(attachments)
         if attachment_text:
             system += (
-                "\n\nFiles attached to the current message were processed locally. "
-                "Use this evidence directly and state any extraction or vision limitations.\n"
-                + attachment_text
+                "\n\nFiles attached to the current message were processed locally. Their evidence is included in the current user turn. "
+                "Read it and answer from it; never claim that attachments are unavailable. State a limitation only when "
+                "the supplied extraction is genuinely insufficient."
+            )
+        elif historical_attachment_text:
+            system += (
+                "\n\nFiles from earlier turns in this conversation remain available locally. Use the relevant file "
+                "when the user refers to 'this file', its filename, or asks a follow-up about its contents. The selected "
+                "file evidence is included in the current user turn."
             )
         project_memory = self._project_conversation_memory(
             project=project,
@@ -305,14 +340,110 @@ class ChatService:
                 "Use it to resolve follow-up references and stable user preferences; ignore unrelated items.\n"
                 + project_memory
             )
-        history = self.store.list_chat_messages(conversation_id, limit=40)
+        recent_history = history[-100:]
+        earlier_memory = self._select_conversation_memory(history[:-100], query=query, limit=48)
+        if earlier_memory:
+            system += (
+                "\n\nDurable memory selected from earlier turns in this conversation. These turns remain stored even "
+                "after the app is closed; use them when they answer a follow-up.\n" + earlier_memory
+            )
         messages = [{"role": "system", "content": system}]
-        messages.extend(
-            {"role": item["role"], "content": item["content"]}
-            for item in history
-            if item["role"] in {"user", "assistant", "system"}
-        )
+        turn_attachment_text = attachment_text or historical_attachment_text
+        for item in recent_history:
+            if item["role"] not in {"user", "assistant", "system"}:
+                continue
+            content = str(item["content"])
+            if turn_attachment_text and item is recent_history[-1] and item["role"] == "user":
+                content += "\n\n<attached_evidence>\n" + turn_attachment_text + "\n</attached_evidence>"
+            messages.append({"role": item["role"], "content": content})
         return messages
+
+    def _complete_with_attachments(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        attachments: list[dict[str, Any]] | None,
+        provider: str,
+        model: str | None,
+        allow_external: bool,
+    ) -> ModelResult:
+        vision = self._vision_attachment(attachments)
+        attachment_context = self._attachment_context(attachments)
+        if vision is not None:
+            image, media_type = vision
+            try:
+                result = self.gateway.complete_vision(
+                    messages, image, media_type=media_type, provider_id=provider,
+                    model=model, allow_external=allow_external,
+                )
+                if attachment_context and _denies_attachment_access(result.content):
+                    return self.gateway.complete_vision(
+                        self._attachment_correction(messages), image, media_type=media_type,
+                        provider_id=provider, model=model, allow_external=allow_external,
+                    )
+                return result
+            except ProviderUnavailableError as exc:
+                messages = [*messages, {
+                    "role": "system",
+                    "content": "Native image understanding was unavailable for this turn. Use the locally extracted "
+                    f"image metadata already supplied and explain the exact limitation briefly. Runtime detail: {exc}",
+                }]
+        result = self.gateway.complete(
+            messages, provider_id=provider, model=model, allow_external=allow_external,
+        )
+        if attachment_context and _denies_attachment_access(result.content):
+            return self.gateway.complete(
+                self._attachment_correction(messages), provider_id=provider,
+                model=model, allow_external=allow_external,
+            )
+        return result
+
+    @staticmethod
+    def _attachment_correction(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [*messages, {
+            "role": "system",
+            "content": "Correction: the attachment was already processed and its readable contents are inside the "
+            "current user message under <attached_evidence>. Answer directly from that evidence. Do not say that you "
+            "cannot access or process the attachment, and do not ask the user to paste text that is already present.",
+        }]
+
+    def _vision_attachment(self, attachments: list[dict[str, Any]] | None) -> tuple[bytes, str] | None:
+        for item in attachments or []:
+            if not isinstance(item, dict) or str(item.get("media_type", "")) != "image":
+                continue
+            asset_id = str(item.get("id") or item.get("asset_id") or "").strip()
+            asset = self.media.get_asset(asset_id) if asset_id else None
+            stored_path = str((asset or {}).get("stored_path", ""))
+            path = Path(stored_path) if stored_path else None
+            if path and path.is_file():
+                return path.read_bytes(), str((asset or {}).get("mime_type") or item.get("mime_type") or "image/png")
+        return None
+
+    @staticmethod
+    def _select_conversation_memory(
+        messages: list[dict[str, Any]], *, query: str, limit: int = 48,
+    ) -> str:
+        if not messages:
+            return ""
+        query_terms = {term for term in _memory_terms(query) if len(term) > 2}
+        ranked: list[tuple[int, int, dict[str, Any]]] = []
+        for index, message in enumerate(messages):
+            content = " ".join(str(message.get("content", "")).split())
+            if not content:
+                continue
+            terms = set(_memory_terms(content))
+            score = len(query_terms & terms) * 20
+            if message.get("role") == "user":
+                score += 3
+            if any(marker in content.lower() for marker in ("remember", "prefer", "my name", "always", "never", "important")):
+                score += 12
+            ranked.append((score, index, message))
+        selected = sorted(ranked, key=lambda item: (item[0], item[1]), reverse=True)[:max(1, min(limit, 80))]
+        selected.sort(key=lambda item: item[1])
+        return "\n".join(
+            f"- {str(item.get('role', 'message'))}: {' '.join(str(item.get('content', '')).split())[:700]}"
+            for _, _, item in selected
+        )
 
     @staticmethod
     def _attachment_records(attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -328,10 +459,57 @@ class ChatService:
             })
         return records[:12]
 
-    @staticmethod
-    def _attachment_context(attachments: list[dict[str, Any]] | None) -> str:
+    def _resolve_attachments(self, attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        resolved = []
+        for item in attachments or []:
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            asset_id = str(record.get("id") or record.get("asset_id") or "").strip()
+            extracted = str(record.get("extracted_text") or record.get("content") or "").strip()
+            if asset_id and not _usable_attachment_text(extracted):
+                asset = self.media.get_asset(asset_id) or {}
+                analyses = self.media.analyses(
+                    project=str(asset.get("project") or "default"), asset_id=asset_id, limit=1,
+                )
+                analysis = analyses[0] if analyses else {}
+                candidate = str(analysis.get("extracted_text", "")).strip()
+                stored_suffix = Path(str(asset.get("stored_path", ""))).suffix.lower()
+                if str(asset.get("media_type", record.get("media_type", ""))) == "document" and not _usable_attachment_text(candidate) and stored_suffix == ".pdf":
+                    try:
+                        analysis = self.media.analyze_asset(asset_id)
+                        candidate = str(analysis.get("extracted_text", "")).strip()
+                    except (OSError, ValueError):
+                        candidate = ""
+                if _usable_attachment_text(candidate):
+                    record["extracted_text"] = candidate[:50_000]
+                    record["summary"] = str(analysis.get("summary", record.get("summary", "")))
+            resolved.append(record)
+        return resolved[:12]
+
+    def _historical_attachments(
+        self, history: list[dict[str, Any]], current: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        current_ids = {str(item.get("id") or item.get("asset_id") or "") for item in current or [] if isinstance(item, dict)}
+        selected = []
+        seen = set(current_ids)
+        for message in reversed(history):
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            for item in reversed(metadata.get("attachments", []) if isinstance(metadata.get("attachments"), list) else []):
+                if not isinstance(item, dict):
+                    continue
+                asset_id = str(item.get("id") or item.get("asset_id") or "").strip()
+                if not asset_id or asset_id in seen:
+                    continue
+                seen.add(asset_id)
+                selected.append(item)
+                if len(selected) >= 3:
+                    return self._resolve_attachments(selected)
+        return self._resolve_attachments(selected)
+
+    def _attachment_context(self, attachments: list[dict[str, Any]] | None) -> str:
         blocks = []
-        for index, item in enumerate(attachments or [], start=1):
+        for index, item in enumerate(self._resolve_attachments(attachments), start=1):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or item.get("filename") or f"attachment-{index}")
@@ -339,7 +517,7 @@ class ChatService:
             extracted = str(item.get("extracted_text") or item.get("content") or "").strip()
             findings = item.get("findings") if isinstance(item.get("findings"), dict) else {}
             details = json.dumps(findings, sort_keys=True)[:1800] if findings else ""
-            evidence = extracted[:12_000] or summary or details or "No readable text was extracted."
+            evidence = extracted[:14_000] if _usable_attachment_text(extracted) else summary or details or "No readable text was extracted."
             blocks.append(f"[Attachment {index}: {name}]\n{evidence}")
         return "\n\n".join(blocks[:12])
 
@@ -383,7 +561,7 @@ class ChatService:
         source = self.store.get_conversation(conversation_id)
         if source is None:
             raise ValueError(f"Unknown conversation '{conversation_id}'.")
-        messages = self.store.list_chat_messages(conversation_id, limit=500)
+        messages = self.store.list_chat_messages(conversation_id, limit=5000)
         selected = []
         for message in messages:
             selected.append(message)
@@ -585,3 +763,25 @@ def stable_id(*parts: str) -> str:
 
 def unique_id(*parts: str) -> str:
     return stable_id(*parts, utc_now(), secrets.token_hex(8))
+
+
+def _memory_terms(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9][a-z0-9_'-]{1,}", str(value).lower())
+
+
+def _denies_attachment_access(value: str) -> bool:
+    text = " ".join(str(value).lower().split())
+    return bool(re.search(
+        r"\b(?:unable|cannot|can't|can not)\b.{0,80}\b(?:access|process|read|open)\b.{0,50}\battachments?\b",
+        text,
+    ))
+
+
+def _usable_attachment_text(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    printable = sum(character.isprintable() or character in "\n\r\t" for character in text)
+    controls = sum(ord(character) < 32 and character not in "\n\r\t" for character in text)
+    letters = sum(character.isalpha() for character in text)
+    return printable / len(text) >= 0.92 and letters / len(text) >= 0.20 and controls == 0

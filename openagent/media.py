@@ -9,7 +9,9 @@ from pathlib import Path
 import re
 import struct
 from typing import Any
+from uuid import uuid4
 
+from .document_processing import extract_pdf_text as extract_document_pdf_text
 from .models import AuditEvent, ContextEvent, utc_now
 from .storage import OpenAgentStore
 
@@ -213,6 +215,7 @@ class MediaManager:
         elif suffix == ".pdf":
             extracted_text = extract_pdf_text(data)
             findings["pdf_text_scan"] = bool(extracted_text)
+            findings["text_quality"] = text_quality(extracted_text)
             analyzer = "local-pdf-text-scan"
         elif suffix in IMAGE_SUFFIXES:
             findings.update(image_findings(data, suffix=suffix))
@@ -224,7 +227,7 @@ class MediaManager:
             findings.update({"video_format": suffix.lstrip("."), "transcript_available": False})
             analyzer = "local-video-metadata"
         summary = summarize_asset(asset, findings, extracted_text)
-        analysis_id = stable_id("media-analysis", asset["id"], analyzer, utc_now())
+        analysis_id = stable_id("media-analysis", asset["id"], analyzer, utc_now(), uuid4().hex)
         created_at = utc_now()
         analysis = {
             "id": analysis_id,
@@ -342,13 +345,28 @@ def decode_text(data: bytes) -> str:
 
 
 def extract_pdf_text(data: bytes) -> str:
-    snippets = []
-    for match in re.finditer(rb"\(([^()]{3,300})\)", data):
-        raw = match.group(1).replace(rb"\)", b")").replace(rb"\(", b"(")
-        text = decode_text(raw)
-        if text and any(char.isalpha() for char in text):
-            snippets.append(text)
-    return "\n".join(snippets[:100]).strip()
+    text = extract_document_pdf_text(data).strip()
+    return text if text_quality(text)["usable"] else ""
+
+
+def text_quality(text: str) -> dict[str, Any]:
+    value = str(text or "").strip()
+    if not value:
+        return {"usable": False, "characters": 0, "printable_ratio": 0.0, "word_count": 0}
+    printable = sum(character.isprintable() or character in "\n\r\t" for character in value)
+    letters = sum(character.isalpha() for character in value)
+    controls = sum(ord(character) < 32 and character not in "\n\r\t" for character in value)
+    words = re.findall(r"\b[\w'-]{2,}\b", value, flags=re.UNICODE)
+    printable_ratio = printable / len(value)
+    letter_ratio = letters / len(value)
+    usable = printable_ratio >= 0.92 and letter_ratio >= 0.20 and controls == 0 and len(words) >= 3
+    return {
+        "usable": usable,
+        "characters": len(value),
+        "printable_ratio": round(printable_ratio, 4),
+        "letter_ratio": round(letter_ratio, 4),
+        "word_count": len(words),
+    }
 
 
 def image_findings(data: bytes, *, suffix: str) -> dict[str, Any]:

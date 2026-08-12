@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 
-from openagent.inference_accelerator import AdaptiveCPUInferenceEngine, compact_messages
+from openagent.inference_accelerator import AdaptiveCPUInferenceEngine, compact_messages, estimate_messages_tokens
 from openagent.model_gateway import ModelGateway, ModelResult
 from openagent.server import build_http_server
 from openagent.storage import OpenAgentStore
@@ -44,6 +44,17 @@ class InferenceAcceleratorTests(unittest.TestCase):
         self.assertFalse(first.metadata["cache_hit"])
         self.assertTrue(second.metadata["cache_hit"])
         self.assertEqual(second.content, "real local answer")
+
+    def test_large_attachment_turn_stays_inside_context_budget(self) -> None:
+        messages = [
+            {"role": "system", "content": "Keep answers grounded. " * 1200},
+            {"role": "user", "content": "Read this CV.\n<attached_evidence>\n" + ("work experience and education " * 900)},
+        ]
+        compacted, _ = compact_messages(messages, token_budget=1000)
+
+        self.assertLessEqual(estimate_messages_tokens(compacted), 1010)
+        self.assertIn("Read this CV", compacted[-1]["content"])
+        self.assertIn("attached_evidence", compacted[-1]["content"])
 
     def test_engine_overhead_benchmark_is_measured(self) -> None:
         result = AdaptiveCPUInferenceEngine().benchmark(iterations=10)

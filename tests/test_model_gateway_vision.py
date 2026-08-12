@@ -10,13 +10,20 @@ from openagent.science.multimodal.image import observe_with_gateway
 
 
 class ModelGatewayVisionTests(unittest.TestCase):
+    def test_ollama_prefers_an_installed_vision_model_for_image_turns(self) -> None:
+        gateway = ModelGateway()
+        provider = gateway.providers["ollama"]
+        provider.installed_models = lambda: ["phi4-mini:latest", "qwen2.5vl:3b"]
+        self.assertEqual("qwen2.5vl:3b", provider.resolve_vision_model(None))
+        self.assertEqual("phi4-mini:latest", provider.resolve_model("phi4-mini"))
+
     def test_ollama_uses_native_message_images_and_reports_provenance(self) -> None:
         gateway = ModelGateway()
-        gateway.providers["ollama"].resolve_model = lambda requested: requested or "llava:latest"
+        gateway.providers["ollama"].resolve_vision_model = lambda requested: requested or "llava:latest"
         captured = {}
 
-        def fake_post(url, payload, *, headers):
-            captured.update(url=url, payload=payload, headers=headers)
+        def fake_post(url, payload, *, headers, timeout_seconds=None):
+            captured.update(url=url, payload=payload, headers=headers, timeout_seconds=timeout_seconds)
             return {"message": {"content": '{"observations":[{"statement":"bright edge","confidence":0.8}]}'}}
 
         with patch("openagent.model_gateway.post_json", side_effect=fake_post):
@@ -34,6 +41,7 @@ class ModelGatewayVisionTests(unittest.TestCase):
         self.assertEqual(message["images"], [base64.b64encode(b"\x89PNG\r\n").decode("ascii")])
         self.assertNotIn("data:image", str(message["content"]))
         self.assertEqual(captured["payload"]["options"]["num_predict"], 120)
+        self.assertGreaterEqual(captured["timeout_seconds"], 180)
         self.assertEqual(result.provider, "ollama")
         self.assertEqual(result.model, "llava:latest")
         self.assertEqual(result.metadata["image_transport"], "ollama-message-images")
@@ -58,8 +66,8 @@ class ModelGatewayVisionTests(unittest.TestCase):
 
         captured = {}
 
-        def fake_post(url, payload, *, headers):
-            captured.update(url=url, payload=payload, headers=headers)
+        def fake_post(url, payload, *, headers, timeout_seconds=None):
+            captured.update(url=url, payload=payload, headers=headers, timeout_seconds=timeout_seconds)
             return {"choices": [{"message": {"content": "vision answer"}}]}
 
         with patch("openagent.model_gateway.post_json", side_effect=fake_post):

@@ -1347,7 +1347,7 @@ async function loadConversations() {
     el.innerHTML = conversations.length
       ? conversations.map(c => `
           <article class="conversation-item ${c.id === state.conversationId ? "active" : ""}" data-conversation-id="${escapeHtml(c.id)}">
-            <button class="conversation-open" data-conversation-open="${escapeHtml(c.id)}"><strong>${c.pinned ? '<span class="pin-mark">◆</span>' : ""}${escapeHtml(c.title || "Conversation")}</strong><span>${escapeHtml(formatDateTime(c.updated_at) || "")}</span></button>
+            <button class="conversation-open" data-conversation-open="${escapeHtml(c.id)}" title="${escapeHtml(c.title || "Conversation")}"><strong>${c.pinned ? '<i class="pin-mark" aria-hidden="true">◆</i>' : ""}${escapeHtml(c.title || "Conversation")}</strong><span>${escapeHtml(formatDateTime(c.updated_at) || "")}</span></button>
             <button class="conversation-menu-trigger" data-conversation-menu="${escapeHtml(c.id)}" aria-label="Conversation actions" aria-haspopup="menu">•••</button>
           </article>
         `).join("")
@@ -1590,7 +1590,7 @@ async function createCodebaseProject() {
   }
 }
 
-async function pickCodebaseFolder() {
+async function pickCodebaseFolder(openWorkspace = true) {
   const button = qs("#codebaseFolderPicker");
   if (button) button.disabled = true;
   try {
@@ -1598,7 +1598,8 @@ async function pickCodebaseFolder() {
     if (!payload.path) return;
     qs("#codebaseSourcePath").value = payload.path;
     const name = payload.path.split(/[\\/]/).filter(Boolean).pop() || "Project";
-    if (!qs("#codebaseProjectName")?.value.trim()) qs("#codebaseProjectName").value = name;
+    qs("#codebaseProjectName").value = name;
+    if (openWorkspace) await createCodebaseProject();
   } catch (error) {
     toast("Folder picker could not open", error.message);
   } finally {
@@ -1665,12 +1666,6 @@ function renderCodebaseMap(project) {
   if (repositoryState) repositoryState.textContent = git.repository
     ? `${git.branch || "detached"} · ${(git.commit || "no commit").slice(0, 10)} · ${git.dirty ? `${(git.changes || []).length} changed` : "clean"}`
     : "Workspace is not a Git repository.";
-  Object.entries(map.commands || {}).forEach(([kind, command]) => {
-    const input = qs(`[data-codebase-command="${kind}"]`);
-    const gate = qs(`[data-codebase-gate="${kind}"]`);
-    if (input && !input.value) input.value = command;
-    if (gate) gate.checked = true;
-  });
 }
 
 function renderCodebaseRunHistory(runs) {
@@ -1680,18 +1675,6 @@ function renderCodebaseRunHistory(runs) {
     `<option value="${escapeHtml(run.id)}">${escapeHtml(String(run.status).replace(/_/g, " "))} · ${escapeHtml(run.user_prompt.slice(0, 42))}</option>`
   ).join("") : '<option value="">No previous runs</option>';
   if (state.codebase.activeRunId && runs.some(run => run.id === state.codebase.activeRunId)) select.value = state.codebase.activeRunId;
-}
-
-function codebaseCompletionPayload() {
-  const completion = {};
-  qsa("[data-codebase-gate]").forEach(gate => {
-    const kind = gate.dataset.codebaseGate;
-    completion[kind] = {
-      enabled: Boolean(gate.checked),
-      command: qs(`[data-codebase-command="${kind}"]`)?.value.trim() || "",
-    };
-  });
-  return completion;
 }
 
 function renderCodebaseTree(entries) {
@@ -1836,35 +1819,62 @@ async function startCodebaseRun() {
     toast("Project and goal required");
     return;
   }
+  const sendButton = qs("#startCodebaseRun");
+  const status = qs("#codebaseRunStatus");
+  if (sendButton) sendButton.disabled = true;
+  if (status) { status.textContent = "Connecting"; status.className = "badge badge-info"; }
   try {
     const payload = await api("/api/codebase/runs", {
       method: "POST",
       body: JSON.stringify({
         codebase_project_id: state.codebase.selectedProjectId,
         prompt,
-        provider: qs("#codebaseProvider")?.value || "auto",
+        provider: "auto",
         model: state.modelSettings.codeModel || "",
-        role_models: {
-          project_manager: { model: qs("#codebaseArchitectureModel")?.value.trim() || state.modelSettings.researchModel || "" },
-          architect: { model: qs("#codebaseArchitectureModel")?.value.trim() || state.modelSettings.researchModel || "" },
-          programmer: { model: qs("#codebaseCodingModel")?.value.trim() || state.modelSettings.codeModel || "" },
-          debugger: { model: qs("#codebaseCodingModel")?.value.trim() || state.modelSettings.codeModel || "" },
-          reviewer: { model: qs("#codebaseReviewModel")?.value.trim() || state.modelSettings.researchModel || "" },
-        },
-        allow_external: Boolean(qs("#codebaseAllowExternal")?.checked),
-        max_iterations: Number(qs("#codebaseIterations")?.value || 8),
-        completion: codebaseCompletionPayload(),
+        role_models: {},
+        allow_external: false,
+        max_iterations: 0,
+        completion: {},
       }),
     });
     state.codebase.activeRunId = payload.run.id;
     state.codebase.events = [];
     state.codebase.eventCursor = 0;
     renderCodebaseRun(payload.run);
+    if (qs("#codebaseGoal")) qs("#codebaseGoal").value = "";
     startCodebaseEventStream(payload.run.id);
     scheduleCodebasePoll();
     toast("Autonomous run started", "Repository analysis and task planning are running.");
   } catch (error) {
-    toast("Run could not start", error.message);
+    if (/failed to fetch|networkerror|load failed/i.test(String(error.message || error))) {
+      const recovered = await recoverCodebaseRun(prompt);
+      if (recovered) return;
+    }
+    if (sendButton) sendButton.disabled = false;
+    if (status) { status.textContent = "Ready"; status.className = "badge"; }
+    toast("Run could not start", /failed to fetch/i.test(String(error.message || error))
+      ? "The CodeQ service disconnected. OpenAgent is still running; retry once after the workspace reconnects."
+      : error.message);
+  }
+}
+
+async function recoverCodebaseRun(prompt) {
+  await new Promise(resolve => setTimeout(resolve, 450));
+  try {
+    const payload = await api(`/api/codebase/runs?project=${encodeURIComponent(getProject())}&limit=20`);
+    const run = (payload.runs || []).find(item =>
+      item.codebase_project_id === state.codebase.selectedProjectId && item.user_prompt === prompt && item.status !== "interactive"
+    );
+    if (!run) return false;
+    state.codebase.activeRunId = run.id;
+    await loadCodebaseRun(run.id, false);
+    startCodebaseEventStream(run.id);
+    scheduleCodebasePoll();
+    if (qs("#codebaseGoal")) qs("#codebaseGoal").value = "";
+    toast("CodeQ reconnected", "The run started and its live state was recovered.");
+    return true;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -1982,6 +1992,22 @@ function renderCodebaseEvents() {
   renderCodebaseCopilotFeed();
 }
 
+function codeqEventLabel(event) {
+  const labels = {
+    "repository.analysed": "Repository understood",
+    "plan.created": "Implementation plan ready",
+    "agent.handoff": "Specialist assigned",
+    "task.completed": "Step completed",
+    "task.continued": "Continuing implementation",
+    "repair.requested": "Repairing automatically",
+    "autonomy.redirected": "Unsafe action replaced automatically",
+    "run.completed": "Work completed and verified",
+    "run.failed": "Run needs attention",
+    "run.cancelled": "Run stopped",
+  };
+  return labels[event.type] || event.type.replace(/\./g, " ");
+}
+
 function renderCodebaseCopilotFeed() {
   const root = qs("#codebaseCopilotFeed");
   if (!root) return;
@@ -1991,20 +2017,40 @@ function renderCodebaseCopilotFeed() {
     return;
   }
   const tasks = run.tasks || [];
-  const recentEvents = state.codebase.events.slice(-30);
+  const hiddenNoise = new Set(["model.completed", "agent.thinking", "tool.started", "tool.completed", "stream.heartbeat"]);
+  const recentEvents = state.codebase.events.filter(event => !hiddenNoise.has(event.type)).slice(-30);
   const validation = run.validation || [];
   const pending = (run.approvals || []).filter(item => item.status === "pending");
   root.innerHTML = `
-    <article class="copilot-message user"><p>${escapeHtml(run.user_prompt || "Software engineering task")}</p></article>
+    <article class="copilot-message user"><p>${escapeHtml(run.user_prompt || "Software engineering task")}</p><div class="copilot-message-actions"><button type="button" data-codeq-copy-prompt>Copy</button><button type="button" data-codeq-edit-prompt>Edit</button></div></article>
     <article class="copilot-message agent"><strong>${escapeHtml(String(run.status || "working").replace(/_/g, " "))}</strong>
       <div class="copilot-task-list">${tasks.map(task => `<span class="${escapeHtml(task.status)}"><i>${task.status === "completed" ? "✓" : task.status === "running" ? "●" : "○"}</i>${escapeHtml(task.title)}</span>`).join("") || "<span><i>●</i>Analysing repository</span>"}</div>
-      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.slice(-8).map(event => `<p><i></i>${escapeHtml(event.type.replace(/\./g, " "))}</p>`).join("")}</div>` : ""}
+      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.slice(-8).map(event => `<p><i></i>${escapeHtml(codeqEventLabel(event))}</p>`).join("")}</div>` : ""}
       ${validation.length ? `<div class="copilot-validation">${validation.map(item => `<span class="${item.status === "passed" ? "passed" : "failed"}">${item.status === "passed" ? "✓" : "×"} ${escapeHtml(item.kind)}</span>`).join("")}</div>` : ""}
       ${pending.length ? `<p class="copilot-attention">Waiting for approval: ${escapeHtml(pending[0].tool)}</p>` : ""}
       ${run.summary ? `<p class="copilot-summary">${escapeHtml(run.summary)}</p>` : ""}
       ${run.error ? `<p class="copilot-error">${escapeHtml(run.error)}</p>` : ""}
     </article>`;
   root.scrollTop = root.scrollHeight;
+}
+
+async function copyCodeqPrompt() {
+  const prompt = String(state.codebase.activeRun?.user_prompt || "");
+  if (!prompt) return;
+  try { await navigator.clipboard.writeText(prompt); }
+  catch (_) {
+    const input = document.createElement("textarea");
+    input.value = prompt; document.body.appendChild(input); input.select(); document.execCommand("copy"); input.remove();
+  }
+  toast("Copied", "CodeQ request copied to the clipboard.");
+}
+
+function editCodeqPrompt() {
+  const input = qs("#codebaseGoal");
+  if (!input || !state.codebase.activeRun?.user_prompt) return;
+  input.value = state.codebase.activeRun.user_prompt;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 }
 
 function renderCodebaseEvidence(run) {
@@ -5929,6 +5975,7 @@ function initSettings() {
   qs("#pullRecommendedOllamaModel")?.addEventListener("click", pullRecommendedOllamaModel);
   qs("#setupReasoningModel")?.addEventListener("click", () => setupModelForTask("reasoning"));
   qs("#setupCodeModel")?.addEventListener("click", () => setupModelForTask("code"));
+  qs("#setupVisionModel")?.addEventListener("click", () => setupModelForTask("vision"));
   qs("#setupVoskModel")?.addEventListener("click", setupVoskStt);
   qs("#setupVoskFromVoice")?.addEventListener("click", setupVoskStt);
   qs("#registerLlamaCppModel")?.addEventListener("click", registerLlamaCppModel);
@@ -6171,9 +6218,10 @@ async function setupModelForTask(task = "chat") {
     research: state.modelSettings.researchModel || DEFAULT_MODEL_SETTINGS.researchModel,
     code: state.modelSettings.codeModel || DEFAULT_MODEL_SETTINGS.codeModel,
     speed: DEFAULT_MODEL_SETTINGS.speedModel || "gemma3:2b",
+    vision: "qwen2.5vl:3b",
   };
   const model = normalizeKnownModelName(modelByTask[task] || modelByTask.chat);
-  const label = task === "code" ? "code model" : task === "reasoning" ? "reasoning model" : "chat model";
+  const label = task === "code" ? "code model" : task === "reasoning" ? "reasoning model" : task === "vision" ? "vision model" : "chat model";
   try {
     toast(`Setting up ${label}`, `Started local setup job for ${model}.`);
     const payload = await api("/api/local-ai/models/setup/job", {
@@ -7243,7 +7291,14 @@ function initNavigation() {
     if (adapterButton) { activateAdapter(adapterButton.dataset.adapterActivate); return; }
   });
   qs("#collapseSidebar")?.addEventListener("click", () => {
-    document.body.classList.toggle("sidebar-collapsed");
+    const collapsed = document.body.classList.toggle("sidebar-collapsed");
+    const button = qs("#collapseSidebar");
+    if (button) {
+      button.setAttribute("aria-expanded", String(!collapsed));
+      button.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+      button.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    }
+    try { localStorage.setItem("oa-sidebar-collapsed", String(collapsed)); } catch (_) {}
   });
   qsa(".nav-group-toggle").forEach(toggle => {
     toggle.addEventListener("click", () => toggleNavGroup(toggle));
@@ -7323,6 +7378,7 @@ function exposeInlineHandlers() {
 // =============================================
 
 async function init() {
+  try { document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("oa-sidebar-collapsed") === "true"); } catch (_) {}
   initTheme();
   initNavigation();
   initPalette();
@@ -7345,14 +7401,10 @@ async function init() {
   qs("#newConversationButton")?.addEventListener("click", newConversation);
   qs("#chatAttachButton")?.addEventListener("click", () => qs("#chatAttachmentInput")?.click());
   qs("#chatAttachmentInput")?.addEventListener("change", event => uploadChatAttachments(event.target.files));
-  qs("#newCodebaseProject")?.addEventListener("click", () => {
-    qs("#codebaseIde")?.setAttribute("hidden", "");
-    qs("#codebaseOpenPanel")?.removeAttribute("hidden");
-    qs("#codebaseSourcePath")?.focus();
-  });
+  qs("#newCodebaseProject")?.addEventListener("click", () => pickCodebaseFolder(true));
   qs("#refreshCodebase")?.addEventListener("click", loadCodebaseProjects);
   qs("#createCodebaseProject")?.addEventListener("click", createCodebaseProject);
-  qs("#codebaseFolderPicker")?.addEventListener("click", pickCodebaseFolder);
+  qs("#codebaseFolderPicker")?.addEventListener("click", () => pickCodebaseFolder(true));
   qs("#codebaseProjectSelect")?.addEventListener("change", event => selectCodebaseProject(event.target.value));
   qs("#scanCodebase")?.addEventListener("click", scanCodebaseProject);
   qs("#saveCodebaseFile")?.addEventListener("click", saveCodebaseFile);
@@ -7378,12 +7430,22 @@ async function init() {
   qs("#resumeCodebaseRun")?.addEventListener("click", resumeCodebaseRun);
   qs("#restoreCodebaseSnapshot")?.addEventListener("click", restoreCodebaseSnapshot);
   qs("#codebaseRunSelect")?.addEventListener("change", event => event.target.value && loadCodebaseRun(event.target.value));
+  qs("#codebaseGoal")?.addEventListener("keydown", event => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !state.codebaseRunBusy) {
+      event.preventDefault();
+      startCodebaseRun();
+    }
+  });
   qs("#runCodebaseTests")?.addEventListener("click", runCodebaseTests);
   qs("#runCodebaseCommand")?.addEventListener("click", runCodebaseCommand);
   qs("#codebaseCommand")?.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); runCodebaseCommand(); } });
   qs("#inspectCodebaseBrowser")?.addEventListener("click", inspectCodebaseBrowser);
   qs("#loadCodebaseStatus")?.addEventListener("click", loadCodebaseStatus);
   qs("#loadCodebaseDiff")?.addEventListener("click", loadCodebaseDiff);
+  qs("#codebaseCopilotFeed")?.addEventListener("click", event => {
+    if (event.target.closest("[data-codeq-copy-prompt]")) copyCodeqPrompt();
+    if (event.target.closest("[data-codeq-edit-prompt]")) editCodeqPrompt();
+  });
   qs("#stopChat")?.addEventListener("click", () => stopActiveChat("Response stopped by user."));
   qs("#testChatModel")?.addEventListener("click", testChatModel);
   qs("#conversationSort")?.addEventListener("change", loadConversations);

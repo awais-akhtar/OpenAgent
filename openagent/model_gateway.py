@@ -265,6 +265,20 @@ class OllamaProvider(BaseProvider):
                     return name
         return installed[0]
 
+    def resolve_vision_model(self, requested: str | None) -> str:
+        installed = self.installed_models()
+        if requested:
+            wanted = normalize_model_name(requested)
+            for name in installed:
+                if model_name_matches(wanted, name):
+                    return name
+        vision_markers = ("llava", "qwen2.5vl", "qwen2-vl", "qwen3-vl", "minicpm-v", "moondream", "vision", "gemma3")
+        for name in installed:
+            compact = name.lower().replace("_", "-")
+            if any(marker in compact for marker in vision_markers):
+                return name
+        return self.resolve_model(requested)
+
     def complete(
         self,
         messages: list[dict[str, str]],
@@ -298,7 +312,7 @@ class OllamaProvider(BaseProvider):
         model: str | None = None,
         max_output_tokens: int | None = None,
     ) -> ModelResult:
-        selected_model = self.resolve_model(model)
+        selected_model = self.resolve_vision_model(model)
         options = provider_request_options(messages)
         if max_output_tokens is not None:
             options = {**options, "num_predict": max(1, int(max_output_tokens))}
@@ -323,6 +337,7 @@ class OllamaProvider(BaseProvider):
                 "keep_alive": keep_alive,
             },
             headers={},
+            timeout_seconds=vision_model_timeout_seconds(),
         )
         content = str(response.get("message", {}).get("content", ""))
         if not content:
@@ -1099,6 +1114,8 @@ class ModelGateway:
             raise ValueError("Vision completion media_type must be an image MIME type.")
         provider = self._select_vision_provider(provider_id, allow_external=allow_external)
         selected_model = self._effective_provider_model(provider, provider_id=provider_id, model=model)
+        if isinstance(provider, OllamaProvider):
+            selected_model = provider.resolve_vision_model(selected_model)
         started = time.perf_counter()
         try:
             result = provider.complete_vision(
@@ -1607,14 +1624,20 @@ def local_hash_embedding(text: str, *, dimensions: int) -> list[float]:
     return [round(value / magnitude, 6) for value in values]
 
 
-def post_json(url: str, payload: dict[str, Any], *, headers: dict[str, str]) -> dict[str, Any]:
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    headers: dict[str, str],
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     request = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
-    with urlopen(request, timeout=model_timeout_seconds()) as response:
+    with urlopen(request, timeout=timeout_seconds or model_timeout_seconds()) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -1668,6 +1691,14 @@ def model_timeout_seconds() -> float:
         return max(5.0, min(120.0, float(os.environ.get("OPENAGENT_MODEL_TIMEOUT_SECONDS", "35"))))
     except ValueError:
         return 35.0
+
+
+def vision_model_timeout_seconds() -> float:
+    try:
+        configured = float(os.environ.get("OPENAGENT_VISION_TIMEOUT_SECONDS", "180"))
+    except ValueError:
+        configured = 180.0
+    return max(model_timeout_seconds(), min(900.0, max(30.0, configured)))
 
 
 def runtime_settings_snapshot() -> dict[str, Any]:

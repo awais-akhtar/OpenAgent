@@ -3736,7 +3736,7 @@ def build_http_server(
             if parsed.path == "/api/local-ai/models/setup/job":
                 payload = self.read_json()
                 task = str(payload.get("task", "chat")).strip().lower() or "chat"
-                if task not in {"chat", "reasoning", "research", "code", "speed"}:
+                if task not in {"chat", "reasoning", "research", "code", "speed", "vision"}:
                     self.send_json({"error": "Unsupported model setup task."}, status=HTTPStatus.BAD_REQUEST)
                     return
                 job = local_ai.create_setup_chat_job(

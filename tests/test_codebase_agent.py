@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from openagent.codebase.repository import RepositoryBoundaryError, RepositoryIntelligence
 from openagent.codebase.sandbox import SandboxManager
 from openagent.codebase.service import CodebaseService
-from openagent.codebase.tools import ApprovalRequired, CodebaseTools, ToolPolicy
+from openagent.codebase.tools import CodebaseTools, ToolPolicy
 from openagent.model_gateway import ModelResult
 from openagent.storage import OpenAgentStore
 
@@ -84,6 +84,36 @@ class EmptyLoginPageGateway(FakeGateway):
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
 
 
+class NarratingPythonGateway(FakeGateway):
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "independent code reviewer" in system:
+            return ModelResult("fake", "review", json.dumps({"status": "passed", "findings": []}), {})
+        if "agent role: tester" in user:
+            payload = {"summary": "run selected files", "actions": [{"tool": "run_tests", "arguments": {"files": ["test_function.py"]}}], "done": False}
+        else:
+            payload = {
+                "summary": "describe work instead of doing it",
+                "actions": [{"tool": "start_process", "arguments": {"command": ["echo", "Creating a factorial function"]}}],
+                "done": True,
+            }
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
+class ApprovalLoopGateway(FakeGateway):
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "project manager" in system or "independent code reviewer" in system:
+            return super().complete(messages, **kwargs)
+        if "outside the protected autonomous boundary" in user:
+            payload = {"summary": "used a workspace-safe implementation", "actions": [{"tool": "write_file", "arguments": {"path": "feature.py", "content": "VALUE = 42\n"}}], "done": True}
+        else:
+            payload = {"summary": "attempted an unavailable helper", "actions": [{"tool": "run_shell", "arguments": {"command": ["missing-codeq-helper", "generate"]}}], "done": True}
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
 class RepositoryIntelligenceTests(unittest.TestCase):
     def test_scan_context_and_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -124,13 +154,17 @@ class SandboxAndPolicyTests(unittest.TestCase):
             self.assertEqual("after", (manager.path("workspace-1") / "value.txt").read_text(encoding="utf-8"))
             self.assertEqual("before", (source / "value.txt").read_text(encoding="utf-8"))
 
-    def test_risk_policy_blocks_push_and_asks_for_install(self) -> None:
+    def test_risk_policy_keeps_workspace_changes_autonomous_and_blocks_push(self) -> None:
         policy = ToolPolicy()
         self.assertEqual(3, policy.classify("git_push", {})["risk"])
+        self.assertEqual(1, policy.classify("delete_file", {"path": "generated.py"})["risk"])
+        self.assertEqual(1, policy.classify("install_dependency", {"command": ["python", "-m", "pip", "install", "pytest"]})["risk"])
+        self.assertEqual(3, policy.classify("install_dependency", {"command": ["unknown-installer", "package"]})["risk"])
         inline = policy.classify("run_shell", {"command": "def double(value):\n    return value * 2"})
         self.assertEqual(3, inline["risk"])
         self.assertIn("write_file", inline["reason"])
-        self.assertEqual(2, policy.classify("run_shell", {"command": ["npm", "install"]})["risk"])
+        self.assertEqual(1, policy.classify("run_shell", {"command": ["npm", "install"]})["risk"])
+        self.assertEqual(3, policy.classify("run_shell", {"command": ["npm", "publish"]})["risk"])
         missing_browser = policy.classify("browser_inspect", {})
         self.assertEqual(3, missing_browser["risk"])
         self.assertIn("complete HTTP URL", missing_browser["reason"])
@@ -141,13 +175,27 @@ class SandboxAndPolicyTests(unittest.TestCase):
             manager = SandboxManager(base / "sandboxes")
             manager.create("workspace-1", source=source)
             tools = CodebaseTools(manager, "workspace-1")
-            with self.assertRaises(ApprovalRequired):
-                tools.execute("install_dependency", {"command": ["npm", "install", "x"]})
             (manager.path("workspace-1") / ".env").write_text("TOKEN=private", encoding="utf-8")
             with self.assertRaises(PermissionError):
                 tools.execute("read_file", {"path": ".env"})
             with self.assertRaisesRegex(PermissionError, "inline source code"):
                 tools.execute("run_shell", {"command": "import inspect; print(inspect.getsourcefile())"})
+
+    def test_local_model_argument_aliases_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "module.py").write_text("def calculate_total():\n    return 1\n", encoding="utf-8")
+            manager = SandboxManager(base / "sandboxes")
+            manager.create("aliases", source=source)
+            tools = CodebaseTools(manager, "aliases")
+            references = tools.execute("find_references", {"query": "calculate_total"})
+            self.assertTrue(references["matches"])
+            result = tools.execute("write_file", {"filename": "created.py", "code": "VALUE = 1\n"})
+            self.assertEqual("created.py", result["path"])
+            test_result = tools.execute("run_tests", {"files": ["created.py"]})
+            self.assertTrue(test_result["skipped"])
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("npm.cmd"), "Windows npm command is not available")
     def test_windows_command_runner_resolves_npm_cmd_without_shell(self) -> None:
@@ -368,7 +416,48 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertEqual([], run["approvals"])
             function_file = Path(project["workspace"]["workspace_path"]) / "function.py"
             self.assertIn("def double", function_file.read_text(encoding="utf-8"))
-            self.assertIn("repair.requested", {item["type"] for item in service.events(run["id"])})
+            self.assertIn("model.action_replaced", {item["type"] for item in service.events(run["id"])})
+
+    def test_narration_process_is_replaced_by_files_and_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            for index in range(25):
+                (source / f"empty-{index}").mkdir()
+            (source / "app.js").write_text("console.log('existing web asset');\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), NarratingPythonGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Function", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="write a Python function that calculates factorial and test it", max_iterations=6)
+            run = service.wait_for_run(run["id"], timeout=20)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertEqual([], run["approvals"])
+            workspace = Path(project["workspace"]["workspace_path"])
+            self.assertIn("def factorial", (workspace / "function.py").read_text(encoding="utf-8"))
+            self.assertTrue((workspace / "test_function.py").is_file())
+            self.assertTrue(any(item["status"] == "passed" for item in run["validation"]))
+            self.assertIn("model.action_replaced", {item["type"] for item in service.events(run["id"])})
+
+    def test_autonomous_run_redirects_approval_action_without_blocking_user(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "main.py").write_text("print('ready')\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), ApprovalLoopGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Autonomous", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Add the requested feature", max_iterations=6)
+            run = service.wait_for_run(run["id"], timeout=20)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertEqual([], run["approvals"])
+            self.assertEqual("VALUE = 42\n", (Path(project["workspace"]["workspace_path"]) / "feature.py").read_text(encoding="utf-8"))
+            self.assertIn("autonomy.redirected", {item["type"] for item in service.events(run["id"])})
+
+    def test_iteration_budget_is_selected_from_task_and_repository_scale(self) -> None:
+        self.assertEqual(24, CodebaseService._automatic_iteration_budget("write a function", {"file_count": 2}))
+        self.assertEqual(64, CodebaseService._automatic_iteration_budget("build a feature", {"file_count": 100}))
+        self.assertEqual(120, CodebaseService._automatic_iteration_budget("build a platform", {"file_count": 900}))
+        self.assertEqual(200, CodebaseService._automatic_iteration_budget("build a platform", {"file_count": 3000}))
 
 
 if __name__ == "__main__":

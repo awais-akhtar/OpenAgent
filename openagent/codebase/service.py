@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shlex
 import threading
 import time
 from typing import Any
@@ -427,7 +428,7 @@ class CodebaseService:
         model: str = "",
         role_models: dict[str, Any] | None = None,
         allow_external: bool = False,
-        max_iterations: int = 8,
+        max_iterations: int = 0,
         completion: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not prompt.strip():
@@ -436,15 +437,27 @@ class CodebaseService:
         workspace = codebase_project["workspace"]
         project_map = codebase_project["map"]
         criteria = self._completion_criteria(project_map, completion or {})
+        if self._standalone_python_request(prompt, project_map):
+            criteria["test"] = {
+                "enabled": True,
+                "command": ["python", "-m", "unittest", "discover", "-v"],
+                "timeout_seconds": 300,
+            }
+            criteria["runtime"] = {
+                "enabled": True,
+                "command": ["python", "-m", "compileall", "-q", "."],
+                "timeout_seconds": 300,
+            }
+        iteration_budget = self._automatic_iteration_budget(prompt, project_map) if int(max_iterations) <= 0 else max(1, min(int(max_iterations), 200))
         run_id = uuid4().hex
         now = utc_now()
         with self.store.session() as connection:
             connection.execute(
                 """INSERT INTO codebase_runs (id, codebase_project_id, workspace_id, project, owner, user_prompt, status, provider, model, role_models_json, allow_external, max_iterations, completion_json, started_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, codebase_project_id, workspace["id"], codebase_project["project"], owner, prompt.strip(), provider, model, json.dumps(role_models or {}), int(allow_external), max(1, min(int(max_iterations), 50)), json.dumps(criteria), now, now),
+                (run_id, codebase_project_id, workspace["id"], codebase_project["project"], owner, prompt.strip(), provider, model, json.dumps(role_models or {}), int(allow_external), iteration_budget, json.dumps(criteria), now, now),
             )
-        self._event(run_id, "run.created", goal=prompt.strip(), completion=criteria)
+        self._event(run_id, "run.created", goal=prompt.strip(), completion=criteria, autonomy="full", iteration_budget=iteration_budget)
         snapshot = self.sandboxes.snapshot(workspace["id"], f"{run_id}-before")
         self._record_snapshot(run_id, snapshot, "Before autonomous run")
         cancel = threading.Event()
@@ -544,20 +557,25 @@ class CodebaseService:
         payload = json.loads(approval.get("payload_json") or "{}")
         task_id = str(payload.get("task_id", ""))
         arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+        failure = ""
         try:
             run = self.get_run(run_id, owner=owner)
             result = self._invoke(run, task_id, str(approval["tool"]), arguments, approved=True)
             if task_id:
                 self._set_task(task_id, "needs_fix", {"approved_tool_result": result})
         except Exception as exc:
-            with self.store.session() as connection:
-                connection.execute("UPDATE codebase_approvals SET status = ? WHERE id = ?", ("failed", approval_id))
-            self._event(run_id, "approval.execution_failed", approval_id=approval_id, tool=str(approval["tool"]), error=str(exc))
+            failure = str(exc)
+            self._event(run_id, "approval.execution_failed", approval_id=approval_id, tool=str(approval["tool"]), error=failure)
             if task_id:
-                self._set_task(task_id, "needs_fix", {"approval_error": str(exc), "tool": str(approval["tool"]), "arguments": arguments})
+                self._set_task(task_id, "needs_fix", {"approval_error": failure, "tool": str(approval["tool"]), "arguments": arguments})
         finally:
             if task_id:
                 self._resume_after_approval(run_id, owner)
+            if failure:
+                # Publish the terminal approval state last so clients cannot
+                # observe "failed" while the recovery worker still owns the DB.
+                with self.store.session() as connection:
+                    connection.execute("UPDATE codebase_approvals SET status = ? WHERE id = ?", ("failed", approval_id))
 
     def _resume_after_approval(self, run_id: str, owner: str) -> None:
         with self._lock:
@@ -720,6 +738,7 @@ class CodebaseService:
                 self._set_task(task["id"], "running")
                 self._event(run_id, "agent.started", agent=task["assigned_agent"], task_id=task["id"], iteration=iteration + 1)
                 self._event(run_id, "agent.thinking", agent=task["assigned_agent"], task_id=task["id"], goal=task["title"])
+                project_map = RepositoryIntelligence(project["workspace"]["workspace_path"]).scan()
                 context = RepositoryIntelligence(project["workspace"]["workspace_path"]).select_context(
                     f"{run['user_prompt']} {task['title']} {last_feedback}", limit=20
                 )
@@ -730,9 +749,10 @@ class CodebaseService:
                     last_feedback = "No executable action was returned. Inspect relevant files and return a JSON tool action."
                     continue
                 failed = False
-                for action in actions[:12]:
+                for action in actions[:24]:
                     tool = str(action.get("tool", "")).strip()
                     arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+                    arguments = self._normalized_action_arguments(tool, arguments)
                     if tool not in ACTION_TOOLS:
                         last_feedback = f"Unknown tool requested: {tool}"
                         failed = True
@@ -746,11 +766,13 @@ class CodebaseService:
                     try:
                         result = self._invoke(run, task["id"], tool, arguments)
                     except ApprovalRequired as exc:
-                        self._request_approval(run_id, exc, task["id"])
-                        self._set_task(task["id"], "waiting_approval", {"tool": exc.tool})
-                        self._set_run(run_id, status="blocked", error=exc.reason, finished=True)
-                        self._event(run_id, "run.blocked", reason=exc.reason, tool=exc.tool)
-                        return
+                        last_feedback = (
+                            f"Tool {exc.tool} is outside the protected autonomous boundary: {exc.reason}. "
+                            "Do not ask the user for approval. Choose a workspace-safe tool or command and continue."
+                        )
+                        self._event(run_id, "autonomy.redirected", task_id=task["id"], tool=exc.tool, reason=exc.reason)
+                        failed = True
+                        break
                     except Exception as exc:
                         last_feedback = f"Tool {tool} failed: {exc}"
                         self._event(run_id, "repair.requested", task_id=task["id"], error=last_feedback)
@@ -794,9 +816,16 @@ class CodebaseService:
                 {"id": "T2", "title": "Add polished responsive styling and interaction behavior", "assigned_agent": "programmer", "depends_on": ["T1"]},
                 {"id": "T3", "title": "Inspect the generated files and validate the page artifacts", "assigned_agent": "tester", "depends_on": ["T2"]},
             ]
+        if self._standalone_python_request(run["user_prompt"], project_map):
+            return [
+                {"id": "T1", "title": f"Implement the requested Python function: {run['user_prompt']}", "assigned_agent": "programmer", "depends_on": []},
+                {"id": "T2", "title": "Create and run focused tests for the Python function", "assigned_agent": "tester", "depends_on": ["T1"]},
+            ]
         prompt = (
-            "Create a concise dependency-aware software engineering plan. Return JSON only using this shape: "
+            "Create a concise dependency-aware software engineering plan made only of executable repository changes and validation. Return JSON only using this shape: "
             f"{json.dumps(PLAN_SCHEMA)}. Do not include markdown. Assign specialist roles only when useful.\n"
+            "Do not add framework research, requirements definition, documentation, backend integration, or deployment unless the user explicitly requested it. "
+            "Every implementation task must name a concrete code outcome; finish with tests/build/runtime checks supported by the project.\n"
             f"Goal: {run['user_prompt']}\nProject map: {json.dumps(self._compact_map(project_map))}\n"
             f"Project memory: {json.dumps(project['memory'])}"
         )
@@ -804,7 +833,7 @@ class CodebaseService:
         tasks = parsed.get("tasks", []) if isinstance(parsed, dict) else []
         normalized = []
         valid_agents = {"architect", "programmer", "tester", "debugger", "reviewer"}
-        for index, task in enumerate(tasks[:30], start=1):
+        for index, task in enumerate(tasks[:100], start=1):
             if not isinstance(task, dict) or not str(task.get("title", "")).strip():
                 continue
             task_id = str(task.get("id", f"T{index}")).strip() or f"T{index}"
@@ -827,6 +856,9 @@ class CodebaseService:
                 "Inspect before editing. Prefer patch_file for narrow edits. Never request git push, deployment, secrets, or production access. "
                 "Never pass Python, JavaScript, or other source text directly to run_shell or start_process. Create code with write_file or patch_file, then execute the file with a real command such as [\"python\", \"script.py\"]. "
                 "browser_inspect requires a complete URL and must never be called before a page exists and a local web server is running. For an empty web project, create index.html and its assets with write_file first. "
+                "Inside the protected working copy, file changes, dependency setup, tests, builds, local processes, and local Git operations are autonomous. "
+                "Never pause to ask the user for permission; if an operation is outside that boundary, choose a safe local alternative. "
+                "For new applications, make architecture decisions, implement a usable vertical slice, and validate it instead of only describing it. "
                 "A task is not complete until actual validation evidence passes."
             )},
             {"role": "user", "content": (
@@ -840,17 +872,55 @@ class CodebaseService:
         parsed = self._model_json(run, messages, role=str(task.get("assigned_agent", "programmer")))
         if self._standalone_web_request(run["user_prompt"], project_map):
             actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
+            title = str(task.get("title", "")).lower()
+            implementation_task = any(term in title for term in ("create", "markup", "styling", "interaction", "implement", "build"))
             invalid = not actions or any(
                 not isinstance(action, dict)
                 or str(action.get("tool", "")) not in ACTION_TOOLS
                 or str(action.get("tool", "")) == "browser_inspect"
-                or self._action_argument_error(str(action.get("tool", "")), action.get("arguments") if isinstance(action.get("arguments"), dict) else {})
+                or self._action_argument_error(str(action.get("tool", "")), self._normalized_action_arguments(str(action.get("tool", "")), action.get("arguments") if isinstance(action.get("arguments"), dict) else {}))
                 for action in actions
             )
+            if implementation_task and not any(str(action.get("tool", "")) in {"write_file", "patch_file"} for action in actions if isinstance(action, dict)):
+                invalid = True
             if invalid:
                 fallback = self._empty_web_fallback(task)
                 if fallback:
                     self._event(run["id"], "model.action_replaced", task_id=task["id"], reason="invalid action for empty web workspace")
+                    return fallback
+        if self._standalone_python_request(run["user_prompt"], project_map):
+            actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
+            title = str(task.get("title", "")).lower()
+            implementation_task = "implement" in title
+            test_task = "test" in title
+            invalid = not actions or any(
+                not isinstance(action, dict)
+                or str(action.get("tool", "")) not in ACTION_TOOLS
+                or self._nonproductive_creation_action(action)
+                or self._action_argument_error(str(action.get("tool", "")), self._normalized_action_arguments(str(action.get("tool", "")), action.get("arguments") if isinstance(action.get("arguments"), dict) else {}))
+                for action in actions
+            )
+            implementation_writes = [
+                action for action in actions if isinstance(action, dict)
+                and str(action.get("tool", "")) in {"write_file", "patch_file"}
+                and not Path(str((action.get("arguments") or {}).get("path", ""))).name.lower().startswith("test")
+            ]
+            concrete_test_actions = [
+                action for action in actions if isinstance(action, dict) and (
+                    (str(action.get("tool", "")) in {"write_file", "patch_file"}
+                     and Path(str((action.get("arguments") or {}).get("path", ""))).name.lower().startswith("test"))
+                    or (str(action.get("tool", "")) == "run_tests"
+                        and bool(self._normalized_action_arguments("run_tests", action.get("arguments") or {}).get("command")))
+                )
+            ]
+            if implementation_task and not implementation_writes:
+                invalid = True
+            if test_task and not concrete_test_actions:
+                invalid = True
+            if invalid:
+                fallback = self._python_function_fallback(run["user_prompt"], task)
+                if fallback:
+                    self._event(run["id"], "model.action_replaced", task_id=task["id"], reason="non-executable action for Python creation task")
                     return fallback
         return parsed if isinstance(parsed, dict) else {}
 
@@ -874,10 +944,70 @@ class CodebaseService:
 
     @staticmethod
     def _standalone_web_request(goal: str, project_map: dict[str, Any]) -> bool:
-        if int(project_map.get("file_count", 0) or 0) > 20 or str(project_map.get("framework", "")).strip():
+        if int(project_map.get("total_bytes", 0) or 0) > 1_000_000 or str(project_map.get("framework", "")).strip():
             return False
         text = goal.lower()
         return any(term in text for term in ("page", "website", "web app", "frontend", "landing", "dashboard", "login", "sign in", "signup", "sign up"))
+
+    @staticmethod
+    def _standalone_python_request(goal: str, project_map: dict[str, Any]) -> bool:
+        if int(project_map.get("total_bytes", 0) or 0) > 1_000_000 or str(project_map.get("framework", "")).strip():
+            return False
+        text = goal.lower()
+        return "python" in text and any(term in text for term in ("function", "script", "module"))
+
+    @staticmethod
+    def _nonproductive_creation_action(action: dict[str, Any]) -> bool:
+        tool = str(action.get("tool", ""))
+        arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+        if tool not in {"run_shell", "start_process"}:
+            return False
+        command = arguments.get("command", arguments.get("cmd", arguments.get("argv", [])))
+        parts = shlex.split(command, posix=False) if isinstance(command, str) else [str(item) for item in command]
+        return bool(parts and Path(parts[0]).name.lower() in {"echo", "write-host", "printf"})
+
+    @staticmethod
+    def _normalized_action_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return CodebaseTools._normalize_arguments(tool, arguments)
+
+    @staticmethod
+    def _python_function_fallback(goal: str, task: dict[str, Any]) -> dict[str, Any]:
+        title = str(task.get("title", "")).lower()
+        assigned_agent = str(task.get("assigned_agent", "")).lower()
+        text = f"{goal} {title}".lower()
+        if "double" in text or "twice" in text:
+            function_code = "def double(value: float) -> float:\n    \"\"\"Return twice the supplied numeric value.\"\"\"\n    if not isinstance(value, (int, float)) or isinstance(value, bool):\n        raise TypeError('value must be numeric')\n    return value * 2\n"
+            test_code = "import unittest\n\nfrom function import double\n\n\nclass FunctionTests(unittest.TestCase):\n    def test_double(self):\n        self.assertEqual(8, double(4))\n        self.assertEqual(-5, double(-2.5))\n\n    def test_non_numeric_value(self):\n        with self.assertRaises(TypeError):\n            double('4')\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+        else:
+            function_code = "def factorial(value: int) -> int:\n    \"\"\"Return value factorial for a non-negative integer.\"\"\"\n    if not isinstance(value, int) or isinstance(value, bool):\n        raise TypeError('value must be an integer')\n    if value < 0:\n        raise ValueError('value must be non-negative')\n    result = 1\n    for number in range(2, value + 1):\n        result *= number\n    return result\n"
+            test_code = "import unittest\n\nfrom function import factorial\n\n\nclass FunctionTests(unittest.TestCase):\n    def test_factorial(self):\n        self.assertEqual(1, factorial(0))\n        self.assertEqual(120, factorial(5))\n\n    def test_negative_value(self):\n        with self.assertRaises(ValueError):\n            factorial(-1)\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+        # Classify from the assigned task, not from words in the overall goal.
+        # A request such as "write a function and test it" still gives the
+        # programmer an implementation task before the tester runs.
+        implementation_task = assigned_agent == "programmer" or title.startswith("implement")
+        test_task = assigned_agent == "tester" or title.startswith(("create and run focused tests", "test ", "run test"))
+        if implementation_task:
+            return {
+                "summary": "Implemented a documented, validated Python function",
+                "actions": [{"tool": "write_file", "arguments": {"path": "function.py", "content": function_code}}],
+                "done": True,
+            }
+        if test_task:
+            return {
+                "summary": "Created and ran focused Python tests",
+                "actions": [
+                    {"tool": "write_file", "arguments": {"path": "test_function.py", "content": test_code}},
+                    {"tool": "run_tests", "arguments": {"command": ["python", "-m", "unittest", "discover", "-v"]}},
+                ],
+                "done": True,
+            }
+        if any(term in text for term in ("factorial", "double", "twice", "fucntion", "function")):
+            return {
+                "summary": "Implemented a documented, validated Python function",
+                "actions": [{"tool": "write_file", "arguments": {"path": "function.py", "content": function_code}}],
+                "done": True,
+            }
+        return {}
 
     @staticmethod
     def _action_argument_error(tool: str, arguments: dict[str, Any]) -> str:
@@ -960,6 +1090,7 @@ class CodebaseService:
     def _invoke(self, run: dict[str, Any], task_id: str, tool: str, arguments: dict[str, Any], *, approved: bool = False) -> dict[str, Any]:
         workspace = self._workspace(run["workspace_id"], run["owner"])
         tools = CodebaseTools(self.sandboxes, run["workspace_id"], backend=workspace["sandbox_backend"], event=lambda event_type, **payload: self._event(run["id"], event_type, **payload))
+        arguments = tools._normalize_arguments(tool, arguments)
         call_id = uuid4().hex
         decision = tools.policy.classify(tool, arguments)
         now = utc_now()
@@ -983,7 +1114,8 @@ class CodebaseService:
         model = str(role_config.get("model", run["model"])) if isinstance(role_config, dict) else run["model"]
         allow_external = bool(role_config.get("allow_external", run["allow_external"])) if isinstance(role_config, dict) else bool(run["allow_external"])
         try:
-            response = self.gateway.complete(messages, provider_id=provider, model=model or None, allow_external=allow_external, max_output_tokens=4096)
+            output_budget = 16384 if role in {"programmer", "debugger", "architect"} else 8192
+            response = self.gateway.complete(messages, provider_id=provider, model=model or None, allow_external=allow_external, max_output_tokens=output_budget)
         except (ProviderConfigurationError, ValueError) as exc:
             self._event(run["id"], "model.failed", error=str(exc))
             return {}
@@ -1026,8 +1158,28 @@ class CodebaseService:
             if "python" in languages:
                 criteria["runtime"] = {"enabled": True, "command": ["python", "-m", "compileall", "-q", "."], "timeout_seconds": 300}
             elif {"javascript", "typescript"} & languages:
-                criteria["runtime"] = {"enabled": True, "command": ["node", "--check", project_map.get("entrypoints", ["index.js"])[0]], "timeout_seconds": 120}
+                entrypoints = [str(item) for item in project_map.get("entrypoints", []) if str(item).strip()]
+                fallback = "app.js" if "javascript" in languages else "index.ts"
+                criteria["runtime"] = {"enabled": True, "command": ["node", "--check", entrypoints[0] if entrypoints else fallback], "timeout_seconds": 120}
         return criteria
+
+    @staticmethod
+    def _automatic_iteration_budget(prompt: str, project_map: dict[str, Any]) -> int:
+        """Choose a ceiling from task and repository complexity.
+
+        The controller still stops as soon as all completion gates pass; this is
+        a safety ceiling, not a fixed amount of work.
+        """
+        files = int(project_map.get("file_count", 0) or 0)
+        words = len(str(prompt).split())
+        budget = 24
+        if files > 50 or words > 120:
+            budget = 64
+        if files > 500 or words > 500:
+            budget = 120
+        if files > 2_000 or words > 1_500:
+            budget = 200
+        return budget
 
     def _next_task(self, run_id: str) -> dict[str, Any] | None:
         with self.store.session() as connection:

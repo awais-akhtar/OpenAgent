@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import re
@@ -39,7 +40,19 @@ class ToolPolicy:
     def classify(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if tool in {"list_directory", "read_file", "read_files", "grep", "search_symbol", "find_references", "project_map", "git_status", "git_diff", "git_log", "process_status", "inspect_logs"}:
             return {"risk": 0, "label": "automatic", "reason": "read-only workspace operation"}
-        if tool in {"write_file", "patch_file", "move_file", "run_tests", "run_linter", "run_typechecker", "run_build", "browser_test", "stop_process"}:
+        if tool == "install_dependency":
+            raw_command = arguments.get("command", [])
+            command = shlex.split(raw_command, posix=False) if isinstance(raw_command, str) else [str(item) for item in raw_command]
+            executable = Path(command[0]).name.lower() if command else ""
+            package_managers = {"python", "python.exe", "pip", "pip.exe", "uv", "npm", "npm.cmd", "pnpm", "yarn", "poetry", "cargo", "go", "dotnet", "mvn", "gradle"}
+            if executable not in package_managers:
+                return {"risk": 3, "label": "denied", "reason": "dependency setup must use a recognized package manager"}
+            return {"risk": 1, "label": "sandbox", "reason": "dependency setup inside protected workspace"}
+        if tool in {
+            "write_file", "patch_file", "delete_file", "move_file", "run_tests", "run_linter",
+            "run_typechecker", "run_build", "browser_test", "stop_process",
+            "git_commit", "git_checkout", "git_revert", "git_reset", "restore_snapshot",
+        }:
             return {"risk": 1, "label": "sandbox", "reason": "bounded sandbox operation"}
         if tool == "browser_inspect":
             raw_url = str(arguments.get("url", "")).strip()
@@ -55,8 +68,6 @@ class ToolPolicy:
             return {"risk": risk, "label": "sandbox" if risk == 1 else "approval", "reason": "local browser inspection" if risk == 1 else "external browser navigation requires approval"}
         if tool == "start_process":
             return self.classify("run_shell", {"command": arguments.get("command", [])})
-        if tool in {"delete_file", "install_dependency", "git_commit", "git_checkout", "git_revert", "git_reset", "restore_snapshot"}:
-            return {"risk": 2, "label": "approval", "reason": "destructive, network, or durable operation requires approval"}
         if tool == "run_shell":
             raw_command = arguments.get("command", [])
             if isinstance(raw_command, str):
@@ -77,7 +88,9 @@ class ToolPolicy:
             if executable not in SAFE_RUNNERS:
                 return {"risk": 2, "label": "approval", "reason": "unrecognized executable requires approval"}
             if executable in {"npm", "npm.cmd", "npx", "pnpm", "yarn"} and any(item.lower() in {"install", "add", "publish"} for item in command[1:]):
-                return {"risk": 2, "label": "approval", "reason": "dependency or publishing command requires approval"}
+                if any(item.lower() == "publish" for item in command[1:]):
+                    return {"risk": 3, "label": "denied", "reason": "package publishing is outside the protected autonomous workspace"}
+                return {"risk": 1, "label": "sandbox", "reason": "dependency setup inside protected workspace"}
             return {"risk": 1, "label": "sandbox", "reason": "recognized command in isolated workspace"}
         if tool in {"git_push", "deploy", "drop_database", "send_email", "purchase_service", "change_dns"}:
             return {"risk": 3, "label": "denied", "reason": "operation is outside autonomous scope"}
@@ -97,14 +110,17 @@ class CodebaseTools:
         self.event = event or (lambda *args, **kwargs: None)
 
     def execute(self, tool: str, arguments: dict[str, Any], *, approved: bool = False) -> dict[str, Any]:
+        arguments = self._normalize_arguments(tool, arguments)
+        handler = getattr(self, f"tool_{tool}", None)
+        if handler is None:
+            raise ValueError(f"unknown codebase tool: {tool}")
+        accepted = set(inspect.signature(handler).parameters)
+        arguments = {key: value for key, value in arguments.items() if key in accepted}
         decision = self.policy.classify(tool, arguments)
         if decision["risk"] == 3:
             raise PermissionError(decision["reason"])
         if decision["risk"] == 2 and not approved:
             raise ApprovalRequired(tool, decision["reason"], arguments)
-        handler = getattr(self, f"tool_{tool}", None)
-        if handler is None:
-            raise ValueError(f"unknown codebase tool: {tool}")
         self.event("tool.started", tool=tool, arguments=self._safe_arguments(arguments), risk=decision)
         try:
             result = handler(**arguments)
@@ -113,6 +129,27 @@ class CodebaseTools:
             raise
         self.event("tool.completed", tool=tool, result=self._bounded_result(result))
         return result
+
+    @staticmethod
+    def _normalize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Accept the small vocabulary differences produced by local models."""
+        normalized = dict(arguments or {})
+        aliases = {
+            "read_file": {"file": "path", "filename": "path"},
+            "read_files": {"files": "paths", "filenames": "paths"},
+            "write_file": {"file": "path", "filename": "path", "text": "content", "body": "content", "code": "content"},
+            "patch_file": {"file": "path", "filename": "path", "old": "search", "new": "replace"},
+            "delete_file": {"file": "path", "filename": "path"},
+            "grep": {"pattern": "query", "text": "query"},
+            "search_symbol": {"query": "name", "symbol": "name"},
+            "find_references": {"query": "symbol", "name": "symbol", "text": "symbol"},
+            "run_shell": {"cmd": "command", "argv": "command"},
+            "start_process": {"cmd": "command", "argv": "command"},
+        }.get(tool, {})
+        for alias, canonical in aliases.items():
+            if canonical not in normalized and alias in normalized:
+                normalized[canonical] = normalized.pop(alias)
+        return normalized
 
     def tool_list_directory(self, path: str = "", recursive: bool = False) -> dict[str, Any]:
         target = self.repo.resolve(path, must_exist=True)

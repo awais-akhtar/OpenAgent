@@ -9,7 +9,7 @@ from openagent.chat import ChatService
 from openagent.external_research import ExternalResearchCollector
 from openagent.research import ResearchEngine
 from openagent.model_gateway import ModelResult
-from openagent.models import ContextEvent
+from openagent.models import ChatMessage, ContextEvent
 from openagent.storage import OpenAgentStore
 
 
@@ -28,6 +28,35 @@ class RecordingGateway:
     def complete(self, messages, **_kwargs):
         self.messages = list(messages)
         return ModelResult(provider="test", model="test-model", content="Grounded response", metadata={})
+
+
+class VisionRecordingGateway(RecordingGateway):
+    def __init__(self) -> None:
+        super().__init__()
+        self.vision_call = None
+
+    def complete_vision(self, messages, image, **kwargs):
+        self.messages = list(messages)
+        self.vision_call = {"image": image, **kwargs}
+        return ModelResult(
+            provider="ollama", model="qwen2.5vl:3b", content="The image contains a blue square.",
+            metadata={"image_transport": "ollama-message-images"},
+        )
+
+
+class AttachmentDenialGateway(RecordingGateway):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def complete(self, messages, **_kwargs):
+        self.calls += 1
+        self.messages = list(messages)
+        content = (
+            "I am unable to access or process attachments."
+            if self.calls == 1 else "The attached report says Candidate Delta reached 92 percent accuracy."
+        )
+        return ModelResult(provider="test", model="test-model", content=content, metadata={})
 
 
 class ChatResearchTests(unittest.TestCase):
@@ -109,8 +138,87 @@ class ChatResearchTests(unittest.TestCase):
             system = gateway.messages[0]["content"]
             self.assertIn("another conversation", system)
             self.assertIn("preferred report format", system)
-            self.assertIn("evidence.txt", system)
-            self.assertIn("Candidate Delta", system)
+            self.assertIn("processed locally", system)
+            self.assertIn("<attached_evidence>", gateway.messages[-1]["content"])
+            self.assertIn("evidence.txt", gateway.messages[-1]["content"])
+            self.assertIn("Candidate Delta reached 92 percent accuracy", gateway.messages[-1]["content"])
+
+    def test_chat_retrieves_an_early_turn_after_hundreds_of_messages(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            gateway = RecordingGateway()
+            service = ChatService(store, gateway)
+            first = service.send("Remember that the launch phrase is amber comet.", project="core")
+            conversation_id = first["conversation_id"]
+            for index in range(620):
+                store.add_chat_message(ChatMessage(
+                    conversation_id=conversation_id, role="user", content=f"Routine progress note {index}.",
+                    provider="user", model="human",
+                ))
+            service.send("What launch phrase did I ask you to remember?", conversation_id=conversation_id, project="core")
+
+            self.assertIn("amber comet", gateway.messages[0]["content"].lower())
+            self.assertGreaterEqual(len(store.list_chat_messages(conversation_id, limit=5000)), 622)
+
+    def test_chat_sends_a_stored_image_to_the_native_vision_gateway(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            gateway = VisionRecordingGateway()
+            service = ChatService(store, gateway)
+            asset = service.media.ingest_bytes(
+                b"\x89PNG\r\n\x1a\nimage-payload", filename="diagram.png", project="core",
+            )
+
+            result = service.send(
+                "What is shown in this image?", project="core", provider="ollama",
+                attachments=[{
+                    "id": asset["id"], "name": "diagram.png", "media_type": "image",
+                    "mime_type": "image/png", "summary": asset["analysis"]["summary"],
+                }],
+            )
+
+            self.assertEqual(gateway.vision_call["image"], b"\x89PNG\r\n\x1a\nimage-payload")
+            self.assertEqual(gateway.vision_call["media_type"], "image/png")
+            self.assertEqual(result["model"], "qwen2.5vl:3b")
+            self.assertEqual(result["messages"][-1]["content"], "The image contains a blue square.")
+
+    def test_chat_corrects_a_false_attachment_access_denial(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = AttachmentDenialGateway()
+            service = ChatService(OpenAgentStore(tmp), gateway)
+            result = service.send(
+                "Read this report.", project="core",
+                attachments=[{
+                    "id": "asset-1", "name": "report.txt", "media_type": "document",
+                    "extracted_text": "Candidate Delta reached 92 percent accuracy.",
+                }],
+            )
+
+            self.assertEqual(gateway.calls, 2)
+            self.assertIn("Candidate Delta", result["messages"][-1]["content"])
+            self.assertIn("Correction: the attachment was already processed", gateway.messages[-1]["content"])
+
+    def test_attachment_evidence_survives_follow_up_turns(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            gateway = RecordingGateway()
+            service = ChatService(store, gateway)
+            asset = service.media.ingest_bytes(
+                b"Awais Akhtar is a software engineer with experience in local AI systems.",
+                filename="cv-awais-akhtar.txt", project="core",
+            )
+            first = service.send(
+                "Read this file.", project="core",
+                attachments=[{"id": asset["id"], "name": "cv-awais-akhtar.txt", "media_type": "document"}],
+            )
+            service.send(
+                "Read that file completely and summarize the experience.",
+                conversation_id=first["conversation_id"], project="core",
+            )
+
+            self.assertIn("Files from earlier turns", gateway.messages[0]["content"])
+            self.assertIn("software engineer", gateway.messages[-1]["content"])
+            self.assertIn("cv-awais-akhtar.txt", gateway.messages[-1]["content"])
 
 
 

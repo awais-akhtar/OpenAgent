@@ -190,6 +190,7 @@ class LocalAIInfrastructure:
             ("smollm2-135m-q1-58", "SmolLM2 135M Q1.58", "llamacpp", "llama.cpp", {"size": "135M", "format": "gguf", "quantization": "Q1.58", "ram_gb": 3, "tier": "survival-cpu"}),
             ("gemma3-2b-q4", "Gemma 3 2B Q4", "ollama", "ollama", {"size": "2B", "quantization": "Q4_K_M", "ram_gb": 6, "tier": "speed-cpu", "roles": ["chat", "speed"], "model": "gemma3:2b", "tokens_per_second_hint": "fast"}),
             ("phi4-mini-3.8b-q4", "Phi-4 Mini 3.8B Q4", "ollama", "ollama", {"size": "3.8B", "quantization": "Q4_K_M", "ram_gb": 8, "tier": "default-cpu", "roles": ["chat", "agent", "research", "reasoning"], "model": "phi4-mini", "context_hint": "long"}),
+            ("qwen2.5vl-3b-q4", "Qwen2.5-VL 3B Q4", "ollama", "ollama", {"size": "3.75B", "quantization": "Q4_K_M", "download_gb": 3.2, "ram_gb": 8, "tier": "vision-default", "roles": ["vision", "image", "document"], "model": "qwen2.5vl:3b", "context_hint": "125k"}),
             ("qwen2.5-coder-3b-q4", "Qwen2.5 Coder 3B Q4", "ollama", "ollama", {"size": "3B", "quantization": "Q4_K_M", "ram_gb": 8, "tier": "code-default", "roles": ["code", "debugging", "sql", "python"], "model": "qwen2.5-coder:3b"}),
             ("deepseek-coder-1.3b-q4", "DeepSeek Coder 1.3B Q4", "ollama", "ollama", {"size": "1.3B", "quantization": "Q4_K_M", "ram_gb": 4, "tier": "code-survival", "roles": ["code", "low-resource"], "model": "deepseek-coder:1.3b"}),
             ("llama3.2-3b-q4", "Llama 3.2 3B Q4", "ollama", "ollama", {"size": "3B", "quantization": "Q4_K_M", "ram_gb": 8, "tier": "rag-extraction", "roles": ["rag", "summarization", "extraction"], "model": "llama3.2:3b"}),
@@ -449,11 +450,13 @@ class LocalAIInfrastructure:
                 [executable, "pull", pull_name],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_seconds,
                 check=False,
             )
-            stdout = completed.stdout
-            stderr = completed.stderr
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
             returncode = completed.returncode
             if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout or "ollama pull failed").strip()
@@ -544,6 +547,7 @@ class LocalAIInfrastructure:
                 "code": CPU_MODEL_STACK["code"],
                 "research": CPU_MODEL_STACK["research"],
                 "speed": CPU_MODEL_STACK["speed"],
+                "vision": CPU_MODEL_STACK["vision"],
                 "low_resource_code": CPU_MODEL_STACK["low_code"],
             },
             "model_root": str(self.model_root),
@@ -580,6 +584,7 @@ class LocalAIInfrastructure:
             "research": CPU_MODEL_STACK["research"],
             "code": CPU_MODEL_STACK["code"],
             "speed": CPU_MODEL_STACK["speed"],
+            "vision": CPU_MODEL_STACK["vision"],
         }.get(task, CPU_MODEL_STACK["chat"])
         requested = ollama_pull_name(model_name or default_model)
         tools = self.model_tool_status()
@@ -624,6 +629,7 @@ class LocalAIInfrastructure:
             "reasoning": CPU_MODEL_STACK["research"],
             "research": CPU_MODEL_STACK["research"],
             "speed": CPU_MODEL_STACK["speed"],
+            "vision": CPU_MODEL_STACK["vision"],
         }.get(task, CPU_MODEL_STACK["chat"]))
         job_kind = f"setup-{task}"
         job_id = stable_id("model-job", job_kind, requested, project, utc_now())

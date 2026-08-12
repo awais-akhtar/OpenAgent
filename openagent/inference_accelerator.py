@@ -406,6 +406,10 @@ def compact_messages(
         return messages, 0
     systems = [item for item in messages if item["role"] == "system"]
     dialogue = [item for item in messages if item["role"] != "system"]
+    system_budget = max(192, token_budget // 3)
+    if estimate_messages_tokens(systems) > system_budget:
+        joined = "\n\n".join(item["content"] for item in systems)
+        systems = [{"role": "system", "content": truncate_middle_tokens(joined, system_budget)}]
     reserved = estimate_messages_tokens(systems)
     available = max(128, token_budget - reserved)
     kept_reversed: list[dict[str, str]] = []
@@ -413,6 +417,13 @@ def compact_messages(
     omitted: list[dict[str, str]] = []
     for item in reversed(dialogue):
         cost = estimate_tokens(item["content"]) + 4
+        if not kept_reversed and cost > available:
+            kept_reversed.append({
+                "role": item["role"],
+                "content": truncate_middle_tokens(item["content"], max(32, available - 4)),
+            })
+            used = available
+            continue
         if kept_reversed and used + cost > available:
             omitted.append(item)
             continue
@@ -437,6 +448,17 @@ def compact_messages(
             },
         ]
     return [*systems, *kept], len(omitted)
+
+
+def truncate_middle_tokens(text: str, token_budget: int) -> str:
+    max_chars = max(32, token_budget * 4)
+    if len(text) <= max_chars:
+        return text
+    marker = "\n...[middle context compacted]...\n"
+    remaining = max(16, max_chars - len(marker))
+    head = remaining // 2
+    tail = remaining - head
+    return text[:head].rstrip() + marker + text[-tail:].lstrip()
 
 
 def adaptive_output_tokens(

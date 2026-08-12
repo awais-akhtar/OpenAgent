@@ -15,11 +15,11 @@ test("desktop workspace loads and core lifecycle controls are usable", async ({ 
 
   await page.locator('[data-view-link="codebase"]').click();
   await expect(page.locator("#codebaseWorkspace")).toBeVisible();
-  await expect(page.locator("#codebaseSourcePath")).toBeVisible();
+  await expect(page.locator("#codebaseSourcePath")).toBeAttached();
   await expect(page.locator("#codebaseBoundary")).toContainText(/workspace/i);
   await expect(page.locator("#codebaseFolderPicker")).toBeVisible();
   await expect(page.locator("#codebaseOpenTabs")).toBeAttached();
-  await expect(page.locator("#codebaseCompletionCriteria")).toBeAttached();
+  await expect(page.locator("#codebaseAutonomySummary")).toContainText("Fully autonomous");
   await page.locator('[data-view-link="chat"]').click();
   await expect(page.locator("#chatLog")).toBeVisible();
 

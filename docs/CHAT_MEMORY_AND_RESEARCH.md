@@ -23,16 +23,18 @@ The classifier sends requests for current papers, product options, literature re
 
 OpenAgent uses two complementary scopes:
 
-- The active conversation supplies the latest 40 messages in chronological order. A bounded query selects the newest records before restoring their original order, so long chats do not fall back to their earliest turns.
+- The active conversation keeps up to 5,000 stored turns available to retrieval. The latest 100 turns are supplied in sequence; earlier turns are ranked against the current request, with extra weight for explicit preferences and facts marked as important. This keeps a long-running conversation usable without sending thousands of irrelevant turns to every model call.
 - Project memory retrieves relevant user messages and knowledge events from other conversations in the same project. It is intended for stable preferences, named facts, and follow-up references. Results from unrelated projects are excluded.
 
 Project memory is retrieval, not a promise that every old sentence is always included. Specific facts should be written clearly, and sensitive work should use a separate project when it must not influence other conversations.
 
 ## Attachments
 
-The attachment button accepts common text, office, PDF, and image formats. The local media pipeline stores the asset, extracts available text and metadata, and adds readable evidence to the project knowledge index. The current model receives a bounded attachment summary with the message.
+The attachment button accepts common text, office, PDF, and image formats. The local media pipeline stores the asset, extracts available text and metadata, and adds readable evidence to the project knowledge index. PDF text is read with `pypdf` when it is installed, with the document parser's conservative fallback used otherwise. A quality check rejects control-heavy or mostly non-text output instead of presenting compressed PDF bytes to the model as readable evidence.
 
-PDF and office extraction depend on the installed document extras. Image files receive local metadata and any observations produced by the configured vision analyzer. OpenAgent reports extraction limitations instead of describing image content it did not inspect.
+Attachment records remain linked to their conversation. A follow-up such as “read that file completely” rehydrates the latest file from local media storage, so the user does not need to attach it again. Current and recovered evidence follows the same refusal-correction path in blocking and streaming chat: if a model incorrectly says it cannot access a processed file, the gateway retries with an explicit pointer to the supplied evidence. When no usable text can be extracted, the response reports that limitation rather than guessing the document's subject.
+
+PDF and office extraction depend on the installed document extras. Image turns use the native image protocol of the selected vision provider. Ollama installations automatically prefer an installed vision model, and the local catalog includes Qwen2.5-VL 3B as a practical CPU/shared-memory option. If no vision model answers, OpenAgent falls back to extracted metadata and states that limitation instead of inventing image content. Chat instructions also tell the selected model to infer intent from ordinary spelling and grammar mistakes, while still asking when an ambiguity would materially change the result.
 
 ## Voice conversations
 

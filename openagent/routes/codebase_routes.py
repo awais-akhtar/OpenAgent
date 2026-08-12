@@ -109,7 +109,7 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
                 model=str(payload.get("model", "")).strip(),
                 role_models=payload.get("role_models") if isinstance(payload.get("role_models"), dict) else {},
                 allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
-                max_iterations=deps.parse_int(str(payload.get("max_iterations", "8")), default=8),
+                max_iterations=deps.parse_int(str(payload.get("max_iterations", "0")), default=0),
                 completion=payload.get("completion") if isinstance(payload.get("completion"), dict) else {},
             )
             return JsonRouteResult({"run": run}, HTTPStatus.ACCEPTED)
@@ -142,4 +142,6 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
     except (ValueError, PermissionError, OSError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+    except Exception as exc:
+        return JsonRouteResult({"error": f"CodeQ request failed: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
     return None

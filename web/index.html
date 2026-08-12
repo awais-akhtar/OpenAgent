@@ -8,9 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260812-codeq-chat-5">
+  <link rel="manifest" href="/manifest.json?v=20260812-chat-codeq-10">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260812-codeq-chat-5">
+  <link rel="stylesheet" href="/styles.css?v=20260812-chat-codeq-10">
   <script>
     // Apply saved theme immediately to prevent flash
     (function() {
@@ -28,7 +28,7 @@
   <!-- ===== SIDEBAR ===== -->
   <aside class="app-sidebar" role="navigation" aria-label="Primary navigation">
     <div class="brand-lockup">
-      <div class="brand-mark" aria-hidden="true">OA</div>
+      <div class="brand-mark" aria-label="OpenAgent"><span></span></div>
       <div>
         <h1>OpenAgent</h1>
         <p>Private AI operating system</p>
@@ -164,7 +164,7 @@
       <div id="codebaseWorkspace" class="codebase-workspace">
         <header class="codebase-commandbar">
           <div class="codebase-window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
-          <div class="codebase-title-lockup"><strong>CodeQ</strong><span id="codebaseBoundary">Protected local workspace</span></div>
+          <div class="codebase-title-lockup"><i class="codeq-mark" aria-hidden="true"></i><strong>CodeQ</strong><span id="codebaseBoundary">Protected local workspace</span></div>
           <div class="codebase-command-actions">
             <select id="codebaseProjectSelect" aria-label="CodeQ project"><option value="">Open a repository</option></select>
             <button id="refreshCodebase" class="codebase-title-button" title="Refresh workspace" aria-label="Refresh workspace">↻</button>
@@ -173,13 +173,14 @@
         </header>
 
         <section id="codebaseOpenPanel" class="codebase-open-panel">
-          <div class="codebase-welcome-mark" aria-hidden="true">&lt;/&gt;</div>
-          <div class="codebase-welcome-copy"><h3>Start coding with an agent</h3><p>Open a local repository in an isolated workspace. Your source folder stays untouched.</p></div>
+          <div class="codebase-welcome-mark" aria-hidden="true"><i class="codeq-mark"></i></div>
+          <div class="codebase-welcome-copy"><h3>Open a project</h3><p>Choose a folder in File Explorer. CodeQ prepares a protected working copy and opens its files immediately.</p></div>
           <div class="codebase-open-fields">
-            <label><span>Repository path</span><span class="codebase-folder-field"><input id="codebaseSourcePath" placeholder="Choose a local project" autocomplete="off" readonly><button id="codebaseFolderPicker" type="button">Browse…</button></span></label>
-            <label><span>Workspace name</span><input id="codebaseProjectName" placeholder="My application"></label>
-            <label><span>Execution boundary</span><select id="codebaseBackend"><option value="local">Local copied workspace</option><option value="docker">Docker · network disabled</option><option value="hosted">Configured hosted adapter</option></select></label>
-            <button id="createCodebaseProject" class="btn btn-primary">Open workspace</button>
+            <button id="codebaseFolderPicker" class="btn btn-primary codebase-native-open" type="button">Open folder in File Explorer</button>
+            <input id="codebaseSourcePath" autocomplete="off" readonly hidden>
+            <input id="codebaseProjectName" hidden>
+            <select id="codebaseBackend" hidden><option value="local">Local protected workspace</option><option value="docker">Docker · network disabled</option><option value="hosted">Configured hosted adapter</option></select>
+            <button id="createCodebaseProject" hidden>Open workspace</button>
           </div>
           <div class="codebase-welcome-shortcuts"><span><kbd>Ctrl</kbd> <kbd>P</kbd> Quick open</span><span><kbd>Ctrl</kbd> <kbd>S</kbd> Save file</span><span><kbd>Ctrl</kbd> <kbd>`</kbd> Terminal</span></div>
         </section>
@@ -204,8 +205,8 @@
             </div>
           </main>
 
-          <aside class="codebase-agent-panel" aria-label="CodeQ Copilot">
-            <div class="codebase-pane-head"><span>CodeQ Copilot</span><span id="codebaseRunStatus" class="badge">Ready</span></div>
+          <aside class="codebase-agent-panel" aria-label="CodeQ agent">
+            <div class="codebase-pane-head"><span><i class="codeq-mark small" aria-hidden="true"></i> CodeQ</span><span id="codebaseRunStatus" class="badge">Ready</span></div>
             <div id="codebaseRepositoryState" class="codebase-repository-state">Open a project, then describe what you want to build or repair.</div>
             <div id="codebaseCopilotFeed" class="codebase-copilot-feed"><div class="copilot-welcome"><strong>Work with your repository</strong><p>Ask CodeQ to inspect, edit, test, debug, or review this project. It chooses specialist agents only when the task benefits from them.</p></div></div>
             <div class="codebase-copilot-composer">
@@ -219,27 +220,11 @@
               <select id="codebaseRunSelect" aria-label="Previous autonomous run"><option value="">No previous runs</option></select>
               <button id="resumeCodebaseRun" class="btn btn-mini btn-soft" disabled>Resume</button>
             </div>
-            <div class="codebase-run-options">
-              <label><span>Provider</span><select id="codebaseProvider"><option value="auto">Auto route</option><option value="ollama">Ollama</option><option value="llamacpp">llama.cpp</option><option value="openvino-direct">OpenVINO</option><option value="openai-compatible">OpenAI compatible</option></select></label>
-              <label><span>Iterations</span><input id="codebaseIterations" type="number" min="1" max="30" value="8"></label>
+            <div id="codebaseAutonomySummary" class="codebase-autonomy-summary">
+              <strong>Fully autonomous</strong>
+              <span>CodeQ selects architecture, models, specialists, iteration budget, and validation from your request and repository.</span>
+              <small>File changes, local dependencies, builds, tests, repairs, and local Git work run automatically inside the protected copy. Publishing and production access stay outside the boundary.</small>
             </div>
-            <div class="codebase-configuration-inner">
-              <summary>Model routing and completion gates</summary>
-              <div class="codebase-role-models">
-                <label><span>Architecture model</span><input id="codebaseArchitectureModel" placeholder="Auto"></label>
-                <label><span>Coding model</span><input id="codebaseCodingModel" placeholder="Auto"></label>
-                <label><span>Review model</span><input id="codebaseReviewModel" placeholder="Auto"></label>
-              </div>
-              <div id="codebaseCompletionCriteria" class="codebase-completion-criteria">
-                <label><input type="checkbox" data-codebase-gate="lint"><span>Lint</span><input data-codebase-command="lint" placeholder="Auto-detect"></label>
-                <label><input type="checkbox" data-codebase-gate="typecheck"><span>Typecheck</span><input data-codebase-command="typecheck" placeholder="Auto-detect"></label>
-                <label><input type="checkbox" data-codebase-gate="test" checked><span>Tests</span><input data-codebase-command="test" placeholder="Auto-detect"></label>
-                <label><input type="checkbox" data-codebase-gate="build"><span>Build</span><input data-codebase-command="build" placeholder="Auto-detect"></label>
-                <label><input type="checkbox" data-codebase-gate="browser"><span>Browser</span><input data-codebase-command="browser" placeholder="npm run test:e2e"></label>
-                <label><input type="checkbox" data-codebase-gate="runtime"><span>Runtime</span><input data-codebase-command="runtime" placeholder="Auto-detect"></label>
-              </div>
-            </div>
-            <label class="toggle-row"><input id="codebaseAllowExternal" type="checkbox"><span><strong>Allow external model</strong><small>Repository context may leave this machine when selected.</small></span></label>
             </details>
             <div class="codebase-tabs" role="tablist">
               <button class="codebase-detail-tab active" data-codebase-detail="tasks">Tasks</button>
@@ -870,6 +855,7 @@
             <button id="pullRecommendedOllamaModel" class="btn btn-primary">Setup Chat Model</button>
             <button id="setupReasoningModel" class="btn btn-soft">Setup Reasoning Model</button>
             <button id="setupCodeModel" class="btn btn-soft">Setup Code Model</button>
+            <button id="setupVisionModel" class="btn btn-soft">Setup Vision Model</button>
             <button id="setupVoskModel" class="btn btn-outline">Setup Vosk STT</button>
             <button id="registerLlamaCppModel" class="btn btn-soft">Register GGUF Model</button>
             <button id="downloadSettingsModel" class="btn btn-soft">Download Local/File</button>
@@ -1524,11 +1510,11 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260812-codeq-chat-5" type="module"></script>
+<script src="/app.js?v=20260812-chat-codeq-10" type="module"></script>
 <script>
   // Register service worker for PWA offline support
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260812-codeq-chat-5').catch(function() {});
+    navigator.serviceWorker.register('/sw.js?v=20260812-chat-codeq-10').catch(function() {});
   }
 </script>
 

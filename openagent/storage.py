@@ -438,7 +438,7 @@ class OpenAgentStore:
         *,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 500))
+        limit = max(1, min(limit, 5000))
         with self.session() as connection:
             rows = connection.execute(
                 """

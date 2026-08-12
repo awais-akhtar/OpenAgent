@@ -52,6 +52,7 @@ class LocalAIInfrastructureTests(unittest.TestCase):
             self.assertGreaterEqual(len(marketplace), 1)
             marketplace_ids = {item["id"] for item in marketplace}
             self.assertIn("phi4-mini-3.8b-q4", marketplace_ids)
+            self.assertIn("qwen2.5vl-3b-q4", marketplace_ids)
             self.assertIn("qwen2.5-coder-3b-q4", marketplace_ids)
             self.assertIn("gemma3-2b-q4", marketplace_ids)
             self.assertIn("deepseek-coder-1.3b-q4", marketplace_ids)
@@ -85,6 +86,21 @@ class LocalAIInfrastructureTests(unittest.TestCase):
         self.assertEqual(result["model"]["provider"], "ollama")
         self.assertEqual(result["model"]["status"], "available")
         run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
+    def test_ollama_pull_tolerates_missing_captured_output(self) -> None:
+        with TemporaryDirectory() as tmp:
+            infra = LocalAIInfrastructure(OpenAgentStore(tmp))
+            completed = SimpleNamespace(returncode=0, stdout=None, stderr=None)
+            with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
+                "openagent.local_ai.subprocess.run", return_value=completed,
+            ):
+                result = infra.pull_ollama_model("qwen2.5vl:3b", allow_network=True, project="test")
+
+        self.assertEqual(result["ollama_model"], "qwen2.5vl:3b")
+        self.assertEqual(result["stdout"], "")
+        self.assertEqual(result["stderr"], "")
 
     def test_setup_chat_model_uses_ollama_when_available(self) -> None:
         with TemporaryDirectory() as tmp:
