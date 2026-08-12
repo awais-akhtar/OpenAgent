@@ -2,6 +2,22 @@
 
 Stage 8 is implemented as a local-first developer platform layer.
 
+The Developer screen is an operations console rather than a feature gallery. It keeps source ingestion, API and SDK inspection, local diagnostics and backups, model lifecycle controls, measured inference, MCP servers, audited terminal runs, scheduler state, and skill packaging in one place. Personal notes, gallery demonstrations, canned bridge writes, test-image generation, and simulated OAuth callbacks are not shown in this console; their APIs remain available to the modules that own them.
+
+```mermaid
+flowchart LR
+  UI[Developer console] --> API[API and SDK contracts]
+  UI --> Models[Model lifecycle]
+  UI --> Runtime[Inference and terminal evidence]
+  UI --> MCP[MCP and skills]
+  UI --> Ops[Diagnostics, backup, scheduler]
+  API --> Audit[Local audit store]
+  Models --> Audit
+  Runtime --> Audit
+  MCP --> Audit
+  Ops --> Audit
+```
+
 ## Implemented Features
 
 - GraphQL-style read API

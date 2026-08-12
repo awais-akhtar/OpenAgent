@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -323,6 +324,90 @@ label > span { color: #b42318; font-size: .8rem; font-weight: 500; }
 .status { min-height: 1.25rem; margin: -.25rem 0; color: #17643a; } .create { margin: 0; text-align: center; }
 @media (max-width: 780px) { .login-shell { grid-template-columns: 1fr; } .login-context { min-height: 250px; padding: 1.5rem; gap: 1.5rem; } .login-context h1 { font-size: clamp(2.5rem, 13vw, 4rem); } .login-context small { display: none; } .form-panel { place-items: start center; padding: 2rem 1.25rem 3rem; } }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+"""
+
+DJANGO_MANAGE = """#!/usr/bin/env python
+import os
+import sys
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+    from django.core.management import execute_from_command_line
+    execute_from_command_line(sys.argv)
+"""
+
+DJANGO_SETTINGS = """from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+SECRET_KEY = "development-only-change-me"
+DEBUG = True
+ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+ROOT_URLCONF = "config.urls"
+WSGI_APPLICATION = "config.wsgi.application"
+INSTALLED_APPS = [
+    "django.contrib.contenttypes",
+    "django.contrib.staticfiles",
+    "pages",
+]
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.middleware.common.CommonMiddleware",
+]
+TEMPLATES = [{
+    "BACKEND": "django.template.backends.django.DjangoTemplates",
+    "DIRS": [BASE_DIR / "templates"],
+    "APP_DIRS": True,
+    "OPTIONS": {"context_processors": []},
+}]
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
+STATIC_URL = "static/"
+STATICFILES_DIRS = [BASE_DIR / "static"]
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+"""
+
+DJANGO_ROOT_URLS = """from django.urls import include, path
+
+urlpatterns = [path("", include("pages.urls"))]
+"""
+
+DJANGO_WSGI = """import os
+
+from django.core.wsgi import get_wsgi_application
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+application = get_wsgi_application()
+"""
+
+DJANGO_SITE_CSS = """* { box-sizing: border-box; }
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #182536; background: #f5f7fa; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+.site-header { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid #dce3eb; background: rgba(255,255,255,.96); }
+.nav-shell { width: min(1120px, calc(100% - 2rem)); min-height: 68px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 2rem; }
+.brand { display: flex; align-items: center; gap: .65rem; color: #17324d; font-weight: 800; text-decoration: none; }
+.brand span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 7px; color: white; background: #17679f; }
+nav { display: flex; gap: .35rem; } nav a { border-radius: 6px; padding: .55rem .75rem; color: #536578; font-weight: 650; text-decoration: none; } nav a:hover { color: #0f568a; background: #e9f2f8; }
+.menu-button { display: none; border: 1px solid #cad5e1; border-radius: 6px; padding: .5rem .7rem; background: white; }
+.hero { padding: clamp(4rem, 10vw, 8rem) 1rem; color: white; background: #123a5a; }.hero > div,.content { width: min(1120px,100%); margin: auto; }
+.eyebrow { margin: 0 0 .7rem; color: #86c8ef; font-size: .76rem; font-weight: 800; text-transform: uppercase; } h1 { margin: 0; font-size: clamp(2.8rem,8vw,5.8rem); } .hero p:last-child { max-width: 650px; color: #d4e7f3; font-size: 1.1rem; line-height: 1.7; }
+.content { min-height: 300px; padding: clamp(3rem,7vw,6rem) 1rem; }.content h2 { font-size: 2rem; }.content p { max-width: 700px; color: #58697b; line-height: 1.75; }
+footer { border-top: 1px solid #dce3eb; padding: 1.5rem; color: #657587; text-align: center; }
+@media (max-width: 680px) { .menu-button { display: block; } nav { position: absolute; top: 61px; right: 1rem; left: 1rem; display: none; flex-direction: column; border: 1px solid #d5dee8; border-radius: 8px; padding: .5rem; background: white; box-shadow: 0 16px 34px rgba(18,58,90,.16); } nav.open { display: flex; } }
+"""
+
+DJANGO_SITE_JS = """(function ($) {
+  'use strict';
+  $('.menu-button').on('click', function () {
+    const $navigation = $('#primary-nav');
+    const open = !$navigation.hasClass('open');
+    $navigation.toggleClass('open', open);
+    $(this).attr('aria-expanded', String(open));
+  });
+  $('#primary-nav a').on('click', function () {
+    $('#primary-nav').removeClass('open');
+    $('.menu-button').attr('aria-expanded', 'false');
+  });
+})(window.jQuery);
 """
 
 
@@ -922,7 +1007,10 @@ class CodebaseService:
             self._set_run(run_id, status="analysing")
             self._event(run_id, "agent.started", agent="project-manager")
             project = self.get_project(run["codebase_project_id"], owner=run["owner"])
-            project_map = self.refresh_project_map(project["id"], owner=run["owner"])
+            # A new run starts from the user's selected folder. Failed-run
+            # artifacts may still exist in the protected workspace for
+            # inspection, but they must not redefine the next request's stack.
+            project_map = RepositoryIntelligence(project["source_path"]).scan()
             self._event(run_id, "repository.analysed", project_map=self._compact_map(project_map))
             architecture = self._consult_specialists(run, project, project_map)
             tasks = self._plan(run, project, project_map, architecture)
@@ -933,6 +1021,7 @@ class CodebaseService:
             changed = False
             active_agent = "project-manager"
             decision_cache: dict[str, dict[str, Any]] = {}
+            repeated_command_failures: dict[str, int] = {}
             max_iterations = max(1, int(run["max_iterations"]))
             for iteration in range(max_iterations):
                 if self._cancelled(run_id):
@@ -1048,10 +1137,27 @@ class CodebaseService:
                         break
                     if tool in {"write_file", "patch_file", "delete_file", "move_file"}:
                         changed = True
+                        repeated_command_failures.clear()
                     exit_code = self._exit_code(result.get("exit_code"))
                     if exit_code is not None and exit_code not in {0, -1}:
                         last_feedback = f"Command failed.\nCommand: {result.get('command')}\nstdout:\n{result.get('stdout', '')}\nstderr:\n{result.get('stderr', '')}"
                         self._event(run_id, "repair.requested", task_id=task["id"], error=last_feedback[-20_000:])
+                        command_key = hashlib.sha256(json.dumps({
+                            "task": task["id"],
+                            "tool": tool,
+                            "command": result.get("command", arguments.get("command", [])),
+                        }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+                        repeated_command_failures[command_key] = repeated_command_failures.get(command_key, 0) + 1
+                        if repeated_command_failures[command_key] >= 2:
+                            concise_error = (
+                                "The same command failed twice without a repository change. "
+                                f"Last command: {result.get('command')}. "
+                                f"{str(result.get('stderr', '')).strip()[-4000:]}"
+                            )
+                            self._set_task(task["id"], "needs_fix", {"feedback": concise_error})
+                            self._set_run(run_id, status="failed", error=concise_error, finished=True)
+                            self._event(run_id, "run.failed", reason="repeated_command_failure", task_id=task["id"], error=concise_error)
+                            return
                         failed = True
                         break
                 if failed:
@@ -1294,6 +1400,11 @@ class CodebaseService:
     def _model_actions(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], context: list[dict[str, Any]], task: dict[str, Any], feedback: str, architecture: dict[str, Any] | None = None) -> dict[str, Any]:
         source_map = RepositoryIntelligence(project["source_path"]).scan()
         profile = classify_request(run["user_prompt"], source_map)
+        if profile["mode"] == "greenfield" and profile["framework"] == "django":
+            fallback = self._django_fallback(run["user_prompt"], task)
+            if fallback:
+                self._event(run["id"], "framework.scaffold.selected", task_id=task["id"], framework="django")
+                return fallback
         messages = [
             {"role": "system", "content": (
                 "You are an autonomous software engineer operating only through supplied workspace tools. "
@@ -1486,6 +1597,202 @@ class CodebaseService:
     def _react_request(goal: str) -> bool:
         return bool(re.search(r"\breact(?:\.js|js)?\b", str(goal), re.I))
 
+    @classmethod
+    def _django_fallback(cls, goal: str, task: dict[str, Any]) -> dict[str, Any]:
+        title = str(task.get("title", "")).lower()
+        pages = cls._requested_named_pages(goal)
+        if "foundation" in title or "entrypoint" in title or "configuration" in title:
+            return {
+                "summary": "Created the Django project foundation and dependency manifest",
+                "actions": [
+                    {"tool": "write_file", "arguments": {"path": "requirements.txt", "content": "Django>=5.1,<6.0\n"}},
+                    {"tool": "write_file", "arguments": {"path": "manage.py", "content": DJANGO_MANAGE}},
+                    {"tool": "write_file", "arguments": {"path": "config/__init__.py", "content": "\"\"\"Django project configuration.\"\"\"\n"}},
+                    {"tool": "write_file", "arguments": {"path": "config/settings.py", "content": DJANGO_SETTINGS}},
+                    {"tool": "write_file", "arguments": {"path": "config/urls.py", "content": DJANGO_ROOT_URLS}},
+                    {"tool": "write_file", "arguments": {"path": "config/wsgi.py", "content": DJANGO_WSGI}},
+                    {"tool": "write_file", "arguments": {"path": "pages/__init__.py", "content": "\"\"\"Page application.\"\"\"\n"}},
+                ],
+                "done": True,
+            }
+        if "complete user-requested behavior" in title or "usable web application" in title or "client" in title:
+            actions = [
+                {"tool": "write_file", "arguments": {"path": "pages/views.py", "content": cls._django_views(pages)}},
+                {"tool": "write_file", "arguments": {"path": "pages/urls.py", "content": cls._django_urls(pages)}},
+                {"tool": "write_file", "arguments": {"path": "templates/base.html", "content": cls._django_base_template(pages, goal)}},
+                {"tool": "write_file", "arguments": {"path": "static/css/site.css", "content": DJANGO_SITE_CSS}},
+                {"tool": "write_file", "arguments": {"path": "static/js/site.js", "content": cls._django_site_script(goal)}},
+            ]
+            actions.extend(
+                {"tool": "write_file", "arguments": {"path": f"templates/{slug}.html", "content": cls._django_page_template(slug, label)}}
+                for slug, label in pages
+            )
+            return {"summary": f"Implemented {len(pages)} routed Django pages with a shared jQuery frontend", "actions": actions, "done": True}
+        if "automated tests" in title or "failure paths" in title:
+            return {
+                "summary": "Added structural route, template, and frontend checks",
+                "actions": [{"tool": "write_file", "arguments": {"path": "test_structure.py", "content": cls._django_structure_tests(pages, goal)}}],
+                "done": True,
+            }
+        if any(term in title for term in ("validation", "validate", "repair", "runtime", "static checks")):
+            paths = ["manage.py", "config/settings.py", "config/urls.py", "pages/views.py", "pages/urls.py", "templates/base.html", "static/js/site.js"]
+            paths.extend(f"templates/{slug}.html" for slug, _label in pages)
+            return {
+                "summary": "Validated Django configuration, tests, routes, templates, and frontend assets",
+                "actions": cls._django_validation_actions(paths),
+                "done": True,
+            }
+        return {}
+
+    @staticmethod
+    def _django_validation_actions(paths: list[str]) -> list[dict[str, Any]]:
+        if os.getenv("OPENAGENT_CODEQ_INSTALL_DEPENDENCIES", "1").strip().lower() in {"0", "false", "no"}:
+            return [
+                {"tool": "run_tests", "arguments": {"command": ["python", "-m", "unittest", "discover", "-v"]}},
+                {"tool": "run_shell", "arguments": {"command": ["python", "-m", "compileall", "-q", "."]}},
+                {"tool": "read_files", "arguments": {"paths": paths}},
+            ]
+        venv_python = ".venv\\Scripts\\python.exe" if os.name == "nt" else ".venv/bin/python"
+        return [
+            {"tool": "run_shell", "arguments": {"command": ["python", "-m", "venv", ".venv"], "timeout_seconds": 300}},
+            {"tool": "install_dependency", "arguments": {"command": [venv_python, "-m", "pip", "install", "-r", "requirements.txt"]}},
+            {"tool": "run_tests", "arguments": {"command": [venv_python, "manage.py", "check"]}},
+            {"tool": "run_tests", "arguments": {"command": [venv_python, "manage.py", "test"]}},
+            {"tool": "run_tests", "arguments": {"command": [venv_python, "-m", "unittest", "discover", "-v"]}},
+            {"tool": "read_files", "arguments": {"paths": paths}},
+        ]
+
+    @staticmethod
+    def _requested_named_pages(goal: str) -> list[tuple[str, str]]:
+        text = str(goal).lower()
+        aliases = {"index": "home", "homepage": "home"}
+        known: list[str] = []
+        for name in ("home", "index", "homepage", "about", "contact", "careers", "services", "work", "pricing", "faq", "team"):
+            if re.search(rf"\b{name}\b", text):
+                canonical = aliases.get(name, name)
+                if canonical not in known:
+                    known.append(canonical)
+        count = CodebaseService._requested_page_count(goal)
+        if count <= 1 and len(known) > 1:
+            count = len(known)
+        defaults = ["home", "about", "contact", "careers", "services", "work", "pricing", "faq", "team"]
+        for name in defaults:
+            if len(known) >= count:
+                break
+            if name not in known:
+                known.append(name)
+        return [(name, name.title()) for name in known[:max(1, count)]]
+
+    @staticmethod
+    def _django_views(pages: list[tuple[str, str]]) -> str:
+        functions = "\n\n".join(f"def {slug}(request):\n    return render(request, '{slug}.html')" for slug, _label in pages)
+        return f"from django.shortcuts import render\n\n\n{functions}\n"
+
+    @staticmethod
+    def _django_urls(pages: list[tuple[str, str]]) -> str:
+        routes = []
+        for slug, _label in pages:
+            route = "" if slug == "home" else f"{slug}/"
+            routes.append(f"    path('{route}', views.{slug}, name='{slug}'),")
+        return "from django.urls import path\n\nfrom . import views\n\napp_name = 'pages'\n\nurlpatterns = [\n" + "\n".join(routes) + "\n]\n"
+
+    @staticmethod
+    def _django_base_template(pages: list[tuple[str, str]], goal: str = "") -> str:
+        if re.search(r"\bbootstrap\b", str(goal), re.I):
+            return CodebaseService._django_bootstrap_base_template(pages)
+        links = "\n".join(f'        <a href="{{% url \'pages:{slug}\' %}}">{label}</a>' for slug, label in pages)
+        return """{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Northstar{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/site.css' %}">
+</head>
+<body>
+  <header class="site-header"><div class="nav-shell"><a class="brand" href="{% url 'pages:home' %}"><span>N</span> Northstar</a><button class="menu-button" type="button" aria-expanded="false" aria-controls="primary-nav">Menu</button><nav id="primary-nav">
+""" + links + """
+  </nav></div></header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>Northstar · Django and jQuery</footer>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+  <script src="{% static 'js/site.js' %}"></script>
+</body>
+</html>
+"""
+
+    @staticmethod
+    def _django_bootstrap_base_template(pages: list[tuple[str, str]]) -> str:
+        links = "\n".join(
+            f'          <li class="nav-item"><a class="nav-link" href="{{% url \'pages:{slug}\' %}}">{label}</a></li>'
+            for slug, label in pages
+        )
+        return """{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Northstar{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+  <link rel="stylesheet" href="{% static 'css/site.css' %}">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg bg-body-tertiary"><div class="container"><a class="navbar-brand" href="{% url 'pages:home' %}">Northstar</a><button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#primary-nav" aria-controls="primary-nav" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="primary-nav"><ul class="navbar-nav ms-auto">
+""" + links + """
+  </ul></div></div></nav>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>Northstar · Django and Bootstrap</footer>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+  <script src="{% static 'js/site.js' %}"></script>
+</body>
+</html>
+"""
+
+    @staticmethod
+    def _django_site_script(goal: str) -> str:
+        if re.search(r"\bbootstrap\b", str(goal), re.I):
+            return "document.documentElement.classList.add('js-ready');\n"
+        return DJANGO_SITE_JS
+
+    @staticmethod
+    def _django_page_template(slug: str, label: str) -> str:
+        descriptions = {"home": "A focused place to begin.", "about": "Learn how the work is organized and delivered.", "contact": "Start a useful conversation with the team."}
+        description = descriptions.get(slug, f"Explore {label.lower()} with a clear and responsive experience.")
+        return "{% extends 'base.html' %}\n{% block title %}" + label + " | Northstar{% endblock %}\n{% block content %}\n<section class=\"hero\"><div><p class=\"eyebrow\">Northstar / " + label + "</p><h1>" + label + "</h1><p>" + description + "</p></div></section>\n<section class=\"content\"><h2>Built with purpose</h2><p>This Django page uses shared templates, responsive styles, and progressive frontend behavior.</p></section>\n{% endblock %}\n"
+
+    @staticmethod
+    def _django_structure_tests(pages: list[tuple[str, str]], goal: str = "") -> str:
+        names = [slug for slug, _label in pages]
+        frontend_asset = "bootstrap@5.3.3" if re.search(r"\bbootstrap\b", str(goal), re.I) else "jquery-3.7.1.min.js"
+        return """from pathlib import Path
+import unittest
+
+
+class ProjectStructureTests(unittest.TestCase):
+    def test_django_project_and_requested_pages_exist(self):
+        root = Path(__file__).parent
+        required = %r
+        self.assertTrue((root / 'manage.py').is_file())
+        self.assertTrue((root / 'config' / 'settings.py').is_file())
+        for name in required:
+            self.assertTrue((root / 'templates' / f'{name}.html').is_file())
+
+    def test_routes_and_jquery_integration_are_wired(self):
+        root = Path(__file__).parent
+        routes = (root / 'pages' / 'urls.py').read_text(encoding='utf-8')
+        base = (root / 'templates' / 'base.html').read_text(encoding='utf-8')
+        for name in %r:
+            self.assertIn("name='" + name + "'", routes)
+        self.assertIn(%r, base)
+        self.assertTrue((root / 'static' / 'js' / 'site.js').is_file())
+
+
+if __name__ == '__main__':
+    unittest.main()
+""" % (names, names, frontend_asset)
+
     @staticmethod
     def _login_request(goal: str) -> bool:
         return bool(re.search(r"\b(login|log in|sign[ -]?in|sign[ -]?up|auth(?:entication)?)\b", str(goal), re.I))
@@ -1587,8 +1894,11 @@ class CodebaseService:
     def _standalone_web_request(goal: str, project_map: dict[str, Any]) -> bool:
         if int(project_map.get("total_bytes", 0) or 0) > 1_000_000 or str(project_map.get("framework", "")).strip():
             return False
+        profile = classify_request(goal, project_map)
+        if profile.get("explicit_stack"):
+            return profile.get("framework") == "react" and CodebaseService._login_request(goal)
         text = goal.lower()
-        return any(term in text for term in ("page", "website", "web app", "frontend", "landing", "dashboard", "login", "sign in", "signup", "sign up"))
+        return CodebaseService._static_web_request(goal) or any(term in text for term in ("login page", "sign in page", "signup page", "sign up page", "landing page", "plain html"))
 
     @staticmethod
     def _standalone_python_request(goal: str, project_map: dict[str, Any]) -> bool:
@@ -2065,7 +2375,8 @@ class CodebaseService:
         if self._static_web_request(run["user_prompt"]):
             profile = {**profile, "framework": "browser", "language": "javascript", "explicit_stack": True}
         missing = check_artifact_contract(root, profile) if profile["mode"] == "greenfield" else []
-        requested_pages = self._requested_page_count(run["user_prompt"]) if self._static_web_request(run["user_prompt"]) else 0
+        page_count_match = re.search(r"\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:static\s+)?pages?\b", run["user_prompt"], re.I)
+        requested_pages = self._requested_page_count(run["user_prompt"]) if page_count_match and profile.get("requires_ui") else 0
         if requested_pages:
             actual_pages = [
                 path for path in root.rglob("*.html")

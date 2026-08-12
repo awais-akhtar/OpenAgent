@@ -32,6 +32,51 @@ STACK_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("unreal",), "unreal", "cpp"),
 )
 
+FUZZY_STACK_WORDS: dict[str, tuple[str, str]] = {
+    "django": ("django", "python"),
+    "fastapi": ("fastapi", "python"),
+    "flask": ("flask", "python"),
+    "react": ("react", "javascript"),
+    "angular": ("angular", "typescript"),
+    "svelte": ("svelte", "typescript"),
+    "flutter": ("flutter", "dart"),
+    "electron": ("electron", "javascript"),
+}
+
+
+def _fuzzy_stack(text: str) -> tuple[str, str] | None:
+    """Recognize a clearly misspelled framework name without guessing prose."""
+
+    tokens = re.findall(r"[a-z][a-z0-9.+#-]{3,}", text)
+    for token in tokens:
+        for canonical, stack in FUZZY_STACK_WORDS.items():
+            if abs(len(token) - len(canonical)) <= 2 and _transposition_distance(token, canonical) <= 2:
+                return stack
+    return None
+
+
+def _transposition_distance(left: str, right: str) -> int:
+    """Return an optimal-string-alignment distance for short framework names."""
+
+    rows = len(left) + 1
+    columns = len(right) + 1
+    matrix = [[0] * columns for _ in range(rows)]
+    for row in range(rows):
+        matrix[row][0] = row
+    for column in range(columns):
+        matrix[0][column] = column
+    for row in range(1, rows):
+        for column in range(1, columns):
+            cost = 0 if left[row - 1] == right[column - 1] else 1
+            matrix[row][column] = min(
+                matrix[row - 1][column] + 1,
+                matrix[row][column - 1] + 1,
+                matrix[row - 1][column - 1] + cost,
+            )
+            if row > 1 and column > 1 and left[row - 1] == right[column - 2] and left[row - 2] == right[column - 1]:
+                matrix[row][column] = min(matrix[row][column], matrix[row - 2][column - 2] + 1)
+    return matrix[-1][-1]
+
 
 def classify_request(goal: str, project_map: dict[str, Any]) -> dict[str, Any]:
     """Describe the requested product without coupling the controller to one UI stack."""
@@ -48,6 +93,11 @@ def classify_request(goal: str, project_map: dict[str, Any]) -> dict[str, Any]:
             language = candidate_language
             explicit_stack = True
             break
+    if not explicit_stack:
+        fuzzy = _fuzzy_stack(text)
+        if fuzzy:
+            framework, language = fuzzy
+            explicit_stack = True
 
     kind = "application"
     categories = (
@@ -64,6 +114,8 @@ def classify_request(goal: str, project_map: dict[str, Any]) -> dict[str, Any]:
         if any(needle in text for needle in needles):
             kind = candidate
             break
+    if framework == "django" and any(term in text for term in ("frontend", "page", "website", "web app", "bootstrap")):
+        kind = "web application"
 
     greenfield = int(project_map.get("file_count", 0) or 0) == 0
     backend_terms = ("database", "postgres", "mysql", "mongodb", "backend", "api", "oauth", "google login", "stripe", "webhook", "authentication system")
@@ -146,7 +198,8 @@ def check_artifact_contract(root: Path, profile: dict[str, Any]) -> list[str]:
             and any(part in {"api", "backend", "server", "services"} for part in Path(path).parts[:-1])
             for path in files
         )
-        if not has_backend:
+        integrated_backend = str(profile.get("framework", "")) == "django" and "manage.py" in lowered
+        if not has_backend and not integrated_backend:
             missing.append("a server implementation under api/, backend/, server/, or services/")
     return missing
 

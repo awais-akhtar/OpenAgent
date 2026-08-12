@@ -28,6 +28,23 @@ Every workflow keeps its assumptions, inputs, checks, and limitations visible.
 The module is intended to support research and engineering decisions, not to
 replace domain review or claim experimental validity by itself.
 
+## Workbench
+
+Scientific AI is a full-height workbench with one input side and one evidence
+side. The six sidebar entries open the relevant controls directly; the page
+does not repeat a capability catalog. A run advances through a compact Plan,
+Execute, Verify, and Report stepper. Results show verification coverage,
+measured execution time, plan steps, tool lifecycle, tables, charts, and the
+human-readable report when those records are present.
+
+```mermaid
+flowchart LR
+  Input[Problem or evidence] --> Steps[Plan / Execute / Verify / Report]
+  Steps --> Tools[Scientific tools]
+  Tools --> Checks[Independent checks]
+  Checks --> Evidence[Report, metrics, table, chart]
+```
+
 ## Scientific Agents
 
 `ScientificAgent` turns a question into a typed plan, executes the matching

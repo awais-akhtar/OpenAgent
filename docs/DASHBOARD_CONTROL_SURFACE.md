@@ -33,6 +33,12 @@ is not a token-per-second estimate. Provider drilldowns distinguish local and
 external routes, readiness, and registered models without treating configured
 external access as active.
 
+The AI load gauge is different from throughput. It reads the number of model
+requests currently inside the inference execution context and divides that by
+the local concurrency capacity. It therefore rises while generation is active
+and returns to zero when the engine is idle. Completed requests per minute no
+longer hold this gauge at 100 percent after work has finished.
+
 Module health is summarized as ready, degraded, or failed. Audit failures are
 classified separately from active incidents. A failure is shown as current
 only when it is unresolved and occurred within the last fifteen minutes. A

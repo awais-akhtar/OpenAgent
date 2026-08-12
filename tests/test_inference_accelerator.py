@@ -63,6 +63,22 @@ class InferenceAcceleratorTests(unittest.TestCase):
         self.assertGreaterEqual(result["planning_ms"]["mean"], 0.0)
         self.assertGreaterEqual(result["cache_lookup_mean_ms"], 0.0)
 
+    def test_activity_load_tracks_live_requests_and_returns_to_idle(self) -> None:
+        engine = AdaptiveCPUInferenceEngine()
+        plan = engine.plan(
+            [{"role": "user", "content": "Measure this request"}],
+            provider_id="local",
+            model="test",
+            allow_external=False,
+        )
+        self.assertEqual(0, engine.status()["activity"]["load_percent"])
+        with engine.activate(plan):
+            activity = engine.status()["activity"]
+            self.assertEqual(1, activity["active_requests"])
+            self.assertGreater(activity["load_percent"], 0)
+        self.assertEqual(0, engine.status()["activity"]["active_requests"])
+        self.assertEqual(0, engine.status()["activity"]["load_percent"])
+
     def test_embedding_requests_use_value_preserving_engine_cache(self) -> None:
         gateway = ModelGateway()
         first = gateway.embed(["private retrieval text"], provider_id="local")

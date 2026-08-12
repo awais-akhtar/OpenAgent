@@ -8,9 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260812-codeq-autonomy-12">
+  <link rel="manifest" href="/manifest.json?v=20260812-codeq-autonomy-15">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260812-codeq-autonomy-12">
+  <link rel="stylesheet" href="/styles.css?v=20260812-codeq-autonomy-15">
   <script>
     // Apply saved theme immediately to prevent flash
     (function() {
@@ -212,20 +212,9 @@
             <div class="codebase-copilot-composer">
             <textarea id="codebaseGoal" rows="4" placeholder="Ask CodeQ to build, fix, explain, or review…"></textarea>
             <div class="codebase-run-buttons">
-              <button id="startCodebaseRun" class="btn btn-primary">Send</button>
-              <button id="cancelCodebaseRun" class="btn btn-danger" disabled>Stop</button>
+              <button id="startCodebaseRun" class="codeq-action-button" aria-label="Send request" title="Send request">↑</button>
+              <button id="cancelCodebaseRun" class="codeq-action-button codeq-stop-button" aria-label="Stop run" title="Stop run" disabled>■</button>
             </div></div>
-            <details class="codebase-configuration codebase-more-options"><summary>Run settings and history</summary>
-            <div class="codebase-history-row">
-              <select id="codebaseRunSelect" aria-label="Previous autonomous run"><option value="">No previous runs</option></select>
-              <button id="resumeCodebaseRun" class="btn btn-mini btn-soft" disabled>Resume</button>
-            </div>
-            <div id="codebaseAutonomySummary" class="codebase-autonomy-summary">
-              <strong>Fully autonomous</strong>
-              <span>CodeQ selects architecture, models, specialists, iteration budget, and validation from your request and repository.</span>
-              <small>CodeQ edits and validates in a protected workspace. After every completion check and independent review pass, the changed files are saved to the folder you selected.</small>
-            </div>
-            </details>
             <div class="codebase-tabs" role="tablist">
               <button class="codebase-detail-tab active" data-codebase-detail="tasks">Tasks</button>
               <button class="codebase-detail-tab" data-codebase-detail="events">Activity</button>
@@ -811,31 +800,8 @@
             <button id="runIntegrationDiagnostics" class="btn btn-soft">Diagnostics</button>
             <button id="createIntegrationBackup" class="btn btn-outline">Backup Now</button>
             <button id="runSafePythonCheck" class="btn btn-outline">Runtime Check</button>
-            <button id="saveUiPreference" class="btn btn-soft">Save UI Pref</button>
           </div>
           <div id="integrationFeed" class="stack-list" style="margin-top:12px"></div>
-        </article>
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Personal OS</p><h3>Presets, drafts, notes, gallery</h3></div>
-            <span class="badge badge-success">SQLite</span>
-          </div>
-          <div id="personalOsCards" class="ops-grid"></div>
-          <div class="form-stack">
-            <input id="personalOsTitle" type="text" placeholder="Title, preset, note, or asset name">
-            <textarea id="personalOsBody" rows="4" placeholder="Content. For compare, separate option A and B with ---"></textarea>
-          </div>
-          <div class="toolbar">
-            <button id="loadPersonalOsStatus" class="btn btn-soft">Refresh Personal OS</button>
-            <button id="savePersonalPreset" class="btn btn-primary">Save Preset</button>
-            <button id="savePersonalSignature" class="btn btn-soft">Signature</button>
-            <button id="savePersonalDraft" class="btn btn-soft">Draft</button>
-            <button id="savePersonalNote" class="btn btn-soft">Note</button>
-            <button id="addGalleryAsset" class="btn btn-outline">Gallery Asset</button>
-            <button id="startCompareRun" class="btn btn-outline">Compare</button>
-            <button id="exportPersonalOs" class="btn btn-outline">Export</button>
-          </div>
-          <div id="personalOsFeed" class="stack-list" style="margin-top:12px"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -960,47 +926,9 @@
           </div>
           <div class="toolbar">
             <button id="refreshScheduler" class="btn btn-soft">Refresh Tasks</button>
-            <button id="createSchedulerTask" class="btn btn-primary">Create Due Task</button>
-            <button id="addSchedulerOutput" class="btn btn-outline">Add Local Output</button>
             <button id="runDueSchedulerTasks" class="btn btn-outline">Run Due</button>
           </div>
           <div id="schedulerFeed" class="stack-list" style="margin-top:12px"></div>
-        </article>
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Image studio</p><h3>Local gallery operations</h3></div>
-            <span class="badge badge-success">Media</span>
-          </div>
-          <div class="toolbar">
-            <button id="refreshImageStudio" class="btn btn-soft">Refresh Images</button>
-            <button id="uploadTinyImage" class="btn btn-primary">Create Test Image</button>
-            <button id="batchTagImages" class="btn btn-outline">Batch Tag Recent</button>
-          </div>
-          <div id="imageStudioFeed" class="stack-list" style="margin-top:12px"></div>
-        </article>
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Agent bridge</p><h3>Scoped local integration API</h3></div>
-            <span class="badge badge-success">Local</span>
-          </div>
-          <div class="toolbar">
-            <button id="refreshAgentBridge" class="btn btn-soft">Refresh Bridge</button>
-            <button id="writeBridgeMemory" class="btn btn-primary">Write Memory</button>
-            <button id="createBridgeTask" class="btn btn-outline">Create Task</button>
-          </div>
-          <div id="agentBridgeFeed" class="stack-list" style="margin-top:12px"></div>
-        </article>
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Providers and documents</p><h3>Certification, OAuth, imports</h3></div>
-            <span class="badge badge-success">Audited</span>
-          </div>
-          <div class="toolbar">
-            <button id="loadProviderCertification" class="btn btn-soft">Provider Matrix</button>
-            <button id="recordOauthCallbackDemo" class="btn btn-outline">Record Callback</button>
-            <button id="importDeveloperDocument" class="btn btn-primary">Import Local Doc</button>
-          </div>
-          <div id="providerDocumentFeed" class="stack-list" style="margin-top:12px"></div>
         </article>
         <article class="card skill-editor-card">
           <div class="card-header"><div><p class="eyebrow">Skill ecosystem</p><h3>Editor, tests, permissions, signed packages</h3></div><span id="skillEditorBadge" class="badge">Draft</span></div>
@@ -1026,8 +954,8 @@
           <div id="skillEditorResult" class="mini-status"></div>
         </article>
         <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Output</p><h3>Developer response</h3></div></div>
-          <pre id="developerOutput" class="output tall">Developer output will appear here.</pre>
+          <div class="card-header"><div><p class="eyebrow">Console</p><h3>Command output</h3></div></div>
+          <pre id="developerOutput" class="output tall" aria-live="polite"></pre>
         </article>
       </div>
     </section>
@@ -1510,11 +1438,11 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260812-codeq-autonomy-12" type="module"></script>
+<script src="/app.js?v=20260812-codeq-autonomy-15" type="module"></script>
 <script>
   // Register service worker for PWA offline support
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260812-codeq-autonomy-12').catch(function() {});
+    navigator.serviceWorker.register('/sw.js?v=20260812-codeq-autonomy-15').catch(function() {});
   }
 </script>
 

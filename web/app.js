@@ -367,7 +367,7 @@ const VIEW_LOADERS = {
   communications: () => loadCommunicationHub().catch(() => {}),
   models:         () => Promise.allSettled([loadProviders(), loadModelPolicy(), loadSmoothRuntime("chat")]),
   security:       () => Promise.allSettled([loadAudit(), loadPrivacyReport(), loadIdentityAdministration()]),
-  developer:      () => Promise.allSettled([loadDeveloperFeed(), loadDeveloperSdk(), loadIntegrationStatus(), loadPersonalOsStatus(), loadSettingsModels(), loadModelSetupStatus(), loadModelJobs(), loadOperationalModules(), loadUltraModelEngine(), loadSkills()]),
+  developer:      () => Promise.allSettled([loadDeveloperFeed(), loadDeveloperSdk(), loadIntegrationStatus(), loadSettingsModels(), loadModelSetupStatus(), loadModelJobs(), loadOperationalModules(), loadUltraModelEngine(), loadSkills()]),
   engine:         () => loadEngineWorkspace().catch(() => {}),
   calendar:       () => Promise.allSettled([loadCalendarEvents(), loadCalendarSyncStatus()]),
   twin:           () => Promise.allSettled([loadTwinSuggestions(), loadTwinGoals()]),
@@ -417,7 +417,7 @@ function renderScienceWorkspace(section) {
     agents: `<div class="form-grid"><label class="field"><span>Memory category</span><select id="scienceMemoryCategory"><option>assumption</option><option>equation</option><option>property</option><option>boundary condition</option><option>experiment</option></select></label><label class="field"><span>Name</span><input id="scienceMemoryName" placeholder="Young modulus"></label><label class="field"><span>Value</span><input id="scienceMemoryValue" placeholder="210"></label><label class="field"><span>Unit</span><input id="scienceMemoryUnit" placeholder="GPa"></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-memory">Save scientific memory</button><button class="btn btn-soft" data-science-action="load-memory">Load project memory</button></div>`,
     computing: `<div class="form-grid"><label class="field"><span>Simulator</span><select id="scienceSimulator"><option value="fenics">FEniCS</option><option value="openfoam">OpenFOAM</option><option value="comsol">COMSOL</option><option value="lammps">LAMMPS</option></select></label><label class="field"><span>Temperature (K)</span><input id="scienceSimulationTemperature" type="number" value="350"></label><label class="field"><span>Duration (s)</span><input id="scienceSimulationDuration" type="number" value="10"></label><label class="field"><span>Conductivity</span><input id="scienceSimulationConductivity" type="number" value="1.5" step="0.1"></label></div><div class="toolbar"><button class="btn btn-primary" data-science-action="simulate">Run simulation example</button></div><label class="field"><span>Approved local Python</span><textarea id="sciencePythonCode" rows="5">print(math.sqrt(16))</textarea></label><div class="toolbar"><button class="btn btn-soft" data-science-action="execute-code">Execute with profiling and repair</button></div>`,
     engineering: `<div class="toolbar"><button class="btn btn-primary" data-science-prompt="optimise a cantilever beam for minimum mass subject to stress and deflection limits">Optimise beam</button><button class="btn btn-soft" data-science-prompt="optimise a heat exchanger and verify the engineering constraints">Optimise heat exchanger</button><button class="btn btn-soft" data-science-prompt="optimise a lighter bridge design and verify stress and deflection">Optimise bridge</button></div>`,
-    multimodal: `<label class="field"><span>Local evidence files</span><input id="scienceEvidenceFiles" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,image/*"></label><p class="muted">PDFs, notes, sensor CSV, simulation JSON, and images are combined locally.</p><div class="toolbar"><button class="btn btn-primary" data-science-action="analyse-evidence">Analyse evidence</button></div>`,
+    multimodal: `<label class="field"><span>Evidence files</span><input id="scienceEvidenceFiles" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,image/*"></label><div class="toolbar"><button class="btn btn-primary" data-science-action="analyse-evidence">Analyse</button></div>`,
     verification: `<label class="field"><span>Result JSON</span><textarea id="scienceVerificationPayload" rows="10">{"text":"The calculated stress is within the stated limit.","values":[125000000],"units":{"stress":{"unit":"Pa","expected":"Pa"}},"residuals":[0.0],"equations":[{"expression":"stress = force/area","symbols":{"stress":125000000,"force":250000,"area":0.002}}],"claims":[{"text":"The calculated stress is within the stated limit.","evidence_ids":["calculation:stress","constraint:stress"]}],"evidence":{"calculation:stress":{"value":125000000,"unit":"Pa"},"constraint:stress":{"passed":true,"limit":250000000,"unit":"Pa"}},"citations":[],"constraints":[{"name":"stress","passed":true}]}</textarea></label><div class="toolbar"><button class="btn btn-primary" data-science-action="verify">Run verification</button></div>`,
     materials: `<div class="science-source-band"><div><span class="eyebrow">Verified public catalog</span><strong>Reproducible materials benchmarks</strong><p id="scienceMaterialsCatalogStatus" class="muted">Loading catalog metadata...</p></div><label class="field"><span>Public dataset</span><select id="scienceMaterialsCatalog"><option value="">Loading...</option></select></label><label class="toggle-row"><input id="scienceMaterialsNetworkApproved" type="checkbox"><span><strong>Approve this download</strong><small>Allow one checksum-verified HTTPS dataset request.</small></span></label><label class="toggle-row"><input id="scienceMaterialsLicenseAccepted" type="checkbox"><span><strong>Accept dataset license</strong><small>The selected catalog entry shows its upstream license and citation.</small></span></label><div class="toolbar"><button class="btn btn-soft" data-science-action="import-public-materials">Import verified dataset</button><button class="btn btn-primary" data-science-action="analyse-public-materials">Download and analyse 80/20 split</button></div></div><div class="section-divider"><span>or use a local dataset</span></div><div class="form-grid"><label class="field"><span>Dataset</span><input id="scienceMaterialsFile" type="file" accept=".csv,.json"></label><label class="field"><span>Target property</span><input id="scienceMaterialsTarget" value="strength"></label><label class="field"><span>Dataset name</span><input id="scienceMaterialsName" value="Local materials dataset"></label><label class="field"><span>Objective</span><select id="scienceMaterialsObjective"><option value="maximize">Maximise target</option><option value="minimize">Minimise target</option></select></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-materials">Store dataset</button><button class="btn btn-primary" data-science-action="analyse-materials">Analyse and rank</button></div>`,
   };
@@ -658,13 +658,19 @@ function renderMetrics() {
   const diskValue = Number(disk.used_percent);
   const inferenceEvents = Array.isArray(state.inferenceStatus?.last_events) ? state.inferenceStatus.last_events : [];
   const inferenceRate = inferenceThroughputSeries(inferenceEvents).at(-1)?.value || 0;
-  const inferenceLoad = Math.min(100, inferenceRate * 12.5);
+  const activeInference = finiteNumber(state.inferenceStatus?.activity?.active_requests);
+  const inferenceCapacity = Math.max(1, finiteNumber(state.inferenceStatus?.activity?.capacity, 1));
+  const inferenceLoad = Number.isFinite(Number(state.inferenceStatus?.activity?.load_percent))
+    ? finiteNumber(state.inferenceStatus.activity.load_percent)
+    : Math.min(100, activeInference / inferenceCapacity * 100);
   const inferenceP50 = Number(state.inferenceStatus?.latency?.p50_ms);
   const items = [
     ["CPU", cpuValue, `${cpu.count || 1} threads`],
     ["RAM", memoryValue, Number.isFinite(Number(memory.available_gb)) ? `${formatGb(memory.available_gb)} free` : "Local memory"],
     ["Disk", diskValue, Number.isFinite(Number(disk.free_gb)) ? `${formatGb(disk.free_gb)} free` : "Data volume"],
-    ["AI load", inferenceLoad, Number.isFinite(inferenceP50) ? `${Math.round(inferenceP50)} ms p50 · ${inferenceRate}/min` : "No measured request"],
+    ["AI load", inferenceLoad, activeInference > 0
+      ? `${activeInference} active · capacity ${inferenceCapacity}`
+      : Number.isFinite(inferenceP50) ? `Idle · ${Math.round(inferenceP50)} ms p50` : "Idle · no measured request"],
   ];
   const el = qs("#metricGrid");
   if (el) el.innerHTML = items.map(([label, rawValue, detail]) => {
@@ -2121,8 +2127,31 @@ function codeqEventLabel(event) {
     "run.completed": "Work completed and verified",
     "run.failed": "Run needs attention",
     "run.cancelled": "Run stopped",
+    "agent.started": "Agent started",
+    "agent.thinking": "Planning the next action",
+    "model.completed": "Model response received",
+    "model.action_rejected": "Action adjusted to match the project",
+    "model.action_replaced": "Action replaced with a working local step",
+    "framework.scaffold.selected": "Framework scaffold selected",
+    "tool.started": "Tool running",
+    "tool.completed": "Tool completed",
+    "tool.failed": "Tool failed; repair started",
+    "file.modified": "File updated",
+    "command.started": "Command running",
+    "command.stdout": "Command produced output",
+    "command.failed": "Command failed; investigating",
   };
   return labels[event.type] || event.type.replace(/\./g, " ");
+}
+
+function codeqEventDetail(event) {
+  const payload = event.payload || {};
+  if (payload.path) return String(payload.path);
+  if (payload.tool) return String(payload.tool).replace(/_/g, " ");
+  if (payload.agent) return String(payload.agent).replace(/_/g, " ");
+  if (payload.command) return Array.isArray(payload.command) ? payload.command.join(" ") : String(payload.command);
+  if (payload.summary) return String(payload.summary);
+  return "";
 }
 
 function renderCodebaseCopilotFeed() {
@@ -2134,15 +2163,20 @@ function renderCodebaseCopilotFeed() {
     return;
   }
   const tasks = run.tasks || [];
-  const hiddenNoise = new Set(["model.completed", "agent.thinking", "tool.started", "tool.completed", "stream.heartbeat"]);
-  const recentEvents = state.codebase.events.filter(event => !hiddenNoise.has(event.type)).slice(-30);
+  const hiddenNoise = new Set(["stream.heartbeat", "task.continued"]);
+  const recentEvents = state.codebase.events.filter(event => !hiddenNoise.has(event.type)).reduce((items, event) => {
+    const key = `${event.type}:${codeqEventDetail(event)}`;
+    if (items.length && items[items.length - 1].key === key) return items;
+    items.push({ key, event });
+    return items;
+  }, []).slice(-12).map(item => item.event);
   const validation = run.validation || [];
   const pending = (run.approvals || []).filter(item => item.status === "pending");
   root.innerHTML = `
     <article class="copilot-message user"><p>${escapeHtml(run.user_prompt || "Software engineering task")}</p><div class="copilot-message-actions"><button type="button" data-codeq-copy-prompt>Copy</button><button type="button" data-codeq-edit-prompt>Edit</button></div></article>
     <article class="copilot-message agent"><strong>${escapeHtml(String(run.status || "working").replace(/_/g, " "))}</strong>
       <div class="copilot-task-list">${tasks.map(task => `<span class="${escapeHtml(task.status)}"><i>${task.status === "completed" ? "✓" : task.status === "running" ? "●" : "○"}</i>${escapeHtml(task.title)}</span>`).join("") || "<span><i>●</i>Analysing repository</span>"}</div>
-      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.slice(-8).map(event => `<p><i></i>${escapeHtml(codeqEventLabel(event))}</p>`).join("")}</div>` : ""}
+      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.map(event => { const detail = codeqEventDetail(event); return `<p><i></i><span>${escapeHtml(codeqEventLabel(event))}${detail ? `<small>${escapeHtml(detail.slice(0, 120))}</small>` : ""}</span></p>`; }).join("")}</div>` : ""}
       ${validation.length ? `<div class="copilot-validation">${validation.map(item => `<span class="${item.status === "passed" ? "passed" : "failed"}">${item.status === "passed" ? "✓" : "×"} ${escapeHtml(item.kind)}</span>`).join("")}</div>` : ""}
       ${pending.length ? `<p class="copilot-attention">Waiting for approval: ${escapeHtml(pending[0].tool)}</p>` : ""}
       ${run.summary ? `<p class="copilot-summary">${escapeHtml(run.summary)}</p>` : ""}
@@ -7879,26 +7913,33 @@ async function runScienceWorkflow() {
   const goal = qs("#scienceGoal")?.value.trim() || "Plan a reproducible scientific investigation";
   const output = qs("#scienceResult");
   const button = qs("#runScienceWorkflow");
+  const stages = ["Plan", "Execute", "Verify", "Report"];
   state.science.busy = true;
-  renderScienceSteps(["Planning the scientific workflow", "Running local tools", "Checking numerical and physical constraints", "Preparing the reviewable report"], 1);
-  if (button) { button.disabled = true; button.textContent = "Running locally…"; }
-  if (output) output.textContent = "Preparing the local scientific workflow…";
+  renderScienceSteps(stages, 0);
+  let visibleStage = 0;
+  const progressTimer = window.setInterval(() => {
+    visibleStage = Math.min(3, visibleStage + 1);
+    renderScienceSteps(stages, visibleStage);
+  }, 900);
+  if (button) { button.disabled = true; button.textContent = "…"; button.setAttribute("aria-label", "Workflow running"); }
+  if (output) output.textContent = "";
   try {
     const payload = await api("/api/science/run", {
       method: "POST",
       body: JSON.stringify({ project: getProject(), goal }),
     });
     const run = payload.run || {};
-    renderScienceSteps(["Planning the scientific workflow", "Running local tools", "Checking numerical and physical constraints", "Preparing the reviewable report"], 4);
+    renderScienceSteps(stages, 4);
     renderSciencePayload(payload);
     toast("Scientific workflow complete", run.metadata?.science?.status || "Result verified locally");
   } catch (error) {
-    renderScienceSteps(["Planning the scientific workflow", "Running local tools", "Checking numerical and physical constraints", "Preparing the reviewable report"], 0, error.message);
+    renderScienceSteps(stages, visibleStage, error.message);
     if (output) output.textContent = `Scientific workflow failed: ${error.message}`;
     toast("Scientific workflow failed", error.message);
   } finally {
+    window.clearInterval(progressTimer);
     state.science.busy = false;
-    if (button) { button.disabled = false; button.textContent = "Run locally"; }
+    if (button) { button.disabled = false; button.textContent = "↑"; button.setAttribute("aria-label", "Run workflow"); }
   }
 }
 
@@ -8081,13 +8122,13 @@ function renderSciencePayload(payload) {
   const verification = payload.analysis?.verification || payload.verification?.scientific || payload.run?.metadata?.science?.verification;
   const plan = payload.run?.metadata?.science?.plan;
   const execution = analysis.execution || (payload.execution?.lifecycle ? payload.execution : null);
+  const findings = verification?.findings || [];
   const summaryValues = [
     ["Status", analysis.status || (verification?.passed ? "passed" : "complete")],
-    ["Project", getProject()],
-    ["Local operation", "Yes"],
+    ["Verification", verification?.score != null ? `${Math.round(Number(verification.score) * 100)}%` : findings.length ? `${findings.filter(item => item.passed).length}/${findings.length}` : "not run"],
+    ["Execution", execution?.elapsed_ms != null ? `${Number(execution.elapsed_ms).toFixed(1)} ms` : "—"],
   ];
   if (summary) summary.innerHTML = summaryValues.map(([label, value]) => `<div class="science-summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("");
-  const findings = verification?.findings || [];
   if (checks) checks.innerHTML = findings.map(item => `<div class="science-check ${item.passed ? "pass" : "fail"}"><div><strong>${escapeHtml(item.check || "check")}</strong><div class="muted">${escapeHtml(item.message || "")}</div></div></div>`).join("");
   if (planList && plan?.steps?.length) {
     planList.innerHTML = `<div class="science-record-heading">Problem plan</div>${plan.steps.map((step, index) => `<div class="science-plan-row"><span>${index + 1}</span><div>${escapeHtml(step)}</div></div>`).join("")}`;

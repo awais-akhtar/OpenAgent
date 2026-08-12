@@ -90,6 +90,8 @@ class AdaptiveCPUInferenceEngine:
         self._misses = 0
         self._embedding_hits = 0
         self._embedding_misses = 0
+        self._active_requests = 0
+        self._request_capacity = max(1, min(4, (os.cpu_count() or 1) // 2))
 
     def plan(
         self,
@@ -153,9 +155,13 @@ class AdaptiveCPUInferenceEngine:
     @contextmanager
     def activate(self, plan: InferencePlan) -> Iterator[None]:
         token = _ACTIVE_OPTIONS.set(dict(plan.options))
+        with self._lock:
+            self._active_requests += 1
         try:
             yield
         finally:
+            with self._lock:
+                self._active_requests = max(0, self._active_requests - 1)
             _ACTIVE_OPTIONS.reset(token)
 
     def get(self, cache_key: str) -> CachedCompletion | None:
@@ -299,6 +305,11 @@ class AdaptiveCPUInferenceEngine:
             return {
                 "status": "ready",
                 "engine": "openagent-adaptive-cpu-v1",
+                "activity": {
+                    "active_requests": self._active_requests,
+                    "capacity": self._request_capacity,
+                    "load_percent": round(min(100.0, self._active_requests / self._request_capacity * 100.0), 2),
+                },
                 "plans": self._plans,
                 "cache": {
                     "entries": len(self._cache),

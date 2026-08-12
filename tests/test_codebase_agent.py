@@ -207,6 +207,14 @@ class RepositoryIntelligenceTests(unittest.TestCase):
         self.assertEqual(("web application", "react"), (default["kind"], default["framework"]))
         full_stack = classify_request("Build a login system with PostgreSQL, Google login, and a dashboard", empty)
         self.assertEqual("full-stack", full_stack["architecture"])
+        misspelled_django = classify_request(
+            "make application with djnaog backend and frontend with bootstrap",
+            empty,
+        )
+        self.assertEqual(("web application", "django", "python"), (
+            misspelled_django["kind"], misspelled_django["framework"], misspelled_django["language"],
+        ))
+        self.assertTrue(misspelled_django["explicit_stack"])
 
     def test_greenfield_contract_rejects_single_file_react_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -597,6 +605,91 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertTrue(any(item["kind"] == "artifacts" and item["status"] == "passed" for item in run["validation"]))
             self.assertFalse(any("sign-in" in task["title"].lower() for task in run["tasks"]))
             self.assertIn("source.publish.completed", {item["type"] for item in service.events(run["id"])})
+
+    def test_django_three_page_request_keeps_framework_and_publishes_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "selected-django-folder"
+            source.mkdir()
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Django site", source_path=str(source))
+            stale_workspace = Path(project["workspace"]["workspace_path"])
+            (stale_workspace / "index.html").write_text("<h1>Rejected login attempt</h1>\n", encoding="utf-8")
+            (stale_workspace / "styles.css").write_text("body{}\n", encoding="utf-8")
+            prompt = "make a django application with intergtaed frontend like with jguery 3 pages, like home contact and about"
+            self.assertFalse(service._standalone_web_request(prompt, {"file_count": 0, "total_bytes": 0, "framework": "", "languages": []}))
+            with patch.dict(os.environ, {"OPENAGENT_CODEQ_INSTALL_DEPENDENCIES": "0"}):
+                run = service.create_run(codebase_project_id=project["id"], prompt=prompt, max_iterations=12)
+                run = service.wait_for_run(run["id"], timeout=25)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue((source / "manage.py").is_file())
+            self.assertTrue((source / "config" / "settings.py").is_file())
+            self.assertTrue((source / "pages" / "urls.py").is_file())
+            self.assertEqual(
+                {"home.html", "about.html", "contact.html", "base.html"},
+                {path.name for path in (source / "templates").glob("*.html")},
+            )
+            self.assertIn("jquery-3.7.1.min.js", (source / "templates" / "base.html").read_text(encoding="utf-8"))
+            self.assertIn("window.jQuery", (source / "static" / "js" / "site.js").read_text(encoding="utf-8"))
+            self.assertTrue(any(item["kind"] == "test" and item["status"] == "passed" for item in run["validation"]))
+            self.assertTrue(any(item["kind"] == "artifacts" and item["status"] == "passed" for item in run["validation"]))
+            self.assertFalse(any("login" in task["title"].lower() or "sign-in" in task["title"].lower() for task in run["tasks"]))
+            self.assertIn("source.publish.completed", {item["type"] for item in service.events(run["id"])})
+
+    def test_misspelled_django_bootstrap_request_builds_four_named_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "selected-bootstrap-folder"
+            source.mkdir()
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Bootstrap site", source_path=str(source))
+            prompt = "make application with djnaog backend and frontend with bootstrap, 4 pages index, contact about and careers"
+            with patch.dict(os.environ, {"OPENAGENT_CODEQ_INSTALL_DEPENDENCIES": "0"}):
+                run = service.create_run(codebase_project_id=project["id"], prompt=prompt, max_iterations=12)
+                run = service.wait_for_run(run["id"], timeout=25)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertEqual(
+                {"base.html", "home.html", "contact.html", "about.html", "careers.html"},
+                {path.name for path in (source / "templates").glob("*.html")},
+            )
+            base_template = (source / "templates" / "base.html").read_text(encoding="utf-8")
+            self.assertIn("bootstrap@5.3.3", base_template)
+            self.assertIn("bootstrap.bundle.min.js", base_template)
+            self.assertIn("name='careers'", (source / "pages" / "urls.py").read_text(encoding="utf-8"))
+            profile = classify_request(prompt, {"file_count": 0, "languages": [], "framework": ""})
+            self.assertFalse(check_artifact_contract(source, profile))
+            self.assertTrue(any(item["kind"] == "artifacts" and item["status"] == "passed" for item in run["validation"]))
+            self.assertIn("framework.scaffold.selected", {item["type"] for item in service.events(run["id"])})
+
+    def test_django_runtime_validation_uses_project_local_environment(self) -> None:
+        with patch.dict(os.environ, {"OPENAGENT_CODEQ_INSTALL_DEPENDENCIES": "1"}):
+            actions = CodebaseService._django_validation_actions(["manage.py"])
+        commands = [item["arguments"]["command"] for item in actions if "command" in item.get("arguments", {})]
+        self.assertIn(["python", "-m", "venv", ".venv"], commands)
+        self.assertTrue(any(command[-2:] == ["manage.py", "check"] for command in commands))
+        self.assertTrue(any(command[-2:] == ["manage.py", "test"] for command in commands))
+        self.assertEqual("install_dependency", actions[1]["tool"])
+
+    def test_identical_command_failure_stops_without_spending_iteration_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "selected-folder"
+            source.mkdir()
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Failure guard", source_path=str(source))
+            failed_action = [{"tool": "run_shell", "arguments": {"command": [sys.executable, "-c", "raise SystemExit(9)"]}}]
+            with patch.object(CodebaseService, "_django_validation_actions", return_value=failed_action):
+                run = service.create_run(
+                    codebase_project_id=project["id"],
+                    prompt="Build a Django site with three pages",
+                    max_iterations=12,
+                )
+                run = service.wait_for_run(run["id"], timeout=25)
+            self.assertEqual("failed", run["status"])
+            self.assertLess(run["iteration"], run["max_iterations"])
+            self.assertIn("same command failed twice", run["error"].lower())
+            failed_events = [item for item in service.events(run["id"]) if item["type"] == "run.failed"]
+            self.assertEqual("repeated_command_failure", failed_events[-1]["payload"]["reason"])
 
     def test_running_process_without_exit_code_is_not_treated_as_a_failed_command(self) -> None:
         self.assertIsNone(CodebaseService._exit_code(None))
