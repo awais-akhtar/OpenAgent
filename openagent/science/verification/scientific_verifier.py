@@ -9,6 +9,7 @@ from .constraints import check_constraints
 from .equations import check_residuals, check_symbolic_equations
 from .numeric import check_finite
 from .units import check_units
+from .claims import check_claim_evidence
 
 
 class ScientificVerifier:
@@ -18,9 +19,11 @@ class ScientificVerifier:
         *,
         values: Iterable[float] | None = None,
         residuals: Iterable[float] | None = None,
-        units: Mapping[str, str] | None = None,
+        units: Mapping[str, Any] | None = None,
         constraints: Iterable[Mapping[str, object]] | None = None,
         equations: Iterable[Mapping[str, Any] | str] | None = None,
+        claims: Iterable[Mapping[str, Any]] | None = None,
+        evidence: Mapping[str, Any] | Iterable[str] | None = None,
     ) -> ScientificVerification:
         findings: list[ScientificFinding] = []
         if values is None:
@@ -34,6 +37,10 @@ class ScientificVerifier:
             findings.append(check_units(units))
         if constraints is not None:
             findings.append(check_constraints(constraints))
+        result_claims = result.get("claims") if isinstance(result.get("claims"), (list, tuple)) else None
+        result_evidence = result.get("evidence") if isinstance(result.get("evidence"), Mapping) else None
+        if claims is not None or result_claims is not None:
+            findings.append(check_claim_evidence(claims if claims is not None else result_claims or (), evidence if evidence is not None else result_evidence or {}))
         passed = all(item.passed for item in findings)
         score = sum(1.0 for item in findings if item.passed) / max(1, len(findings))
         return ScientificVerification(passed=passed, findings=tuple(findings), score=score)

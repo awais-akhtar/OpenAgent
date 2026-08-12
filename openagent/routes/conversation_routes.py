@@ -46,6 +46,7 @@ def handle_get(path: str, query: str, deps: ConversationRouteDependencies) -> Js
         if path == "/api/conversations/organized":
             return JsonRouteResult({"conversations": deps.organization.list(
                 project=project, include_archived=deps.parse_bool(deps.first(params, "include_archived"), default=False),
+                archived_only=deps.parse_bool(deps.first(params, "archived_only"), default=False),
                 folder=deps.first(params, "folder") or "", sort=deps.first(params, "sort") or "pinned",
                 query=deps.first(params, "q") or "", limit=deps.parse_int(deps.first(params, "limit"), default=100))})
         if path == "/api/conversations/folders":

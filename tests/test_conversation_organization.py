@@ -38,6 +38,8 @@ class ConversationOrganizationTests(unittest.TestCase):
             self.assertEqual(result["count"], 1)
             self.assertTrue(organization.get(beta_id)["archived"])
             self.assertNotIn(beta_id, {item["id"] for item in organization.list(project="core")})
+            archived = organization.list(project="core", include_archived=True, archived_only=True)
+            self.assertEqual([beta_id], [item["id"] for item in archived])
 
     def test_route_contract_covers_full_organization_lifecycle(self) -> None:
         paths = {path for _, path in ROUTES}

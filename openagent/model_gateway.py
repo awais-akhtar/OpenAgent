@@ -7,6 +7,7 @@ or an auto-routing policy allows local network providers.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import hashlib
 import json
@@ -71,6 +72,17 @@ class ModelProvider(Protocol):
     ) -> ModelResult:
         ...
 
+    def complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ModelResult:
+        ...
+
     def stream_complete(
         self,
         messages: list[dict[str, str]],
@@ -129,6 +141,17 @@ class BaseProvider:
             done=True,
             metadata=result.metadata,
         )
+
+    def complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ModelResult:
+        raise ProviderUnavailableError(f"Provider '{self.id}' does not support vision completion.")
 
     def embed(
         self,
@@ -264,6 +287,61 @@ class OllamaProvider(BaseProvider):
             model=selected_model,
             content=content,
             metadata={"base_url": self.base_url, "network": True, "local_network": True, "smooth_options": options},
+        )
+
+    def complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ModelResult:
+        selected_model = self.resolve_model(model)
+        options = provider_request_options(messages)
+        if max_output_tokens is not None:
+            options = {**options, "num_predict": max(1, int(max_output_tokens))}
+        encoded = base64.b64encode(image).decode("ascii")
+        vision_messages = [dict(message) for message in messages]
+        image_index = next(
+            (index for index in range(len(vision_messages) - 1, -1, -1) if vision_messages[index].get("role") == "user"),
+            None,
+        )
+        if image_index is None:
+            vision_messages.append({"role": "user", "content": "Describe the supplied image.", "images": [encoded]})
+        else:
+            vision_messages[image_index]["images"] = [encoded]
+        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+        response = post_json(
+            f"{self.base_url}/api/chat",
+            {
+                "model": selected_model,
+                "messages": vision_messages,
+                "stream": False,
+                "options": options,
+                "keep_alive": keep_alive,
+            },
+            headers={},
+        )
+        content = str(response.get("message", {}).get("content", ""))
+        if not content:
+            raise ProviderUnavailableError(
+                f"Ollama model '{selected_model}' returned no vision response. Confirm that the model supports images."
+            )
+        return ModelResult(
+            provider=self.id,
+            model=selected_model,
+            content=content,
+            metadata={
+                "base_url": self.base_url,
+                "network": True,
+                "local_network": True,
+                "modality": "vision",
+                "media_type": media_type,
+                "image_transport": "ollama-message-images",
+                "smooth_options": options,
+            },
         )
 
     def stream_complete(
@@ -624,6 +702,68 @@ class OpenAICompatibleProvider(BaseProvider):
             metadata={"base_url": self.base_url, "network": True, "external": True},
         )
 
+    def complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ModelResult:
+        self.require_configured()
+        selected_model = model or self.default_model
+        data_url = f"data:{media_type};base64,{base64.b64encode(image).decode('ascii')}"
+        vision_messages: list[dict[str, Any]] = []
+        image_attached = False
+        for message in reversed(messages):
+            if not image_attached and message.get("role") == "user":
+                content: list[dict[str, Any]] = []
+                if message.get("content"):
+                    content.append({"type": "text", "text": str(message["content"])})
+                content.append({"type": "image_url", "image_url": {"url": data_url}})
+                vision_messages.append({"role": "user", "content": content})
+                image_attached = True
+            else:
+                vision_messages.append(dict(message))
+        vision_messages.reverse()
+        if not image_attached:
+            vision_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe the supplied image."},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            )
+        payload: dict[str, Any] = {"model": selected_model, "messages": vision_messages, "stream": False}
+        if max_output_tokens is not None:
+            payload["max_tokens"] = max(1, int(max_output_tokens))
+        response = post_json(
+            f"{self.base_url}/chat/completions",
+            payload,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        content = chat_completion_content(response)
+        if not content:
+            raise ProviderUnavailableError(
+                f"OpenAI-compatible model '{selected_model}' returned no vision response. Confirm that the endpoint and model support image_url content."
+            )
+        return ModelResult(
+            provider=self.id,
+            model=selected_model,
+            content=content,
+            metadata={
+                "base_url": self.base_url,
+                "network": True,
+                "external": True,
+                "modality": "vision",
+                "media_type": media_type,
+                "image_transport": "openai-image-url",
+            },
+        )
+
     def stream_complete(
         self,
         messages: list[dict[str, str]],
@@ -934,6 +1074,82 @@ class ModelGateway:
             cache_hit=False,
         )
         return ModelResult(result.provider, result.model, result.content, metadata)
+
+    def complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str = "image/png",
+        provider_id: str = "auto",
+        model: str | None = None,
+        allow_external: bool = False,
+        max_output_tokens: int | None = None,
+    ) -> ModelResult:
+        """Complete a request through a provider's native image protocol.
+
+        Vision requests never fall back to a text provider because doing so
+        would silently discard the image. External endpoints retain the same
+        explicit approval boundary as text completion.
+        """
+
+        if not image:
+            raise ValueError("Vision completion requires non-empty image bytes.")
+        if not media_type.startswith("image/"):
+            raise ValueError("Vision completion media_type must be an image MIME type.")
+        provider = self._select_vision_provider(provider_id, allow_external=allow_external)
+        selected_model = self._effective_provider_model(provider, provider_id=provider_id, model=model)
+        started = time.perf_counter()
+        try:
+            result = provider.complete_vision(
+                messages,
+                image,
+                media_type=media_type,
+                model=selected_model,
+                max_output_tokens=max_output_tokens,
+            )
+        except ProviderUnavailableError:
+            raise
+        except Exception as exc:
+            raise ProviderUnavailableError(
+                f"Vision completion failed through provider '{provider.id}' using model "
+                f"'{selected_model or provider.default_model}': {exc}"
+            ) from exc
+        latency_ms = (time.perf_counter() - started) * 1000
+        return ModelResult(
+            provider=result.provider,
+            model=result.model,
+            content=result.content,
+            metadata={
+                **result.metadata,
+                "provider": result.provider,
+                "model": result.model,
+                "modality": "vision",
+                "latency_ms": round(latency_ms, 3),
+                "routing_policy": self.routing_policy,
+                "external_approved": bool(allow_external and not provider.local),
+            },
+        )
+
+    def _select_vision_provider(self, provider_id: str, *, allow_external: bool) -> ModelProvider:
+        if provider_id == "auto":
+            ollama = self.providers["ollama"]
+            if ollama.available():
+                return ollama
+            external = self.providers["openai-compatible"]
+            if allow_external and external.available():
+                return external
+            raise ProviderUnavailableError(
+                "No vision provider is available. Start Ollama with a vision-capable model, or configure an "
+                "OpenAI-compatible vision endpoint and pass allow_external=true."
+            )
+        provider = self.select_provider(provider_id, allow_external=allow_external)
+        if provider.id not in {"ollama", "openai-compatible"}:
+            raise ProviderUnavailableError(
+                f"Provider '{provider.id}' does not support native vision completion. "
+                "Select 'ollama' or a configured 'openai-compatible' vision provider."
+            )
+        return provider
 
     def stream_complete(
         self,

@@ -57,8 +57,9 @@ The repository contains a runnable local-first implementation: a native desktop 
 - Ultra-scale sharded GGUF orchestration with honest 200B feasibility math, resident/out-of-core/private-RPC plans, safe loopback `llama-server` lifecycle, warm prompt/KV caches, speculative decoding, and grounded output rejection
 - Adaptive CPU/GPU/NPU compiler with GGUF, SafeTensors, ONNX, and OpenVINO frontends; graph/tensor/kernel IR; transfer-aware prefill/decode planning; mixed-precision budgeting; paged KV metadata; deadline batching; vendor compilation; exact-model differential calibration; and a persistent network-free OpenVINO hardware worker
 - Advanced Engine workspace with persistent model roles, per-role identity prompts, live provider/model assignment, native direct token streaming, custom model sequences, and an audited reasoning-code-supervisor revision loop
-- Scientific AI workspace with local heat-equation computation, operator surrogates, constrained engineering optimisation, multimodal scientific evidence, numerical verification, and materials discovery helpers
-- Scientific AI tooling with project-scoped scientific memory, five-stage problem planning, traceback-driven self-correction, SymPy equation checks, simulator adapters, operator-learning interfaces, experiment planning, bounded code execution, runtime and memory profiles, and a collapsible workbench navigation
+- Scientific AI workspace with a finite-difference heat solver, Fourier ridge surrogate, real DeepONet branch/trunk model, constrained engineering optimisation, native local vision routing, structured verification, and materials discovery workflows
+- Scientific AI tooling with validated local-model planning and deterministic fallback, evidence-bound result analysis, project-scoped memory, traceback-driven self-correction, AST execution policy, SymPy and Pint checks, an optional FEniCS heat adapter, experiment planning, runtime profiles, and a collapsible workbench navigation; FNO and PINN remain clearly labeled baselines
+- CodeQ IDE directly below Chat with a native folder chooser, protected copied workspaces, Explorer, closable multi-file tabs, terminal and Git panels, a Copilot-style live run feed, repository intelligence, permission-aware tools, repair loops, independent review, snapshots, resumable state, and evidence-based completion gates
 - Private PhD Application Studio with reusable academic data, local CV/SOP evidence uploads, position tracking, approval-gated professor and lab research, evidence-grounded document generation, revision history, local quality review, and DOCX/PDF/ZIP exports
 - Stage 13 full local product runtime with submitted-audio STT, local voiceprint clone records, generated WAV voice audio, browser/form automation, approved desktop file automation, and real PWA/mobile/desktop package directories
 - Stage 14 native Windows desktop installability with a standard-library desktop shell, local status command, Start Menu/Desktop launcher scripts, and hard-audit proof that no browser is required
@@ -293,6 +294,9 @@ The README is a starting point; the design and operational details live in the
 linked documents below.
 
 - [Architecture](docs/ARCHITECTURE.md) - system layers, data flow, and module boundaries
+- [Dashboard control surface](docs/DASHBOARD_CONTROL_SURFACE.md) - real-time local telemetry, model latency, readiness, and audit activity
+- [Autonomous software engineering](docs/AUTONOMOUS_SOFTWARE_ENGINEERING.md) - codebase workspaces, repository intelligence, task graphs, tools, sandbox boundaries, approvals, repair loops, verification, and live events
+- [Chat, memory, voice, and research](docs/CHAT_MEMORY_AND_RESEARCH.md) - conversation recall, project memory, attachments, source-backed discovery, voice mode, privacy boundaries, and history organization
 - [Scientific AI](docs/SCIENTIFIC_AI.md) - scientific agents, tools, memory, verification, multimodal work, materials discovery, and experiment planning
 - [Scientific Agents](docs/science/SCIENTIFIC_AGENTS.md) - planning, local evidence, bounded execution, self-correction, profiling, and audit
 - [Scientific Computing](docs/science/SCIENTIFIC_COMPUTING.md) - reference solvers, operator-learning interfaces, simulation adapters, and benchmarks

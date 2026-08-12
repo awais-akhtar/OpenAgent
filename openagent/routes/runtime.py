@@ -30,6 +30,8 @@ from ..calendar_sync import CalendarSyncError, CalendarSyncManager
 from ..calendar_system import CalendarSystem
 from ..capabilities import vision_coverage
 from ..chat import ChatService
+from ..chat_artifacts import ChatArtifactService
+from ..codebase import CodebaseService
 from ..communication import CommunicationApprovalRequired, CommunicationHub
 from ..conversation_organization import ConversationOrganization
 from ..config import auth_enforcement_enabled, web_root as default_web_root
@@ -69,6 +71,7 @@ from .advanced_rag_routes import AdvancedRAGRouteDependencies, handle_get as han
 from .adaptive_engine_routes import AdaptiveEngineRouteDependencies, handle_get as handle_adaptive_engine_get, handle_post as handle_adaptive_engine_post
 from .backup_routes import BackupRouteDependencies, handle_get as handle_backup_get, handle_post as handle_backup_post
 from .calendar_routes import CalendarRouteDependencies, handle_get as handle_calendar_get, handle_post as handle_calendar_post
+from .codebase_routes import CodebaseRouteDependencies, handle_get as handle_codebase_get, handle_post as handle_codebase_post
 from .communication_routes import CommunicationRouteDependencies, handle_get as handle_communication_get, handle_post as handle_communication_post
 from .conversation_routes import ConversationRouteDependencies, handle_delete as handle_conversation_delete, handle_get as handle_conversation_get, handle_patch as handle_conversation_patch, handle_post as handle_conversation_post
 from .contacts_routes import ContactsRouteDependencies, handle_delete as handle_contacts_delete, handle_get as handle_contacts_get, handle_patch as handle_contacts_patch, handle_post as handle_contacts_post
@@ -239,6 +242,7 @@ def build_http_server(
     gateway = ModelGateway(direct_hardware=adaptive_engine.direct)
     adaptive_engine.bind_gateway(gateway)
     agents = AgentRegistry(store, gateway)
+    chat_artifacts = ChatArtifactService(store)
     openvino_warm_event = threading.Event()
     openvino_warm_thread: threading.Thread | None = None
     if warm_openvino:
@@ -270,6 +274,7 @@ def build_http_server(
         openvino_warm_event.set()
     vector_store = VectorStore(store)
     chat = ChatService(store, gateway)
+    codebase = CodebaseService(store, gateway)
     workspace = WorkspaceManager(store)
     assistant = AssistantManager(store)
     workflows = WorkflowEngine(store, gateway)
@@ -437,6 +442,7 @@ def build_http_server(
         add_module("research", "Research engine", lambda: research_engine.status(project=project))
         add_module("phd", "PhD application workspace", lambda: phd_workspace.status(project=project))
         add_module("science", "Scientific AI", lambda: {"status": "ready", "privacy_boundary": "Local scientific computation only."})
+        add_module("codebase", "Autonomous software engineering", lambda: {"projects": len(codebase.list_projects(project=project)), "runs": len(codebase.list_runs(project=project, limit=20)), "sandbox_root": str(codebase.sandboxes.root)})
         add_module("agents", "Multi-agent system", lambda: {"agents": agents.specs(), "marketplace": multi_agent.marketplace()})
         add_module("knowledge", "Knowledge and RAG", lambda: knowledge.status(project=project))
         add_module("memory", "Semantic memory", lambda: semantic_memory.status(project=project))
@@ -582,6 +588,18 @@ def build_http_server(
             run_agent=lambda goal, project="default": agents.run("scientific", goal, project=project),
             read_json=read_json,
             service=scientific_service,
+            gateway=gateway,
+        )
+
+    def codebase_route_dependencies(read_json, query_owner, payload_owner) -> CodebaseRouteDependencies:
+        return CodebaseRouteDependencies(
+            codebase=codebase,
+            first=first,
+            parse_bool=parse_bool,
+            parse_int=parse_int,
+            query_owner=query_owner,
+            payload_owner=payload_owner,
+            read_json=read_json,
         )
 
     def conversation_route_dependencies(read_json, query_owner, payload_owner) -> ConversationRouteDependencies:
@@ -645,6 +663,20 @@ def build_http_server(
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if not self._enforce_auth_gate(parsed.path, "GET"):
+                return
+            if parsed.path.startswith("/api/codebase/runs/") and parsed.path.endswith("/events/stream"):
+                params = parse_qs(parsed.query)
+                run_id = unquote(parsed.path.removeprefix("/api/codebase/runs/").removesuffix("/events/stream")).strip("/")
+                try:
+                    stream = codebase.event_stream(
+                        run_id,
+                        owner=self._query_owner(params) or "local",
+                        after=parse_int(first(params, "after"), default=0),
+                        timeout_seconds=parse_int(first(params, "timeout_seconds"), default=120),
+                    )
+                    self.send_event_stream(stream)
+                except KeyError as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
                 return
             identity_route = handle_identity_get(parsed.path, identity_route_dependencies(self))
             if identity_route is not None:
@@ -737,6 +769,14 @@ def build_http_server(
             science_route = handle_science_get(parsed.path, parsed.query, science_route_dependencies(self.read_json))
             if science_route is not None:
                 self.send_json(science_route.payload, status=science_route.status)
+                return
+            codebase_route = handle_codebase_get(
+                parsed.path,
+                parsed.query,
+                codebase_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
+            )
+            if codebase_route is not None:
+                self.send_json(codebase_route.payload, status=codebase_route.status)
                 return
             conversation_route = handle_conversation_get(
                 parsed.path,
@@ -1950,6 +1990,13 @@ def build_http_server(
             if science_route is not None:
                 self.send_json(science_route.payload, status=science_route.status)
                 return
+            codebase_route = handle_codebase_post(
+                parsed.path,
+                codebase_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
+            )
+            if codebase_route is not None:
+                self.send_json(codebase_route.payload, status=codebase_route.status)
+                return
             conversation_route = handle_conversation_post(
                 parsed.path,
                 conversation_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
@@ -2072,6 +2119,7 @@ def build_http_server(
                 model = str(payload.get("model", "")).strip() or None
                 conversation_id = str(payload.get("conversation_id") or "").strip() or None
                 allow_external = parse_bool(payload.get("allow_external"), default=False)
+                attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
                 if not content:
                     self.send_json({"error": "A message is required."}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -2083,8 +2131,39 @@ def build_http_server(
                         provider=provider,
                         model=model,
                         allow_external=allow_external,
+                        attachments=attachments,
                     )
                 except (ProviderConfigurationError, ValueError) as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json(result, status=HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/chat/artifact":
+                payload = self.read_json()
+                try:
+                    artifact = chat_artifacts.render(
+                        title=str(payload.get("title", "OpenAgent document")),
+                        content=str(payload.get("content", "")),
+                        file_format=str(payload.get("format", "pdf")),
+                        project=str(payload.get("project", "default")) or "default",
+                    )
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"artifact": artifact}, status=HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/chat/research-record":
+                payload = self.read_json()
+                try:
+                    result = chat.record_research(
+                        str(payload.get("query", "")),
+                        str(payload.get("report", "")),
+                        conversation_id=str(payload.get("conversation_id", "")).strip() or None,
+                        project=str(payload.get("project", "default")).strip() or "default",
+                        sources=payload.get("sources") if isinstance(payload.get("sources"), list) else [],
+                        research_session_id=str(payload.get("research_session_id", "")).strip(),
+                    )
+                except ValueError as exc:
                     self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                     return
                 self.send_json(result, status=HTTPStatus.CREATED)
@@ -2097,6 +2176,7 @@ def build_http_server(
                 model = str(payload.get("model", "")).strip() or None
                 conversation_id = str(payload.get("conversation_id") or "").strip() or None
                 allow_external = parse_bool(payload.get("allow_external"), default=False)
+                attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
                 if not content:
                     self.send_json({"error": "A message is required."}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -2108,6 +2188,7 @@ def build_http_server(
                         provider=provider,
                         model=model,
                         allow_external=allow_external,
+                        attachments=attachments,
                     )
                 )
                 return
@@ -5037,7 +5118,7 @@ def build_http_server(
             return True
 
         def _handle_file_upload(self) -> None:
-            """Handle multipart file upload for knowledge ingestion."""
+            """Analyze an uploaded document or image and add readable evidence to RAG."""
             content_type = self.headers.get("Content-Type", "")
             content_length = parse_int(self.headers.get("Content-Length"), default=0)
             if "multipart/form-data" not in content_type:
@@ -5057,20 +5138,62 @@ def build_http_server(
             if not boundary:
                 self.send_json({"error": "No boundary in multipart form"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            filename, text_content = _parse_multipart(raw, boundary)
-            if not text_content:
-                self.send_json({"error": "No text content extracted from uploaded file"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            project = "default"
-            title = filename or "Uploaded file"
-            document = knowledge.ingest_text(
-                title=title,
-                content=text_content,
-                project=project,
-                source="upload",
-                source_path=filename or "",
+            parts = _parse_multipart_parts(raw, boundary)
+            file_part = next(
+                (part for part in parts if str(part.get("filename", "")).strip() and isinstance(part.get("content"), bytes)),
+                None,
             )
-            self.send_json({"document": document, "filename": filename, "chars_extracted": len(text_content)}, status=HTTPStatus.CREATED)
+            if file_part is None:
+                self.send_json({"error": "No file was included in the upload."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            project_part = next((part for part in parts if part.get("name") == "project"), None)
+            project = (
+                bytes(project_part.get("content", b"")).decode("utf-8", errors="replace").strip()
+                if project_part else "default"
+            ) or "default"
+            filename = str(file_part.get("filename", "")).strip() or "attachment.bin"
+            content = bytes(file_part.get("content", b""))
+            content_type_hint = str(file_part.get("content_type", "")).strip()
+            asset = media.ingest_bytes(
+                content,
+                filename=filename,
+                project=project,
+                source="chat-attachment",
+                source_path=filename,
+                metadata={"mime_type": content_type_hint} if content_type_hint else {},
+            )
+            analysis = asset.get("analysis") if isinstance(asset.get("analysis"), dict) else {}
+            text_content = str(analysis.get("extracted_text", "")).strip()
+            if not text_content and Path(filename).suffix.lower() in {".docx", ".odt", ".rtf", ".html", ".htm", ".csv", ".md"}:
+                from ..document_processing import extract_office_text
+
+                text_content = extract_office_text(filename, content).strip()
+            document = None
+            if text_content:
+                document = knowledge.ingest_text(
+                    title=filename,
+                    content=text_content,
+                    project=project,
+                    source="chat-attachment",
+                    source_path=filename,
+                    metadata={"asset_id": asset.get("id", ""), "mime_type": asset.get("mime_type", "")},
+                )
+            attachment = {
+                "id": asset.get("id", ""),
+                "name": filename,
+                "filename": filename,
+                "media_type": asset.get("media_type", "document"),
+                "mime_type": asset.get("mime_type", content_type_hint),
+                "size_bytes": asset.get("size_bytes", len(content)),
+                "summary": analysis.get("summary", ""),
+                "extracted_text": text_content[:50_000],
+                "findings": analysis.get("findings", {}),
+                "document_id": (document or {}).get("id", "") if isinstance(document, dict) else "",
+            }
+            self.send_json(
+                {"attachment": attachment, "asset": asset, "document": document, "filename": filename, "chars_extracted": len(text_content)},
+                status=HTTPStatus.CREATED,
+            )
 
         def _handle_voice_upload(self) -> None:
             """Handle browser audio uploads from current and older workbench builds."""
@@ -5158,11 +5281,14 @@ def build_http_server(
             if not self._wants_legacy_json():
                 payload = self._envelope(payload, status)
             body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
 
         def _wants_legacy_json(self) -> bool:
             """Return True only when a caller explicitly asks for raw legacy JSON.

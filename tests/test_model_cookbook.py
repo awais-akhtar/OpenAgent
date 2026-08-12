@@ -54,6 +54,8 @@ class ModelCookbookTests(unittest.TestCase):
 
             fit = cookbook.hardware_fit(project="core", model_ref="qwen-coder", parameter_count_b=3.0)
             self.assertIn("recommended_bits", fit)
+            repeated_fit = cookbook.hardware_fit(project="core", model_ref="qwen-coder", parameter_count_b=3.0)
+            self.assertEqual(repeated_fit["recommended_bits"], fit["recommended_bits"])
             self.assertIsInstance(cookbook.cached_files(project="core"), list)
 
             with self.assertRaises(ValueError):

@@ -9,10 +9,11 @@ from openagent.routes.health_routes import HealthRouteDependencies, handle_get
 
 
 class RouteContractTests(unittest.TestCase):
-    def test_domain_route_contracts_cover_master_blueprint_api_paths(self) -> None:
+    def test_domain_route_contracts_cover_documented_api_paths(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        blueprint = (root / "MASTER BLUEPRINT.md").read_text(encoding="utf-8")
-        blueprint_paths = sorted(set(re.findall(r"/api/[A-Za-z0-9_./{}-]+", blueprint)))
+        documentation = [root / "README.md", *(root / "docs").rglob("*.md")]
+        documented_text = "\n".join(path.read_text(encoding="utf-8") for path in documentation)
+        blueprint_paths = sorted(set(re.findall(r"/api/[A-Za-z0-9_./{}-]+", documented_text)))
         declared = {
             (route["method"], route["path"])
             for contract in route_contracts()

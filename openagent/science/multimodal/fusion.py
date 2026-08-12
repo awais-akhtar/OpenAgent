@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from .image import summarise_image
+from .image import analyse_image_bytes, observe_with_gateway, summarise_image
 from .sensor import parse_sensor_csv, summarise_sensor_rows
 from .simulation_output import numeric_leaves
 from .document import summarise_document
@@ -28,6 +28,31 @@ class MultimodalScientificContext:
 
     def add_image(self, name: str, values: Iterable[float], *, width: int = 0, height: int = 0) -> dict[str, Any]:
         item = {"kind": "image", "name": str(name), "summary": summarise_image(values, width=width, height=height)}
+        self._items.append(item)
+        return item
+
+    def add_image_bytes(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        media_type: str = "image/png",
+        gateway: Any = None,
+        vlm_model: str = "",
+        provider_id: str = "auto",
+        allow_external: bool = False,
+    ) -> dict[str, Any]:
+        local = analyse_image_bytes(data, name=name)
+        vlm = observe_with_gateway(
+            data,
+            gateway=gateway,
+            model=vlm_model,
+            name=name,
+            media_type=media_type,
+            provider_id=provider_id,
+            allow_external=allow_external,
+        ) if vlm_model else {"status": "not-requested", "observations": [], "reason": "No vision model was selected."}
+        item = {"kind": "image", "name": str(name), "local_analysis": local, "vlm": vlm}
         self._items.append(item)
         return item
 

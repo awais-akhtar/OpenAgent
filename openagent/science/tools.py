@@ -117,9 +117,31 @@ class CommandSimulationTool(SimulationTool):
         }
 
 
-class FenicsTool(CommandSimulationTool):
-    def __init__(self, executable: str | Path | None = None) -> None:
-        super().__init__("FEniCS", executable)
+class FenicsTool(SimulationTool):
+    """Use the Python FEniCS API, with a visibly labeled reference fallback."""
+
+    name = "FEniCS"
+
+    def __init__(self, executable: str | Path | None = None, *, allow_fallback: bool = True) -> None:
+        # ``executable`` remains accepted for compatibility with older callers.
+        self.executable = str(executable) if executable else ""
+        self.allow_fallback = allow_fallback
+
+    def capability(self) -> ToolCapability:
+        available = importlib.util.find_spec("fenics") is not None
+        return ToolCapability(
+            self.name,
+            "python-simulator",
+            package="fenics",
+            executable=None,
+            available=available,
+            privacy_boundary="Runs the FEniCS Python API locally; when absent, callers may explicitly use the labeled finite-difference fallback.",
+        )
+
+    def run(self, *, inputs: Mapping[str, Any], timeout_seconds: float = 30.0) -> dict[str, Any]:
+        from .simulations.fenics_heat import FenicsHeatAdapter
+
+        return FenicsHeatAdapter(allow_fallback=self.allow_fallback).run(inputs=inputs)
 
 
 class OpenFOAMTool(CommandSimulationTool):

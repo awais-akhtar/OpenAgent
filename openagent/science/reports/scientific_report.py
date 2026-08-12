@@ -27,6 +27,14 @@ def build_report(*, goal: str, plan: dict[str, Any], result: dict[str, Any], ver
     if result.get("memory_used"):
         lines.extend(["", "Scientific memory used:"])
         lines.extend(f"- {item.get('name')}: {item.get('value')} {item.get('unit', '')}".rstrip() for item in result["memory_used"])
+    model_analysis = result.get("model_analysis") if isinstance(result.get("model_analysis"), dict) else None
+    if model_analysis and model_analysis.get("status") == "completed":
+        lines.extend(["", "Grounded model analysis:", str(model_analysis.get("summary", ""))])
+        for claim in model_analysis.get("claims", []):
+            references = ", ".join(claim.get("evidence_ids", []))
+            lines.append(f"- {claim.get('text', '')} [{references}]")
+        for limitation in model_analysis.get("limitations", []):
+            lines.append(f"- Limitation: {limitation}")
     lines.extend(["", "Verification:", f"- Status: {'passed' if verification.get('passed') else 'needs review'}", f"- Score: {float(verification.get('score', 0.0)):.2f}"])
     for finding in verification.get("findings", []):
         lines.append(f"- {finding.get('check', 'check')}: {finding.get('message', '')}")

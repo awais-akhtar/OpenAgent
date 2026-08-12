@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import time
 from typing import Iterable, Sequence
 
 
@@ -51,11 +52,28 @@ class ScientificSurrogate:
 
     def compare_with_solver(self, solver: object, initial: Iterable[float]) -> dict[str, float]:
         values = [float(item) for item in initial]
+        predicted_started = time.perf_counter()
         predicted = self.predict(values)
+        surrogate_seconds = time.perf_counter() - predicted_started
+        solver_started = time.perf_counter()
         solved = list(getattr(solver, "solve")(values))
-        error = math.sqrt(sum((left - right) ** 2 for left, right in zip(predicted, solved)) / max(1, len(solved)))
+        solver_seconds = time.perf_counter() - solver_started
+        errors = [left - right for left, right in zip(predicted, solved)]
+        error = math.sqrt(sum(item * item for item in errors) / max(1, len(solved)))
+        mae = sum(abs(item) for item in errors) / max(1, len(solved))
         scale = max(1e-12, math.sqrt(sum(item * item for item in solved) / max(1, len(solved))))
-        return {"rmse": error, "relative_rmse": error / scale}
+        mean = sum(solved) / max(1, len(solved))
+        total = sum((item - mean) ** 2 for item in solved)
+        residual = sum(item * item for item in errors)
+        return {
+            "rmse": error,
+            "mae": mae,
+            "relative_rmse": error / scale,
+            "r2": 1.0 - residual / max(total, 1e-12),
+            "max_absolute_error": max(abs(item) for item in errors),
+            "surrogate_seconds": surrogate_seconds,
+            "solver_seconds": solver_seconds,
+        }
 
     def _features(self, values: Sequence[float]) -> list[float]:
         mean = sum(values) / max(1, len(values))

@@ -167,8 +167,13 @@ def run_production_proof(data_dir: str | Path, *, queue_jobs: int = 100) -> dict
         workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         required = [
             package.get("scripts", {}).get("test:e2e") == "playwright test",
-            "reuseExistingServer: false" in config,
+            "reuseExistingServer: !process.env.CI" in config,
+            "OPENAGENT_E2E_PORT" in config,
             "consoleErrors" in spec,
+            "metricGrid" in spec,
+            "conversationActionMenu" in spec,
+            "codebaseOpenTabs" in spec,
+            'data-nav-group="platform"' in spec,
             "npm run test:e2e" in workflow,
             "playwright install --with-deps chromium" in workflow,
         ]

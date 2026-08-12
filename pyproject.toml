@@ -22,6 +22,7 @@ science = [
   "numpy>=1.26,<3",
   "scipy>=1.12,<2",
   "sympy>=1.12,<2",
+  "pint>=0.24,<1",
 ]
 media = [
   "Pillow>=11,<13",
@@ -40,6 +41,7 @@ full = [
   "numpy>=1.26,<3",
   "scipy>=1.12,<2",
   "sympy>=1.12,<2",
+  "pint>=0.24,<1",
   "Pillow>=11,<13",
   "pypdf>=5,<7",
   "pypdfium2>=4,<6",

@@ -57,16 +57,21 @@ Developer launch:
 python -m openagent.desktop
 ```
 
-Run the latest source without reinstalling while developing:
+When the installer manifest still points to a local source checkout containing
+`.venv`, the installed desktop shortcut automatically launches that source
+environment. This keeps backend and UI edits in sync during development while
+preserving the installed shortcut, stable port, and desktop data directory.
+
+The equivalent direct developer launch is:
 
 ```powershell
 .\.venv\Scripts\python.exe -m openagent.workbench
 ```
 
 The source launcher and installed app use the same
-`%LOCALAPPDATA%\OpenAgent\data` by default. Source edits appear immediately in
-the developer launch. Rerun the installer only when the installed private
-environment itself should be updated.
+`%LOCALAPPDATA%\OpenAgent\data` by default. Rerun the installer when the
+installed private environment needs new dependencies or when the recorded
+source checkout is no longer present.
 
 Legacy Tk fallback:
 
@@ -141,6 +146,9 @@ Desktop launch, local notes, chat, agent runs, workspace actions, knowledge acti
   those old tabs. If a browser retained an old service worker for one of those
   origins, clearing that origin's site data removes the offline shell; it is
   not an active OpenAgent server.
+- A source-backed development installation reads its current Python and web
+  assets from the installer-recorded checkout. A packaged installation without
+  that checkout continues to use its bundled files.
 - Do not run `python -m openagent`, `openagent-workbench`, and the installed
   shortcut as separate products. They are alternative launchers for one local
   runtime. The single-instance lock will keep only one desktop workbench active.

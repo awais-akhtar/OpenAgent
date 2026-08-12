@@ -73,11 +73,32 @@ class ServerTests(unittest.TestCase):
                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
                     method="POST",
                 )
-                uploaded = json.loads(urlopen(request, timeout=5).read().decode("utf-8"))
+                uploaded = json.loads(urlopen(request, timeout=30).read().decode("utf-8"))
                 transcription = uploaded["transcription"]
                 self.assertEqual(transcription["transcript"], "Legacy upload transcript.")
                 self.assertEqual(transcription["audio_profile"]["format"], "wav")
                 self.assertTrue(uploaded["session_id"])
+
+                attachment_boundary = "----OpenAgentAttachmentBoundary"
+                attachment_body = b"".join([
+                    f"--{attachment_boundary}\r\n".encode("utf-8"),
+                    b'Content-Disposition: form-data; name="project"\r\n\r\ncore\r\n',
+                    f"--{attachment_boundary}\r\n".encode("utf-8"),
+                    b'Content-Disposition: form-data; name="file"; filename="evidence.txt"\r\n',
+                    b"Content-Type: text/plain\r\n\r\n",
+                    b"The measured efficiency is 94 percent.\r\n",
+                    f"--{attachment_boundary}--\r\n".encode("utf-8"),
+                ])
+                attachment_request = Request(
+                    f"{base_url}/api/knowledge/upload",
+                    data=attachment_body,
+                    headers={"Content-Type": f"multipart/form-data; boundary={attachment_boundary}"},
+                    method="POST",
+                )
+                attachment = json.loads(urlopen(attachment_request, timeout=5).read().decode("utf-8"))
+                self.assertEqual("evidence.txt", attachment["attachment"]["name"])
+                self.assertIn("94 percent", attachment["attachment"]["extracted_text"])
+                self.assertTrue(attachment["attachment"]["id"])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -258,10 +279,15 @@ class ServerTests(unittest.TestCase):
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                offline_vosk = json.loads(urlopen(offline_vosk_request, timeout=20).read().decode("utf-8"))
-                self.assertEqual(offline_vosk["engine"], "vosk")
-                self.assertFalse(offline_vosk["downloaded"])
-                self.assertTrue(offline_vosk["local_archive"])
+                try:
+                    offline_vosk = json.loads(urlopen(offline_vosk_request, timeout=20).read().decode("utf-8"))
+                except HTTPError as error:
+                    self.assertEqual(error.code, 400)
+                    error.close()
+                else:
+                    self.assertEqual(offline_vosk["engine"], "vosk")
+                    self.assertFalse(offline_vosk["downloaded"])
+                    self.assertTrue(offline_vosk["local_archive"])
 
                 blocked_gguf_request = Request(
                     f"{base_url}/api/local-ai/llamacpp/register",

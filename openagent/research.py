@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import time
 import uuid
+import re
 from typing import Any
 
 from .core_runtime import smooth_runtime_profile
 from .context import ContextEngine
+from .external_research import ExternalResearchCollector
 from .model_gateway import ModelGateway, ModelResult
 from .models import AuditEvent
 from .storage import OpenAgentStore
@@ -59,11 +61,21 @@ class ResearchEngine:
         plan = self._local_plan(query)
 
         # Step 2: Collect local context evidence
-        context_hits = self.context.search(query, project=project, limit=context_limit)
+        context_hits = [
+            item for item in self.context.search(query, project=project, limit=context_limit * 3)
+            if str(item.get("type", "")).casefold() not in {"conversation", "research"}
+        ][:context_limit]
         sources: list[dict[str, Any]] = [
-            {"id": ev.get("id", ""), "title": ev.get("title", ""), "snippet": ev.get("content", "")[:300], "type": "local_memory"}
+            {
+                "id": ev.get("id", ""), "title": ev.get("title", ""),
+                "snippet": ev.get("content", "")[:500], "type": "local_memory",
+                "url": "", "published_at": ev.get("created_at", ""),
+                "metadata": {"source": ev.get("source", "local")},
+            }
             for ev in context_hits
         ]
+        if allow_external:
+            sources.extend(ExternalResearchCollector().search(query, limit=self._requested_source_limit(query)))
 
         # Step 3: Iterative analysis — refine understanding
         # Step 3: Analyze evidence locally, then use one bounded model call for
@@ -84,6 +96,16 @@ class ResearchEngine:
             allow_external=allow_external,
         )
         report = synthesis.content
+        external_sources = [source for source in sources if source.get("url")]
+        if external_sources:
+            report = f"{report.rstrip()}\n\n{self._source_list(sources)}"
+        elif self._needs_current_sources(query):
+            boundary = (
+                "Public source search was authorized but no current sources could be reached. "
+                if allow_external else
+                "Current public sources were not searched because external research was not authorized for this run. "
+            )
+            report = f"{boundary}No claim about the latest paper can be verified.\n\n{report}".strip()
 
         elapsed = round(time.time() - started_at, 2)
         self.store.add_audit_event(
@@ -126,7 +148,7 @@ class ResearchEngine:
             "model": synthesis.model,
             "engine": synthesis.metadata.get("inference", {}),
             "model_metadata": synthesis.metadata,
-            "mode": "compact-local-synthesis",
+            "mode": "external-source-backed" if external_sources else "compact-local-synthesis",
         }
 
     def _local_plan(self, query: str) -> str:
@@ -247,7 +269,12 @@ class ResearchEngine:
     ) -> ModelResult:
         """Produce a report together with auditable shared-engine evidence."""
         combined_analysis = "\n\n".join(f"Iteration {i+1}:\n{note}" for i, note in enumerate(analysis_notes))
-        source_titles = ", ".join(s["title"] for s in sources[:6]) or "No external sources"
+        source_text = "\n".join(
+            f"[{index}] {source.get('title') or 'Untitled source'} | "
+            f"date={source.get('published_at') or 'unknown'} | url={source.get('url') or 'local'} | "
+            f"evidence={source.get('snippet', '')[:700]}"
+            for index, source in enumerate(sources[:30], start=1)
+        ) or "No verified sources were collected."
 
         messages = [
             {
@@ -255,7 +282,10 @@ class ResearchEngine:
                 "content": (
                     "You are a research synthesis expert. Produce a clear, well-structured research report "
                     "with an executive summary, key findings, and conclusions. "
-                    "Cite local sources where appropriate. Be accurate about uncertainty."
+                    "Every factual or comparative claim must be grounded in the supplied evidence. "
+                    "Use bracket citations such as [1] that match the supplied source numbers. "
+                    "Never invent a paper, date, author, URL, experiment, or search action. "
+                    "If evidence is missing, say so directly."
                 ),
             },
             {
@@ -264,8 +294,9 @@ class ResearchEngine:
                     f"Research question: {query}\n\n"
                     f"Plan followed:\n{plan}\n\n"
                     f"Analysis notes:\n{combined_analysis}\n\n"
-                    f"Sources consulted: {source_titles}\n\n"
-                    "Write a compact final report with an executive summary, key findings, source notes, gaps, and next actions."
+                    f"Verified source records:\n{source_text}\n\n"
+                    "Write a useful report that answers the question directly, compares the strongest evidence, "
+                    "and distinguishes metadata/abstract evidence from full-paper evidence."
                 ),
             },
         ]
@@ -330,6 +361,32 @@ class ResearchEngine:
             content="".join(parts).strip(),
             metadata=final_metadata,
         )
+
+    @staticmethod
+    def _needs_current_sources(query: str) -> bool:
+        return bool(re.search(r"\b(latest|newest|recent|today|current|paper|study|research)\b", query, re.IGNORECASE))
+
+    @staticmethod
+    def _requested_source_limit(query: str) -> int:
+        match = re.search(
+            r"\b(?:find|review|compare|list)?\s*(\d{1,2})\s+(?:papers?|studies|sources?|options?|cars?|products?)\b",
+            query,
+            re.IGNORECASE,
+        )
+        if match:
+            return max(8, min(int(match.group(1)), 40))
+        return 20 if re.search(r"\b(literature review|systematic review|options?|compare|shortlist)\b", query, re.IGNORECASE) else 14
+
+    @staticmethod
+    def _source_list(sources: list[dict[str, Any]]) -> str:
+        lines = ["## Sources"]
+        for index, source in enumerate(sources, start=1):
+            if not source.get("url"):
+                continue
+            title = str(source.get("title") or source.get("url") or "Source").replace("[", "(").replace("]", ")")
+            date = str(source.get("published_at") or "date not supplied")[:10]
+            lines.append(f"{index}. [{title}]({source.get('url')}) — {date} · {source.get('type', 'web')}")
+        return "\n".join(lines)
 
     def status(self, *, project: str = "default") -> dict[str, Any]:
         """Return the research engine status."""

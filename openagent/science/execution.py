@@ -1,13 +1,16 @@
-"""Local code execution records with bounded retries and profiling."""
+"""Policy-checked, bounded isolated subprocess execution and profiling."""
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import time
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 
@@ -42,9 +45,22 @@ class ExecutionRecord:
 
 
 class ScientificCodeRunner:
-    """Runs short local scripts and exposes traceback data for repair loops."""
+    """Runs policy-checked scripts in a bounded isolated subprocess.
 
-    def run(self, code: str, *, timeout_seconds: float = 10.0, retries: int = 0, repair: Callable[[str, str], str] | None = None) -> ExecutionRecord:
+    This is defense in depth for local scientific jobs, not a secure sandbox.
+    """
+
+    def run(
+        self,
+        code: str,
+        *,
+        timeout_seconds: float = 10.0,
+        memory_limit_mb: int = 512,
+        retries: int = 0,
+        repair: Callable[[str, str], str] | None = None,
+    ) -> ExecutionRecord:
+        if memory_limit_mb < 32 or memory_limit_mb > 16_384:
+            raise ValueError("memory_limit_mb must be between 32 and 16384")
         current = code
         repairer = repair or repair_scientific_code
         started = time.perf_counter()
@@ -52,29 +68,66 @@ class ScientificCodeRunner:
         attempts = 0
         peak_memory = 0
         history: list[dict[str, object]] = []
-        lifecycle: list[dict[str, object]] = [{"stage": "code_prepared", "status": "complete", "message": "Python source prepared for isolated local execution."}]
+        lifecycle: list[dict[str, object]] = [{"stage": "code_prepared", "status": "complete", "message": "Python source prepared for bounded isolated subprocess execution."}]
         repairs = 0
         for attempts in range(1, max(1, retries + 1) + 1):
+            violations = execution_policy_violations(current)
+            if violations:
+                message = "Execution policy rejected the source: " + "; ".join(violations)
+                last = subprocess.CompletedProcess([sys.executable, "-I", "-c", "<blocked>"], 126, "", message)
+                history.append({
+                    "attempt": attempts,
+                    "returncode": 126,
+                    "elapsed_ms": 0.0,
+                    "code_sha256": hashlib.sha256(current.encode("utf-8")).hexdigest(),
+                    "stderr_tail": message,
+                    "stdout_tail": "",
+                    "repair_applied": False,
+                    "policy_violations": list(violations),
+                })
+                lifecycle.append({"stage": "policy", "status": "rejected", "attempt": attempts, "message": message})
+                break
             lifecycle.append({"stage": "execute", "status": "running", "attempt": attempts, "message": f"Running attempt {attempts}."})
             attempt_started = time.perf_counter()
-            process = subprocess.Popen(
-                [sys.executable, "-I", "-c", current],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            deadline = time.monotonic() + max(0.1, timeout_seconds)
-            while process.poll() is None:
-                peak_memory = max(peak_memory, _process_memory_bytes(process.pid))
-                if time.monotonic() >= deadline:
-                    process.kill()
+            with tempfile.TemporaryDirectory(prefix="openagent-science-") as workspace:
+                process = subprocess.Popen(
+                    [sys.executable, "-I", "-c", current],
+                    cwd=workspace,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                )
+                deadline = time.monotonic() + max(0.1, timeout_seconds)
+                memory_limit_bytes = memory_limit_mb * 1024 * 1024
+                while process.poll() is None:
+                    current_memory = _process_memory_bytes(process.pid)
+                    peak_memory = max(peak_memory, current_memory)
+                    if current_memory > memory_limit_bytes:
+                        process.kill()
+                        stdout, stderr = process.communicate()
+                        last = subprocess.CompletedProcess(
+                            process.args,
+                            125,
+                            stdout,
+                            f"{stderr}\nExecution exceeded the {memory_limit_mb} MB memory limit.".strip(),
+                        )
+                        lifecycle[-1] = {
+                            "stage": "resource_limit",
+                            "status": "terminated",
+                            "attempt": attempts,
+                            "message": f"Attempt {attempts} exceeded the {memory_limit_mb} MB memory limit.",
+                        }
+                        break
+                    if time.monotonic() >= deadline:
+                        process.kill()
+                        stdout, stderr = process.communicate()
+                        last = subprocess.CompletedProcess(process.args, 124, stdout, f"{stderr}\nExecution timed out.".strip())
+                        break
+                    time.sleep(0.01)
+                else:
                     stdout, stderr = process.communicate()
-                    last = subprocess.CompletedProcess(process.args, 124, stdout, f"{stderr}\nExecution timed out.".strip())
-                    break
-                time.sleep(0.01)
-            else:
-                stdout, stderr = process.communicate()
-                last = subprocess.CompletedProcess(process.args, int(process.returncode or 0), stdout, stderr)
+                    last = subprocess.CompletedProcess(process.args, int(process.returncode or 0), stdout, stderr)
             entry: dict[str, object] = {
                 "attempt": attempts,
                 "returncode": last.returncode,
@@ -88,7 +141,8 @@ class ScientificCodeRunner:
                 history.append(entry)
                 lifecycle[-1] = {"stage": "execute", "status": "complete", "attempt": attempts, "message": f"Attempt {attempts} completed successfully."}
                 break
-            lifecycle[-1] = {"stage": "execute", "status": "failed", "attempt": attempts, "message": f"Attempt {attempts} returned exit code {last.returncode}."}
+            if lifecycle[-1].get("stage") != "resource_limit":
+                lifecycle[-1] = {"stage": "execute", "status": "failed", "attempt": attempts, "message": f"Attempt {attempts} returned exit code {last.returncode}."}
             lifecycle.append({"stage": "traceback", "status": "captured", "attempt": attempts, "message": _traceback_summary(last.stderr)})
             if attempts > retries:
                 history.append(entry)
@@ -142,7 +196,7 @@ def _process_memory_bytes(pid: int) -> int:
             ok = ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
             ctypes.windll.kernel32.CloseHandle(handle)
             return int(counters.PeakWorkingSetSize) if ok else 0
-        status = open(f"/proc/{pid}/status", encoding="utf-8").read()
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
         for line in status.splitlines():
             if line.startswith("VmHWM:"):
                 return int(line.split()[1]) * 1024
@@ -164,6 +218,45 @@ def repair_scientific_code(code: str, traceback: str) -> str:
         if message in traceback and statement not in code:
             return f"{statement}\n{code}"
     return code
+
+
+_BLOCKED_IMPORTS = frozenset({
+    "aiohttp", "builtins", "ctypes", "ftplib", "http", "httpx", "importlib", "multiprocessing",
+    "os", "pathlib", "requests", "shutil", "signal", "smtplib", "socket", "subprocess", "urllib", "webbrowser",
+})
+_BLOCKED_CALLS = frozenset({"breakpoint", "compile", "delattr", "eval", "exec", "getattr", "globals", "input", "locals", "open", "setattr", "vars", "__import__"})
+_BLOCKED_ATTRIBUTES = frozenset({
+    "call", "check_call", "check_output", "connect", "execv", "execve", "open", "popen", "remove",
+    "rename", "replace", "rmdir", "rmtree", "run", "spawn", "system", "unlink", "urlopen", "write_bytes", "write_text",
+})
+
+
+def execution_policy_violations(code: str) -> tuple[str, ...]:
+    """Return conservative AST policy violations without executing source."""
+
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        return (f"invalid Python syntax at line {exc.lineno or 0}",)
+    violations: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in _BLOCKED_IMPORTS:
+                    violations.add(f"blocked import '{root}'")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".", 1)[0]
+            if root in _BLOCKED_IMPORTS or node.level:
+                violations.add(f"blocked import '{node.module or 'relative'}'")
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _BLOCKED_CALLS:
+                violations.add(f"blocked call '{node.func.id}'")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in _BLOCKED_ATTRIBUTES:
+                violations.add(f"blocked call '*.{node.func.attr}'")
+        elif isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            violations.add(f"blocked attribute '{node.attr}'")
+    return tuple(sorted(violations))
 
 
 def _traceback_summary(traceback: str) -> str:

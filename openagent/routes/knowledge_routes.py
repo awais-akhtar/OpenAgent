@@ -18,6 +18,7 @@ ROUTES = (
     ("POST", "/api/knowledge/synthesize"),
     ("POST", "/api/knowledge/compress"),
     ("POST", "/api/knowledge/replay"),
+    ("POST", "/api/embeddings"),
 )
 
 

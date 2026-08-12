@@ -17,6 +17,9 @@ ROUTES = (
     ("GET", "/api/developer/extensions"),
     ("GET", "/api/developer/sdk"),
     ("GET", "/api/developer/api-keys"),
+    ("POST", "/api/developer/api-keys/verify"),
+    ("POST", "/api/developer/tools/invoke"),
+    ("POST", "/api/developer/webhooks/dispatch"),
     ("POST", "/api/graphql"),
     ("POST", "/api/developer/graphql"),
 )

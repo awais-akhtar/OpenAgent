@@ -442,10 +442,13 @@ class OpenAgentStore:
         with self.session() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM chat_messages
-                WHERE conversation_id = ?
-                ORDER BY created_at ASC
-                LIMIT ?
+                SELECT * FROM (
+                    SELECT chat_messages.*, rowid AS _rowid FROM chat_messages
+                    WHERE conversation_id = ?
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                ) recent
+                ORDER BY created_at ASC, _rowid ASC
                 """,
                 (conversation_id, limit),
             ).fetchall()

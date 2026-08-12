@@ -18,6 +18,11 @@ and styled DOCX/PDF/Markdown/ZIP exports. See
 ## Implemented
 
 - Local HTTP API
+- CodeQ IDE directly below Chat with a native folder chooser, protected copied local and Docker workspaces, closable multi-file tabs, terminal and Git panels, and a versioned adapter for a separately configured hosted worker
+- Durable software-engineering runs, structured task graphs, tool calls, file changes, validation evidence, approvals, snapshots, events, and project memory
+- Repository maps with languages, frameworks, database hints, entry points, commands, dependencies, configuration, tests, database models, symbols, imports, dependency and Python call graphs, routes, Git state, search, and bounded context selection
+- Permission-aware filesystem, terminal, managed-process, Git, test, build, lint, typecheck, and Playwright browser-inspection tools with explicit risk levels
+- Error-to-repair iterations, role-specific model routing, structured agent handoffs, independent diff review, explicit completion criteria, cancellation, interruption recovery, run history, and resume support
 - SQLite storage
 - Context events
 - Context search and snapshots

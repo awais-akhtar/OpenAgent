@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import tomllib
 import unittest
+from unittest.mock import patch
 
 from openagent.desktop import (
     desktop_feature_manifest,
@@ -24,6 +25,8 @@ from openagent.workbench import (
     configure_managed_accelerator,
     configure_managed_openvino_model,
     installation_source_root,
+    launch_workbench,
+    project_venv_python,
     ui_build_token,
     workbench_status,
 )
@@ -47,6 +50,16 @@ class DesktopTests(unittest.TestCase):
                 first.release()
             self.assertTrue(second.acquire())
             second.release()
+
+    def test_desktop_opens_existing_headless_runtime(self) -> None:
+        with TemporaryDirectory() as tmp, \
+             patch("openagent.workbench.WorkbenchInstanceLock.acquire", return_value=False), \
+             patch("openagent.workbench._running_instance_url", return_value="http://127.0.0.1:8765/"), \
+             patch("openagent.workbench.focus_openagent_window", return_value=False), \
+             patch("openagent.workbench.open_app_window") as open_window:
+            self.assertEqual(launch_workbench(tmp, open_window=True), 0)
+            open_window.assert_called_once()
+            self.assertEqual(open_window.call_args.args[0], "http://127.0.0.1:8765/")
 
     def test_managed_openvino_configuration_requires_complete_local_model(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -93,6 +106,23 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(installation_source_root(), source.resolve())
                 self.assertEqual(configure_managed_accelerator(), str(accelerator.resolve()))
                 self.assertEqual(configure_managed_openvino_model(Path(tmp) / "data"), str(model.resolve()))
+
+    def test_installed_runtime_uses_manifest_source_venv_for_development(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as tmp:
+            local_app_data = Path(tmp) / "local"
+            source = Path(tmp) / "source"
+            (source / "openagent").mkdir(parents=True)
+            interpreter = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"local-python")
+            manifest = local_app_data / "OpenAgent" / "install-manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"source": str(source)}), encoding="utf-8")
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data), "OPENAGENT_SOURCE_ROOT": ""}, clear=False):
+                self.assertEqual(project_venv_python(), interpreter.resolve())
 
     def test_desktop_status_is_native_and_local(self) -> None:
         with TemporaryDirectory() as tmp:

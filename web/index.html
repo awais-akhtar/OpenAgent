@@ -8,9 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260715-stable-runtime-5">
+  <link rel="manifest" href="/manifest.json?v=20260812-codeq-chat-5">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260715-stable-runtime-5">
+  <link rel="stylesheet" href="/styles.css?v=20260812-codeq-chat-5">
   <script>
     // Apply saved theme immediately to prevent flash
     (function() {
@@ -45,14 +45,10 @@
       <button class="nav-group-label nav-group-toggle" data-nav-group="core" aria-expanded="true">Core</button>
       <button class="nav-link active" data-view-link="dashboard"><span class="nav-icon">🏠</span><span>Dashboard</span></button>
       <button class="nav-link" data-view-link="chat"><span class="nav-icon">💬</span><span>Chat</span></button>
-      <button class="nav-link" data-view-link="voice"><span class="nav-icon">🎙</span><span>Voice</span></button>
-      <button class="nav-link" data-view-link="research"><span class="nav-icon">🔍</span><span>Research</span></button>
-      <button class="nav-link" data-view-link="phd"><span class="nav-icon">🎓</span><span>PhD Studio</span></button>
+      <button class="nav-link" data-view-link="codebase"><span class="nav-icon">⌘</span><span>CodeQ</span></button>
       <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="intelligence" aria-expanded="false">Intelligence</button>
-      <button class="nav-link nav-group-hidden" data-view-link="intelligence"><span class="nav-icon">✨</span><span>Overview</span></button>
       <button class="nav-link nav-group-hidden" data-view-link="agents"><span class="nav-icon">🤖</span><span>Agents</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="knowledge"><span class="nav-icon">📚</span><span>Knowledge</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="workspace"><span class="nav-icon">🗂</span><span>Workspace</span></button>
+      <button class="nav-link nav-group-hidden" data-view-link="workspace"><span class="nav-icon">🗂</span><span>Documents</span></button>
       <button class="nav-link nav-group-hidden" data-view-link="automation"><span class="nav-icon">⚡</span><span>Automation</span></button>
       <button class="nav-group-label nav-group-toggle nav-science-toggle collapsed" data-nav-group="science" aria-expanded="false"><span class="nav-icon">🔬</span>Scientific AI</button>
       <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="agents"><span class="nav-icon">🧪</span><span>Scientific Agents</span></button>
@@ -100,219 +96,239 @@
 
   <!-- ===== MAIN ===== -->
   <main class="app-main">
-    <header class="topbar">
-      <div>
-        <h2 id="screenTitle">Dashboard</h2>
-      </div>
-    </header>
+    <h2 id="screenTitle" class="sr-only">Dashboard</h2>
 
     <!-- ===== DASHBOARD ===== -->
     <section class="view active" id="view-dashboard" data-view-panel="dashboard" aria-label="Dashboard">
-      <div class="technical-hero">
-        <div>
-          <p class="eyebrow">Local runtime</p>
-          <h3>Machine, model, and audit telemetry</h3>
-          <p id="dashboardRuntimeSummary">Reading local system status...</p>
-          <div class="hero-actions">
-            <button class="btn btn-primary" data-view-jump="chat">💬 Start Chat</button>
-            <button class="btn btn-soft" data-view-jump="research">🔍 Deep Research</button>
-            <button class="btn btn-outline" data-view-jump="developer">⚙️ Model Tools</button>
-          </div>
+      <div class="analytics-console">
+        <div class="analytics-live-line"><span><i></i> Live telemetry</span><time id="dashboardLastUpdated">Connecting</time></div>
+        <div id="metricGrid" class="gauge-grid" aria-label="Current CPU, memory, disk, and AI engine load"></div>
+        <div class="analytics-grid">
+          <article class="analytics-panel analytics-panel-wide">
+            <header><div><span>System pressure</span><strong>Live resource history</strong></div><span id="dashboardPressureBadge" class="badge">Measuring</span></header>
+            <div id="dashboardResourceChart" class="telemetry-chart" role="img" aria-label="CPU and memory usage history"></div>
+            <div class="chart-legend" aria-hidden="true"><span><i class="legend-cpu"></i>CPU</span><span><i class="legend-memory"></i>Memory</span></div>
+            <div id="dashboardResourcePressure" class="pressure-grid" aria-label="Current resource pressure"></div>
+          </article>
+          <article class="analytics-panel">
+            <header><div><span>Inference engine</span><strong>Latency and throughput</strong></div><span id="dashboardInferenceBadge" class="badge">Measuring</span></header>
+            <div id="dashboardInferenceChart" class="telemetry-chart" role="img" aria-label="Measured model response latency and request throughput"></div>
+            <div id="dashboardInferenceStats" class="telemetry-stat-row"></div>
+          </article>
         </div>
-        <div class="runtime-status-card">
-          <span class="badge badge-success">Local only</span>
-          <strong id="dashboardModelSummary">Checking model providers...</strong>
-          <p id="privacyBoundary">Local server, local database, explicit external approvals.</p>
-        </div>
-      </div>
-
-      <div class="metric-grid" id="metricGrid" aria-label="System metrics"></div>
-
-      <div class="dashboard-grid">
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Runtime</p><h3>Local system details</h3></div>
-            <span class="badge badge-success">Live</span>
-          </div>
-          <div class="system-grid" id="dashboardSystemGrid"></div>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Models</p><h3>Local model inventory</h3></div>
-            <button class="btn btn-mini btn-soft" data-view-jump="developer">Manage</button>
-          </div>
-          <div id="dashboardModelGrid" class="stack-list"></div>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Modules</p><h3>Runnable health matrix</h3></div>
-            <span class="badge" id="dashboardModuleHealthBadge">Checking</span>
-          </div>
-          <div id="dashboardModuleHealth" class="stack-list"></div>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Audit</p><h3>Recent actions</h3></div>
-            <button class="btn btn-mini btn-soft" data-view-jump="security">Open</button>
-          </div>
-          <div id="auditEvents" class="stack-list"></div>
-        </article>
       </div>
     </section>
 
     <!-- ===== CHAT ===== -->
     <section class="view" id="view-chat" data-view-panel="chat" aria-label="Chat">
-      <div class="split-layout chat-layout">
-        <article class="card" style="display:flex;flex-direction:column;gap:0">
-          <div class="card-header">
-            <div><p class="eyebrow">Conversation</p><h3>Local chat workspace</h3></div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <select id="providerSelect" aria-label="Model provider" style="width:auto"></select>
-              <button id="streamToggle" class="btn btn-mini btn-soft" title="Toggle streaming">⚡ Stream</button>
-            </div>
-          </div>
-          <div id="providerWarning" class="notice" role="status"></div>
-          <div id="chatModelReadiness" class="mini-status" style="margin-bottom:10px"></div>
-          <div class="switch-row">
-            <label class="toggle" aria-label="Allow external provider">
-              <input id="allowExternal" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-            <span>Allow external provider for this message</span>
-          </div>
+      <div id="chatConversationWorkspace" class="chat-shell">
+        <aside class="chat-history-rail" aria-label="Conversation history">
+          <button id="newConversationButton" class="new-chat-button" type="button"><span>New chat</span><kbd>Ctrl N</kbd></button>
+          <div id="conversationList" class="conversation-scroll"></div>
+          <button id="showArchivedConversations" class="archived-conversations" type="button" aria-pressed="false"><span>Archived</span><span aria-hidden="true">›</span></button>
+        </aside>
+        <article class="chat-stage">
           <div id="chatLog" class="chat-log" role="log" aria-live="polite" aria-label="Chat messages"></div>
-          <div class="composer">
-            <textarea id="chatInput" rows="3" placeholder="Ask OpenAgent to reason, remember, plan, or inspect local context…" aria-label="Chat input"></textarea>
-            <div class="composer-actions">
-              <button id="sendChat" class="btn btn-primary">Send</button>
-              <button id="stopChat" class="btn btn-danger" disabled>Stop</button>
-              <button id="chatVoiceBtn" class="btn btn-soft" title="Push to talk">🎙</button>
-            </div>
+          <section id="chatVoiceMode" class="chat-voice-mode" hidden aria-live="polite">
+            <div id="chatVoiceOrb" class="chat-voice-orb"><i></i><i></i><i></i><i></i></div>
+            <strong id="chatVoiceState">Listening</strong>
+            <p id="chatVoiceLiveText">Speak naturally. OpenAgent will answer aloud and keep this conversation in history.</p>
+            <button id="endChatVoiceMode" type="button">End voice conversation</button>
+          </section>
+          <div class="chat-composer-dock">
+            <div id="chatAttachmentTray" class="chat-attachment-tray" hidden></div>
+            <button id="chatAttachButton" class="composer-attach" type="button" aria-label="Attach files" title="Attach documents or images">＋</button>
+            <input id="chatAttachmentInput" type="file" multiple hidden accept=".txt,.md,.csv,.json,.pdf,.docx,.odt,.rtf,.html,.htm,image/*">
+            <textarea id="chatInput" rows="1" placeholder="Message OpenAgent or ask it to research, create a file, or use your knowledge…" aria-label="Chat input"></textarea>
+            <button id="chatVoiceButton" class="composer-voice" type="button" aria-label="Start voice conversation" title="Start voice conversation">🎙</button>
+            <span class="composer-button-stack">
+              <button id="sendChat" class="composer-submit" aria-label="Send message" title="Send message">↑</button>
+              <button id="stopChat" class="composer-stop" aria-label="Stop response" title="Stop response" disabled>■</button>
+            </span>
           </div>
         </article>
+        <div class="compat-controls" hidden>
+          <select id="providerSelect" aria-label="Model provider"></select><button id="streamToggle" type="button">Stream</button>
+          <div id="providerWarning"></div><div id="chatModelReadiness"></div><input id="allowExternal" type="checkbox">
+          <button id="testChatModel" type="button">Test</button><button id="compactConversation" type="button">Compact</button><button id="showConversationBranches" type="button">Branches</button>
+          <select id="conversationSort"><option value="pinned">Pinned</option><option value="recent">Recent</option><option value="oldest">Oldest</option><option value="semantic">Semantic</option></select>
+          <select id="conversationBulkAction"><option value="archive">Archive</option><option value="delete">Delete</option></select><button id="runConversationBulk" type="button">Apply</button>
+        </div>
+      </div>
+      <div id="conversationActionMenu" class="conversation-action-popover" hidden></div>
 
-        <aside class="card side-panel">
-          <p class="eyebrow">Tools</p>
-          <button class="quick-action" data-command="search-memory">Search memory</button>
-          <button class="quick-action" data-command="export-chat">Export conversation</button>
-          <button class="quick-action" id="testChatModel">Test local model</button>
-          <button class="quick-action" data-view-jump="knowledge">Open knowledge</button>
-          <button class="quick-action" data-view-jump="voice">Voice chat</button>
-          <div class="mini-divider"></div>
-          <div class="conversation-heading"><h4>Conversations</h4><button id="compactConversation" class="icon-button" title="Compact selected conversation" aria-label="Compact selected conversation">C</button><button id="showConversationBranches" class="icon-button" title="Show branch graph" aria-label="Show branch graph">B</button></div>
-          <div class="conversation-filters">
-            <select id="conversationSort" aria-label="Conversation sorting"><option value="pinned">Pinned first</option><option value="recent">Recent</option><option value="oldest">Oldest</option><option value="semantic">Semantic</option></select>
-            <label class="conversation-archive-toggle"><input id="showArchivedConversations" type="checkbox"> Archived</label>
+    </section>
+
+    <!-- ===== CODEBASE ===== -->
+    <section class="view" id="view-codebase" data-view-panel="codebase" aria-label="CodeQ">
+      <div id="codebaseWorkspace" class="codebase-workspace">
+        <header class="codebase-commandbar">
+          <div class="codebase-window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div class="codebase-title-lockup"><strong>CodeQ</strong><span id="codebaseBoundary">Protected local workspace</span></div>
+          <div class="codebase-command-actions">
+            <select id="codebaseProjectSelect" aria-label="CodeQ project"><option value="">Open a repository</option></select>
+            <button id="refreshCodebase" class="codebase-title-button" title="Refresh workspace" aria-label="Refresh workspace">↻</button>
+            <button id="newCodebaseProject" class="codebase-title-button codebase-open-button">Open folder</button>
           </div>
-          <div class="conversation-bulk">
-            <select id="conversationBulkAction" aria-label="Bulk conversation action"><option value="archive">Archive</option><option value="unarchive">Unarchive</option><option value="pin">Pin</option><option value="unpin">Unpin</option><option value="delete">Delete</option></select>
-            <button id="runConversationBulk" class="btn btn-mini btn-soft">Apply</button>
+        </header>
+
+        <section id="codebaseOpenPanel" class="codebase-open-panel">
+          <div class="codebase-welcome-mark" aria-hidden="true">&lt;/&gt;</div>
+          <div class="codebase-welcome-copy"><h3>Start coding with an agent</h3><p>Open a local repository in an isolated workspace. Your source folder stays untouched.</p></div>
+          <div class="codebase-open-fields">
+            <label><span>Repository path</span><span class="codebase-folder-field"><input id="codebaseSourcePath" placeholder="Choose a local project" autocomplete="off" readonly><button id="codebaseFolderPicker" type="button">Browse…</button></span></label>
+            <label><span>Workspace name</span><input id="codebaseProjectName" placeholder="My application"></label>
+            <label><span>Execution boundary</span><select id="codebaseBackend"><option value="local">Local copied workspace</option><option value="docker">Docker · network disabled</option><option value="hosted">Configured hosted adapter</option></select></label>
+            <button id="createCodebaseProject" class="btn btn-primary">Open workspace</button>
           </div>
-          <div id="conversationList" class="stack-list"></div>
-        </aside>
+          <div class="codebase-welcome-shortcuts"><span><kbd>Ctrl</kbd> <kbd>P</kbd> Quick open</span><span><kbd>Ctrl</kbd> <kbd>S</kbd> Save file</span><span><kbd>Ctrl</kbd> <kbd>`</kbd> Terminal</span></div>
+        </section>
+
+        <div id="codebaseIde" class="codebase-ide" hidden>
+          <aside class="codebase-files" aria-label="Repository files">
+            <div class="codebase-pane-head"><span>Explorer</span><button id="scanCodebase" class="icon-button" title="Rescan repository" aria-label="Rescan repository">↻</button></div>
+            <div id="codebaseMapSummary" class="codebase-map-summary"></div>
+            <div id="codebaseFileTree" class="codebase-file-tree"></div>
+          </aside>
+
+          <main class="codebase-editor">
+            <div class="codebase-editor-tabs">
+              <div id="codebaseOpenTabs" class="codebase-open-tabs" role="tablist"></div>
+              <span id="codebaseEditorTab" hidden>Welcome</span>
+              <button id="saveCodebaseFile" class="codebase-editor-save" title="Save file" aria-label="Save file" disabled>Save</button>
+            </div>
+            <div class="codebase-breadcrumb"><span id="codebaseEditorPath">No file open</span></div>
+            <div class="codebase-editor-surface">
+              <pre id="codebaseLineNumbers" class="codebase-line-numbers" aria-hidden="true">1</pre>
+              <textarea id="codebaseEditor" spellcheck="false" aria-label="Code editor" placeholder="Select a text file from Explorer"></textarea>
+            </div>
+          </main>
+
+          <aside class="codebase-agent-panel" aria-label="CodeQ Copilot">
+            <div class="codebase-pane-head"><span>CodeQ Copilot</span><span id="codebaseRunStatus" class="badge">Ready</span></div>
+            <div id="codebaseRepositoryState" class="codebase-repository-state">Open a project, then describe what you want to build or repair.</div>
+            <div id="codebaseCopilotFeed" class="codebase-copilot-feed"><div class="copilot-welcome"><strong>Work with your repository</strong><p>Ask CodeQ to inspect, edit, test, debug, or review this project. It chooses specialist agents only when the task benefits from them.</p></div></div>
+            <div class="codebase-copilot-composer">
+            <textarea id="codebaseGoal" rows="4" placeholder="Ask CodeQ to build, fix, explain, or review…"></textarea>
+            <div class="codebase-run-buttons">
+              <button id="startCodebaseRun" class="btn btn-primary">Send</button>
+              <button id="cancelCodebaseRun" class="btn btn-danger" disabled>Stop</button>
+            </div></div>
+            <details class="codebase-configuration codebase-more-options"><summary>Run settings and history</summary>
+            <div class="codebase-history-row">
+              <select id="codebaseRunSelect" aria-label="Previous autonomous run"><option value="">No previous runs</option></select>
+              <button id="resumeCodebaseRun" class="btn btn-mini btn-soft" disabled>Resume</button>
+            </div>
+            <div class="codebase-run-options">
+              <label><span>Provider</span><select id="codebaseProvider"><option value="auto">Auto route</option><option value="ollama">Ollama</option><option value="llamacpp">llama.cpp</option><option value="openvino-direct">OpenVINO</option><option value="openai-compatible">OpenAI compatible</option></select></label>
+              <label><span>Iterations</span><input id="codebaseIterations" type="number" min="1" max="30" value="8"></label>
+            </div>
+            <div class="codebase-configuration-inner">
+              <summary>Model routing and completion gates</summary>
+              <div class="codebase-role-models">
+                <label><span>Architecture model</span><input id="codebaseArchitectureModel" placeholder="Auto"></label>
+                <label><span>Coding model</span><input id="codebaseCodingModel" placeholder="Auto"></label>
+                <label><span>Review model</span><input id="codebaseReviewModel" placeholder="Auto"></label>
+              </div>
+              <div id="codebaseCompletionCriteria" class="codebase-completion-criteria">
+                <label><input type="checkbox" data-codebase-gate="lint"><span>Lint</span><input data-codebase-command="lint" placeholder="Auto-detect"></label>
+                <label><input type="checkbox" data-codebase-gate="typecheck"><span>Typecheck</span><input data-codebase-command="typecheck" placeholder="Auto-detect"></label>
+                <label><input type="checkbox" data-codebase-gate="test" checked><span>Tests</span><input data-codebase-command="test" placeholder="Auto-detect"></label>
+                <label><input type="checkbox" data-codebase-gate="build"><span>Build</span><input data-codebase-command="build" placeholder="Auto-detect"></label>
+                <label><input type="checkbox" data-codebase-gate="browser"><span>Browser</span><input data-codebase-command="browser" placeholder="npm run test:e2e"></label>
+                <label><input type="checkbox" data-codebase-gate="runtime"><span>Runtime</span><input data-codebase-command="runtime" placeholder="Auto-detect"></label>
+              </div>
+            </div>
+            <label class="toggle-row"><input id="codebaseAllowExternal" type="checkbox"><span><strong>Allow external model</strong><small>Repository context may leave this machine when selected.</small></span></label>
+            </details>
+            <div class="codebase-tabs" role="tablist">
+              <button class="codebase-detail-tab active" data-codebase-detail="tasks">Tasks</button>
+              <button class="codebase-detail-tab" data-codebase-detail="events">Activity</button>
+              <button class="codebase-detail-tab" data-codebase-detail="review">Evidence</button>
+            </div>
+            <div id="codebaseTaskGraph" class="codebase-detail-panel"></div>
+            <div id="codebaseEventStream" class="codebase-detail-panel" hidden></div>
+            <div id="codebaseEvidence" class="codebase-detail-panel" hidden></div>
+            <div id="codebaseApprovals" class="codebase-approvals"></div>
+            <div class="codebase-snapshot-row"><select id="codebaseSnapshotSelect" aria-label="Run snapshot"><option value="">No snapshots</option></select><button id="restoreCodebaseSnapshot" class="btn btn-mini btn-soft" disabled>Restore</button></div>
+          </aside>
+
+          <section class="codebase-terminal" aria-label="Terminal and Git output">
+            <div class="codebase-terminal-head">
+              <div class="codebase-terminal-tabs"><button class="active" data-codebase-output="terminal">Terminal</button><button data-codebase-output="git">Git diff</button></div>
+              <div><button id="runCodebaseTests" class="btn btn-mini btn-soft">Run tests</button><button id="loadCodebaseStatus" class="btn btn-mini btn-soft">Git status</button><button id="loadCodebaseDiff" class="btn btn-mini btn-soft">Git diff</button></div>
+            </div>
+            <div class="codebase-terminal-command"><input id="codebaseCommand" placeholder="Run a workspace command, for example npm test"><button id="runCodebaseCommand" class="btn btn-mini btn-primary">Run</button><input id="codebaseBrowserUrl" value="http://127.0.0.1:3000" aria-label="Local application URL"><button id="inspectCodebaseBrowser" class="btn btn-mini btn-soft">Inspect app</button></div>
+            <pre id="codebaseTerminalOutput" class="codebase-terminal-output" aria-live="polite">Open a repository to begin.</pre>
+            <pre id="codebaseGitOutput" class="codebase-terminal-output" hidden></pre>
+          </section>
+
+          <footer class="codebase-statusbar" aria-label="CodeQ status">
+            <span id="codebaseBranchStatus">⑂ no repository</span>
+            <span id="codebaseSandboxStatus">Local boundary</span>
+            <span class="codebase-status-spacer"></span>
+            <span id="codebaseCursorStatus">Ln 1, Col 1</span>
+            <span>UTF-8</span>
+            <span id="codebaseLanguageStatus">Plain Text</span>
+            <span>OpenAgent</span>
+          </footer>
+        </div>
       </div>
     </section>
 
     <!-- ===== VOICE ===== -->
     <section class="view" id="view-voice" data-view-panel="voice" aria-label="Voice">
-      <div class="voice-panel">
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Voice</p><h3>Push to talk</h3></div><span class="badge" id="voiceModeBadge">Ready</span></div>
-          <div class="voice-settings">
-            <label>
-              <span>STT engine</span>
-              <select id="voiceEngineSelect" aria-label="Speech-to-text engine">
-                <option value="">Best high-quality local engine</option>
-              </select>
-            </label>
-            <label class="switch-row voice-fallback-toggle">
-              <input id="allowFallbackStt" type="checkbox">
-              <span>Allow lower-accuracy Windows fallback</span>
-            </label>
+      <div class="voice-shell">
+        <div class="voice-command-strip">
+          <select id="voiceEngineSelect" aria-label="Speech-to-text engine"><option value="">Automatic local engine</option></select>
+          <button id="createVoiceSession" class="icon-button" type="button" title="New voice session" aria-label="New voice session">＋</button>
+        </div>
+        <div class="voice-capture-stage">
+          <div id="voiceWaveform" class="voice-meter voice-spectrum" aria-label="Microphone level">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
           </div>
-          <div class="voice-center">
-            <button id="voiceRecordBtn" class="voice-record-btn" aria-label="Start recording" aria-pressed="false">🎙</button>
-            <div class="voice-status" id="voiceStatus" role="status">Press and hold to record, or click to toggle</div>
-            <div id="voiceWaveform" class="voice-meter" aria-label="Microphone level">
-              <span></span><span></span><span></span><span></span><span></span>
-            </div>
-          </div>
-          <div id="voiceConfidence" class="mini-status" style="margin-bottom:10px">Transcript confidence will appear after recording.</div>
+          <button id="voiceRecordBtn" class="voice-record-btn" aria-label="Start recording" aria-pressed="false"><span aria-hidden="true"></span></button>
+          <div class="voice-status" id="voiceStatus" role="status">Tap to speak</div>
+          <span id="voiceModeBadge" class="sr-only">Ready</span>
+        </div>
+        <div class="voice-transcript-stage">
           <div class="voice-transcript" id="voiceTranscript" aria-live="polite" contenteditable="true" role="textbox" aria-label="Editable transcript">Transcript will appear here…</div>
-          <div class="toolbar" style="margin-top:12px">
-            <button id="sendTranscript" class="btn btn-primary">Send to Chat</button>
-            <button id="clearTranscript" class="btn btn-soft">Clear</button>
+          <div class="voice-transcript-footer">
+            <span id="voiceConfidence">Waiting for speech</span>
+            <div><button id="clearTranscript" class="btn btn-soft">Clear</button><button id="sendTranscript" class="btn btn-primary">Continue in chat</button></div>
           </div>
-          <div id="sttEngineStatus" class="mini-status" style="margin-top:12px">Checking local STT engines...</div>
-        </article>
-
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Voice sessions</p><h3>History</h3></div></div>
-          <div class="toolbar">
-            <button id="createVoiceSession" class="btn btn-soft">New Session</button>
-            <button id="loadVoiceStatus" class="btn btn-outline">Status</button>
-            <button id="setupVoskFromVoice" class="btn btn-outline">Setup Vosk</button>
-          </div>
-          <div id="voiceOutput" class="voice-dashboard" aria-live="polite">
-            <div class="empty-state">Voice runtime status will appear here.</div>
-          </div>
-        </article>
-
+        </div>
+        <div class="compat-controls" hidden>
+          <input id="allowFallbackStt" type="checkbox"><div id="sttEngineStatus"></div>
+          <button id="loadVoiceStatus" type="button">Status</button><button id="setupVoskFromVoice" type="button">Setup</button><div id="voiceOutput"></div>
+        </div>
       </div>
     </section>
 
     <!-- ===== RESEARCH ===== -->
     <section class="view" id="view-research" data-view-panel="research" aria-label="Research">
-      <div class="workbench-grid">
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Deep Research</p><h3>AI research engine</h3></div><span class="badge" id="researchStatusBadge">Idle</span></div>
-          <input id="researchQuery" placeholder="What do you want to research deeply?" style="margin-bottom:10px">
-          <div class="research-options">
-            <label>
-              <span>Depth</span>
-              <select id="researchDepth">
-                <option value="2">Fast local pass</option>
-                <option value="3" selected>Balanced deep research</option>
-              </select>
-            </label>
-            <label class="switch-row">
-              <input id="researchAllowExternal" type="checkbox">
-              <span>Allow external research only for this run</span>
-            </label>
-          </div>
-          <div class="toolbar">
-            <button id="startResearch" class="btn btn-primary">Start Research</button>
-            <button id="cancelResearch" class="btn btn-soft" disabled>Cancel</button>
-            <button id="researchToChat" class="btn btn-outline" disabled>Send Report to Chat</button>
-          </div>
-          <div id="researchProgress" style="display:none">
-            <div class="research-step" id="rStep1"><span>🔍</span> <span>Planning research strategy</span></div>
-            <div class="research-step" id="rStep2"><span>🌐</span> <span>Collecting sources</span></div>
-            <div class="research-step" id="rStep3"><span>🧠</span> <span>Analyzing and synthesizing</span></div>
-            <div class="research-step" id="rStep4"><span>✅</span> <span>Compiling final report</span></div>
-          </div>
+      <div class="research-shell">
+        <span id="researchStatusBadge" class="sr-only">Idle</span>
+        <ol id="researchProgress" class="research-stepper" aria-label="Research progress" style="display:none">
+          <li class="research-step" id="rStep1"><span>1</span><div><strong>Plan</strong><small>Define questions and search strategy</small></div></li>
+          <li class="research-step" id="rStep2"><span>2</span><div><strong>Collect</strong><small>Search papers, web, code, and datasets</small></div></li>
+          <li class="research-step" id="rStep3"><span>3</span><div><strong>Verify</strong><small>Compare sources and resolve conflicts</small></div></li>
+          <li class="research-step" id="rStep4"><span>4</span><div><strong>Write</strong><small>Build the cited report</small></div></li>
+        </ol>
+        <div id="researchSources" class="research-source-strip"></div>
+        <article id="researchOutput" class="research-report-stream" aria-live="polite">
+          <div class="research-welcome"><strong>What should I investigate?</strong><p>Ask a question. Research can combine local knowledge with approved papers, web pages, repositories, and datasets.</p></div>
         </article>
-
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Research output</p><h3>Findings</h3></div></div>
-          <div id="researchSources" style="margin-bottom:12px"></div>
-          <div id="researchOutput" class="research-report tall">
-            <div class="empty-state">Research findings will appear here.</div>
+        <div class="research-composer">
+          <textarea id="researchQuery" rows="1" placeholder="Research a topic deeply…" aria-label="Research question"></textarea>
+          <div class="research-composer-options">
+            <select id="researchDepth" aria-label="Research depth"><option value="2">Fast</option><option value="3" selected>Deep</option></select>
+            <label><input id="researchAllowExternal" type="checkbox"><span>Web</span></label>
+            <button id="researchToChat" class="research-secondary-action" disabled title="Continue report in chat">↗</button>
+            <span class="research-run-stack"><button id="startResearch" class="composer-submit" aria-label="Start research">↑</button><button id="cancelResearch" class="composer-stop" aria-label="Cancel research" disabled>■</button></span>
           </div>
-        </article>
-
-        <article class="card research-library-card">
-          <div class="card-header">
-            <div><p class="eyebrow">Durable library</p><h3>Research sessions</h3></div>
-            <button id="refreshResearchLibrary" class="btn btn-soft">Refresh</button>
-          </div>
-          <div id="researchLibrary" class="stack-list">
-            <div class="empty-state">No research sessions yet.</div>
-          </div>
-        </article>
+        </div>
+        <details class="research-library-drawer"><summary>Previous research</summary><button id="refreshResearchLibrary" class="btn btn-soft">Refresh</button><div id="researchLibrary" class="stack-list"></div></details>
       </div>
     </section>
 
@@ -521,157 +537,61 @@
       </div>
     </section>
 
-    <!-- ===== INTELLIGENCE OVERVIEW ===== -->
-    <section class="view" id="view-intelligence" data-view-panel="intelligence" aria-label="Intelligence overview">
-      <div class="technical-hero">
-        <div>
-          <p class="eyebrow">Intelligence layer</p>
-          <h3>Agents, memory, knowledge, workspace, and automation</h3>
-          <p id="intelligenceSummary">Checking local intelligence modules...</p>
-          <div class="hero-actions">
-            <button class="btn btn-primary" data-view-jump="agents">Run Agent</button>
-            <button class="btn btn-soft" data-view-jump="knowledge">Search Knowledge</button>
-            <button class="btn btn-outline" data-view-jump="automation">Open Workflows</button>
-          </div>
-        </div>
-        <div class="runtime-status-card">
-          <span class="badge badge-success">Local memory</span>
-          <strong id="intelligenceReadiness">Reading module health...</strong>
-          <p>Every action is recorded through the local audit trail.</p>
-        </div>
-      </div>
-      <div class="intelligence-grid" id="intelligenceGrid"></div>
-    </section>
-
     <!-- ===== AGENTS ===== -->
     <section class="view" id="view-agents" data-view-panel="agents" aria-label="Agents">
-      <div class="workbench-grid">
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Agent run</p><h3>Delegate a local goal</h3></div>
-            <select id="agentSelect" aria-label="Select agent" style="width:auto"></select>
-          </div>
-          <textarea id="goalInput" rows="5" placeholder="Plan the next milestone for OpenAgent…"></textarea>
-          <div class="toolbar">
-            <button id="runAgent" class="btn btn-primary">Run Agent</button>
-            <button id="runCheckedAgent" class="btn btn-soft">Run Checked</button>
-            <button id="runParallelAgents" class="btn btn-outline">Parallel</button>
-          </div>
-          <pre id="agentOutput" class="output tall">Agent output will appear here.</pre>
-        </article>
-
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Built-in agents</p><h3>Specialists</h3></div></div>
-          <div id="agentGrid" class="agent-grid"></div>
+      <div class="agent-console">
+        <aside class="agent-roster">
+          <div class="agent-roster-head"><strong>Roles</strong><button id="newAgentRole" class="icon-button" title="Create role" aria-label="Create role">＋</button></div>
+          <div id="agentGrid" class="agent-role-list"></div>
+        </aside>
+        <article class="agent-run-stage">
+          <div class="agent-command-row"><select id="agentSelect" aria-label="Select agent"></select><button id="editAgentRole" class="btn btn-soft" type="button">Edit role</button></div>
+          <textarea id="goalInput" rows="5" placeholder="Give this agent a goal…"></textarea>
+          <div class="toolbar"><button id="runAgent" class="btn btn-primary">Run</button><button id="runCheckedAgent" class="btn btn-soft">Run with review</button><button id="runParallelAgents" class="btn btn-outline">Delegate in parallel</button></div>
+          <div id="agentOutput" class="agent-output-stage" aria-live="polite"></div>
         </article>
       </div>
+      <dialog id="agentRoleDialog" class="role-dialog">
+        <form method="dialog">
+          <header><strong id="agentRoleDialogTitle">Create role</strong><button id="closeAgentRole" class="icon-button" value="cancel" aria-label="Close">×</button></header>
+          <label><span>Name</span><input id="agentRoleName" required placeholder="Release reviewer"></label>
+          <label><span>Base capability</span><select id="agentRoleBase"></select></label>
+          <label><span>Role instructions</span><textarea id="agentRoleInstructions" rows="8" required placeholder="Describe this role's responsibility, boundaries, and completion criteria."></textarea></label>
+          <footer><button id="deleteAgentRole" class="btn btn-danger" type="button" hidden>Delete</button><span></span><button id="cancelAgentRole" class="btn btn-soft" value="cancel">Cancel</button><button id="saveAgentRole" class="btn btn-primary" type="button">Save role</button></footer>
+        </form>
+      </dialog>
     </section>
 
     <!-- ===== WORKSPACE ===== -->
     <section class="view" id="view-workspace" data-view-panel="workspace" aria-label="Workspace">
-      <div class="workbench-grid">
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Workspace</p><h3>Create an item</h3></div>
-            <select id="workspaceKind" aria-label="Workspace item kind" style="width:auto">
+      <div class="document-workspace">
+        <aside class="document-library">
+          <div class="document-library-head"><strong>Documents</strong><input id="workspaceSearch" placeholder="Search"></div>
+          <div id="workspaceItems" class="document-list"></div>
+        </aside>
+        <article class="document-editor">
+          <div class="document-editor-bar">
+            <input id="workspaceTitle" placeholder="Untitled document">
+            <select id="workspaceKind" aria-label="Document type">
               <option value="document">Document</option>
               <option value="note">Note</option>
               <option value="wiki_page">Wiki page</option>
-              <option value="dashboard">Dashboard</option>
-              <option value="research_canvas">Research canvas</option>
-              <option value="whiteboard">Whiteboard</option>
-              <option value="mind_map">Mind map</option>
               <option value="template">Template</option>
               <option value="folder">Folder</option>
             </select>
           </div>
-          <input id="workspaceTitle" placeholder="Item title" style="margin-bottom:8px">
-          <textarea id="workspaceContent" rows="6" placeholder="Content, notes, or working draft…"></textarea>
-          <div class="toolbar">
-            <button id="createWorkspaceItem" class="btn btn-primary">Create</button>
-            <button id="loadWorkspaceCanvas" class="btn btn-soft">Canvas</button>
-          </div>
-          <pre id="workspaceOutput" class="output">Output will appear here.</pre>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Items</p><h3>Project workspace</h3></div>
-            <input id="workspaceSearch" class="compact-input" placeholder="Filter" style="width:160px">
-          </div>
-          <div id="workspaceItems" class="stack-list"></div>
-        </article>
-      </div>
-    </section>
-
-    <!-- ===== KNOWLEDGE ===== -->
-    <section class="view" id="view-knowledge" data-view-panel="knowledge" aria-label="Knowledge">
-      <div class="workbench-grid">
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Knowledge ingestion</p><h3>Add to knowledge base</h3></div></div>
-
-          <!-- File upload zone -->
-          <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="Upload a file for knowledge ingestion">
-            <span class="upload-icon">📄</span>
-            <p>Drop a file here, or click to browse</p>
-            <small>PDF, TXT, MD, DOCX supported — processed locally</small>
-            <input type="file" id="fileInput" hidden accept=".pdf,.txt,.md,.csv,.json,.docx">
-          </div>
-          <div id="uploadStatus" class="notice" style="display:none"></div>
-
-          <input id="knowledgeTitle" placeholder="Manual knowledge title" style="margin-top:12px;margin-bottom:8px">
-          <textarea id="knowledgeContent" rows="5" placeholder="Paste text, a document excerpt, or research notes…"></textarea>
-          <div class="toolbar">
-            <button id="ingestKnowledge" class="btn btn-primary">Ingest Text</button>
-            <button id="addSemanticMemory" class="btn btn-soft">Save Semantic Memory</button>
-          </div>
-          <input id="knowledgeQuery" placeholder="Ask the knowledge base" style="margin-top:12px;margin-bottom:8px">
-          <div class="toolbar">
-            <button id="searchKnowledge" class="btn btn-outline">Hybrid Search</button>
-            <button id="synthesizeKnowledge" class="btn btn-outline">Synthesize</button>
-            <button id="showKnowledgeGraph" class="btn btn-outline">Graph</button>
-          </div>
-          <div class="rag-control-row">
-            <button id="runAdvancedRag" class="btn btn-primary">Deep RAG</button>
-            <label class="switch-row compact" for="ragGenerate">
-              <input id="ragGenerate" type="checkbox">
-              Generate grounded answer with selected model
-            </label>
-          </div>
-          <div id="ragBackendStatus" class="mini-chip-row" aria-live="polite"></div>
-        </article>
-
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Results</p><h3>Source-backed output</h3></div></div>
-          <div id="knowledgeOutput" class="knowledge-output tall">
-            <div class="empty-state">Knowledge output will appear here.</div>
-          </div>
+          <textarea id="workspaceContent" placeholder="Write here…"></textarea>
+          <footer><span id="workspaceOutput" aria-live="polite"></span><div><button id="loadWorkspaceCanvas" class="btn btn-soft">Canvas</button><button id="createWorkspaceItem" class="btn btn-primary">Save</button></div></footer>
         </article>
       </div>
     </section>
 
     <!-- ===== AUTOMATION ===== -->
     <section class="view" id="view-automation" data-view-panel="automation" aria-label="Automation">
-      <article class="card">
-        <div class="card-header">
-          <div><p class="eyebrow">Workflow automation</p><h3>Visual builder</h3></div>
-          <div class="toolbar slim">
-            <button id="createWorkflow" class="btn btn-primary">Create Sample</button>
-            <button id="runDueWorkflows" class="btn btn-soft">Run Due</button>
-          </div>
-        </div>
-        <div class="automation-grid">
-          <div>
-            <h4>Workflows</h4>
-            <div id="workflows" class="stack-list"></div>
-          </div>
-          <div>
-            <h4>Canvas</h4>
-            <div id="workflowCanvas" class="workflow-canvas" aria-label="Workflow canvas"></div>
-          </div>
-        </div>
-        <pre id="workflowOutput" class="output">Workflow output will appear here.</pre>
-      </article>
+      <div class="automation-shell">
+        <aside class="automation-list"><div><strong>Workflows</strong><button id="createWorkflow" class="icon-button" aria-label="New workflow">＋</button></div><div id="workflows" class="stack-list"></div></aside>
+        <article class="automation-builder"><div id="workflowCanvas" class="workflow-canvas" aria-label="Workflow canvas"><div class="workflow-authoring"><input id="workflowName" placeholder="Workflow name"><div class="workflow-node-editor"><label><span>When</span><select id="workflowTrigger"><option value="manual">Started manually</option><option value="scheduled">On a schedule</option><option value="event">When an event arrives</option></select></label><span class="workflow-connector">→</span><label><span>Do</span><select id="workflowAction"><option value="run_agent">Run an agent</option><option value="search_context">Search memory</option><option value="chat">Ask a model</option><option value="report_generate">Generate a report</option><option value="file_list">List local files</option><option value="monitor_check">Check a monitor</option><option value="alert">Create an alert</option></select></label></div><textarea id="workflowInstruction" rows="5" placeholder="Describe the goal, query, message, or report content…"></textarea><button id="saveWorkflow" class="btn btn-primary" type="button">Save workflow</button></div></div><div class="automation-runbar"><span id="workflowOutput" aria-live="polite"></span><button id="runDueWorkflows" class="btn btn-primary">Run due workflows</button></div></article>
+      </div>
     </section>
 
     <!-- ===== ASSISTANT ===== -->
@@ -876,6 +796,16 @@
     <!-- ===== DEVELOPER ===== -->
     <section class="view" id="view-developer" data-view-panel="developer" aria-label="Developer platform">
       <div class="workbench-grid">
+        <article class="card developer-knowledge-card">
+          <div class="card-header"><div><p class="eyebrow">Chat knowledge</p><h3>Local source library</h3></div><span class="badge badge-success">Automatic RAG</span></div>
+          <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="Upload a file for chat knowledge">
+            <span class="upload-icon">＋</span><p>Add source files</p><small>PDF, DOCX, text, Markdown, CSV, JSON</small>
+            <input type="file" id="fileInput" hidden accept=".pdf,.txt,.md,.csv,.json,.docx" multiple>
+          </div>
+          <div id="uploadStatus" class="notice" style="display:none"></div>
+          <details class="developer-knowledge-text"><summary>Add pasted knowledge</summary><input id="knowledgeTitle" placeholder="Source title"><textarea id="knowledgeContent" rows="5" placeholder="Paste notes or source text…"></textarea><div class="toolbar"><button id="ingestKnowledge" class="btn btn-primary">Add source</button><button id="addSemanticMemory" class="btn btn-soft">Remember</button></div></details>
+          <div class="compat-controls" hidden><input id="knowledgeQuery"><button id="searchKnowledge" aria-label="Search knowledge"></button><button id="synthesizeKnowledge" aria-label="Synthesize knowledge"></button><button id="showKnowledgeGraph" aria-label="Show knowledge graph"></button><button id="runAdvancedRag" aria-label="Run advanced retrieval"></button><input id="ragGenerate" type="checkbox"><div id="ragBackendStatus"></div><div id="knowledgeOutput"></div></div>
+        </article>
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Developer tools</p><h3>API, SDK, webhooks</h3></div></div>
           <div class="toolbar">
@@ -1314,36 +1244,23 @@
 
     <!-- ===== SCIENTIFIC AI ===== -->
     <section class="view" id="view-science" data-view-panel="science" aria-label="Scientific AI">
-      <div class="split-layout">
-        <article class="card">
-          <div class="card-header">
-            <div><p class="eyebrow">Local scientific workflows</p><h2>Scientific AI</h2><p class="muted">Numerical computing, engineering design, multimodal evidence, verification, and materials discovery.</p></div>
-            <span id="scienceBadge" class="badge badge-soft">Checking</span>
-          </div>
-          <div id="scienceWorkflowGrid" class="metric-grid" aria-live="polite"></div>
-          <div id="scienceCapabilityGrid" class="science-capability-grid" aria-label="Scientific AI capabilities"></div>
-          <div id="scienceSectionDetail" class="science-section-detail" aria-live="polite"></div>
+      <div class="science-console">
+        <article class="science-workbench">
+          <header><h2 id="scienceActiveTitle">Scientific Agents</h2><span id="scienceBadge" class="badge badge-soft">Checking</span></header>
           <div id="scienceSectionWorkspace" class="science-section-workspace"></div>
+          <div class="science-prompt-dock"><textarea id="scienceGoal" rows="2" placeholder="Describe the scientific problem…"></textarea><button id="runScienceWorkflow" class="composer-submit" aria-label="Run workflow">↑</button></div>
           <div id="scienceRunSteps" class="science-run-steps" aria-live="polite" aria-label="Scientific workflow progress"></div>
-          <div class="form-stack" style="margin-top:16px">
-            <label class="field"><span>Scientific request</span><textarea id="scienceGoal" rows="5" placeholder="Try: optimise a cantilever beam for minimum mass, subject to stress and deflection limits."></textarea></label>
-            <div class="toolbar">
-              <button id="runScienceWorkflow" class="btn btn-primary">Run locally</button>
-              <button id="refreshScienceStatus" class="btn btn-soft">Refresh</button>
-            </div>
-          </div>
-          <p class="privacy-note" id="sciencePrivacyBoundary">Scientific inputs and results remain local. No network research or provider call is performed by this module.</p>
         </article>
-        <article class="card">
-          <div class="card-header"><div><p class="eyebrow">Verification record</p><h3>Evidence and checks</h3></div><span class="badge badge-success">Reviewable</span></div>
+        <article class="science-evidence-panel">
           <div id="scienceResultSummary" class="science-result-summary"></div>
           <div id="sciencePlanList" class="science-plan-list" aria-live="polite"></div>
           <div id="scienceVerificationList" class="science-verification-list"></div>
           <div id="scienceExecutionTimeline" class="science-execution-timeline" aria-live="polite"></div>
           <div id="scienceResultTable" class="table-wrap"></div>
           <canvas id="scienceResultChart" class="science-result-chart" width="720" height="260" aria-label="Scientific result chart"></canvas>
-          <pre id="scienceResult" class="output" aria-live="polite">Run a scientific workflow to see its method, result, and verification findings.</pre>
+          <div id="scienceResult" class="science-result-output" aria-live="polite"></div>
         </article>
+        <div class="compat-controls" hidden><div id="scienceWorkflowGrid"></div><div id="scienceCapabilityGrid"></div><div id="scienceSectionDetail"></div><button id="refreshScienceStatus">Refresh</button><p id="sciencePrivacyBoundary"></p></div>
       </div>
     </section>
 
@@ -1607,11 +1524,11 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260715-stable-runtime-5" type="module"></script>
+<script src="/app.js?v=20260812-codeq-chat-5" type="module"></script>
 <script>
   // Register service worker for PWA offline support
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260715-stable-runtime-5').catch(function() {});
+    navigator.serviceWorker.register('/sw.js?v=20260812-codeq-chat-5').catch(function() {});
   }
 </script>
 

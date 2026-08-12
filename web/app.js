@@ -10,11 +10,8 @@
 
 const MODULES = [
   { id: "chat",        label: "AI Workspace",       text: "Streaming chat, provider controls, conversation memory." },
-  { id: "voice",       label: "Voice Interface",     text: "Push-to-talk, transcription, voice sessions." },
-  { id: "research",    label: "Deep Research",       text: "Iterative AI-driven research with source synthesis." },
-  { id: "phd",         label: "PhD Studio",          text: "Private profile, position research, and grounded application documents." },
+  { id: "codebase",    label: "CodeQ",               text: "Repository-aware coding with protected tools, repair loops, and validation evidence." },
   { id: "agents",      label: "Multi-Agent System",  text: "Specialists, parallel execution, delegation, verification." },
-  { id: "knowledge",   label: "Knowledge + RAG",     text: "File ingest, hybrid search, graph, semantic memory." },
   { id: "automation",  label: "Automation",          text: "Visual workflow builder, triggers, safe actions." },
   { id: "calendar",    label: "Calendar System",     text: "CalDAV-compatible calendar, scheduling intelligence, iCal." },
   { id: "twin",        label: "Digital Twin",        text: "Personal AI memory, intent prediction, goal tracking." },
@@ -27,13 +24,9 @@ const MODULES = [
 const PALETTE_COMMANDS = [
   { label: "Dashboard",              icon: "🏠", group: "Navigate", action: () => setView("dashboard") },
   { label: "Chat",                   icon: "💬", group: "Navigate", action: () => setView("chat") },
-  { label: "Voice Chat",             icon: "🎙", group: "Navigate", action: () => setView("voice") },
-  { label: "Deep Research",          icon: "🔍", group: "Navigate", action: () => setView("research") },
-  { label: "PhD Application Studio", icon: "🎓", group: "Navigate", action: () => setView("phd") },
-  { label: "Intelligence Overview",  icon: "✨", group: "Navigate", action: () => setView("intelligence") },
+  { label: "CodeQ",                  icon: "⌘", group: "Navigate", action: () => setView("codebase") },
   { label: "Agents",                 icon: "🤖", group: "Navigate", action: () => setView("agents") },
-  { label: "Knowledge Base",         icon: "📚", group: "Navigate", action: () => setView("knowledge") },
-  { label: "Workspace",              icon: "🗂", group: "Navigate", action: () => setView("workspace") },
+  { label: "Documents",              icon: "🗂", group: "Navigate", action: () => setView("workspace") },
   { label: "Automation",             icon: "⚡", group: "Navigate", action: () => setView("automation") },
   { label: "Assistant",              icon: "📋", group: "Navigate", action: () => setView("assistant") },
   { label: "Communications",         icon: "📡", group: "Navigate", action: () => setView("communications") },
@@ -49,9 +42,7 @@ const PALETTE_COMMANDS = [
   { label: "Web Scraper",            icon: "🌐", group: "Navigate", action: () => setView("scraper") },
   { label: "Fine-Tuning",            icon: "🎯", group: "Navigate", action: () => setView("finetune") },
   { label: "New chat",               icon: "➕", group: "Actions",  action: () => { setView("chat"); newConversation(); } },
-  { label: "Start research",         icon: "🔍", group: "Actions",  action: () => { setView("research"); qs("#researchQuery").focus(); } },
   { label: "Run agent",              icon: "▶️", group: "Actions",  action: () => { setView("agents"); runAgent(); } },
-  { label: "Search knowledge",       icon: "🔎", group: "Actions",  action: () => { setView("knowledge"); qs("#knowledgeQuery").focus(); } },
   { label: "Daily brief",            icon: "📰", group: "Actions",  action: () => { setView("assistant"); getDailyBrief(); } },
   { label: "Privacy report",         icon: "🔏", group: "Actions",  action: () => { setView("security"); loadPrivacyReport(); } },
   { label: "Smooth runtime plan",    icon: "🧠", group: "System",   action: () => { setView("models"); loadSmoothRuntime("chat"); } },
@@ -82,7 +73,30 @@ const state = {
   localAiStatus: {},
   modelPolicy: {},
   moduleHealth: {},
+  inferenceStatus: {},
+  auditEvents: [],
+  dashboardHistory: {
+    cpu: [],
+    memory: [],
+    disk: [],
+  },
+  dashboardUi: {
+    paused: false,
+    resourceWindow: 36,
+    providerFilter: "all",
+    incidentFilter: "all",
+  },
+  dashboardSources: {
+    health: false,
+    metrics: false,
+    providers: false,
+    models: false,
+    modules: false,
+    inference: false,
+    audit: false,
+  },
   capabilities: {},
+  customAgents: [],
   privacySettings: {
     localOnly: true,
     auditAll: true,
@@ -120,6 +134,12 @@ const state = {
   voiceRecordingBackend: "",
   voiceChunks: [],
   voiceSessions: [],
+  voiceTarget: "voice",
+  voiceReplyPending: false,
+  chatVoiceMode: false,
+  chatAttachments: [],
+  showArchivedConversations: false,
+  conversationMenuTarget: "",
   researchRunning: false,
   researchAbortController: null,
   researchSessionId: null,
@@ -130,6 +150,21 @@ const state = {
   engineRoleOptions: { roles: [], providers: [], models: [] },
   engineRuns: [],
   science: { status: {}, busy: false },
+  codebase: {
+    projects: [],
+    selectedProjectId: "",
+    selectedProject: null,
+    selectedFile: "",
+    selectedFileHash: "",
+    openFiles: [],
+    fileBuffers: {},
+    activeRunId: "",
+    activeRun: null,
+    eventCursor: 0,
+    events: [],
+    streamController: null,
+    pollTimer: null,
+  },
   selectedEngineRole: "chat",
   theme: "dark",
   authToken: (() => { try { return sessionStorage.getItem("oa-auth-token") || ""; } catch (e) { return ""; } })(),
@@ -262,8 +297,9 @@ function readJsonInput(sel, fallback = {}) {
 
 async function api(path, options = {}) {
   const authorization = state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {};
+  const contentHeaders = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...authorization, ...(options.headers || {}) },
+    headers: { ...contentHeaders, ...authorization, ...(options.headers || {}) },
     ...options,
   });
   const text = await res.text();
@@ -318,11 +354,10 @@ function initTheme() {
 const VIEW_LOADERS = {
   dashboard:      () => Promise.allSettled([loadDashboardTelemetry(), loadAudit()]),
   chat:           () => Promise.allSettled([loadConversations(), loadProviders(), loadModelSetupStatus(), loadModelJobs()]),
+  codebase:       () => loadCodebaseProjects().catch(error => toast("CodeQ unavailable", error.message)),
   voice:          () => loadVoiceStatus().catch(() => {}),
-  phd:            () => loadPhdWorkspace().catch(() => {}),
-  intelligence:   () => loadIntelligenceOverview().catch(() => {}),
   agents:         () => loadAgents().catch(() => {}),
-  knowledge:      () => loadKnowledgeStatus().catch(() => {}),
+  knowledge:      () => Promise.resolve(),
   workspace:      () => loadWorkspaceItems().catch(() => {}),
   automation:     () => loadWorkflows().catch(() => {}),
   assistant:      () => Promise.allSettled([getDailyBrief()]),
@@ -341,6 +376,7 @@ const VIEW_LOADERS = {
 
 function setView(view) {
   state.activeView = view;
+  document.body.classList.toggle("codebase-mode", view === "codebase");
   qsa("[data-view-panel]").forEach(p => p.classList.toggle("active", p.dataset.viewPanel === view));
   qsa("[data-view-link]").forEach(b => b.classList.toggle("active", b.dataset.viewLink === view));
   const titleEl = qs("#screenTitle");
@@ -357,13 +393,15 @@ function setScienceSection(section) {
   qsa("[data-science-capability]").forEach(card => card.classList.toggle("active", card.dataset.scienceCapability === section));
   const details = {
     agents: ["Scientific Agents", "Break a question into steps, select local tools, execute bounded work, inspect the result, and retry with traceback feedback when a repair function is supplied."],
-    computing: ["Scientific Computing", "Run deterministic solvers and transparent surrogate baselines. FNO, DeepONet, PINN, and operator-learning contracts are available for richer local backends."],
-    engineering: ["Engineering Optimisation", "Define variables, bounds, objectives, and physical constraints, then compare feasible candidates with a visible method and evidence trail."],
-    multimodal: ["Multimodal Science", "Combine paper or note text, equations, tables, sensor CSV, numerical images, and simulation output into one typed evidence context."],
-    verification: ["Scientific Verification", "Check finite values, residuals, units, equations, and engineering constraints before a result is marked reviewable."],
-    materials: ["Materials Discovery", "Fit a transparent property predictor, rank candidate materials, estimate uncertainty, and choose the next experiment for review."],
+    computing: ["Scientific Computing", "Run deterministic solvers, a trained DeepONet, and transparent surrogate benchmarks. FNO and PINN remain clearly labelled baseline interfaces."],
+    engineering: ["Engineering Optimisation", "Define variables, bounds, objectives, and physical constraints, then compare random, differential-evolution, or local-search results with a visible evidence trail."],
+    multimodal: ["Multimodal Science", "Fuse papers, equations, tables, sensor CSV, simulation output, and measured image features. A configured native vision provider can add attributed image observations."],
+    verification: ["Scientific Verification", "Check finite values, equation residuals, dimensional units, constraints, and claim-to-evidence links before a result is marked reviewable."],
+    materials: ["Materials Discovery", "Train a standardized bootstrap ensemble, report held-out metrics, rank candidates, and expose uncertainty as a screening signal rather than a calibrated probability."],
   };
   const detail = details[section] || details.agents;
+  const title = qs("#scienceActiveTitle");
+  if (title) title.textContent = detail[0];
   const detailEl = qs("#scienceSectionDetail");
   if (detailEl) detailEl.innerHTML = `<h3>${detail[0]}</h3><p>${detail[1]}</p>`;
   renderScienceWorkspace(section);
@@ -377,10 +415,14 @@ function renderScienceWorkspace(section) {
     computing: `<div class="form-grid"><label class="field"><span>Simulator</span><select id="scienceSimulator"><option value="fenics">FEniCS</option><option value="openfoam">OpenFOAM</option><option value="comsol">COMSOL</option><option value="lammps">LAMMPS</option></select></label><label class="field"><span>Temperature (K)</span><input id="scienceSimulationTemperature" type="number" value="350"></label><label class="field"><span>Duration (s)</span><input id="scienceSimulationDuration" type="number" value="10"></label><label class="field"><span>Conductivity</span><input id="scienceSimulationConductivity" type="number" value="1.5" step="0.1"></label></div><div class="toolbar"><button class="btn btn-primary" data-science-action="simulate">Run simulation example</button></div><label class="field"><span>Approved local Python</span><textarea id="sciencePythonCode" rows="5">print(math.sqrt(16))</textarea></label><div class="toolbar"><button class="btn btn-soft" data-science-action="execute-code">Execute with profiling and repair</button></div>`,
     engineering: `<div class="toolbar"><button class="btn btn-primary" data-science-prompt="optimise a cantilever beam for minimum mass subject to stress and deflection limits">Optimise beam</button><button class="btn btn-soft" data-science-prompt="optimise a heat exchanger and verify the engineering constraints">Optimise heat exchanger</button><button class="btn btn-soft" data-science-prompt="optimise a lighter bridge design and verify stress and deflection">Optimise bridge</button></div>`,
     multimodal: `<label class="field"><span>Local evidence files</span><input id="scienceEvidenceFiles" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,image/*"></label><p class="muted">PDFs, notes, sensor CSV, simulation JSON, and images are combined locally.</p><div class="toolbar"><button class="btn btn-primary" data-science-action="analyse-evidence">Analyse evidence</button></div>`,
-    verification: `<label class="field"><span>Result JSON</span><textarea id="scienceVerificationPayload" rows="10">{"text":"Stress is within the stated limit [1].","values":[125000000],"units":{"stress":"Pa"},"residuals":[0.0],"equations":[{"expression":"stress = force/area","symbols":{"stress":125000000,"force":250000,"area":0.002}}],"citations":["design calculation"],"evidence_terms":["stress","limit"],"constraints":[{"name":"stress","passed":true}]}</textarea></label><div class="toolbar"><button class="btn btn-primary" data-science-action="verify">Run verification</button></div>`,
-    materials: `<div class="form-grid"><label class="field"><span>Dataset</span><input id="scienceMaterialsFile" type="file" accept=".csv,.json"></label><label class="field"><span>Target property</span><input id="scienceMaterialsTarget" value="strength"></label><label class="field"><span>Dataset name</span><input id="scienceMaterialsName" value="Public materials dataset"></label><label class="field"><span>Objective</span><select id="scienceMaterialsObjective"><option value="maximize">Maximise target</option><option value="minimize">Minimise target</option></select></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-materials">Store dataset</button><button class="btn btn-primary" data-science-action="analyse-materials">Analyse and rank</button></div>`,
+    verification: `<label class="field"><span>Result JSON</span><textarea id="scienceVerificationPayload" rows="10">{"text":"The calculated stress is within the stated limit.","values":[125000000],"units":{"stress":{"unit":"Pa","expected":"Pa"}},"residuals":[0.0],"equations":[{"expression":"stress = force/area","symbols":{"stress":125000000,"force":250000,"area":0.002}}],"claims":[{"text":"The calculated stress is within the stated limit.","evidence_ids":["calculation:stress","constraint:stress"]}],"evidence":{"calculation:stress":{"value":125000000,"unit":"Pa"},"constraint:stress":{"passed":true,"limit":250000000,"unit":"Pa"}},"citations":[],"constraints":[{"name":"stress","passed":true}]}</textarea></label><div class="toolbar"><button class="btn btn-primary" data-science-action="verify">Run verification</button></div>`,
+    materials: `<div class="science-source-band"><div><span class="eyebrow">Verified public catalog</span><strong>Reproducible materials benchmarks</strong><p id="scienceMaterialsCatalogStatus" class="muted">Loading catalog metadata...</p></div><label class="field"><span>Public dataset</span><select id="scienceMaterialsCatalog"><option value="">Loading...</option></select></label><label class="toggle-row"><input id="scienceMaterialsNetworkApproved" type="checkbox"><span><strong>Approve this download</strong><small>Allow one checksum-verified HTTPS dataset request.</small></span></label><label class="toggle-row"><input id="scienceMaterialsLicenseAccepted" type="checkbox"><span><strong>Accept dataset license</strong><small>The selected catalog entry shows its upstream license and citation.</small></span></label><div class="toolbar"><button class="btn btn-soft" data-science-action="import-public-materials">Import verified dataset</button><button class="btn btn-primary" data-science-action="analyse-public-materials">Download and analyse 80/20 split</button></div></div><div class="section-divider"><span>or use a local dataset</span></div><div class="form-grid"><label class="field"><span>Dataset</span><input id="scienceMaterialsFile" type="file" accept=".csv,.json"></label><label class="field"><span>Target property</span><input id="scienceMaterialsTarget" value="strength"></label><label class="field"><span>Dataset name</span><input id="scienceMaterialsName" value="Local materials dataset"></label><label class="field"><span>Objective</span><select id="scienceMaterialsObjective"><option value="maximize">Maximise target</option><option value="minimize">Minimise target</option></select></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-materials">Store dataset</button><button class="btn btn-primary" data-science-action="analyse-materials">Analyse and rank</button></div>`,
   };
   workspace.innerHTML = views[section] || views.agents;
+  if (section === "materials") loadPublicMaterialsCatalog().catch(error => {
+    const status = qs("#scienceMaterialsCatalogStatus");
+    if (status) status.textContent = `Catalog unavailable: ${error.message}`;
+  });
 }
 
 // =============================================
@@ -404,15 +446,22 @@ async function loadCapabilities() {
 }
 
 async function loadDashboardTelemetry() {
-  const [health, metrics, providers, localAi, localModels, policy, moduleHealth, uiBuild] = await Promise.allSettled([
+  const moduleHealthRequest = api(`/api/modules/health?project=${encodeURIComponent(getProject())}`).then(value => {
+    state.moduleHealth = value;
+    state.dashboardSources.modules = true;
+    renderDashboardSystem();
+    return value;
+  });
+  const [health, metrics, providers, localAi, localModels, policy, moduleHealth, uiBuild, inference] = await Promise.allSettled([
     api("/api/health"),
     api("/api/system/metrics"),
     api("/api/models"),
     api("/api/local-ai/status"),
     api("/api/local-ai/models"),
     api("/api/model-policy"),
-    api(`/api/modules/health?project=${encodeURIComponent(getProject())}`),
+    moduleHealthRequest,
     api("/api/ui/build"),
+    api("/api/inference/status"),
   ]);
   if (health.status === "fulfilled") state.health = health.value;
   if (metrics.status === "fulfilled") state.systemMetrics = metrics.value;
@@ -422,32 +471,211 @@ async function loadDashboardTelemetry() {
   if (policy.status === "fulfilled") state.modelPolicy = policy.value;
   if (moduleHealth.status === "fulfilled") state.moduleHealth = moduleHealth.value;
   if (uiBuild.status === "fulfilled") state.uiBuild = uiBuild.value;
+  if (inference.status === "fulfilled") state.inferenceStatus = inference.value;
+  state.dashboardSources = {
+    health: health.status === "fulfilled",
+    metrics: metrics.status === "fulfilled",
+    providers: providers.status === "fulfilled",
+    models: localModels.status === "fulfilled",
+    modules: moduleHealth.status === "fulfilled",
+    inference: inference.status === "fulfilled",
+    audit: state.dashboardSources.audit,
+  };
+  if (metrics.status === "fulfilled") captureDashboardSample(metrics.value);
   renderMetrics();
   renderDashboardSystem();
 }
 
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function captureDashboardSample(metrics) {
+  const timestamp = Date.now();
+  const append = (series, value) => {
+    if (!Number.isFinite(Number(value))) return;
+    series.push({ at: timestamp, value: Math.max(0, Math.min(100, Number(value))) });
+    if (series.length > 36) series.splice(0, series.length - 36);
+  };
+  append(state.dashboardHistory.cpu, metrics.cpu?.usage_percent);
+  append(state.dashboardHistory.memory, metrics.memory?.used_percent);
+  append(state.dashboardHistory.disk, metrics.disk?.used_percent);
+  const updated = qs("#dashboardLastUpdated");
+  if (updated) updated.textContent = `Updated ${new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+}
+
+function chartPoints(series, width = 600, height = 180, padding = 12, maximum = 100) {
+  if (!series.length) return "";
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  return series.map((item, index) => {
+    const x = series.length === 1 ? width - padding : padding + (index / (series.length - 1)) * usableWidth;
+    const y = height - padding - (Math.max(0, Math.min(maximum, finiteNumber(item.value))) / maximum) * usableHeight;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function telemetrySvg(series, { label, cssClass = "chart-line-primary", maximum = 100, width = 600, height = 180 } = {}) {
+  if (!series.length) return "";
+  const points = chartPoints(series, width, height, 12, maximum);
+  const last = series[series.length - 1];
+  const lastPoint = points.split(" ").at(-1).split(",");
+  return `
+    <polyline class="${cssClass}" points="${points}" vector-effect="non-scaling-stroke"></polyline>
+    <circle class="${cssClass} chart-endpoint" cx="${lastPoint[0]}" cy="${lastPoint[1]}" r="3"></circle>
+    <title>${escapeHtml(label)}: ${escapeHtml(String(last.value))}</title>
+  `;
+}
+
+function renderDashboardResourceChart() {
+  const chart = qs("#dashboardResourceChart");
+  if (!chart) return;
+  const windowSize = state.dashboardUi.resourceWindow;
+  const cpu = state.dashboardHistory.cpu.slice(-windowSize);
+  const memory = state.dashboardHistory.memory.slice(-windowSize);
+  const latestCpu = cpu.at(-1)?.value;
+  const latestMemory = memory.at(-1)?.value;
+  renderDashboardPressure();
+  if (!cpu.length && !memory.length) {
+    chart.setAttribute("aria-label", "CPU and memory telemetry are unavailable.");
+    chart.innerHTML = `<div class="chart-empty"><strong>Telemetry unavailable</strong><span>No numeric system sample was returned.</span></div>`;
+    return;
+  }
+  chart.setAttribute("aria-label", `CPU ${latestCpu == null ? "unavailable" : formatPercent(latestCpu)} and memory ${latestMemory == null ? "unavailable" : formatPercent(latestMemory)}. ${Math.max(cpu.length, memory.length)} live samples retained in this browser session.`);
+  chart.innerHTML = `
+    <svg viewBox="0 0 600 180" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+      <path class="chart-grid-line" d="M12 12H588 M12 51H588 M12 90H588 M12 129H588 M12 168H588"></path>
+      ${telemetrySvg(cpu, { label: "CPU percent", cssClass: "chart-line-cpu" })}
+      ${telemetrySvg(memory, { label: "Memory percent", cssClass: "chart-line-memory" })}
+    </svg>
+    <div class="chart-axis" aria-hidden="true"><span>100%</span><span>50%</span><span>0%</span></div>
+  `;
+}
+
+function pressureLevel(value) {
+  if (!Number.isFinite(value)) return { label: "Unavailable", className: "badge-soft" };
+  if (value >= 90) return { label: "Critical", className: "badge-danger" };
+  if (value >= 75) return { label: "High", className: "badge-warn" };
+  if (value >= 55) return { label: "Elevated", className: "badge-info" };
+  return { label: "Nominal", className: "badge-success" };
+}
+
+function renderDashboardPressure() {
+  const metrics = state.systemMetrics || {};
+  const values = [
+    ["CPU", Number(metrics.cpu?.usage_percent)],
+    ["Memory", Number(metrics.memory?.used_percent)],
+    ["Disk", Number(metrics.disk?.used_percent)],
+  ].filter(([, value]) => Number.isFinite(value));
+  const pressure = values.length ? Math.max(...values.map(([, value]) => value)) : NaN;
+  const level = pressureLevel(pressure);
+  const badge = qs("#dashboardPressureBadge");
+  if (badge) {
+    badge.textContent = Number.isFinite(pressure) ? `${level.label} · ${pressure.toFixed(0)}%` : level.label;
+    badge.className = `badge ${level.className}`;
+  }
+  const grid = qs("#dashboardResourcePressure");
+  if (!grid) return;
+  grid.innerHTML = values.length ? values.map(([label, value]) => `
+    <div class="pressure-item">
+      <span>${escapeHtml(label)}</span><strong>${formatPercent(value)}</strong>
+      <i aria-hidden="true"><b style="width:${Math.max(0, Math.min(100, value))}%"></b></i>
+    </div>
+  `).join("") : emptyState("Resource pressure is unavailable because no numeric OS metrics were returned.");
+  grid.setAttribute("aria-label", values.length
+    ? `Current resource pressure is ${level.label.toLowerCase()} at ${pressure.toFixed(0)} percent, based on the highest measured CPU, memory, or disk utilization.`
+    : "Current resource pressure is unavailable.");
+}
+
+function inferenceThroughputSeries(events) {
+  const timed = events
+    .map(event => ({ at: finiteNumber(event.at) * 1000, value: finiteNumber(event.latency_ms) }))
+    .filter(event => event.at > 0)
+    .sort((a, b) => a.at - b.at);
+  return timed.map(event => ({
+    at: event.at,
+    value: timed.filter(candidate => candidate.at <= event.at && candidate.at > event.at - 60000).length,
+  }));
+}
+
+function renderDashboardInference() {
+  const status = state.inferenceStatus || {};
+  const events = Array.isArray(status.last_events) ? status.last_events : [];
+  const latencySeries = events
+    .filter(event => Number.isFinite(Number(event.latency_ms)))
+    .map(event => ({ at: finiteNumber(event.at) * 1000, value: finiteNumber(event.latency_ms) }));
+  const p50 = status.latency?.p50_ms;
+  const firstToken = status.latency?.first_token_p50_ms;
+  const p95 = status.latency?.p95_ms;
+  const throughputSeries = inferenceThroughputSeries(events);
+  const latestThroughput = throughputSeries.at(-1)?.value;
+  const maximum = latencySeries.length ? Math.max(1, ...latencySeries.map(item => item.value)) : 1;
+  const chart = qs("#dashboardInferenceChart");
+  const badge = qs("#dashboardInferenceBadge");
+  const stats = qs("#dashboardInferenceStats");
+  if (!state.dashboardSources.inference) {
+    if (badge) { badge.textContent = "Unavailable"; badge.className = "badge badge-soft"; }
+    if (chart) {
+      chart.setAttribute("aria-label", "Model inference telemetry is unavailable.");
+      chart.innerHTML = `<div class="chart-empty"><strong>Telemetry unavailable</strong><span>The inference status endpoint did not return data.</span></div>`;
+    }
+    if (stats) stats.innerHTML = "";
+    return;
+  }
+  if (badge) {
+    badge.textContent = latencySeries.length ? `Warm · ${latencySeries.length} sample${latencySeries.length === 1 ? "" : "s"}` : "Cold";
+    badge.className = `badge ${latencySeries.length ? "badge-success" : "badge-soft"}`;
+  }
+  if (chart) {
+    chart.setAttribute("aria-label", latencySeries.length
+      ? `${latencySeries.length} measured inference requests. Median response latency ${p50 ?? "unavailable"} milliseconds and current measured request rate ${latestThroughput ?? 0} per minute.`
+      : "No measured model inference requests are available yet.");
+    chart.innerHTML = latencySeries.length ? `
+      <div class="inference-trend-band"><span>Latency · max ${maximum.toFixed(0)} ms</span><svg viewBox="0 0 600 82" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path class="chart-grid-line" d="M12 12H588 M12 41H588 M12 70H588"></path>${telemetrySvg(latencySeries, { label: "Response latency milliseconds", cssClass: "chart-line-latency", maximum, height: 82 })}</svg></div>
+      <div class="inference-trend-band"><span>Completed requests/min · max ${Math.max(1, ...throughputSeries.map(item => item.value))}</span><svg viewBox="0 0 600 82" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path class="chart-grid-line" d="M12 12H588 M12 41H588 M12 70H588"></path>${telemetrySvg(throughputSeries, { label: "Completed requests per minute", cssClass: "chart-line-throughput", maximum: Math.max(1, ...throughputSeries.map(item => item.value)), height: 82 })}</svg></div>
+    ` : `<div class="chart-empty"><strong>No measured generation yet</strong><span>Latency appears after a model request completes.</span></div>`;
+  }
+  if (stats) stats.innerHTML = [
+    ["p50 response", p50 == null ? "—" : `${finiteNumber(p50).toFixed(0)} ms`],
+    ["p95 response", p95 == null ? "—" : `${finiteNumber(p95).toFixed(0)} ms`],
+    ["p50 first token", firstToken == null ? "—" : `${finiteNumber(firstToken).toFixed(0)} ms`],
+    ["requests/min", latestThroughput == null ? "—" : String(latestThroughput)],
+  ].map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+}
+
 function renderMetrics() {
-  const health = state.health;
   const metrics = state.systemMetrics || {};
   const memory = metrics.memory || {};
   const cpu = metrics.cpu || {};
   const disk = metrics.disk || {};
-  const localModels = state.localModels || [];
-  const availableProviders = (state.providers || []).filter(p => p.id !== "auto" && p.available).length;
+  const sources = state.dashboardSources || {};
+  const cpuValue = Number(cpu.usage_percent);
+  const memoryValue = Number(memory.used_percent);
+  const diskValue = Number(disk.used_percent);
+  const inferenceEvents = Array.isArray(state.inferenceStatus?.last_events) ? state.inferenceStatus.last_events : [];
+  const inferenceRate = inferenceThroughputSeries(inferenceEvents).at(-1)?.value || 0;
+  const inferenceLoad = Math.min(100, inferenceRate * 12.5);
+  const inferenceP50 = Number(state.inferenceStatus?.latency?.p50_ms);
   const items = [
-    ["CPU",         formatPercent(cpu.usage_percent)],
-    ["RAM",         formatPercent(memory.used_percent)],
-    ["RAM Free",    formatGb(memory.available_gb)],
-    ["Disk Free",   formatGb(disk.free_gb)],
-    ["Local Models", localModels.length],
-    ["Providers",   availableProviders],
-    ["Chats",       health.conversation_count ?? 0],
-    ["Audit",       health.audit_event_count ?? 0],
+    ["CPU", cpuValue, `${cpu.count || 1} threads`],
+    ["RAM", memoryValue, Number.isFinite(Number(memory.available_gb)) ? `${formatGb(memory.available_gb)} free` : "Local memory"],
+    ["Disk", diskValue, Number.isFinite(Number(disk.free_gb)) ? `${formatGb(disk.free_gb)} free` : "Data volume"],
+    ["AI load", inferenceLoad, Number.isFinite(inferenceP50) ? `${Math.round(inferenceP50)} ms p50 · ${inferenceRate}/min` : "No measured request"],
   ];
   const el = qs("#metricGrid");
-  if (el) el.innerHTML = items.map(([l,v]) =>
-    `<article class="metric-card"><span>${escapeHtml(l)}</span><strong>${escapeHtml(String(v))}</strong></article>`
-  ).join("");
+  if (el) el.innerHTML = items.map(([label, rawValue, detail]) => {
+    const available = label === "AI load" ? sources.inference : sources.metrics;
+    const value = available && Number.isFinite(rawValue) ? Math.max(0, Math.min(100, rawValue)) : 0;
+    const circumference = 2 * Math.PI * 48;
+    const offset = circumference * (1 - value / 100);
+    return `<article class="gauge-card" style="--gauge-value:${value}">
+      <div class="gauge-dial"><svg viewBox="0 0 112 112" aria-hidden="true"><circle class="gauge-track" cx="56" cy="56" r="48"></circle><circle class="gauge-value" cx="56" cy="56" r="48" stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle></svg><strong>${available && Number.isFinite(rawValue) ? `${rawValue.toFixed(0)}%` : "—"}</strong></div>
+      <div><span>${escapeHtml(label)}</span><small>${escapeHtml(detail)}</small></div>
+    </article>`;
+  }).join("");
+  renderDashboardResourceChart();
+  renderDashboardInference();
 }
 
 function renderDashboardSystem() {
@@ -469,20 +697,19 @@ function renderDashboardSystem() {
   }
   const modelSummary = qs("#dashboardModelSummary");
   if (modelSummary) {
-    modelSummary.textContent = `${availableProviders.length} live providers · ${models.length} registered local models · ${policy.routing_policy || "local-first"} route`;
+    modelSummary.textContent = state.dashboardSources.providers && state.dashboardSources.models
+      ? `${availableProviders.length} live providers · ${models.length} registered local models · ${policy.routing_policy || "local-first"} route`
+      : "Provider or model inventory is unavailable.";
   }
   const systemGrid = qs("#dashboardSystemGrid");
   if (systemGrid) {
     const rows = [
       ["Platform", `${platform.system || "Unknown"} ${platform.release || ""}`.trim()],
       ["CPU threads", cpu.count || 1],
-      ["Process CPU", `${cpu.process_seconds ?? 0}s`],
-      ["RAM total", formatGb(memory.total_gb)],
-      ["RAM used", `${formatGb(memory.used_gb)} (${formatPercent(memory.used_percent)})`],
-      ["Data disk", `${formatGb(disk.free_gb)} free of ${formatGb(disk.total_gb)}`],
+      ["RAM", `${formatGb(memory.used_gb)} / ${formatGb(memory.total_gb)}`],
+      ["Data disk", `${formatGb(disk.free_gb)} free`],
+      ["UI build", uiBuild.version || "checking"],
       ["Database", health.database || "local SQLite"],
-      ["UI build", uiBuild.version ? `${uiBuild.version} · ${uiBuild.web_root || "local web"}` : "checking"],
-      ["Privacy", metrics.privacy_boundary || "Local telemetry only"],
     ];
     systemGrid.innerHTML = rows.map(([label, value]) => `
       <div class="system-row">
@@ -493,44 +720,83 @@ function renderDashboardSystem() {
   }
   const modelGrid = qs("#dashboardModelGrid");
   if (modelGrid) {
-    const providerItems = providers
+    const filter = state.dashboardUi.providerFilter;
+    const filteredProviders = providers
       .filter(p => p.id !== "auto")
+      .filter(p => filter === "all" || (filter === "ready" && p.available) || (filter === "local" && p.local) || (filter === "external" && !p.local));
+    const providerItems = filteredProviders
       .map(p => {
         const installed = Array.isArray(p.installed_models) ? p.installed_models : [];
         const modelDetail = p.id === "ollama" && installed.length
           ? `${p.selected_model || installed[0]} · ${installed.length} installed`
           : p.default_model || "policy";
-        return listItem(
-          p.label || p.id,
-          `${p.available ? "Available" : "Offline"} · ${modelDetail} · ${p.local ? "local boundary" : "external"}`,
-          `<span class="badge ${p.available ? "badge-success" : "badge-soft"}">${escapeHtml(p.id)}</span>`
-        );
+        return `<div class="provider-status-row">
+          <i class="provider-indicator ${p.available ? "online" : "offline"}" aria-hidden="true"></i>
+          <div><strong>${escapeHtml(p.label || p.id)}</strong><span>${escapeHtml(modelDetail)}</span></div>
+          <small>${escapeHtml(p.local ? "LOCAL" : "EXTERNAL")}</small>
+        </div>`;
       });
-    const modelItems = models.slice(0, 5).map(m => listItem(
-      m.name || m.id,
-      `${m.provider || "local"} · ${m.status || "registered"}`,
-      `<span class="badge">${escapeHtml(m.metadata?.quantization || m.metadata?.tier || "model")}</span>`
-    ));
+    const modelItems = filter === "all" || filter === "local" ? models.slice(0, 3).map(m => `<div class="provider-status-row model-record">
+      <i class="provider-indicator ${m.status === "failed" ? "offline" : "standby"}" aria-hidden="true"></i>
+      <div><strong>${escapeHtml(m.name || m.id)}</strong><span>${escapeHtml(m.provider || "local")} · ${escapeHtml(m.status || "registered")}</span></div>
+      <small>${escapeHtml(m.metadata?.quantization || m.metadata?.tier || "MODEL")}</small>
+    </div>`) : [];
     modelGrid.innerHTML = [...providerItems, ...modelItems].join("") || emptyState("No model providers or registered local models yet.");
+  }
+  const readiness = qs("#dashboardProviderReadiness");
+  if (readiness) {
+    const listed = providers.filter(provider => provider.id !== "auto");
+    const local = listed.filter(provider => provider.local);
+    const external = listed.filter(provider => !provider.local);
+    readiness.innerHTML = [
+      ["Local ready", local.filter(provider => provider.available).length, local.length],
+      ["External ready", external.filter(provider => provider.available).length, external.length],
+      ["Unavailable", listed.filter(provider => !provider.available).length, listed.length],
+      ["Registered models", models.length, models.length],
+    ].map(([label, value, total]) => `<div><span>${escapeHtml(label)}</span><strong>${value}${label === "Registered models" ? "" : ` / ${total}`}</strong></div>`).join("");
   }
   const healthBadge = qs("#dashboardModuleHealthBadge");
   if (healthBadge) {
     const counts = moduleHealth.counts || {};
-    healthBadge.textContent = `${counts.ready || 0} ready`;
-    healthBadge.className = `badge ${(counts.error || 0) ? "badge-danger" : (counts.degraded || 0) ? "badge-warn" : "badge-success"}`;
+    healthBadge.textContent = state.dashboardSources.modules ? `${counts.ready || 0} ready` : "Unavailable";
+    healthBadge.className = `badge ${!state.dashboardSources.modules ? "badge-soft" : (counts.error || 0) ? "badge-danger" : (counts.degraded || 0) ? "badge-warn" : "badge-success"}`;
   }
   const healthGrid = qs("#dashboardModuleHealth");
   if (healthGrid) {
     const modules = moduleHealth.modules || [];
-    healthGrid.innerHTML = modules.slice(0, 8).map(module => {
-      const badgeClass = module.status === "ready" ? "badge-success" : module.status === "degraded" ? "badge-warn" : "badge-danger";
-      return listItem(
-        module.label || module.id,
-        module.reason || "Local status API responded.",
-        `<span class="badge ${badgeClass}">${escapeHtml(module.status || "unknown")}</span>`
-      );
-    }).join("") || emptyState("Module health has not been loaded yet.");
+    const ordered = [...modules].sort((a, b) => (a.status === "ready") - (b.status === "ready"));
+    healthGrid.innerHTML = ordered.slice(0, 9).map(module => `
+      <div class="module-health-row">
+        <i class="health-${escapeHtml(module.status || "unknown")}" aria-hidden="true"></i>
+        <span>${escapeHtml(module.label || module.id)}</span>
+        <small>${escapeHtml(module.status || "unknown")}</small>
+      </div>
+    `).join("") || emptyState("Module health has not been loaded yet.");
   }
+  const healthChart = qs("#dashboardHealthChart");
+  if (healthChart) {
+    if (!state.dashboardSources.modules) {
+      healthChart.setAttribute("aria-label", "Module health telemetry is unavailable.");
+      healthChart.innerHTML = `<div class="chart-empty"><strong>Health unavailable</strong><span>The module health endpoint did not return data.</span></div>`;
+    } else {
+      const counts = moduleHealth.counts || {};
+      const total = Math.max(1, finiteNumber(counts.total) || ((moduleHealth.modules || []).length));
+      const ready = finiteNumber(counts.ready);
+      const degraded = finiteNumber(counts.degraded);
+      const error = finiteNumber(counts.error);
+      healthChart.setAttribute("aria-label", `${ready} ready, ${degraded} degraded, and ${error} failed modules out of ${total}.`);
+      healthChart.innerHTML = `
+        <div class="health-bar" aria-hidden="true">
+          <i class="ready" style="width:${ready / total * 100}%"></i>
+          <i class="degraded" style="width:${degraded / total * 100}%"></i>
+          <i class="error" style="width:${error / total * 100}%"></i>
+        </div>
+        <div class="health-counts"><span><b>${ready}</b> Ready</span><span><b>${degraded}</b> Degraded</span><span><b>${error}</b> Failed</span></div>
+      `;
+    }
+  }
+  const privacy = qs("#privacyBoundary");
+  if (privacy) privacy.textContent = metrics.privacy_boundary || "System telemetry remains on this machine.";
 }
 
 async function loadIntelligenceOverview() {
@@ -661,6 +927,38 @@ function appendChat(role, content, streaming = false) {
   return node;
 }
 
+function requestedChatArtifactFormat(message) {
+  const text = String(message || "").toLowerCase();
+  if (!/\b(make|create|generate|write|prepare|export|give)\b/.test(text)) return "";
+  if (/\b(pdf)\b/.test(text)) return "pdf";
+  if (/\b(docx|word document|word file)\b/.test(text)) return "docx";
+  if (/\b(markdown|\.md)\b/.test(text)) return "md";
+  if (/\b(html|web document)\b/.test(text)) return "html";
+  if (/\b(text file|\.txt)\b/.test(text)) return "txt";
+  return "";
+}
+
+async function attachRequestedChatArtifact(message, content, node) {
+  const format = requestedChatArtifactFormat(message);
+  if (!format || !content || !node) return;
+  try {
+    const title = String(message).replace(/\s+/g, " ").trim().slice(0, 90) || "OpenAgent document";
+    const payload = await api("/api/chat/artifact", { method: "POST", body: JSON.stringify({ title, content, format, project: getProject() }) });
+    const artifact = payload.artifact || {};
+    const bytes = Uint8Array.from(atob(artifact.base64 || ""), character => character.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: artifact.content_type || "application/octet-stream" }));
+    const link = document.createElement("a");
+    link.className = "chat-artifact-download";
+    link.href = url;
+    link.download = artifact.filename || `openagent-document.${format}`;
+    link.innerHTML = `<span>${escapeHtml(format.toUpperCase())}</span><strong>${escapeHtml(artifact.filename || "Download document")}</strong><small>${escapeHtml(formatBytes(artifact.size_bytes || bytes.length))}</small>`;
+    node.appendChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 600000);
+  } catch (error) {
+    toast("Document rendering failed", error.message);
+  }
+}
+
 function newConversation() {
   stopActiveChat("New conversation started.");
   state.conversationId = null;
@@ -668,6 +966,15 @@ function newConversation() {
   if (el) el.innerHTML = "";
   loadConversations().catch(() => {});
   updateChatControls(false);
+}
+
+function isResearchRequest(message) {
+  const text = String(message || "").toLowerCase();
+  return /\b(research|investigate|find (?:me )?(?:the )?(?:latest|recent|newest|best|options?|cars?|products?|papers?)|compare (?:current|available|the best)|latest (?:paper|study|research)|search (?:the )?(?:web|internet|papers?)|literature review|papers? on|studies on|shop for|shortlist)\b/.test(text);
+}
+
+function researchUsesPublicWeb(message) {
+  return /\b(latest|recent|newest|current|today|web|internet|paper|study|github|kaggle|arxiv|doi)\b/i.test(String(message || ""));
 }
 
 async function sendChat() {
@@ -682,18 +989,27 @@ async function sendChat() {
   const configuredModel = normalizeKnownModelName(state.modelSettings.chatModel || "");
   const model = provider === "auto" ? "" : configuredModel;
   const allowExternal = !state.privacySettings.localOnly && (qs("#allowExternal")?.checked || false);
+  const attachments = state.chatAttachments.map(item => ({ ...item }));
   appendChat("user", message);
   input.value = "";
+  state.chatAttachments = [];
+  renderChatAttachments();
+
+  if (isResearchRequest(message)) {
+    await sendChatResearch(message, provider, model, attachments);
+    loadConversations().catch(() => {});
+    return;
+  }
 
   if (state.streamingEnabled) {
-    await sendChatStreaming(message, provider, model, allowExternal);
+    await sendChatStreaming(message, provider, model, allowExternal, attachments);
   } else {
-    await sendChatBlocking(message, provider, model, allowExternal);
+    await sendChatBlocking(message, provider, model, allowExternal, attachments);
   }
   loadConversations().catch(() => {});
 }
 
-async function sendChatStreaming(message, provider, model, allowExternal) {
+async function sendChatStreaming(message, provider, model, allowExternal, attachments = []) {
   const node = appendChat("assistant", `Thinking with ${provider === "auto" ? "Auto Route" : provider}${model ? ` · ${model}` : ""}…`, true);
   let accum = "";
   let finalMessage = "";
@@ -717,7 +1033,7 @@ async function sendChatStreaming(message, provider, model, allowExternal) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId }),
+      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId, attachments }),
     });
     if (!res.ok) {
       let detail = "";
@@ -758,7 +1074,11 @@ async function sendChatStreaming(message, provider, model, allowExternal) {
     }
     if (node && !accum && finalMessage) node.innerHTML = renderMarkdown(finalMessage);
     if (node && !accum && !finalMessage) node.innerHTML = "<em>No assistant text was returned. Try Setup Chat Model in Developer.</em>";
-    if (node) node.classList.remove("streaming");
+    if (node) {
+      node.classList.remove("streaming");
+      await attachRequestedChatArtifact(message, accum || finalMessage, node);
+      speakPendingVoiceReply(accum || finalMessage);
+    }
   } catch(e) {
     if (node) {
       node.classList.remove("streaming");
@@ -805,18 +1125,22 @@ function handleChatSseLine(line, node, stateRef) {
   }
 }
 
-async function sendChatBlocking(message, provider, model, allowExternal) {
+async function sendChatBlocking(message, provider, model, allowExternal, attachments = []) {
   const node = appendChat("assistant", "…");
   state.chatBusy = true;
   updateChatControls(true);
   try {
     const payload = await api("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId }),
+      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId, attachments }),
     });
     state.conversationId = payload.conversation?.id;
     const lastMsg = (payload.messages || []).at(-1);
-    if (node && lastMsg) node.innerHTML = renderMarkdown(lastMsg.content);
+    if (node && lastMsg) {
+      node.innerHTML = renderMarkdown(lastMsg.content);
+      await attachRequestedChatArtifact(message, lastMsg.content, node);
+      speakPendingVoiceReply(lastMsg.content);
+    }
   } catch(e) {
     if (node) node.innerHTML = `<em>Error: ${escapeHtml(e.message)}</em>`;
     toast("Chat error", e.message);
@@ -824,6 +1148,127 @@ async function sendChatBlocking(message, provider, model, allowExternal) {
     state.chatBusy = false;
     updateChatControls(false);
   }
+}
+
+async function sendChatResearch(message, provider, model, attachments = []) {
+  const node = appendChat("assistant", renderInlineResearchProgress(message, [], "Planning the investigation"), true);
+  const controller = new AbortController();
+  state.chatBusy = true;
+  state.chatAbortController = controller;
+  state.chatAbortReason = "";
+  updateChatControls(true);
+  let sessionId = "";
+  try {
+    const created = await api("/api/research/sessions", {
+      method: "POST",
+      signal: controller.signal,
+      body: JSON.stringify({
+        query: message,
+        project: getProject(),
+        max_iterations: 3,
+        provider,
+        model,
+        allow_external: researchUsesPublicWeb(message),
+      }),
+    });
+    sessionId = created.session?.id || "";
+    if (!sessionId) throw new Error("Research did not return a session ID.");
+    let session = created.session;
+    while (!controller.signal.aborted) {
+      const payload = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+      session = payload.session;
+      const checkpoints = session.checkpoints || [];
+      if (node) node.innerHTML = renderInlineResearchProgress(message, checkpoints, checkpoints.at(-1)?.message || "Collecting evidence");
+      if (["completed", "failed", "cancelled"].includes(session.status)) break;
+      await abortableDelay(650, controller.signal);
+    }
+    if (session.status !== "completed") throw new Error(session.error || `Research ${session.status}.`);
+    const result = { ...session, ...(session.result || {}) };
+    const report = result.report || "No source-backed report was returned.";
+    const sources = result.sources || session.sources || [];
+    if (node) {
+      node.classList.remove("streaming");
+      node.innerHTML = `${renderMarkdown(report)}${renderChatResearchSources(sources)}`;
+    }
+    const recorded = await api("/api/chat/research-record", {
+      method: "POST",
+      body: JSON.stringify({
+        query: message, report, sources, research_session_id: sessionId,
+        conversation_id: state.conversationId, project: getProject(),
+      }),
+    });
+    state.conversationId = recorded.conversation_id || recorded.conversation?.id || state.conversationId;
+    speakPendingVoiceReply(report);
+  } catch (error) {
+    if (sessionId && (error.name === "AbortError" || controller.signal.aborted)) {
+      api(`/api/research/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: "{}" }).catch(() => {});
+    }
+    if (node) {
+      node.classList.remove("streaming");
+      node.innerHTML = `<em>${escapeHtml(error.name === "AbortError" ? (state.chatAbortReason || "Research stopped.") : error.message)}</em>`;
+    }
+    if (error.name !== "AbortError") toast("Research failed", error.message);
+  } finally {
+    if (state.chatAbortController === controller) {
+      state.chatBusy = false;
+      state.chatAbortController = null;
+      state.chatAbortReason = "";
+      updateChatControls(false);
+    }
+  }
+}
+
+function abortableDelay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Stopped", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function renderInlineResearchProgress(query, checkpoints, status) {
+  const completed = new Set((checkpoints || []).map(item => item.stage));
+  const steps = [
+    ["planning", "Master agent"], ["sources", "Source agents"], ["synthesis", "Review agent"], ["completed", "Cited answer"],
+  ];
+  return `<div class="chat-research-run"><strong>Researching: ${escapeHtml(query)}</strong><ol>${steps.map(([stage, label], index) => {
+    const done = completed.has(stage) || steps.slice(index + 1).some(([later]) => completed.has(later));
+    const active = !done && index === steps.findIndex(([candidate]) => !completed.has(candidate));
+    return `<li class="${done ? "done" : active ? "active" : ""}"><i>${done ? "✓" : index + 1}</i><span>${label}</span></li>`;
+  }).join("")}</ol><small>${escapeHtml(status || "Working")}</small></div>`;
+}
+
+function renderChatResearchSources(sources) {
+  const linked = (sources || []).filter(source => /^https?:\/\//i.test(String(source.url || "")));
+  if (!linked.length) return "";
+  return `<details class="chat-research-sources" open><summary>${linked.length} verified source${linked.length === 1 ? "" : "s"}</summary>${linked.map(source => `
+    <a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(source.title || source.url)}</strong><small>${escapeHtml((source.published_at || "date unavailable").slice(0, 10))} · ${escapeHtml(source.type || "web")}</small></a>
+  `).join("")}</details>`;
+}
+
+function speakPendingVoiceReply(text) {
+  if (!state.voiceReplyPending && !state.chatVoiceMode) return;
+  state.voiceReplyPending = false;
+  if (!("speechSynthesis" in window)) return;
+  const spoken = String(text || "").replace(/```[\s\S]*?```/g, " code block omitted ").replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1").replace(/[#*_>`~-]/g, " ").replace(/\s+/g, " ").trim();
+  if (!spoken) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(spoken.slice(0, 4000));
+  utterance.rate = 1.02;
+  setChatVoiceState("Speaking", spoken.slice(0, 180));
+  utterance.onend = () => {
+    if (!state.chatVoiceMode) return;
+    setChatVoiceState("Listening", "Speak when you are ready.");
+    window.setTimeout(() => { if (state.chatVoiceMode && !state.voiceRecording) startVoiceRecording(); }, 350);
+  };
+  utterance.onerror = () => { if (state.chatVoiceMode) setChatVoiceState("Ready", "Speech playback stopped. Tap the microphone to continue."); };
+  window.speechSynthesis.speak(utterance);
 }
 
 function stopActiveChat(reason = "Response stopped by user.") {
@@ -839,7 +1284,7 @@ function updateChatControls(running = state.chatBusy) {
   const stopBtn = qs("#stopChat");
   const sendBtn = qs("#sendChat");
   if (stopBtn) stopBtn.disabled = !running;
-  if (sendBtn) sendBtn.textContent = running ? "Steer" : "Send";
+  if (sendBtn) { sendBtn.disabled = running; sendBtn.textContent = "↑"; }
 }
 
 async function testChatModel() {
@@ -893,36 +1338,101 @@ function normalizeKnownModelName(modelName) {
 
 async function loadConversations() {
   const sort = qs("#conversationSort")?.value || "pinned";
-  const archived = qs("#showArchivedConversations")?.checked ? "true" : "false";
+  const archived = state.showArchivedConversations ? "true" : "false";
   const semanticQuery = sort === "semantic" ? (qs("#chatInput")?.value.trim() || "conversation") : "";
-  const payload = await api(`/api/conversations/organized?project=${encodeURIComponent(getProject())}&limit=100&sort=${encodeURIComponent(sort)}&include_archived=${archived}&q=${encodeURIComponent(semanticQuery)}`);
+  const payload = await api(`/api/conversations/organized?project=${encodeURIComponent(getProject())}&limit=100&sort=${encodeURIComponent(sort)}&include_archived=${archived}&archived_only=${archived}&q=${encodeURIComponent(semanticQuery)}`);
   const conversations = payload.conversations || [];
   const el = qs("#conversationList");
   if (el) {
     el.innerHTML = conversations.length
       ? conversations.map(c => `
           <article class="conversation-item ${c.id === state.conversationId ? "active" : ""}" data-conversation-id="${escapeHtml(c.id)}">
-            <input type="checkbox" class="conversation-select" value="${escapeHtml(c.id)}" aria-label="Select ${escapeHtml(c.title || "conversation")}">
-            <button class="conversation-open" data-conversation-open="${escapeHtml(c.id)}">
-              <strong>${c.pinned ? "Pinned · " : ""}${escapeHtml(c.title || "Conversation")}</strong>
-              <span>${escapeHtml(c.folder || "Unfiled")} · ${escapeHtml(formatDateTime(c.updated_at) || c.id.slice(0, 8))} · ${escapeHtml(c.message_count || 0)} messages</span>
-            </button>
-            <button class="conversation-action" data-conversation-action="${c.pinned ? "unpin" : "pin"}" data-conversation-target="${escapeHtml(c.id)}" title="${c.pinned ? "Unpin" : "Pin"}">${c.pinned ? "U" : "P"}</button>
-            <button class="conversation-action" data-conversation-action="${c.archived ? "unarchive" : "archive"}" data-conversation-target="${escapeHtml(c.id)}" title="${c.archived ? "Unarchive" : "Archive"}">${c.archived ? "R" : "A"}</button>
+            <button class="conversation-open" data-conversation-open="${escapeHtml(c.id)}"><strong>${c.pinned ? '<span class="pin-mark">◆</span>' : ""}${escapeHtml(c.title || "Conversation")}</strong><span>${escapeHtml(formatDateTime(c.updated_at) || "")}</span></button>
+            <button class="conversation-menu-trigger" data-conversation-menu="${escapeHtml(c.id)}" aria-label="Conversation actions" aria-haspopup="menu">•••</button>
           </article>
         `).join("")
-      : emptyState("No conversations yet");
+      : `<div class="conversation-empty">No conversations</div>`;
     qsa("[data-conversation-open]", el).forEach(item => {
       item.addEventListener("click", () => loadConversation(item.dataset.conversationOpen));
     });
-    qsa("[data-conversation-action]", el).forEach(item => {
-      item.addEventListener("click", () => runConversationAction(item.dataset.conversationTarget, item.dataset.conversationAction));
+    qsa("[data-conversation-menu]", el).forEach(item => {
+      item.addEventListener("click", event => {
+        event.stopPropagation();
+        openConversationActionMenu(item, conversations.find(c => c.id === item.dataset.conversationMenu));
+      });
     });
+  }
+  const archivedButton = qs("#showArchivedConversations");
+  if (archivedButton) {
+    archivedButton.setAttribute("aria-pressed", String(state.showArchivedConversations));
+    archivedButton.classList.toggle("active", state.showArchivedConversations);
+    archivedButton.firstElementChild.textContent = state.showArchivedConversations ? "Back to chats" : "Archived";
   }
 }
 
+function closeConversationActionMenu() {
+  const menu = qs("#conversationActionMenu");
+  if (menu) menu.hidden = true;
+  state.conversationMenuTarget = "";
+}
+
+function openConversationActionMenu(trigger, conversation) {
+  const menu = qs("#conversationActionMenu");
+  if (!menu || !conversation) return;
+  if (!menu.hidden && state.conversationMenuTarget === conversation.id) {
+    closeConversationActionMenu();
+    return;
+  }
+  state.conversationMenuTarget = conversation.id;
+  menu.innerHTML = `
+    <button role="menuitem" data-action="${conversation.pinned ? "unpin" : "pin"}">${conversation.pinned ? "Unpin" : "Pin"}</button>
+    <button role="menuitem" data-action="${conversation.archived ? "unarchive" : "archive"}">${conversation.archived ? "Unarchive" : "Archive"}</button>
+    <button role="menuitem" class="danger" data-action="delete">Delete</button>`;
+  menu.hidden = false;
+  const rect = trigger.getBoundingClientRect();
+  const width = 150;
+  const left = Math.min(window.innerWidth - width - 10, Math.max(10, rect.right - width));
+  const top = Math.min(window.innerHeight - 132, rect.bottom + 5);
+  Object.assign(menu.style, { left: `${left}px`, top: `${top}px`, width: `${width}px` });
+  qsa("[data-action]", menu).forEach(button => button.addEventListener("click", async () => {
+    const action = button.dataset.action;
+    closeConversationActionMenu();
+    await runConversationAction(conversation.id, action);
+  }));
+}
+
+async function uploadChatAttachments(files) {
+  for (const file of Array.from(files || [])) {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    form.append("project", getProject());
+    try {
+      const payload = await api("/api/knowledge/upload", { method: "POST", body: form });
+      state.chatAttachments.push(payload.attachment || { name: file.name, mime: file.type, size_bytes: file.size });
+      renderChatAttachments();
+    } catch (error) {
+      toast("Attachment failed", `${file.name}: ${error.message}`);
+    }
+  }
+  const input = qs("#chatAttachmentInput");
+  if (input) input.value = "";
+}
+
+function renderChatAttachments() {
+  const tray = qs("#chatAttachmentTray");
+  if (!tray) return;
+  tray.hidden = !state.chatAttachments.length;
+  tray.innerHTML = state.chatAttachments.map((item, index) => `<span><strong>${escapeHtml(item.name || "Attachment")}</strong><button type="button" data-remove-attachment="${index}" aria-label="Remove ${escapeHtml(item.name || "attachment")}">×</button></span>`).join("");
+  qsa("[data-remove-attachment]", tray).forEach(button => button.addEventListener("click", () => {
+    state.chatAttachments.splice(Number(button.dataset.removeAttachment), 1);
+    renderChatAttachments();
+  }));
+}
+
 async function runConversationAction(conversationId, action) {
+  if (action === "delete" && !window.confirm("Delete this conversation permanently?")) return;
   await api("/api/conversations/bulk", { method: "POST", body: JSON.stringify({ conversation_ids: [conversationId], action, project: getProject() }) });
+  if (action === "delete" && conversationId === state.conversationId) newConversation();
   await loadConversations();
 }
 
@@ -1032,11 +1542,676 @@ async function exportCurrentChat() {
 }
 
 // =============================================
+// Autonomous codebase workspace
+// =============================================
+
+async function loadCodebaseProjects() {
+  const payload = await api(`/api/codebase/projects?project=${encodeURIComponent(getProject())}`);
+  state.codebase.projects = payload.projects || [];
+  const select = qs("#codebaseProjectSelect");
+  if (!select) return;
+  const selected = state.codebase.selectedProjectId;
+  select.innerHTML = '<option value="">Open a repository</option>' + state.codebase.projects.map(project =>
+    `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`
+  ).join("");
+  if (selected && state.codebase.projects.some(project => project.id === selected)) select.value = selected;
+  if (!state.codebase.selectedProjectId && state.codebase.projects.length) {
+    select.value = state.codebase.projects[0].id;
+    await selectCodebaseProject(select.value);
+  }
+}
+
+async function createCodebaseProject() {
+  const sourcePath = qs("#codebaseSourcePath")?.value.trim();
+  if (!sourcePath) {
+    toast("Repository folder required", "Enter the local folder that should be copied into an isolated workspace.");
+    return;
+  }
+  const button = qs("#createCodebaseProject");
+  if (button) button.disabled = true;
+  try {
+    const payload = await api("/api/codebase/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        project: getProject(),
+        name: qs("#codebaseProjectName")?.value.trim() || sourcePath.split(/[\\/]/).filter(Boolean).pop(),
+        source_path: sourcePath,
+        backend: qs("#codebaseBackend")?.value || "local",
+      }),
+    });
+    state.codebase.selectedProjectId = payload.project.id;
+    toast("Repository ready", "A copied workspace and agent branch were created.");
+    await loadCodebaseProjects();
+    await selectCodebaseProject(payload.project.id);
+  } catch (error) {
+    toast("Repository could not be opened", error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function pickCodebaseFolder() {
+  const button = qs("#codebaseFolderPicker");
+  if (button) button.disabled = true;
+  try {
+    const payload = await api("/api/codebase/folder-picker", { method: "POST", body: "{}" });
+    if (!payload.path) return;
+    qs("#codebaseSourcePath").value = payload.path;
+    const name = payload.path.split(/[\\/]/).filter(Boolean).pop() || "Project";
+    if (!qs("#codebaseProjectName")?.value.trim()) qs("#codebaseProjectName").value = name;
+  } catch (error) {
+    toast("Folder picker could not open", error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function selectCodebaseProject(projectId) {
+  if (!projectId) {
+    state.codebase.selectedProjectId = "";
+    state.codebase.selectedProject = null;
+    qs("#codebaseIde")?.setAttribute("hidden", "");
+    qs("#codebaseOpenPanel")?.removeAttribute("hidden");
+    if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = "⑂ no repository";
+    if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = "Local boundary";
+    return;
+  }
+  const [projectPayload, treePayload] = await Promise.all([
+    api(`/api/codebase/projects/${encodeURIComponent(projectId)}`),
+    api(`/api/codebase/projects/${encodeURIComponent(projectId)}/tree`),
+  ]);
+  state.codebase.selectedProjectId = projectId;
+  state.codebase.selectedProject = projectPayload.project;
+  state.codebase.selectedFile = "";
+  state.codebase.selectedFileHash = "";
+  state.codebase.openFiles = [];
+  state.codebase.fileBuffers = {};
+  renderCodebaseTabs();
+  qs("#codebaseIde")?.removeAttribute("hidden");
+  qs("#codebaseOpenPanel")?.setAttribute("hidden", "");
+  renderCodebaseMap(projectPayload.project);
+  renderCodebaseTree(treePayload.entries || []);
+  const terminal = qs("#codebaseTerminalOutput");
+  if (terminal && terminal.textContent.trim() === "Open a repository to begin.") terminal.textContent = `${projectPayload.project.name} terminal ready.\nCommands run inside the copied workspace.`;
+  const recent = await api(`/api/codebase/runs?project=${encodeURIComponent(getProject())}&limit=20`);
+  const projectRuns = (recent.runs || []).filter(item => item.codebase_project_id === projectId && item.status !== "interactive");
+  renderCodebaseRunHistory(projectRuns);
+  const run = projectRuns[0];
+  if (run) {
+    state.codebase.activeRunId = run.id;
+    await loadCodebaseRun(run.id, false);
+  } else {
+    resetCodebaseRunView();
+  }
+}
+
+function renderCodebaseMap(project) {
+  const map = project.map || {};
+  const workspace = project.workspace || {};
+  const summary = qs("#codebaseMapSummary");
+  if (summary) summary.innerHTML = [
+    `<strong>${escapeHtml((map.languages || []).join(", ") || "Repository")}</strong>`,
+    `${Number(map.file_count || 0).toLocaleString()} files`,
+    map.framework ? escapeHtml(map.framework) : "",
+    map.database ? escapeHtml(map.database) : "",
+    `<span title="${escapeHtml(workspace.workspace_path || "")}">${escapeHtml(workspace.sandbox_backend || "local")} sandbox · ${escapeHtml(workspace.branch || "agent branch")}</span>`,
+  ].filter(Boolean).join("<br>");
+  const boundary = qs("#codebaseBoundary");
+  if (boundary) boundary.textContent = `Protected copy: ${workspace.workspace_path || "local workspace"}. Source remains unchanged.`;
+  const git = map.git || {};
+  if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = `⑂ ${git.repository ? (git.branch || "detached") : (workspace.branch || "agent workspace")}`;
+  if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = `${workspace.sandbox_backend || "local"} · source protected`;
+  const repositoryState = qs("#codebaseRepositoryState");
+  if (repositoryState) repositoryState.textContent = git.repository
+    ? `${git.branch || "detached"} · ${(git.commit || "no commit").slice(0, 10)} · ${git.dirty ? `${(git.changes || []).length} changed` : "clean"}`
+    : "Workspace is not a Git repository.";
+  Object.entries(map.commands || {}).forEach(([kind, command]) => {
+    const input = qs(`[data-codebase-command="${kind}"]`);
+    const gate = qs(`[data-codebase-gate="${kind}"]`);
+    if (input && !input.value) input.value = command;
+    if (gate) gate.checked = true;
+  });
+}
+
+function renderCodebaseRunHistory(runs) {
+  const select = qs("#codebaseRunSelect");
+  if (!select) return;
+  select.innerHTML = runs.length ? runs.map(run =>
+    `<option value="${escapeHtml(run.id)}">${escapeHtml(String(run.status).replace(/_/g, " "))} · ${escapeHtml(run.user_prompt.slice(0, 42))}</option>`
+  ).join("") : '<option value="">No previous runs</option>';
+  if (state.codebase.activeRunId && runs.some(run => run.id === state.codebase.activeRunId)) select.value = state.codebase.activeRunId;
+}
+
+function codebaseCompletionPayload() {
+  const completion = {};
+  qsa("[data-codebase-gate]").forEach(gate => {
+    const kind = gate.dataset.codebaseGate;
+    completion[kind] = {
+      enabled: Boolean(gate.checked),
+      command: qs(`[data-codebase-command="${kind}"]`)?.value.trim() || "",
+    };
+  });
+  return completion;
+}
+
+function renderCodebaseTree(entries) {
+  const root = qs("#codebaseFileTree");
+  if (!root) return;
+  const visible = entries
+    .filter(item => item.path !== ".openagent" && !item.path.startsWith(".openagent/"))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  root.innerHTML = visible.length ? visible.slice(0, 5000).map(item =>
+    `<button class="codebase-file-item ${item.type === "directory" ? "directory" : ""}" ${item.type === "file" ? `data-codebase-file="${escapeHtml(item.path)}"` : "disabled"} title="${escapeHtml(item.path)}" style="padding-left:${7 + Math.min(item.path.split("/").length - 1, 8) * 10}px"><span>${item.type === "directory" ? "▾" : "◇"}</span><span>${escapeHtml(item.path.split("/").pop())}</span></button>`
+  ).join("") : emptyState("No readable files found in this workspace.");
+}
+
+function updateCodebaseLineNumbers() {
+  const editor = qs("#codebaseEditor");
+  const gutter = qs("#codebaseLineNumbers");
+  if (!editor || !gutter) return;
+  const count = Math.max(1, editor.value.split("\n").length);
+  gutter.textContent = Array.from({ length: count }, (_, index) => index + 1).join("\n");
+  gutter.scrollTop = editor.scrollTop;
+  updateCodebaseCursorStatus();
+}
+
+function updateCodebaseCursorStatus() {
+  const editor = qs("#codebaseEditor");
+  if (!editor) return;
+  const before = editor.value.slice(0, editor.selectionStart || 0);
+  const lines = before.split("\n");
+  if (qs("#codebaseCursorStatus")) qs("#codebaseCursorStatus").textContent = `Ln ${lines.length}, Col ${(lines.at(-1) || "").length + 1}`;
+}
+
+function codebaseLanguage(path) {
+  const extension = String(path || "").split(".").pop().toLowerCase();
+  return ({ py: "Python", js: "JavaScript", jsx: "JavaScript React", ts: "TypeScript", tsx: "TypeScript React", json: "JSON", md: "Markdown", html: "HTML", css: "CSS", scss: "SCSS", sql: "SQL", rs: "Rust", go: "Go", java: "Java", cpp: "C++", c: "C", cs: "C#", yaml: "YAML", yml: "YAML", toml: "TOML" })[extension] || "Plain Text";
+}
+
+async function openCodebaseFile(path) {
+  if (!state.codebase.selectedProjectId) return;
+  try {
+    rememberCurrentCodebaseBuffer();
+    let buffer = state.codebase.fileBuffers[path];
+    if (!buffer) {
+      const payload = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/file?path=${encodeURIComponent(path)}`);
+      buffer = { content: payload.file.content || "", sha256: payload.file.sha256 || "", dirty: false };
+      state.codebase.fileBuffers[path] = buffer;
+    }
+    if (!state.codebase.openFiles.includes(path)) state.codebase.openFiles.push(path);
+    state.codebase.selectedFile = path;
+    state.codebase.selectedFileHash = buffer.sha256 || "";
+    qs("#codebaseEditorPath").textContent = path;
+    if (qs("#codebaseEditorTab")) qs("#codebaseEditorTab").textContent = path.split("/").pop();
+    if (qs("#codebaseLanguageStatus")) qs("#codebaseLanguageStatus").textContent = codebaseLanguage(path);
+    qs("#codebaseEditor").value = buffer.content || "";
+    updateCodebaseLineNumbers();
+    qs("#saveCodebaseFile").disabled = false;
+    qsa("[data-codebase-file]").forEach(node => node.classList.toggle("active", node.dataset.codebaseFile === path));
+    renderCodebaseTabs();
+  } catch (error) {
+    toast("File could not be opened", error.message);
+  }
+}
+
+function rememberCurrentCodebaseBuffer() {
+  const path = state.codebase.selectedFile;
+  const editor = qs("#codebaseEditor");
+  if (!path || !editor || !state.codebase.fileBuffers[path]) return;
+  const buffer = state.codebase.fileBuffers[path];
+  if (buffer.content !== editor.value) {
+    buffer.content = editor.value;
+    buffer.dirty = true;
+  }
+}
+
+function renderCodebaseTabs() {
+  const root = qs("#codebaseOpenTabs");
+  if (!root) return;
+  root.innerHTML = state.codebase.openFiles.map(path => {
+    const buffer = state.codebase.fileBuffers[path] || {};
+    return `<div class="codebase-editor-tab ${path === state.codebase.selectedFile ? "active" : ""}" role="tab" aria-selected="${path === state.codebase.selectedFile}" data-codebase-tab="${escapeHtml(path)}"><span class="codebase-file-dot"></span><span>${escapeHtml(path.split("/").pop())}${buffer.dirty ? " •" : ""}</span><button type="button" data-codebase-tab-close="${escapeHtml(path)}" aria-label="Close ${escapeHtml(path)}">×</button></div>`;
+  }).join("");
+  qsa("[data-codebase-tab]", root).forEach(tab => tab.addEventListener("click", () => openCodebaseFile(tab.dataset.codebaseTab)));
+  qsa("[data-codebase-tab-close]", root).forEach(button => button.addEventListener("click", event => {
+    event.stopPropagation();
+    closeCodebaseFile(button.dataset.codebaseTabClose);
+  }));
+}
+
+function closeCodebaseFile(path) {
+  rememberCurrentCodebaseBuffer();
+  const index = state.codebase.openFiles.indexOf(path);
+  state.codebase.openFiles = state.codebase.openFiles.filter(item => item !== path);
+  delete state.codebase.fileBuffers[path];
+  if (state.codebase.selectedFile === path) {
+    state.codebase.selectedFile = "";
+    const next = state.codebase.openFiles[Math.min(index, state.codebase.openFiles.length - 1)];
+    if (next) openCodebaseFile(next);
+    else {
+      qs("#codebaseEditor").value = "";
+      qs("#codebaseEditorPath").textContent = "No file open";
+      qs("#saveCodebaseFile").disabled = true;
+      updateCodebaseLineNumbers();
+    }
+  }
+  renderCodebaseTabs();
+}
+
+async function saveCodebaseFile() {
+  if (!state.codebase.selectedProjectId || !state.codebase.selectedFile) return;
+  try {
+    const payload = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/file`, {
+      method: "POST",
+      body: JSON.stringify({ path: state.codebase.selectedFile, content: qs("#codebaseEditor")?.value || "", expected_sha256: state.codebase.selectedFileHash }),
+    });
+    state.codebase.selectedFileHash = payload.change.new_sha256 || "";
+    const buffer = state.codebase.fileBuffers[state.codebase.selectedFile];
+    if (buffer) {
+      buffer.content = qs("#codebaseEditor")?.value || "";
+      buffer.sha256 = state.codebase.selectedFileHash;
+      buffer.dirty = false;
+    }
+    renderCodebaseTabs();
+    toast("Saved", state.codebase.selectedFile);
+  } catch (error) {
+    toast("Save failed", error.message);
+  }
+}
+
+async function scanCodebaseProject() {
+  if (!state.codebase.selectedProjectId) return;
+  try {
+    await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/scan`, { method: "POST", body: JSON.stringify({}) });
+    await selectCodebaseProject(state.codebase.selectedProjectId);
+    toast("Repository map refreshed");
+  } catch (error) {
+    toast("Scan failed", error.message);
+  }
+}
+
+async function startCodebaseRun() {
+  const prompt = qs("#codebaseGoal")?.value.trim();
+  if (!state.codebase.selectedProjectId || !prompt) {
+    toast("Project and goal required");
+    return;
+  }
+  try {
+    const payload = await api("/api/codebase/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        codebase_project_id: state.codebase.selectedProjectId,
+        prompt,
+        provider: qs("#codebaseProvider")?.value || "auto",
+        model: state.modelSettings.codeModel || "",
+        role_models: {
+          project_manager: { model: qs("#codebaseArchitectureModel")?.value.trim() || state.modelSettings.researchModel || "" },
+          architect: { model: qs("#codebaseArchitectureModel")?.value.trim() || state.modelSettings.researchModel || "" },
+          programmer: { model: qs("#codebaseCodingModel")?.value.trim() || state.modelSettings.codeModel || "" },
+          debugger: { model: qs("#codebaseCodingModel")?.value.trim() || state.modelSettings.codeModel || "" },
+          reviewer: { model: qs("#codebaseReviewModel")?.value.trim() || state.modelSettings.researchModel || "" },
+        },
+        allow_external: Boolean(qs("#codebaseAllowExternal")?.checked),
+        max_iterations: Number(qs("#codebaseIterations")?.value || 8),
+        completion: codebaseCompletionPayload(),
+      }),
+    });
+    state.codebase.activeRunId = payload.run.id;
+    state.codebase.events = [];
+    state.codebase.eventCursor = 0;
+    renderCodebaseRun(payload.run);
+    startCodebaseEventStream(payload.run.id);
+    scheduleCodebasePoll();
+    toast("Autonomous run started", "Repository analysis and task planning are running.");
+  } catch (error) {
+    toast("Run could not start", error.message);
+  }
+}
+
+async function cancelCodebaseRun() {
+  if (!state.codebase.activeRunId) return;
+  try {
+    const payload = await api(`/api/codebase/runs/${encodeURIComponent(state.codebase.activeRunId)}/cancel`, { method: "POST", body: JSON.stringify({}) });
+    renderCodebaseRun(payload.run);
+  } catch (error) {
+    toast("Stop failed", error.message);
+  }
+}
+
+async function resumeCodebaseRun() {
+  if (!state.codebase.activeRunId) return;
+  try {
+    const payload = await api(`/api/codebase/runs/${encodeURIComponent(state.codebase.activeRunId)}/resume`, { method: "POST", body: JSON.stringify({}) });
+    renderCodebaseRun(payload.run);
+    startCodebaseEventStream(payload.run.id);
+    scheduleCodebasePoll();
+    toast("Run resumed", "The agent continues from its durable task and workspace state.");
+  } catch (error) {
+    toast("Resume failed", error.message);
+  }
+}
+
+async function restoreCodebaseSnapshot() {
+  const snapshotId = qs("#codebaseSnapshotSelect")?.value;
+  if (!state.codebase.activeRunId || !snapshotId) return;
+  try {
+    await api(`/api/codebase/runs/${encodeURIComponent(state.codebase.activeRunId)}/snapshots/${encodeURIComponent(snapshotId)}/restore`, { method: "POST", body: JSON.stringify({}) });
+    await selectCodebaseProject(state.codebase.selectedProjectId);
+    toast("Snapshot restored", "The copied workspace was rolled back. The source repository was not changed.");
+  } catch (error) {
+    toast("Restore failed", error.message);
+  }
+}
+
+function scheduleCodebasePoll() {
+  clearTimeout(state.codebase.pollTimer);
+  state.codebase.pollTimer = setTimeout(async () => {
+    if (!state.codebase.activeRunId) return;
+    const run = await loadCodebaseRun(state.codebase.activeRunId, false).catch(() => null);
+    if (run && !["completed", "failed", "cancelled", "blocked"].includes(run.status)) scheduleCodebasePoll();
+  }, 1000);
+}
+
+async function loadCodebaseRun(runId, restartStream = true) {
+  const payload = await api(`/api/codebase/runs/${encodeURIComponent(runId)}`);
+  state.codebase.activeRunId = runId;
+  state.codebase.activeRun = payload.run;
+  renderCodebaseRun(payload.run);
+  if (restartStream && !["completed", "failed", "cancelled"].includes(payload.run.status)) startCodebaseEventStream(runId);
+  return payload.run;
+}
+
+function renderCodebaseRun(run) {
+  state.codebase.activeRun = run;
+  const status = qs("#codebaseRunStatus");
+  if (status) {
+    status.textContent = String(run.status || "idle").replace(/_/g, " ");
+    status.className = `badge ${run.status === "completed" ? "badge-success" : run.status === "failed" ? "badge-error" : run.status === "blocked" ? "badge-warn" : "badge-info"}`;
+  }
+  const active = ["queued", "planning", "running", "repairing", "validating", "reviewing", "cancelling"].includes(run.status);
+  if (qs("#startCodebaseRun")) qs("#startCodebaseRun").disabled = active;
+  if (qs("#cancelCodebaseRun")) qs("#cancelCodebaseRun").disabled = !active;
+  if (qs("#resumeCodebaseRun")) qs("#resumeCodebaseRun").disabled = !["blocked", "failed", "interrupted"].includes(run.status);
+  if (qs("#codebaseRunSelect")) qs("#codebaseRunSelect").value = run.id;
+  const snapshotSelect = qs("#codebaseSnapshotSelect");
+  if (snapshotSelect) {
+    snapshotSelect.innerHTML = (run.snapshots || []).length ? (run.snapshots || []).map(item =>
+      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${new Date(item.created_at).toLocaleTimeString()}</option>`
+    ).join("") : '<option value="">No snapshots</option>';
+    qs("#restoreCodebaseSnapshot").disabled = !(run.snapshots || []).length;
+  }
+  renderCodebaseTasks(run.tasks || []);
+  renderCodebaseEvidence(run);
+  renderCodebaseApprovals(run.approvals || []);
+  renderCodebaseCopilotFeed();
+  const latestValidation = (run.validation || []).slice(-1)[0];
+  if (latestValidation) renderCodebaseTerminal(latestValidation);
+}
+
+function resetCodebaseRunView() {
+  state.codebase.activeRunId = "";
+  state.codebase.activeRun = null;
+  qs("#codebaseRunStatus").textContent = "Ready";
+  if (qs("#startCodebaseRun")) qs("#startCodebaseRun").disabled = false;
+  if (qs("#cancelCodebaseRun")) qs("#cancelCodebaseRun").disabled = true;
+  renderCodebaseCopilotFeed();
+  qs("#codebaseTaskGraph").innerHTML = emptyState("Start a run to create a dependency-aware task graph.");
+  qs("#codebaseEventStream").innerHTML = emptyState("Agent activity will stream here.");
+  qs("#codebaseEvidence").innerHTML = emptyState("Validation evidence appears only after commands run.");
+  qs("#codebaseApprovals").innerHTML = "";
+  if (qs("#resumeCodebaseRun")) qs("#resumeCodebaseRun").disabled = true;
+  if (qs("#restoreCodebaseSnapshot")) qs("#restoreCodebaseSnapshot").disabled = true;
+}
+
+function renderCodebaseTasks(tasks) {
+  const root = qs("#codebaseTaskGraph");
+  if (!root) return;
+  root.innerHTML = tasks.length ? tasks.map(task =>
+    `<article class="codebase-task ${escapeHtml(task.status)}"><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.assigned_agent)} · ${escapeHtml(task.status.replace(/_/g, " "))}${task.depends_on?.length ? ` · waits for ${task.depends_on.length}` : ""}</small></article>`
+  ).join("") : emptyState("Understanding the repository and creating tasks…");
+}
+
+function renderCodebaseEvents() {
+  const root = qs("#codebaseEventStream");
+  if (!root) return;
+  const events = state.codebase.events.slice(-250).reverse();
+  root.innerHTML = events.length ? events.map(event => {
+    const detail = event.payload?.tool || event.payload?.agent || event.payload?.summary || event.payload?.error || "";
+    return `<div class="codebase-event"><span class="codebase-event-dot"></span><div><strong>${escapeHtml(event.type.replace(/\./g, " "))}</strong>${detail ? `<small> · ${escapeHtml(String(detail).slice(0, 180))}</small>` : ""}</div><time>${escapeHtml(new Date(event.created_at).toLocaleTimeString())}</time></div>`;
+  }).join("") : emptyState("Waiting for agent activity…");
+  renderCodebaseCopilotFeed();
+}
+
+function renderCodebaseCopilotFeed() {
+  const root = qs("#codebaseCopilotFeed");
+  if (!root) return;
+  const run = state.codebase.activeRun;
+  if (!run) {
+    root.innerHTML = '<div class="copilot-welcome"><strong>Work with your repository</strong><p>Ask CodeQ to inspect, edit, test, debug, or review this project. It chooses specialist agents only when the task benefits from them.</p></div>';
+    return;
+  }
+  const tasks = run.tasks || [];
+  const recentEvents = state.codebase.events.slice(-30);
+  const validation = run.validation || [];
+  const pending = (run.approvals || []).filter(item => item.status === "pending");
+  root.innerHTML = `
+    <article class="copilot-message user"><p>${escapeHtml(run.user_prompt || "Software engineering task")}</p></article>
+    <article class="copilot-message agent"><strong>${escapeHtml(String(run.status || "working").replace(/_/g, " "))}</strong>
+      <div class="copilot-task-list">${tasks.map(task => `<span class="${escapeHtml(task.status)}"><i>${task.status === "completed" ? "✓" : task.status === "running" ? "●" : "○"}</i>${escapeHtml(task.title)}</span>`).join("") || "<span><i>●</i>Analysing repository</span>"}</div>
+      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.slice(-8).map(event => `<p><i></i>${escapeHtml(event.type.replace(/\./g, " "))}</p>`).join("")}</div>` : ""}
+      ${validation.length ? `<div class="copilot-validation">${validation.map(item => `<span class="${item.status === "passed" ? "passed" : "failed"}">${item.status === "passed" ? "✓" : "×"} ${escapeHtml(item.kind)}</span>`).join("")}</div>` : ""}
+      ${pending.length ? `<p class="copilot-attention">Waiting for approval: ${escapeHtml(pending[0].tool)}</p>` : ""}
+      ${run.summary ? `<p class="copilot-summary">${escapeHtml(run.summary)}</p>` : ""}
+      ${run.error ? `<p class="copilot-error">${escapeHtml(run.error)}</p>` : ""}
+    </article>`;
+  root.scrollTop = root.scrollHeight;
+}
+
+function renderCodebaseEvidence(run) {
+  const root = qs("#codebaseEvidence");
+  if (!root) return;
+  const rows = (run.validation || []).map(item =>
+    `<div class="codebase-evidence-row"><span>${escapeHtml(item.kind)}</span><strong class="${item.status === "passed" ? "status-ok" : "status-error"}">${escapeHtml(item.status)} · exit ${item.exit_code}</strong></div>`
+  );
+  if (run.summary) rows.push(`<div class="codebase-evidence-row"><span>Final review</span><strong>${escapeHtml(run.summary)}</strong></div>`);
+  if (run.error) rows.push(`<div class="codebase-evidence-row"><span>Blocking error</span><strong class="status-error">${escapeHtml(run.error)}</strong></div>`);
+  root.innerHTML = rows.length ? rows.join("") : emptyState("Build, test, lint, typecheck, runtime, and review evidence will appear here.");
+}
+
+function renderCodebaseApprovals(approvals) {
+  const root = qs("#codebaseApprovals");
+  if (!root) return;
+  const pending = approvals.filter(item => item.status === "pending");
+  root.innerHTML = pending.map(item =>
+    `<article class="codebase-approval"><strong>Approval required: ${escapeHtml(item.tool)}</strong><p>${escapeHtml(item.reason)}</p><div class="toolbar"><button class="btn btn-mini btn-primary" data-codebase-approval="${escapeHtml(item.id)}" data-approved="true">Approve</button><button class="btn btn-mini btn-soft" data-codebase-approval="${escapeHtml(item.id)}" data-approved="false">Reject</button></div></article>`
+  ).join("");
+  renderCodebaseCopilotFeed();
+}
+
+async function resolveCodebaseApproval(approvalId, approved) {
+  qsa(`[data-codebase-approval="${CSS.escape(approvalId)}"]`).forEach(button => { button.disabled = true; });
+  state.codebase.streamController?.abort();
+  try {
+    const payload = await api(`/api/codebase/approvals/${encodeURIComponent(approvalId)}/resolve`, { method: "POST", body: JSON.stringify({ approved }) });
+    const resolution = payload.approval || payload;
+    if (resolution.status === "failed") toast("Approved action could not run", `${resolution.result?.error || "Execution failed"}. The agent is repairing the task.`);
+    else toast(approved ? "Approved" : "Rejected", approved ? "The run is resuming." : "The operation remains blocked.");
+    await loadCodebaseRun(state.codebase.activeRunId);
+    scheduleCodebasePoll();
+  } catch (error) {
+    await new Promise(resolve => setTimeout(resolve, 350));
+    try {
+      const run = await loadCodebaseRun(state.codebase.activeRunId);
+      const recorded = (run?.approvals || []).find(item => item.id === approvalId && item.status !== "pending");
+      if (recorded) {
+        toast("Approval recorded", `The server recorded this action as ${recorded.status}. The run is continuing from durable state.`);
+        scheduleCodebasePoll();
+        return;
+      }
+    } catch (_) {}
+    qsa(`[data-codebase-approval="${CSS.escape(approvalId)}"]`).forEach(button => { button.disabled = false; });
+    toast("Approval could not be recorded", `${error.message}. The action was not retried automatically.`);
+  }
+}
+
+async function startCodebaseEventStream(runId) {
+  state.codebase.streamController?.abort();
+  const controller = new AbortController();
+  state.codebase.streamController = controller;
+  const headers = state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {};
+  try {
+    const response = await fetch(`/api/codebase/runs/${encodeURIComponent(runId)}/events/stream?after=${state.codebase.eventCursor}&timeout_seconds=120`, { headers, signal: controller.signal });
+    if (!response.ok || !response.body) throw new Error(`Event stream failed: ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      lines.forEach(line => {
+        if (!line.startsWith("data: ")) return;
+        try {
+          const event = JSON.parse(line.slice(6));
+          if (event.type === "stream.heartbeat") return;
+          if (Number(event.sequence) > state.codebase.eventCursor) state.codebase.eventCursor = Number(event.sequence);
+          if (event.type !== "stream.closed") state.codebase.events.push(event);
+          renderCodebaseEvents();
+        } catch (_) {}
+      });
+    }
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      const payload = await api(`/api/codebase/runs/${encodeURIComponent(runId)}/events?after=${state.codebase.eventCursor}`).catch(() => ({ events: [] }));
+      (payload.events || []).forEach(event => {
+        state.codebase.eventCursor = Math.max(state.codebase.eventCursor, Number(event.sequence || 0));
+        state.codebase.events.push(event);
+      });
+      renderCodebaseEvents();
+    }
+  }
+}
+
+async function runCodebaseTool(tool, toolArguments = {}) {
+  if (!state.codebase.activeRunId) {
+    if (!state.codebase.activeProjectId) throw new Error("Open a repository first.");
+    const session = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.activeProjectId)}/tools`, {
+      method: "POST",
+      body: JSON.stringify({ tool, arguments: toolArguments }),
+    });
+    state.codebase.activeRunId = session.run?.id || "";
+    if (session.run) {
+      state.codebase.runs = [session.run, ...state.codebase.runs.filter(item => item.id !== session.run.id)];
+      renderCodebaseRunHistory(state.codebase.runs.filter(item => item.status !== "interactive"));
+    }
+    if (session.result?.approval_required) {
+      toast("Approval required", session.result.approval_required.reason || "Review this operation in the agent panel.");
+      await loadCodebaseRun(state.codebase.activeRunId, false);
+      return null;
+    }
+    return session.result;
+  }
+  const payload = await api(`/api/codebase/runs/${encodeURIComponent(state.codebase.activeRunId)}/tools`, {
+    method: "POST",
+    body: JSON.stringify({ tool, arguments: toolArguments }),
+  });
+  if (payload.result?.approval_required) {
+    toast("Approval required", payload.result.approval_required.reason || "Review this operation in the agent panel.");
+    await loadCodebaseRun(state.codebase.activeRunId, false);
+    return null;
+  }
+  return payload.result;
+}
+
+async function runCodebaseTests() {
+  try {
+    const result = await runCodebaseTool("run_tests");
+    if (result) renderCodebaseTerminal(result);
+  } catch (error) {
+    toast("Tests failed to start", error.message);
+  }
+}
+
+async function loadCodebaseDiff() {
+  try {
+    const result = await runCodebaseTool("git_diff");
+    if (!result) return;
+    qs("#codebaseGitOutput").textContent = result.stdout || result.stderr || "No Git changes.";
+    showCodebaseOutput("git");
+  } catch (error) {
+    toast("Git diff failed", error.message);
+  }
+}
+
+async function loadCodebaseStatus() {
+  try {
+    const result = await runCodebaseTool("git_status");
+    if (!result) return;
+    qs("#codebaseGitOutput").textContent = result.stdout || result.stderr || "Working tree clean.";
+    showCodebaseOutput("git");
+  } catch (error) {
+    toast("Git status failed", error.message);
+  }
+}
+
+async function runCodebaseCommand() {
+  const command = qs("#codebaseCommand")?.value.trim();
+  if (!command) return;
+  try {
+    const result = await runCodebaseTool("run_shell", { command, timeout_seconds: 900 });
+    if (result) renderCodebaseTerminal(result);
+  } catch (error) {
+    toast("Command requires attention", error.message);
+  }
+}
+
+async function inspectCodebaseBrowser() {
+  const url = qs("#codebaseBrowserUrl")?.value.trim();
+  if (!url) return;
+  try {
+    const result = await runCodebaseTool("browser_inspect", { url, actions: [], timeout_seconds: 120 });
+    if (result) {
+      const browser = result.browser || {};
+      renderCodebaseTerminal({
+        ...result,
+        stdout: [`Page: ${browser.title || url}`, `URL: ${browser.url || url}`, `Console errors: ${(browser.console_errors || []).length}`, `Screenshot: ${result.artifact || "not created"}`].join("\n"),
+      });
+      toast((browser.console_errors || []).length ? "Browser issues found" : "Browser inspection passed", result.artifact || url);
+    }
+  } catch (error) {
+    toast("Browser inspection failed", error.message);
+  }
+}
+
+function renderCodebaseTerminal(result) {
+  const command = Array.isArray(result.command) ? result.command.join(" ") : String(result.command || "validation");
+  qs("#codebaseTerminalOutput").textContent = [`> ${command}`, result.stdout || "", result.stderr || "", `exit ${result.exit_code} · ${Math.round(result.duration_ms || 0)} ms`].filter(Boolean).join("\n");
+  showCodebaseOutput("terminal");
+}
+
+function showCodebaseOutput(name) {
+  const git = name === "git";
+  qs("#codebaseTerminalOutput")?.toggleAttribute("hidden", git);
+  qs("#codebaseGitOutput")?.toggleAttribute("hidden", !git);
+  qsa("[data-codebase-output]").forEach(button => button.classList.toggle("active", button.dataset.codebaseOutput === name));
+}
+
+function showCodebaseDetail(name) {
+  const map = { tasks: "#codebaseTaskGraph", events: "#codebaseEventStream", review: "#codebaseEvidence" };
+  Object.entries(map).forEach(([key, selector]) => qs(selector)?.toggleAttribute("hidden", key !== name));
+  qsa("[data-codebase-detail]").forEach(button => button.classList.toggle("active", button.dataset.codebaseDetail === name));
+}
+
+// =============================================
 // Voice
 // =============================================
 
 function initVoice() {
   const btn = qs("#voiceRecordBtn");
+  qs("#chatVoiceButton")?.addEventListener("click", toggleChatVoiceRecording);
+  qs("#endChatVoiceMode")?.addEventListener("click", endChatVoiceConversation);
   if (!btn) return;
   btn.addEventListener("click", toggleVoiceRecording);
   qs("#sendTranscript")?.addEventListener("click", sendTranscriptToChat);
@@ -1044,7 +2219,6 @@ function initVoice() {
     const el = qs("#voiceTranscript");
     if (el) el.textContent = "Transcript will appear here…";
   });
-  qs("#chatVoiceBtn")?.addEventListener("click", () => setView("voice"));
   qs("#createVoiceSession")?.addEventListener("click", createVoiceSession);
   qs("#loadVoiceStatus")?.addEventListener("click", loadVoiceStatus);
   qs("#allowFallbackStt")?.addEventListener("change", () => {
@@ -1055,7 +2229,37 @@ function initVoice() {
   });
 }
 
+async function toggleChatVoiceRecording() {
+  state.voiceTarget = "chat";
+  if (!state.chatVoiceMode) {
+    state.chatVoiceMode = true;
+    qs("#chatVoiceMode")?.removeAttribute("hidden");
+    setChatVoiceState("Listening", "Speak naturally. Your transcript and the spoken answer stay in this chat.");
+  }
+  if (state.voiceRecording) stopVoiceRecording();
+  else await startVoiceRecording();
+}
+
+function endChatVoiceConversation() {
+  state.chatVoiceMode = false;
+  state.voiceReplyPending = false;
+  if (state.voiceRecording) stopVoiceRecording();
+  window.speechSynthesis?.cancel?.();
+  qs("#chatVoiceMode")?.setAttribute("hidden", "");
+  renderVoiceRecordingButtons(false);
+}
+
+function setChatVoiceState(status, detail = "") {
+  const title = qs("#chatVoiceState");
+  const text = qs("#chatVoiceLiveText");
+  const mode = qs("#chatVoiceMode");
+  if (title) title.textContent = status;
+  if (text) text.textContent = detail;
+  if (mode) mode.dataset.state = status.toLowerCase();
+}
+
 async function toggleVoiceRecording() {
+  state.voiceTarget = "voice";
   if (state.voiceRecording) {
     stopVoiceRecording();
   } else {
@@ -1082,8 +2286,8 @@ async function startVoiceRecording() {
     state.voicePeakLevel = 0;
     renderVoiceTranscriptionQuality({ transcript_status: "recording", stt_message: "Recording audio locally..." });
     state.voiceRecording = true;
-    const btn = qs("#voiceRecordBtn");
-    if (btn) { btn.classList.add("recording"); btn.textContent = "⏹"; btn.setAttribute("aria-pressed", "true"); }
+    if (state.voiceTarget === "chat") setChatVoiceState("Listening", "I’m listening. Tap the microphone when you finish, or pause naturally.");
+    renderVoiceRecordingButtons(true);
     const status = qs("#voiceStatus");
     if (status) status.textContent = `Recording ${state.voiceRecordingBackend === "web-audio-wav" ? "WAV" : "audio"}… click again to stop`;
     const badge = qs("#voiceModeBadge");
@@ -1201,10 +2405,10 @@ function stopVoiceRecording() {
     state.voiceMediaRecorder.stop();
     state.voiceMediaRecorder.stream?.getTracks().forEach(t => t.stop());
   }
-  const btn = qs("#voiceRecordBtn");
-  if (btn) { btn.classList.remove("recording"); btn.textContent = "🎙"; btn.setAttribute("aria-pressed", "false"); }
+  renderVoiceRecordingButtons(false);
   const status = qs("#voiceStatus");
   if (status) status.textContent = "Processing…";
+  if (state.voiceTarget === "chat" && state.chatVoiceMode) setChatVoiceState("Transcribing", "Turning your speech into text locally.");
 }
 
 async function handleVoiceRecordingStop() {
@@ -1253,12 +2457,38 @@ async function handleVoiceRecordingStop() {
       badge.textContent = transcription.transcript_status === "transcribed" ? "Transcribed" : "Needs STT";
       badge.className = transcription.transcript_status === "transcribed" ? "badge badge-success" : "badge badge-warning";
     }
+    if (state.voiceTarget === "chat" && transcription.transcript_status === "transcribed" && transcription.transcript) {
+      const input = qs("#chatInput");
+      if (input) input.value = transcription.transcript;
+      state.voiceReplyPending = true;
+      setChatVoiceState("Thinking", transcription.transcript);
+      await sendChat();
+    } else if (state.voiceTarget === "chat") {
+      toast("No reliable transcript", transcription.stt_message || "Configure faster-whisper or Vosk in Developer.");
+    }
   } catch(e) {
     toast("Transcription error", e.message);
     const status = qs("#voiceStatus");
     if (status) status.textContent = "Error - transcription request failed";
     const badge = qs("#voiceModeBadge");
     if (badge) { badge.textContent = "Ready"; badge.className = "badge"; }
+  }
+}
+
+function renderVoiceRecordingButtons(recording) {
+  const dedicated = qs("#voiceRecordBtn");
+  if (dedicated) {
+    dedicated.classList.toggle("recording", recording);
+    dedicated.textContent = recording ? "⏹" : "🎙";
+    dedicated.setAttribute("aria-pressed", String(recording));
+  }
+  const chat = qs("#chatVoiceButton");
+  if (chat) {
+    chat.classList.toggle("recording", recording && state.voiceTarget === "chat");
+    chat.textContent = recording && state.voiceTarget === "chat" ? "■" : "🎙";
+    chat.setAttribute("aria-pressed", String(recording && state.voiceTarget === "chat"));
+    chat.setAttribute("aria-label", recording && state.voiceTarget === "chat" ? "Stop voice recording" : "Start voice conversation");
+    chat.title = recording && state.voiceTarget === "chat" ? "Stop and send" : "Start voice conversation";
   }
 }
 
@@ -1280,6 +2510,8 @@ function renderVoiceLevel(input) {
     bar.style.height = `${Math.max(8, Math.round(8 + level * 32 * weight))}px`;
     bar.classList.toggle("hot", level > 0.72);
   });
+  const orb = qs("#chatVoiceOrb");
+  if (orb && state.chatVoiceMode) orb.style.setProperty("--voice-level", String(level));
 }
 
 function renderVoiceTranscriptionQuality(transcription) {
@@ -1826,13 +3058,8 @@ function renderResearchLoading(query) {
   const el = qs("#researchOutput");
   if (!el) return;
   el.innerHTML = `
-    <div class="research-loading">
-      <span class="spinner"></span>
-      <div>
-        <strong>Researching locally</strong>
-        <p>${escapeHtml(query)}</p>
-      </div>
-    </div>
+    <div class="research-query-message">${escapeHtml(query)}</div>
+    <div class="research-writing"><span class="spinner"></span><span>Building the evidence set…</span></div>
   `;
 }
 
@@ -1842,26 +3069,16 @@ function renderResearchResult(result) {
   const report = result.report || result.summary || "No report was returned.";
   const sources = result.sources || [];
   el.innerHTML = `
-    <div class="research-meta-grid">
-      <article><span>Provider</span><strong>${escapeHtml(result.provider || "auto")}</strong></article>
-      <article><span>Model</span><strong>${escapeHtml(result.model || "auto")}</strong></article>
-      <article><span>Iterations</span><strong>${escapeHtml(result.iterations ?? 0)}</strong></article>
-      <article><span>Elapsed</span><strong>${escapeHtml(result.elapsed_seconds ?? 0)}s</strong></article>
-    </div>
-    <div class="research-plan">
-      <strong>Plan</strong>
-      <p>${renderMarkdown(result.plan || "No plan returned.")}</p>
-    </div>
     <div class="research-markdown">${renderMarkdown(report)}</div>
-    <div class="research-source-list">
-      <strong>Sources used</strong>
+    <details class="research-source-list" ${sources.length ? "open" : ""}>
+      <summary>${sources.length} source${sources.length === 1 ? "" : "s"}</summary>
       ${sources.length ? sources.map(source => `
         <article class="list-item">
           <strong>${escapeHtml(source.title || source.type || "Local source")}</strong>
           <p>${escapeHtml(source.snippet || source.url || source.id || "")}</p>
         </article>
-      `).join("") : `<div class="empty-state">No local sources matched. Report is based on model reasoning and current prompt only.</div>`}
-    </div>
+      `).join("") : ""}
+    </details>
   `;
 }
 
@@ -1883,19 +3100,27 @@ function sendResearchToChat() {
 async function loadAgents() {
   try {
     const payload = await api("/api/agents");
-    state.agents = payload.agents || [];
+    try { state.customAgents = JSON.parse(localStorage.getItem("oa-custom-agent-roles") || "[]"); } catch (_) { state.customAgents = []; }
+    state.agents = [...(payload.agents || []), ...state.customAgents];
     const sel = qs("#agentSelect");
     if (sel) sel.innerHTML = state.agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join("");
     const grid = qs("#agentGrid");
-    if (grid) grid.innerHTML = state.agents.map(a =>
-      `<article class="agent-tile"><strong>${escapeHtml(a.name)}</strong><p>${escapeHtml(a.description)}</p></article>`
-    ).join("");
+    if (grid) {
+      grid.innerHTML = state.agents.map((a, index) => `<button class="agent-role-row ${index === 0 ? "active" : ""}" type="button" data-agent-role="${escapeHtml(a.id)}"><span class="agent-avatar">${escapeHtml((a.name || "A").slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(a.name)}</strong><small>${escapeHtml(a.id)}</small></span><i></i></button>`).join("");
+      qsa("[data-agent-role]", grid).forEach(button => button.addEventListener("click", () => {
+        if (sel) sel.value = button.dataset.agentRole;
+        qsa("[data-agent-role]", grid).forEach(item => item.classList.toggle("active", item === button));
+      }));
+    }
   } catch(e) { console.warn("loadAgents", e); }
 }
 
 async function runAgent(endpoint = "/api/agents/run") {
-  const agentId = qs("#agentSelect")?.value || "executive";
-  const goal = qs("#goalInput")?.value.trim() || "Review OpenAgent status";
+  const selectedId = qs("#agentSelect")?.value || "executive";
+  const custom = state.customAgents.find(item => item.id === selectedId);
+  const agentId = custom?.base_agent || selectedId;
+  const requestedGoal = qs("#goalInput")?.value.trim() || "Review OpenAgent status";
+  const goal = custom ? `Role: ${custom.name}\nInstructions: ${custom.instructions}\n\nGoal: ${requestedGoal}` : requestedGoal;
   try {
     const payload = await api(endpoint, {
       method: "POST",
@@ -1903,6 +3128,46 @@ async function runAgent(endpoint = "/api/agents/run") {
     });
     renderAgentOutput(payload);
   } catch(e) { toast("Agent error", e.message); }
+}
+
+function openAgentRoleDialog(role = null) {
+  const dialog = qs("#agentRoleDialog");
+  if (!dialog) return;
+  const builtIns = state.agents.filter(item => !String(item.id).startsWith("custom:"));
+  const base = qs("#agentRoleBase");
+  if (base) base.innerHTML = builtIns.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  dialog.dataset.roleId = role?.id || "";
+  qs("#agentRoleDialogTitle").textContent = role ? "Edit role" : "Create role";
+  qs("#agentRoleName").value = role?.name || "";
+  qs("#agentRoleInstructions").value = role?.instructions || "";
+  if (base) base.value = role?.base_agent || builtIns[0]?.id || "executive";
+  qs("#deleteAgentRole")?.toggleAttribute("hidden", !role);
+  dialog.showModal();
+}
+
+function saveAgentRole() {
+  const dialog = qs("#agentRoleDialog");
+  const name = qs("#agentRoleName")?.value.trim();
+  const instructions = qs("#agentRoleInstructions")?.value.trim();
+  if (!name || !instructions) { toast("Role needs a name and instructions"); return; }
+  const previousId = dialog?.dataset.roleId || "";
+  const id = previousId || `custom:${crypto.randomUUID()}`;
+  const role = { id, name, description: instructions.slice(0, 140), instructions, base_agent: qs("#agentRoleBase")?.value || "executive", custom: true };
+  state.customAgents = [...state.customAgents.filter(item => item.id !== id), role];
+  localStorage.setItem("oa-custom-agent-roles", JSON.stringify(state.customAgents));
+  dialog?.close();
+  loadAgents();
+  toast("Role saved", name);
+}
+
+function deleteAgentRole() {
+  const dialog = qs("#agentRoleDialog");
+  const id = dialog?.dataset.roleId || "";
+  if (!id || !window.confirm("Delete this custom role?")) return;
+  state.customAgents = state.customAgents.filter(item => item.id !== id);
+  localStorage.setItem("oa-custom-agent-roles", JSON.stringify(state.customAgents));
+  dialog?.close();
+  loadAgents();
 }
 
 async function runParallelAgents() {
@@ -2111,11 +3376,17 @@ async function autoQuantizeRegisteredModel() {
 async function loadWorkspaceItems() {
   const q = qs("#workspaceSearch")?.value.trim() || "";
   const payload = await api(`/api/workspace/items?project=${encodeURIComponent(getProject())}&q=${encodeURIComponent(q)}&limit=12`);
-  const items = payload.items || [];
+  const hiddenFixtureTitles = new Set(["desktop smoke document", "hard audit", "audit dashboard", "audit template"]);
+  const items = (payload.items || []).filter(item => !hiddenFixtureTitles.has(String(item.title || "").trim().toLowerCase()));
   const el = qs("#workspaceItems");
   if (el) el.innerHTML = items.length
-    ? items.map(i => listItem(i.title, `${i.kind} — ${(i.content || "").slice(0, 60)}`)).join("")
-    : emptyState("No workspace items yet");
+    ? items.map(i => `<button class="document-list-item" type="button" data-workspace-title="${escapeHtml(i.title)}" data-workspace-content="${escapeHtml(i.content || "")}"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.kind || "document")}</span></button>`).join("")
+    : `<div class="document-empty">No documents yet</div>`;
+  qsa("[data-workspace-title]", el).forEach(item => item.addEventListener("click", () => {
+    const title = qs("#workspaceTitle"); const content = qs("#workspaceContent");
+    if (title) title.value = item.dataset.workspaceTitle || "";
+    if (content) content.value = item.dataset.workspaceContent || "";
+  }));
 }
 
 async function createWorkspaceItem() {
@@ -2176,15 +3447,21 @@ function initUpload() {
 
   zone.addEventListener("click", () => input.click());
   zone.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") input.click(); });
-  input.addEventListener("change", e => { if (e.target.files[0]) uploadFile(e.target.files[0]); });
+  input.addEventListener("change", e => uploadFiles([...e.target.files]));
 
   zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag-over"); });
   zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
   zone.addEventListener("drop", e => {
     e.preventDefault();
     zone.classList.remove("drag-over");
-    if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+    uploadFiles([...e.dataTransfer.files]);
   });
+}
+
+async function uploadFiles(files) {
+  for (const file of files) await uploadFile(file);
+  const input = qs("#fileInput");
+  if (input) input.value = "";
 }
 
 async function uploadFile(file) {
@@ -2470,6 +3747,29 @@ function renderWorkflowCanvas(nodes, edges) {
       } catch(_) {}
     });
   });
+}
+
+function renderWorkflowAuthoring() {
+  const canvas = qs("#workflowCanvas");
+  if (!canvas) return;
+  canvas.innerHTML = `<div class="workflow-authoring"><input id="workflowName" placeholder="Workflow name"><div class="workflow-node-editor"><label><span>When</span><select id="workflowTrigger"><option value="manual">Started manually</option><option value="scheduled">On a schedule</option><option value="event">When an event arrives</option></select></label><span class="workflow-connector">→</span><label><span>Do</span><select id="workflowAction"><option value="run_agent">Run an agent</option><option value="search_context">Search memory</option><option value="chat">Ask a model</option><option value="report_generate">Generate a report</option><option value="file_list">List local files</option><option value="monitor_check">Check a monitor</option><option value="alert">Create an alert</option></select></label></div><textarea id="workflowInstruction" rows="5" placeholder="Describe the goal, query, message, or report content…"></textarea><button id="saveWorkflow" class="btn btn-primary" type="button">Save workflow</button></div>`;
+  qs("#saveWorkflow")?.addEventListener("click", createWorkflowFromEditor);
+  qs("#workflowName")?.focus();
+}
+
+async function createWorkflowFromEditor() {
+  try {
+    const name = qs("#workflowName")?.value.trim();
+    const action = qs("#workflowAction")?.value || "run_agent";
+    const instruction = qs("#workflowInstruction")?.value.trim();
+    if (!name || !instruction) { toast("Workflow needs a name and instruction"); return; }
+    const fieldByAction = { run_agent: "goal", search_context: "query", chat: "message", report_generate: "content", file_list: "path", monitor_check: "target", alert: "message" };
+    const step = { action, [fieldByAction[action] || "content"]: instruction };
+    const d = await api("/api/workflows", { method: "POST", body: JSON.stringify({ name, project: getProject(), trigger_type: qs("#workflowTrigger")?.value || "manual", steps: [step] }) });
+    setOutput("#workflowOutput", d);
+    loadWorkflows();
+    toast("Workflow saved", name);
+  } catch(e) { toast("Workflow error", e.message); }
 }
 
 // =============================================
@@ -2938,16 +4238,100 @@ async function loadIdentityAdministration() {
     : emptyState(me ? "No federation policies" : "Administrator sign in required");
 }
 
+function auditEventTime(event) {
+  const parsed = Date.parse(event.created_at || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function auditIncidentKey(event) {
+  return `${event.action || "action"}\u0000${event.resource || "resource"}`;
+}
+
+function classifyAuditIncidents(events, now = Date.now()) {
+  const ordered = [...events].sort((a, b) => auditEventTime(b) - auditEventTime(a));
+  const current = [];
+  const history = [];
+  const recentWindowMs = 15 * 60 * 1000;
+  ordered.filter(event => event.status === "failed").forEach(failure => {
+    const failureTime = auditEventTime(failure);
+    const recovered = ordered.some(event =>
+      event.status !== "failed"
+      && auditIncidentKey(event) === auditIncidentKey(failure)
+      && auditEventTime(event) > failureTime
+    );
+    if (!recovered && failureTime > 0 && failureTime <= now + 60000 && now - failureTime <= recentWindowMs) current.push(failure);
+    else history.push({ ...failure, incident_state: recovered ? "resolved" : "aged" });
+  });
+  return { current, history };
+}
+
+function renderDashboardAudit(events) {
+  const chart = qs("#dashboardAuditChart");
+  const failures = events.filter(event => event.status === "failed");
+  const incidents = classifyAuditIncidents(events);
+  const currentSet = new Set(incidents.current);
+  const historyMap = new Map(incidents.history.map(event => [auditIncidentKey(event) + auditEventTime(event), event.incident_state]));
+  const allowed = events.filter(event => event.status !== "failed");
+  if (chart) {
+    chart.setAttribute("aria-label", `${events.length} recent audit actions: ${allowed.length} allowed, ${incidents.current.length} current incidents, and ${incidents.history.length} historical failures.`);
+    chart.innerHTML = events.length ? `
+      <div class="audit-bars" aria-hidden="true">
+        ${[...events].reverse().map(event => {
+          const historical = historyMap.has(auditIncidentKey(event) + auditEventTime(event));
+          const eventClass = currentSet.has(event) ? "failed" : historical ? "historical" : "allowed";
+          return `<i class="${eventClass}" title="${escapeHtml(event.action || "action")}"></i>`;
+        }).join("")}
+      </div>
+      <div class="audit-summary"><span><b>${allowed.length}</b> allowed</span><span class="${incidents.current.length ? "has-failures" : ""}"><b>${incidents.current.length}</b> current</span><span><b>${incidents.history.length}</b> history</span></div>
+    ` : `<div class="chart-empty"><strong>No audit activity</strong><span>Actions appear here as they are recorded.</span></div>`;
+  }
+  const rail = qs("#dashboardFailures");
+  if (rail) {
+    if (incidents.current.length) {
+      const latest = incidents.current[0];
+      const detail = latest.metadata?.error || latest.resource || "No failure detail was recorded.";
+      rail.innerHTML = `<div><span>Attention required</span><strong>${escapeHtml(latest.action || "Failed action")}</strong><p>${escapeHtml(String(detail))}</p></div><button class="btn btn-mini btn-outline" data-view-jump="security">Inspect</button>`;
+      rail.classList.add("visible");
+    } else {
+      rail.innerHTML = "";
+      rail.classList.remove("visible");
+    }
+  }
+  const dashboard = qs("#auditEvents");
+  const visibleEvents = events.filter(event => {
+    if (state.dashboardUi.incidentFilter === "all") return true;
+    if (state.dashboardUi.incidentFilter === "current") return currentSet.has(event);
+    return event.status === "failed" && historyMap.has(auditIncidentKey(event) + auditEventTime(event));
+  });
+  if (dashboard) dashboard.innerHTML = visibleEvents.length ? visibleEvents.slice(0, 8).map(event => {
+    const incidentState = currentSet.has(event) ? "current" : historyMap.get(auditIncidentKey(event) + auditEventTime(event));
+    return `
+    <div class="audit-event-row ${incidentState === "current" ? "failed current" : incidentState ? "historical" : ""}">
+      <i aria-hidden="true"></i>
+      <div><strong>${escapeHtml(event.action || "action")}</strong><span>${escapeHtml(event.actor || "system")} · ${escapeHtml(event.resource || "local resource")}</span></div>
+      <time datetime="${escapeHtml(event.created_at || "")}">${escapeHtml(formatDateTime(event.created_at))}</time>
+      <small>${escapeHtml(incidentState || event.status || "allowed")}</small>
+    </div>
+  `; }).join("") : emptyState(state.dashboardUi.incidentFilter === "all" ? "No audit events yet" : `No ${state.dashboardUi.incidentFilter} incidents in the loaded audit window.`);
+}
+
 async function loadAudit() {
   try {
     const payload = await api(`/api/audit?project=${encodeURIComponent(getProject())}&limit=8`);
     const events = payload.events || [];
-    const html = events.length
+    state.dashboardSources.audit = true;
+    state.auditEvents = events;
+    renderDashboardAudit(events);
+    renderMetrics();
+    const securityHtml = events.length
       ? events.map(e => listItem(e.action, `${e.actor||"system"} — ${e.status||"ok"}`)).join("")
       : emptyState("No audit events yet");
-    const a = qs("#auditEvents"); if (a) a.innerHTML = html;
-    const s = qs("#securityAuditFeed"); if (s) s.innerHTML = html;
-  } catch(e) { console.warn("loadAudit", e); }
+    const s = qs("#securityAuditFeed"); if (s) s.innerHTML = securityHtml;
+  } catch(e) {
+    state.dashboardSources.audit = false;
+    renderMetrics();
+    console.warn("loadAudit", e);
+  }
 }
 
 async function loadPrivacyReport() {
@@ -5812,8 +7196,6 @@ function initKeyboardShortcuts() {
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     // Single-key shortcuts
     if (e.key === "g" && !e.ctrlKey) { e.preventDefault(); setView("chat"); }
-    if (e.key === "v" && !e.ctrlKey) { e.preventDefault(); setView("voice"); }
-    if (e.key === "r" && !e.ctrlKey) { e.preventDefault(); setView("research"); }
   });
 }
 
@@ -5823,6 +7205,14 @@ function initKeyboardShortcuts() {
 
 function initNavigation() {
   document.addEventListener("click", e => {
+    const codebaseFile = e.target.closest("[data-codebase-file]");
+    if (codebaseFile) { openCodebaseFile(codebaseFile.dataset.codebaseFile); return; }
+    const codebaseApproval = e.target.closest("[data-codebase-approval]");
+    if (codebaseApproval) { resolveCodebaseApproval(codebaseApproval.dataset.codebaseApproval, codebaseApproval.dataset.approved === "true"); return; }
+    const codebaseDetail = e.target.closest("[data-codebase-detail]");
+    if (codebaseDetail) { showCodebaseDetail(codebaseDetail.dataset.codebaseDetail); return; }
+    const codebaseOutput = e.target.closest("[data-codebase-output]");
+    if (codebaseOutput) { showCodebaseOutput(codebaseOutput.dataset.codebaseOutput); return; }
     const sciencePrompt = e.target.closest("[data-science-prompt]");
     if (sciencePrompt) {
       const goal = qs("#scienceGoal");
@@ -5902,7 +7292,6 @@ async function refreshAll() {
     loadIntegrationStatus(), loadPersonalOsStatus(), loadCalendarEvents(), loadCalendarSyncStatus(), loadTwinSuggestions(), loadVaultEntries(),
     loadScraperJobs(), loadFinetuneStatus(), loadModelJobs(), loadOperationalModules(),
   ]);
-  toast("Refreshed", "All data reloaded from local runtime.");
 }
 
 function exposeInlineHandlers() {
@@ -5942,7 +7331,6 @@ async function init() {
   initResearch();
   initUpload();
   initSettings();
-  initPhdWorkspace();
   exposeInlineHandlers();
 
   // Bind buttons
@@ -5954,14 +7342,67 @@ async function init() {
     }
   });
   qs("#sendChat")?.addEventListener("click", sendChat);
+  qs("#newConversationButton")?.addEventListener("click", newConversation);
+  qs("#chatAttachButton")?.addEventListener("click", () => qs("#chatAttachmentInput")?.click());
+  qs("#chatAttachmentInput")?.addEventListener("change", event => uploadChatAttachments(event.target.files));
+  qs("#newCodebaseProject")?.addEventListener("click", () => {
+    qs("#codebaseIde")?.setAttribute("hidden", "");
+    qs("#codebaseOpenPanel")?.removeAttribute("hidden");
+    qs("#codebaseSourcePath")?.focus();
+  });
+  qs("#refreshCodebase")?.addEventListener("click", loadCodebaseProjects);
+  qs("#createCodebaseProject")?.addEventListener("click", createCodebaseProject);
+  qs("#codebaseFolderPicker")?.addEventListener("click", pickCodebaseFolder);
+  qs("#codebaseProjectSelect")?.addEventListener("change", event => selectCodebaseProject(event.target.value));
+  qs("#scanCodebase")?.addEventListener("click", scanCodebaseProject);
+  qs("#saveCodebaseFile")?.addEventListener("click", saveCodebaseFile);
+  qs("#codebaseEditor")?.addEventListener("input", () => { rememberCurrentCodebaseBuffer(); renderCodebaseTabs(); updateCodebaseLineNumbers(); });
+  qs("#codebaseEditor")?.addEventListener("scroll", updateCodebaseLineNumbers);
+  qs("#codebaseEditor")?.addEventListener("click", updateCodebaseCursorStatus);
+  qs("#codebaseEditor")?.addEventListener("keyup", updateCodebaseCursorStatus);
+  qs("#codebaseEditor")?.addEventListener("select", updateCodebaseCursorStatus);
+  qs("#codebaseEditor")?.addEventListener("keydown", event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      saveCodebaseFile();
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      const editor = event.currentTarget;
+      const start = editor.selectionStart;
+      editor.setRangeText("  ", start, editor.selectionEnd, "end");
+      updateCodebaseLineNumbers();
+    }
+  });
+  qs("#startCodebaseRun")?.addEventListener("click", startCodebaseRun);
+  qs("#cancelCodebaseRun")?.addEventListener("click", cancelCodebaseRun);
+  qs("#resumeCodebaseRun")?.addEventListener("click", resumeCodebaseRun);
+  qs("#restoreCodebaseSnapshot")?.addEventListener("click", restoreCodebaseSnapshot);
+  qs("#codebaseRunSelect")?.addEventListener("change", event => event.target.value && loadCodebaseRun(event.target.value));
+  qs("#runCodebaseTests")?.addEventListener("click", runCodebaseTests);
+  qs("#runCodebaseCommand")?.addEventListener("click", runCodebaseCommand);
+  qs("#codebaseCommand")?.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); runCodebaseCommand(); } });
+  qs("#inspectCodebaseBrowser")?.addEventListener("click", inspectCodebaseBrowser);
+  qs("#loadCodebaseStatus")?.addEventListener("click", loadCodebaseStatus);
+  qs("#loadCodebaseDiff")?.addEventListener("click", loadCodebaseDiff);
   qs("#stopChat")?.addEventListener("click", () => stopActiveChat("Response stopped by user."));
   qs("#testChatModel")?.addEventListener("click", testChatModel);
   qs("#conversationSort")?.addEventListener("change", loadConversations);
-  qs("#showArchivedConversations")?.addEventListener("change", loadConversations);
+  qs("#showArchivedConversations")?.addEventListener("click", () => {
+    state.showArchivedConversations = !state.showArchivedConversations;
+    closeConversationActionMenu();
+    loadConversations();
+  });
   qs("#runConversationBulk")?.addEventListener("click", runConversationBulk);
   qs("#compactConversation")?.addEventListener("click", compactCurrentConversation);
   qs("#showConversationBranches")?.addEventListener("click", showCurrentConversationBranches);
   qs("#chatInput")?.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
+  document.addEventListener("click", event => {
+    const menu = qs("#conversationActionMenu");
+    if (menu && !menu.hidden && !menu.contains(event.target) && !event.target.closest("[data-conversation-menu]")) closeConversationActionMenu();
+  });
+  window.addEventListener("resize", closeConversationActionMenu);
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeConversationActionMenu(); });
+  qs("#researchQuery")?.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startResearch(); } });
   qs("#streamToggle")?.addEventListener("click", e => {
     state.streamingEnabled = !state.streamingEnabled;
     e.currentTarget.textContent = state.streamingEnabled ? "⚡ Stream" : "⚡ Batch";
@@ -5971,6 +7412,17 @@ async function init() {
   qs("#runAgent")?.addEventListener("click", () => runAgent());
   qs("#runCheckedAgent")?.addEventListener("click", () => runAgent("/api/agents/run-checked"));
   qs("#runParallelAgents")?.addEventListener("click", runParallelAgents);
+  qs("#newAgentRole")?.addEventListener("click", () => openAgentRoleDialog());
+  qs("#editAgentRole")?.addEventListener("click", () => {
+    const selected = qs("#agentSelect")?.value || "";
+    const role = state.customAgents.find(item => item.id === selected);
+    if (!role) { toast("Built-in roles are read-only", "Create a custom role to define your own instructions."); return; }
+    openAgentRoleDialog(role);
+  });
+  qs("#closeAgentRole")?.addEventListener("click", () => qs("#agentRoleDialog")?.close());
+  qs("#cancelAgentRole")?.addEventListener("click", () => qs("#agentRoleDialog")?.close());
+  qs("#saveAgentRole")?.addEventListener("click", saveAgentRole);
+  qs("#deleteAgentRole")?.addEventListener("click", deleteAgentRole);
   qs("#createWorkspaceItem")?.addEventListener("click", createWorkspaceItem);
   qs("#workspaceSearch")?.addEventListener("input", loadWorkspaceItems);
   qs("#loadWorkspaceCanvas")?.addEventListener("click", async () => {
@@ -5993,13 +7445,8 @@ async function init() {
   qs("#showKnowledgeGraph")?.addEventListener("click", async () => {
     try { const d = await api(`/api/knowledge/graph?project=${encodeURIComponent(getProject())}`); renderKnowledgeGraph(d); } catch(e) {}
   });
-  qs("#createWorkflow")?.addEventListener("click", async () => {
-    try {
-      const d = await api("/api/workflows", { method: "POST", body: JSON.stringify({ name: "Sample workflow", project: getProject(), steps: [{ action: "search_context", query: "OpenAgent" }] }) });
-      setOutput("#workflowOutput", d);
-      loadWorkflows();
-    } catch(e) { toast("Workflow error", e.message); }
-  });
+  qs("#createWorkflow")?.addEventListener("click", renderWorkflowAuthoring);
+  qs("#saveWorkflow")?.addEventListener("click", createWorkflowFromEditor);
   qs("#runDueWorkflows")?.addEventListener("click", async () => {
     try { const d = await api("/api/workflows/run-due", { method: "POST", body: JSON.stringify({ project: getProject() }) }); setOutput("#workflowOutput", d); } catch(e) { toast("Run due error", e.message); }
   });
@@ -6152,6 +7599,27 @@ async function init() {
   qsa("[data-theme-select]").forEach(btn =>
     btn.addEventListener("click", () => applyTheme(btn.dataset.themeSelect))
   );
+  qsa("[data-dashboard-window]").forEach(button => button.addEventListener("click", () => {
+    state.dashboardUi.resourceWindow = Number(button.dataset.dashboardWindow) || 36;
+    qsa("[data-dashboard-window]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    renderDashboardResourceChart();
+  }));
+  qsa("[data-provider-filter]").forEach(button => button.addEventListener("click", () => {
+    state.dashboardUi.providerFilter = button.dataset.providerFilter || "all";
+    qsa("[data-provider-filter]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    renderDashboardSystem();
+  }));
+  qsa("[data-incident-filter]").forEach(button => button.addEventListener("click", () => {
+    state.dashboardUi.incidentFilter = button.dataset.incidentFilter || "all";
+    qsa("[data-incident-filter]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    renderDashboardAudit(state.auditEvents);
+  }));
+  qs("#dashboardPauseTelemetry")?.addEventListener("click", event => {
+    state.dashboardUi.paused = !state.dashboardUi.paused;
+    event.currentTarget.setAttribute("aria-pressed", String(state.dashboardUi.paused));
+    event.currentTarget.textContent = state.dashboardUi.paused ? "Resume live" : "Pause live";
+    event.currentTarget.setAttribute("aria-label", state.dashboardUi.paused ? "Resume dashboard live updates" : "Pause dashboard live updates");
+  });
 
   // Global search redirect to palette
   qs("#globalSearch")?.addEventListener("keydown", e => {
@@ -6164,7 +7632,12 @@ async function init() {
   // Initial load
   await refreshAll();
   window.setInterval(() => {
-    if (!document.hidden) {
+    if (!document.hidden && state.activeView === "dashboard" && !state.dashboardUi.paused) {
+      Promise.allSettled([loadDashboardTelemetry(), loadAudit()]).catch(() => {});
+    }
+  }, 5000);
+  window.setInterval(() => {
+    if (!document.hidden && state.activeView !== "dashboard") {
       Promise.allSettled([loadDashboardTelemetry(), loadAudit(), loadProviders()]).catch(() => {});
     }
   }, 30000);
@@ -6285,6 +7758,18 @@ async function runScienceAction(action) {
       ? { project: getProject(), name: qs("#scienceMaterialsName")?.value, target, records, source: "local-upload" }
       : { project: getProject(), target, records, maximize: qs("#scienceMaterialsObjective")?.value !== "minimize" };
     payload = await api(endpoint, { method: "POST", body: JSON.stringify(body) });
+  } else if (action === "import-public-materials" || action === "analyse-public-materials") {
+    const datasetId = qs("#scienceMaterialsCatalog")?.value || "";
+    if (!datasetId) throw new Error("Choose a public materials dataset first.");
+    if (!qs("#scienceMaterialsNetworkApproved")?.checked) throw new Error("Approve the one-time HTTPS dataset download first.");
+    if (!qs("#scienceMaterialsLicenseAccepted")?.checked) throw new Error("Accept the selected dataset license first.");
+    const endpoint = action === "import-public-materials"
+      ? "/api/science/materials/catalog/import"
+      : "/api/science/materials/catalog/analyse";
+    payload = await api(endpoint, { method: "POST", body: JSON.stringify({
+      project: getProject(), dataset_id: datasetId, allow_external: true,
+      license_accepted: true, seed: 31,
+    }) });
   } else if (action === "analyse-evidence") {
     payload = await analyseScienceEvidence();
   } else {
@@ -6292,6 +7777,26 @@ async function runScienceAction(action) {
   }
   renderScienceSteps(steps, 4);
   renderSciencePayload(payload);
+}
+
+async function loadPublicMaterialsCatalog() {
+  const select = qs("#scienceMaterialsCatalog");
+  if (!select) return;
+  const payload = await api("/api/science/materials/catalog");
+  const datasets = Array.isArray(payload.datasets) ? payload.datasets : [];
+  select.innerHTML = datasets.length
+    ? datasets.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)} · ${escapeHtml(item.rows)} rows</option>`).join("")
+    : `<option value="">No catalog datasets available</option>`;
+  const renderSelection = () => {
+    const selected = datasets.find(item => item.id === select.value);
+    const status = qs("#scienceMaterialsCatalogStatus");
+    if (!status) return;
+    status.textContent = selected
+      ? `${selected.rows} rows · target ${selected.target} · ${selected.license_id} · records download only after approval; checksum ${String(selected.sha256 || "").slice(0, 12)}...`
+      : "No catalog dataset selected.";
+  };
+  select.addEventListener("change", renderSelection);
+  renderSelection();
 }
 
 async function readMaterialsDataset() {

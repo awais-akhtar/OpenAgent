@@ -123,11 +123,15 @@ class ConversationOrganization:
         return {**conversation, "folder": pref["folder"], "pinned": bool(pref["pinned"]), "archived": bool(pref["archived"]),
                 "compaction_mode": pref["compaction_mode"], "compact_after": pref["compact_after"], "message_count": count}
 
-    def list(self, *, project: str = "default", include_archived: bool = False, folder: str = "",
+    def list(self, *, project: str = "default", include_archived: bool = False, archived_only: bool = False, folder: str = "",
              sort: str = "pinned", query: str = "", limit: int = 100) -> list[dict[str, Any]]:
         conversations = self.store.list_conversations(project=project, limit=max(1, min(limit, 200)))
         records = [self.get(str(item["id"])) for item in conversations]
-        records = [item for item in records if (include_archived or not item["archived"]) and (not folder or item["folder"] == folder)]
+        records = [
+            item for item in records
+            if ((item["archived"] if archived_only else (include_archived or not item["archived"])))
+            and (not folder or item["folder"] == folder)
+        ]
         if sort == "semantic" and query.strip():
             for item in records:
                 messages = self.store.list_chat_messages(str(item["id"]), limit=80)

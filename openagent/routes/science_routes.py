@@ -13,6 +13,7 @@ from ..science.computing.neural_operator import DeepONet, FNO, PINN
 from ..science.experiment import ExperimentPlanner
 from ..science.execution import ScientificCodeRunner
 from ..science.multimodal.fusion import MultimodalScientificContext
+from ..science.materials.catalog import list_public_materials_datasets
 from ..science.service import ScientificService
 from ..science.tools import COMSOLTool, FenicsTool, LAMMPSTool, OpenFOAMTool, discover_scientific_tools
 from . import JsonRouteResult
@@ -25,6 +26,7 @@ ROUTES = (
     ("GET", "/api/science/tools"),
     ("GET", "/api/science/memory"),
     ("GET", "/api/science/materials/datasets"),
+    ("GET", "/api/science/materials/catalog"),
     ("POST", "/api/science/run"),
     ("POST", "/api/science/multimodal"),
     ("POST", "/api/science/experiments"),
@@ -32,6 +34,10 @@ ROUTES = (
     ("POST", "/api/science/memory"),
     ("POST", "/api/science/materials/datasets"),
     ("POST", "/api/science/materials/analyse"),
+    ("POST", "/api/science/materials/catalog/import"),
+    ("POST", "/api/science/materials/catalog/analyse"),
+    ("POST", "/api/science/operators/deeponet"),
+    ("POST", "/api/science/engineering/optimize"),
     ("POST", "/api/science/verify"),
     ("POST", "/api/science/simulate"),
 )
@@ -47,6 +53,7 @@ class ScienceRouteDependencies:
     run_agent: Any
     read_json: Any
     service: ScientificService | None = None
+    gateway: Any = None
 
 
 def handle_get(path: str, query: str, deps: ScienceRouteDependencies) -> JsonRouteResult | None:
@@ -66,6 +73,11 @@ def handle_get(path: str, query: str, deps: ScienceRouteDependencies) -> JsonRou
         if deps.service is None:
             return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
         return JsonRouteResult({"datasets": deps.service.list_material_datasets(project=project)})
+    if path == "/api/science/materials/catalog":
+        return JsonRouteResult({
+            "datasets": list_public_materials_datasets(),
+            "privacy_boundary": "Listing the bundled metadata is local. Importing records requires separate network and license approval.",
+        })
     if path != "/api/science/status":
         return None
     return JsonRouteResult(
@@ -79,9 +91,10 @@ def handle_get(path: str, query: str, deps: ScienceRouteDependencies) -> JsonRou
                 {"id": "materials_discovery", "label": "Materials property discovery"},
                 {"id": "multimodal_fusion", "label": "Multimodal scientific evidence"},
             ],
-            "backends": {"numpy": _optional_module("numpy"), "scipy": _optional_module("scipy")},
-            "capabilities": ["scientific_memory", "experiment_planning", "bounded_execution", "profiling"],
-            "privacy_boundary": "Scientific calculations and evidence stay local. This API does not perform network research or upload inputs.",
+            "backends": {"numpy": _optional_module("numpy"), "scipy": _optional_module("scipy"), "torch": _optional_module("torch")},
+            "capabilities": ["scientific_memory", "experiment_planning", "bounded_execution", "profiling", "deeponet_training", "materials_reporting", "multimodal_observations", "optimizer_selection", "approved_citation_resolution"],
+            "optimizer_methods": ["random", "differential_evolution", "minimize"],
+            "privacy_boundary": "Scientific calculations and evidence stay local unless a verification request explicitly approves external citation resolution.",
         }
     )
 
@@ -94,7 +107,9 @@ def handle_post(path: str, deps: ScienceRouteDependencies) -> JsonRouteResult | 
     try:
         if path == "/api/science/run":
             goal = str(payload.get("goal", "")).strip()
-            return JsonRouteResult({"run": deps.run_agent(goal, project=project)}, HTTPStatus.CREATED)
+            run = deps.run_agent(goal, project=project)
+            serialized = deps.service.serialize_agent_run(run) if deps.service is not None and isinstance(run, dict) else {"run": run}
+            return JsonRouteResult(serialized, HTTPStatus.CREATED)
         if path == "/api/science/experiments":
             candidates = payload.get("candidates", [])
             if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
@@ -110,6 +125,7 @@ def handle_post(path: str, deps: ScienceRouteDependencies) -> JsonRouteResult | 
             record = ScientificCodeRunner().run(
                 code,
                 timeout_seconds=min(30.0, max(0.1, float(payload.get("timeout_seconds", 10.0)))),
+                memory_limit_mb=min(16_384, max(32, int(payload.get("memory_limit_mb", 512)))),
                 retries=min(3, max(0, int(payload.get("retries", 0)))),
             )
             return JsonRouteResult({"execution": record.to_dict()}, HTTPStatus.CREATED)
@@ -144,9 +160,64 @@ def handle_post(path: str, deps: ScienceRouteDependencies) -> JsonRouteResult | 
                 raise ValueError("candidates must be a list of objects")
             result = deps.service.analyse_materials(project=project, records=records, target=str(payload.get("target", "")), candidates=candidates, maximize=bool(payload.get("maximize", True)))
             return JsonRouteResult({"analysis": result}, HTTPStatus.CREATED)
+        if path == "/api/science/materials/catalog/import":
+            if deps.service is None:
+                return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            result = deps.service.import_public_material_dataset(
+                project=project,
+                dataset_id=str(payload.get("dataset_id", "")),
+                allow_external=payload.get("allow_external") is True,
+                license_accepted=payload.get("license_accepted") is True,
+            )
+            return JsonRouteResult({"import": result}, HTTPStatus.CREATED)
+        if path == "/api/science/materials/catalog/analyse":
+            if deps.service is None:
+                return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            result = deps.service.analyse_public_material_dataset(
+                project=project,
+                dataset_id=str(payload.get("dataset_id", "")),
+                allow_external=payload.get("allow_external") is True,
+                license_accepted=payload.get("license_accepted") is True,
+                seed=int(payload.get("seed", 31)),
+            )
+            return JsonRouteResult({"analysis": result}, HTTPStatus.CREATED)
+        if path == "/api/science/operators/deeponet":
+            if deps.service is None:
+                return JsonRouteResult({"error": "Scientific operator training is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            inputs = _numeric_matrix(payload.get("inputs"), "inputs")
+            outputs = _numeric_matrix(payload.get("outputs"), "outputs")
+            evaluation_inputs = _numeric_matrix(payload.get("evaluation_inputs", []), "evaluation_inputs", allow_empty=True)
+            evaluation_outputs = _numeric_matrix(payload.get("evaluation_outputs", []), "evaluation_outputs", allow_empty=True)
+            result = deps.service.train_deeponet(
+                project=project,
+                inputs=inputs,
+                outputs=outputs,
+                evaluation_inputs=evaluation_inputs,
+                evaluation_outputs=evaluation_outputs,
+                backend=str(payload.get("backend", "auto")),
+                hidden=min(512, max(2, int(payload.get("hidden", 48)))),
+                basis=min(512, max(2, int(payload.get("basis", 24)))),
+                epochs=min(20_000, max(1, int(payload.get("epochs", 350)))),
+                seed=int(payload.get("seed", 7)),
+            )
+            return JsonRouteResult({"operator": result}, HTTPStatus.CREATED)
+        if path == "/api/science/engineering/optimize":
+            if deps.service is None:
+                return JsonRouteResult({"error": "Scientific optimisation is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            result = deps.service.optimize_engineering(
+                project=project,
+                method=str(payload.get("method", "random")),
+                iterations=min(50_000, max(1, int(payload.get("iterations", 800)))),
+                stress_limit=float(payload.get("stress_limit", 250e6)),
+                deflection_limit=float(payload.get("deflection_limit", 0.005)),
+                benchmark=bool(payload.get("benchmark", False)),
+            )
+            return JsonRouteResult({"optimization": result}, HTTPStatus.CREATED)
         if path == "/api/science/verify":
             if deps.service is None:
                 return JsonRouteResult({"error": "Scientific verification is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            if "external_citation_lookup_approved" in payload and not isinstance(payload.get("external_citation_lookup_approved"), bool):
+                raise ValueError("external_citation_lookup_approved must be a boolean")
             return JsonRouteResult({"verification": deps.service.verify(project=project, payload=payload)}, HTTPStatus.CREATED)
         if path == "/api/science/simulate":
             simulator_id = str(payload.get("simulator", "fenics")).lower()
@@ -172,14 +243,34 @@ def handle_post(path: str, deps: ScienceRouteDependencies) -> JsonRouteResult | 
             if isinstance(item, dict):
                 context.add_sensor_csv(str(item.get("name", "sensor.csv")), str(item.get("content", "")))
         for item in payload.get("images", []) if isinstance(payload.get("images"), list) else []:
-            if isinstance(item, dict) and isinstance(item.get("values"), list):
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("values"), list):
                 context.add_image(str(item.get("name", "image")), [float(value) for value in item["values"]], width=int(item.get("width", 0) or 0), height=int(item.get("height", 0) or 0))
+            elif str(item.get("base64", "")):
+                context.add_image_bytes(
+                    str(item.get("name", "image")),
+                    base64.b64decode(str(item["base64"]), validate=True),
+                    media_type=str(item.get("media_type", "image/png")),
+                    gateway=deps.gateway,
+                    vlm_model=str(item.get("vlm_model", payload.get("vlm_model", ""))),
+                    provider_id=str(item.get("provider_id", payload.get("provider_id", "auto"))),
+                    allow_external=bool(item.get("allow_external", payload.get("allow_external", False))),
+                )
         for item in payload.get("simulations", []) if isinstance(payload.get("simulations"), list) else []:
             if isinstance(item, dict):
                 context.add_simulation(str(item.get("name", "simulation.json")), item.get("content", {}))
         response = deps.agent.run_multimodal(str(payload.get("goal", "Explain the supplied evidence")), context, project=project)
-        return JsonRouteResult({"run": response.to_record(), "context": context.summary()}, HTTPStatus.CREATED)
-    except (TypeError, ValueError, RuntimeError) as exc:
+        summary = context.summary()
+        observations = [
+            {"name": item.get("name", ""), "kind": item.get("kind", ""), "observations": item.get("vlm", {}).get("observations", [])}
+            for item in summary["items"]
+            if isinstance(item, dict) and isinstance(item.get("vlm"), dict)
+        ]
+        return JsonRouteResult({"run": response.to_record(), "context": summary, "observations": observations}, HTTPStatus.CREATED)
+    except PermissionError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.FORBIDDEN)
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
 
@@ -189,3 +280,14 @@ def _optional_module(name: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def _numeric_matrix(value: Any, field: str, *, allow_empty: bool = False) -> list[list[float]]:
+    if allow_empty and value == []:
+        return []
+    if not isinstance(value, list) or not value or not all(isinstance(row, list) and row for row in value):
+        raise ValueError(f"{field} must be a non-empty matrix")
+    try:
+        return [[float(item) for item in row] for row in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must contain only numeric values") from exc

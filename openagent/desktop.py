@@ -31,7 +31,7 @@ from .security_privacy import SecurityPrivacyManager
 from .semantic_memory import SemanticMemoryManager
 from .storage import OpenAgentStore
 from .voice import VoiceRuntime, synthesize_tone_wav
-from .workbench import configured_workbench_port, launch_workbench, workbench_status
+from .workbench import configured_workbench_port, launch_workbench, maybe_reexec_project_venv, workbench_status
 from .workflows import WorkflowEngine
 from .workspace import WorkspaceManager
 
@@ -1347,6 +1347,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.feature_smoke_json:
         print(json.dumps(run_desktop_feature_smoke(data_dir, project=args.project), indent=2, sort_keys=True))
         return 0
+    if argv is None and not args.legacy_tk:
+        maybe_reexec_project_venv()
     try:
         if args.legacy_tk:
             return launch_desktop(data_dir, project=args.project)

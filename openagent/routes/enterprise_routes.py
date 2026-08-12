@@ -16,6 +16,10 @@ ROUTES = (
     ("GET", "/api/enterprise/disaster-recovery"),
     ("GET", "/api/enterprise/workspace/members"),
     ("GET", "/api/enterprise/org-memory"),
+    ("POST", "/api/enterprise/access/check"),
+    ("POST", "/api/enterprise/audit/export"),
+    ("POST", "/api/enterprise/policies/evaluate"),
+    ("POST", "/api/enterprise/sso/validate"),
 )
 
 

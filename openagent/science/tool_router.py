@@ -22,8 +22,30 @@ class ScientificToolRouter:
         if plan.workflow == "heat_equation":
             solver = HeatEquation1D()
             initial = solver.initial_condition("sine")
-            output = {"solver": {"points": solver.points, "steps": solver.steps, "alpha": solver.alpha, "dt": solver.dt}, "initial": initial, "final": solver.solve(initial), "energy_initial": solver.energy(initial), "energy_final": solver.energy(solver.solve(initial))}
-            return output, self.verifier.verify(output)
+            final = solver.solve(initial)
+            energy_initial = solver.energy(initial)
+            energy_final = solver.energy(final)
+            constraints = [{"name": "energy_decay", "passed": energy_final <= energy_initial, "value": energy_final, "limit": energy_initial}]
+            evidence = {
+                "heat:initial-energy": {"value": energy_initial, "method": "discrete squared-energy sum"},
+                "heat:final-energy": {"value": energy_final, "method": "discrete squared-energy sum"},
+            }
+            claims = [{
+                "id": "heat:energy-decay",
+                "text": "The discrete energy did not increase during the stable heat-equation run.",
+                "evidence_ids": ["heat:initial-energy", "heat:final-energy"],
+            }]
+            output = {
+                "solver": {"points": solver.points, "steps": solver.steps, "alpha": solver.alpha, "dt": solver.dt},
+                "initial": initial,
+                "final": final,
+                "energy_initial": energy_initial,
+                "energy_final": energy_final,
+                "constraints": constraints,
+                "claims": claims,
+                "evidence": evidence,
+            }
+            return output, self.verifier.verify(output, constraints=constraints, claims=claims, evidence=evidence)
         if plan.workflow == "beam_optimization":
             parameters = _engineering_parameters(memory, bridge=False)
             return self._run_engineering_script(_beam_script(parameters), parameters, workflow="beam_optimization")

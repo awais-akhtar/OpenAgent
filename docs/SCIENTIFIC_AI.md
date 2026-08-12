@@ -32,7 +32,9 @@ replace domain review or claim experimental validity by itself.
 
 `ScientificAgent` turns a question into a typed plan, executes the matching
 local workflow, runs verification checks, and returns a report with the
-assumptions and next actions. The current planner covers:
+assumptions and next actions. A configured local model can propose a validated
+JSON plan; invalid or unavailable model output falls back to the deterministic
+planner. The supported workflows cover:
 
 - scientific review planning
 - heat-equation computation
@@ -72,17 +74,18 @@ Question -> Scientific Agent -> Tool adapter -> Result -> Verification -> Report
 ## Scientific Computing
 
 The built-in computing path includes a stable one-dimensional heat-equation
-solver and a transparent surrogate baseline. Operator-learning interfaces are
-available for:
+solver, a transparent Fourier ridge surrogate, and a real DeepONet branch/trunk
+implementation with NumPy and optional PyTorch backends. Operator-learning
+interfaces are available for:
 
 - FNO
 - DeepONet
 - PINN
 - general operator-learning backends
 
-The dependency-light baseline is deterministic and testable. Projects can add
-NumPy, SciPy, PyTorch, or another approved backend behind the same `fit` and
-`predict` contract without changing the agent or route API.
+DeepONet is evaluated on held-out solver outputs. FNO and PINN currently remain
+explicit mean-output baselines; their status metadata prevents them from being
+presented as completed implementations.
 
 ## Engineering Optimisation
 
@@ -132,10 +135,10 @@ so normal project ownership and retention rules remain in force.
 The verification path is deliberately separate from the agent response:
 
 ```text
-Agent output
+Agent output and evidence IDs
     -> finite-value checks
     -> residual and equation checks
-    -> unit checks
+    -> Pint dimensional checks
     -> engineering constraint checks
     -> consistency findings
     -> PASS or needs review
@@ -164,8 +167,9 @@ Scientific memory is loaded before engineering execution. Recognised project
 records such as density, Young's modulus, span, load, stress limit, and
 deflection limit replace labelled defaults and are listed in the final report.
 
-The safety helpers also provide citation presence checks, numeric consistency
-checks, and a conservative evidence-overlap check for unsupported claims.
+The safety helpers require structured claim-to-evidence links and structured
+citation records. External DOI or URL resolution is performed only through an
+approved caller-provided resolver; otherwise the report says it was not checked.
 
 ## Experiment Planner
 

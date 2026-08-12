@@ -145,9 +145,14 @@ class ScientificWorkflowTests(unittest.TestCase):
         self.assertTrue(any(item.name == "NumPy" for item in discover_scientific_tools()))
         papers = PaperSearch([{"title": "Heat transfer study", "abstract": "A finite difference method."}])
         self.assertEqual(papers.search("heat")[0].title, "Heat transfer study")
-        self.assertTrue(check_citations("See [1]", ["paper 1"])['passed'])
+        self.assertTrue(check_citations("See [paper-1]", [{"id": "paper-1", "title": "Paper 1"}])["passed"])
         self.assertTrue(check_consistency({"a": 1.0, "b": 2.0})['passed'])
-        self.assertTrue(detect_unsupported_claims("Heat result", ["heat"])['passed'])
+        self.assertTrue(
+            detect_unsupported_claims(
+                [{"text": "Heat result", "evidence_ids": ["result:heat"]}],
+                {"result:heat": 1.0},
+            )["passed"]
+        )
 
     def test_scientific_service_persists_memory_and_materials(self) -> None:
         with TemporaryDirectory() as tmp:

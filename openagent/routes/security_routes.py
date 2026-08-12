@@ -17,6 +17,14 @@ ROUTES = (
     ("GET", "/api/security/privacy-reports"),
     ("GET", "/api/security/privacy-report"),
     ("GET", "/api/security/sandbox-profiles"),
+    ("POST", "/api/security/audit-chain/seal"),
+    ("POST", "/api/security/egress/request"),
+    ("POST", "/api/security/egress/resolve"),
+    ("POST", "/api/security/retention/apply"),
+    ("POST", "/api/security/sandbox/evaluate"),
+    ("POST", "/api/security/secrets/reveal"),
+    ("POST", "/api/security/secrets/rotate"),
+    ("POST", "/api/security/shares/resolve"),
 )
 
 

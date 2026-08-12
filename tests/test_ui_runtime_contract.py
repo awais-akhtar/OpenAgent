@@ -48,7 +48,11 @@ def _button_is_wired(attrs: dict[str, str]) -> bool:
         )
     return any(
         key in attrs
-        for key in ("data-view-link", "data-view-jump", "data-command", "data-theme-select", "data-nav-group")
+        for key in (
+            "data-view-link", "data-view-jump", "data-command", "data-theme-select", "data-nav-group",
+            "data-dashboard-window", "data-provider-filter", "data-incident-filter",
+            "data-codebase-file", "data-codebase-approval", "data-codebase-detail", "data-codebase-output",
+        )
     )
 
 

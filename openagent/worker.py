@@ -235,6 +235,14 @@ class WorkerRuntime:
             session = lifecycle.start(session_id)
             if session["status"] == "cancelled":
                 return session
+            lifecycle.checkpoint(
+                session_id,
+                "collecting",
+                25,
+                "Searching local knowledge and approved public indexes."
+                if bool(payload.get("allow_external"))
+                else "Searching local knowledge sources.",
+            )
         try:
             result = ResearchEngine(self.store, self.gateway).run(
                 query,

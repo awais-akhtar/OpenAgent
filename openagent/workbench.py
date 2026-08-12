@@ -78,10 +78,20 @@ def configure_managed_accelerator() -> str:
     source_root = installation_source_root()
     if source_root is None:
         return ""
-    scripts = "Scripts" if sys.platform == "win32" else "bin"
-    executable_name = "python.exe" if sys.platform == "win32" else "python"
-    executable = source_root / ".accelerator-venv" / scripts / executable_name
-    if not executable.is_file():
+    layouts = (
+        (("Scripts", "python.exe"), ("bin", "python"))
+        if sys.platform == "win32"
+        else (("bin", "python"), ("Scripts", "python.exe"))
+    )
+    executable = next(
+        (
+            source_root / ".accelerator-venv" / scripts / executable_name
+            for scripts, executable_name in layouts
+            if (source_root / ".accelerator-venv" / scripts / executable_name).is_file()
+        ),
+        None,
+    )
+    if executable is None:
         return ""
     selected = str(executable.resolve())
     os.environ["OPENAGENT_SOURCE_ROOT"] = str(source_root)
@@ -203,18 +213,26 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
     return ""
 
 
+def project_venv_python() -> Path | None:
+    """Return the installer-recorded source interpreter when it is available."""
+
+    package_root = Path(__file__).resolve().parents[1]
+    source_root = installation_source_root() or package_root
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    executable = "python.exe" if sys.platform == "win32" else "python"
+    candidate = source_root / ".venv" / scripts_dir / executable
+    return candidate.resolve() if candidate.is_file() else None
+
+
 def maybe_reexec_project_venv() -> None:
-    """Prefer the repo virtualenv for local launches when it exists."""
+    """Prefer the installer-recorded source virtualenv for development launches."""
 
     if os.environ.get("OPENAGENT_SKIP_PROJECT_VENV_REEXEC", "").strip():
         return
     if os.environ.get("OPENAGENT_PROJECT_VENV_REEXECED", "").strip():
         return
-    package_root = Path(__file__).resolve().parents[1]
-    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
-    executable = "python.exe" if sys.platform == "win32" else "python"
-    venv_python = package_root / ".venv" / scripts_dir / executable
-    if not venv_python.exists():
+    venv_python = project_venv_python()
+    if venv_python is None:
         return
     try:
         current = Path(sys.executable).resolve()
@@ -226,7 +244,7 @@ def maybe_reexec_project_venv() -> None:
     os.environ["OPENAGENT_PROJECT_VENV_REEXECED"] = "1"
     os.environ.setdefault("OPENAGENT_FASTER_WHISPER_MODEL", "base.en")
     existing_path = os.environ.get("PYTHONPATH", "")
-    root_text = str(package_root)
+    root_text = str(target.parents[2])
     os.environ["PYTHONPATH"] = root_text if not existing_path else f"{root_text}{os.pathsep}{existing_path}"
     command = [str(target), "-m", "openagent.workbench", *sys.argv[1:]]
     if sys.platform == "win32":
@@ -304,7 +322,7 @@ def launch_workbench(
     if not instance_lock.acquire():
         existing_url = _running_instance_url(runtime_path)
         if existing_url and open_window:
-            focus_openagent_window()
+            open_app_window(existing_url, data_path, profile_dir=runtime_path / "browser-reconnect")
         print(existing_url or "OpenAgent Workbench is already running for this data directory.")
         return 0
     store = OpenAgentStore(data_path)
@@ -417,14 +435,51 @@ def focus_openagent_window() -> bool:
         import ctypes
 
         user32 = ctypes.windll.user32
-        handle = user32.FindWindowW(None, "OpenAgent")
-        if not handle:
+        handles: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        @callback_type
+        def collect(handle, _param):
+            length = user32.GetWindowTextLengthW(handle)
+            if length:
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(handle, title, length + 1)
+                if (
+                    "openagent" in title.value.casefold()
+                    and user32.IsWindowVisible(handle)
+                    and _browser_window_process(user32, handle, ctypes)
+                ):
+                    handles.append(int(handle))
+                    return False
+            return True
+
+        user32.EnumWindows(collect, 0)
+        if not handles:
             return False
+        handle = handles[0]
         user32.ShowWindow(handle, 9)
         user32.SetForegroundWindow(handle)
         return True
     except Exception:
         return False
+
+
+def _browser_window_process(user32: Any, handle: int, ctypes_module: Any) -> bool:
+    """Return true only for a visible Chromium browser process on Windows."""
+
+    process_id = ctypes_module.c_ulong()
+    user32.GetWindowThreadProcessId(handle, ctypes_module.byref(process_id))
+    process = ctypes_module.windll.kernel32.OpenProcess(0x1000, False, process_id.value)
+    if not process:
+        return False
+    try:
+        path = ctypes_module.create_unicode_buffer(32768)
+        size = ctypes_module.c_ulong(len(path))
+        if not ctypes_module.windll.kernel32.QueryFullProcessImageNameW(process, 0, path, ctypes_module.byref(size)):
+            return False
+        return Path(path.value).name.casefold() in {"msedge.exe", "chrome.exe", "chromium.exe"}
+    finally:
+        ctypes_module.windll.kernel32.CloseHandle(process)
 
 
 def resolve_app_browser() -> str:

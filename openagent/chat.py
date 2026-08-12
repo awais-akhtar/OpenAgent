@@ -6,7 +6,7 @@ import json
 import hashlib
 from pathlib import Path
 import secrets
-from typing import Iterator
+from typing import Any, Iterator
 
 from .context import ContextEngine
 from .model_gateway import ModelGateway
@@ -56,13 +56,15 @@ class ChatService:
         provider: str = "local",
         model: str | None = None,
         allow_external: bool = False,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, object]:
         conversation, user_message = self._record_user_message(
             content,
             conversation_id=conversation_id,
             project=project,
+            attachments=attachments,
         )
-        messages = self._build_model_messages(conversation["id"], project)
+        messages = self._build_model_messages(conversation["id"], project, query=content, attachments=attachments)
         result = self.gateway.complete(
             messages,
             provider_id=provider,
@@ -99,11 +101,13 @@ class ChatService:
         provider: str = "local",
         model: str | None = None,
         allow_external: bool = False,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> Iterator[dict[str, object]]:
         conversation, user_message = self._record_user_message(
             content,
             conversation_id=conversation_id,
             project=project,
+            attachments=attachments,
         )
         yield {"type": "conversation", "conversation": conversation, "message": user_message}
         yield {
@@ -114,7 +118,7 @@ class ChatService:
             "conversation_id": conversation["id"],
         }
 
-        messages = self._build_model_messages(conversation["id"], project)
+        messages = self._build_model_messages(conversation["id"], project, query=content, attachments=attachments)
         parts: list[str] = []
         chunk_provider = provider
         chunk_model = model or ""
@@ -155,6 +159,7 @@ class ChatService:
         *,
         conversation_id: str | None,
         project: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
         content = content.strip()
         if not content:
@@ -171,6 +176,7 @@ class ChatService:
                 content=content,
                 provider="user",
                 model="human",
+                metadata={"attachments": self._attachment_records(attachments)},
             )
         )
         self.context.ingest(
@@ -223,15 +229,83 @@ class ChatService:
         )
         return assistant_message
 
-    def _build_model_messages(self, conversation_id: str, project: str) -> list[dict[str, str]]:
+    def record_research(
+        self,
+        query: str,
+        report: str,
+        *,
+        conversation_id: str | None = None,
+        project: str = "default",
+        sources: list[dict[str, object]] | None = None,
+        research_session_id: str = "",
+    ) -> dict[str, object]:
+        """Persist a completed research exchange in ordinary chat history."""
+
+        conversation, user_message = self._record_user_message(
+            query, conversation_id=conversation_id, project=project,
+        )
+        source_records = sources or []
+        assistant_message = self._record_assistant_message(
+            conversation,
+            report,
+            provider="research",
+            model="source-backed-research",
+            metadata={
+                "research_session_id": research_session_id,
+                "source_count": len(source_records),
+                "sources": source_records[:20],
+            },
+            project=project,
+        )
+        return {
+            "conversation": conversation,
+            "conversation_id": conversation["id"],
+            "messages": [user_message, assistant_message],
+        }
+
+    def _build_model_messages(
+        self,
+        conversation_id: str,
+        project: str,
+        *,
+        query: str = "",
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, str]]:
         snapshot = self.context.snapshot(project=project, limit=40)
         terms = ", ".join(item["term"] for item in snapshot["top_terms"][:8]) or "none yet"
+        evidence = self.context.search(query, project=project, limit=6) if query.strip() else []
+        evidence_text = "\n".join(
+            f"- {item.get('title') or item.get('type') or 'Local source'}: {str(item.get('content', ''))[:700]}"
+            for item in evidence
+            if str(item.get("content", "")).strip()
+        )
         system = (
             "You are OpenAgent, a self-hosted privacy-first AI operating system. "
             "Respect local-first boundaries. "
-            f"Project: {project}. Memory events: {snapshot['event_count']}. Top terms: {terms}."
+            f"Project: {project}. Memory events: {snapshot['event_count']}. Top terms: {terms}. "
+            "Use retrieved local evidence when it is relevant, but never pretend it is current web research."
         )
-        history = self.store.list_chat_messages(conversation_id, limit=20)
+        if evidence_text:
+            system += f"\n\nRetrieved local knowledge for this request:\n{evidence_text}"
+        attachment_text = self._attachment_context(attachments)
+        if attachment_text:
+            system += (
+                "\n\nFiles attached to the current message were processed locally. "
+                "Use this evidence directly and state any extraction or vision limitations.\n"
+                + attachment_text
+            )
+        project_memory = self._project_conversation_memory(
+            project=project,
+            current_conversation_id=conversation_id,
+            current_query=query,
+        )
+        if project_memory:
+            system += (
+                "\n\nRecent memory from this project and other conversations follows. "
+                "Use it to resolve follow-up references and stable user preferences; ignore unrelated items.\n"
+                + project_memory
+            )
+        history = self.store.list_chat_messages(conversation_id, limit=40)
         messages = [{"role": "system", "content": system}]
         messages.extend(
             {"role": item["role"], "content": item["content"]}
@@ -239,6 +313,65 @@ class ChatService:
             if item["role"] in {"user", "assistant", "system"}
         )
         return messages
+
+    @staticmethod
+    def _attachment_records(attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        records = []
+        for item in attachments or []:
+            if not isinstance(item, dict):
+                continue
+            records.append({
+                "id": str(item.get("id") or item.get("asset_id") or ""),
+                "name": str(item.get("name") or item.get("filename") or "attachment"),
+                "media_type": str(item.get("media_type") or "document"),
+                "mime_type": str(item.get("mime_type") or ""),
+            })
+        return records[:12]
+
+    @staticmethod
+    def _attachment_context(attachments: list[dict[str, Any]] | None) -> str:
+        blocks = []
+        for index, item in enumerate(attachments or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("filename") or f"attachment-{index}")
+            summary = " ".join(str(item.get("summary") or "").split())
+            extracted = str(item.get("extracted_text") or item.get("content") or "").strip()
+            findings = item.get("findings") if isinstance(item.get("findings"), dict) else {}
+            details = json.dumps(findings, sort_keys=True)[:1800] if findings else ""
+            evidence = extracted[:12_000] or summary or details or "No readable text was extracted."
+            blocks.append(f"[Attachment {index}: {name}]\n{evidence}")
+        return "\n\n".join(blocks[:12])
+
+    def _project_conversation_memory(
+        self,
+        *,
+        project: str,
+        current_conversation_id: str,
+        current_query: str,
+        limit: int = 12,
+    ) -> str:
+        events = self.store.list_events(project=project, limit=160)
+        relevant = self.context.search(current_query, project=project, limit=12) if current_query.strip() else []
+        ordered = [*relevant, *events]
+        selected: list[str] = []
+        seen: set[str] = set()
+        for item in ordered:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if str(item.get("type", "")) != "conversation" or metadata.get("role") != "user":
+                continue
+            content = " ".join(str(item.get("content", "")).split())
+            if not content or content.casefold() == current_query.strip().casefold():
+                continue
+            key = content.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            origin = "this conversation" if metadata.get("conversation_id") == current_conversation_id else "another conversation"
+            selected.append(f"- ({origin}) {content[:500]}")
+            if len(selected) >= max(1, min(limit, 30)):
+                break
+        return "\n".join(selected)
 
     def branch(
         self,

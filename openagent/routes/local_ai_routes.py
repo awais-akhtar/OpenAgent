@@ -30,6 +30,11 @@ ROUTES = (
     ("POST", "/api/local-ai/models/delete"),
     ("POST", "/api/local-ai/models/{id}/dependencies"),
     ("POST", "/api/local-ai/models/{id}/tools"),
+    ("POST", "/api/local-ai/benchmark"),
+    ("POST", "/api/local-ai/cluster-plan"),
+    ("POST", "/api/local-ai/models/quantize"),
+    ("POST", "/api/local-ai/models/setup-chat"),
+    ("POST", "/api/local-ai/ollama/pull"),
 )
 
 

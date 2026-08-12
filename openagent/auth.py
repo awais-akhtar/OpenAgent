@@ -86,6 +86,8 @@ SCOPE_CATALOG: tuple[dict[str, str], ...] = (
     {"scope": "settings:write", "description": "Change runtime settings"},
     {"scope": "phd:read", "description": "View private PhD profiles, positions, sources, and artifacts"},
     {"scope": "phd:write", "description": "Manage PhD application data, research, generation, and exports"},
+    {"scope": "codebase:read", "description": "View codebase projects, workspaces, runs, and event history"},
+    {"scope": "codebase:write", "description": "Create and operate isolated software-engineering workspaces"},
 )
 
 DEFAULT_SCOPES: tuple[str, ...] = tuple(entry["scope"] for entry in SCOPE_CATALOG)
@@ -815,6 +817,7 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/integrations/", "integrations:read", "integrations:admin"),
     ("/api/settings/", "settings:read", "settings:write"),
     ("/api/phd/", "phd:read", "phd:write"),
+    ("/api/codebase/", "codebase:read", "codebase:write"),
 )
 
 

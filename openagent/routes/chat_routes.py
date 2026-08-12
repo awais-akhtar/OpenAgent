@@ -16,6 +16,8 @@ ROUTES = (
     ("POST", "/api/chat/stream"),
     ("POST", "/api/chat/branch"),
     ("POST", "/api/chat/import"),
+    ("POST", "/api/chat/artifact"),
+    ("POST", "/api/chat/research-record"),
 )
 
 

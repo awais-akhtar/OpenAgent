@@ -253,7 +253,7 @@ class ModelCookbook:
             "runner_priority": ["ollama", "llama.cpp", "vllm"],
             "privacy_boundary": "Hardware fit uses local system telemetry only.",
         }
-        profile_id = stable_id("fit", project, model_ref, str(parameter_count_b), utc_now())
+        profile_id = uuid4().hex
         with self.store.session() as connection:
             connection.execute(
                 "INSERT INTO model_fit_profiles (id, project, model_ref, profile_json, created_at) VALUES (?, ?, ?, ?, ?)",
