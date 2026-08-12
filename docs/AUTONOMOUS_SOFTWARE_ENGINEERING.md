@@ -111,6 +111,8 @@ CodeQ classifies a new request by product type, language, and framework before i
 
 Small malformed-model recovery remains available where a deterministic result is honest: standalone browser pages, Vite/React sign-in work, and focused Python functions. Every other project stays in the general model-tool-repair loop. Narration-only implementation steps and validation steps without executable evidence are rejected and retried instead of being marked complete. Completion commands are rediscovered after greenfield files are created, so generated test and build scripts become real gates once their toolchain and dependencies are present.
 
+Static-site requests carry an explicit page-count contract. For example, a request for four static pages must leave four linked HTML documents plus their shared assets in the selected folder. CodeQ treats `static` as a plain browser project rather than silently substituting React, checks the requested page count during artifact validation, and publishes only after that check passes. Managed preview or dependency processes may report a running state without an exit code; the controller waits for real completion evidence instead of interpreting that state as a command failure.
+
 Routine reads, edits, tests, builds, local managed processes, and loopback browser checks run automatically inside the copied workspace. Publishing verified file changes to the explicitly selected folder is part of successful completion; external URLs, pushes, deployments, purchases, DNS changes, and production database operations remain outside autonomous scope. This separation lets ordinary engineering work continue unattended without giving a model unrestricted control of the host machine.
 
 ## Live events

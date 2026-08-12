@@ -85,6 +85,18 @@ class EmptyLoginPageGateway(FakeGateway):
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
 
 
+class StaticSiteGateway(FakeGateway):
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        if "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "final acceptance auditor" in system:
+            payload = {"status": "passed", "missing_tasks": [], "evidence": ["four linked pages and assets verified"]}
+        else:
+            payload = {"summary": "attempted an invalid browser action", "actions": [{"tool": "browser_inspect", "arguments": {}}], "done": True}
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
 class NarratingPythonGateway(FakeGateway):
     def complete(self, messages, **kwargs):
         system = messages[0]["content"].lower()
@@ -558,6 +570,39 @@ class CodebaseServiceTests(unittest.TestCase):
             event_types = {item["type"] for item in service.events(run["id"])}
             self.assertIn("model.action_replaced", event_types)
             self.assertIn("source.publish.completed", event_types)
+
+    def test_static_four_page_site_is_verified_and_published_to_selected_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "selected-folder"
+            source.mkdir()
+            service = CodebaseService(OpenAgentStore(base / "data"), StaticSiteGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Static site", source_path=str(source))
+            run = service.create_run(
+                codebase_project_id=project["id"],
+                prompt="make a web appliation with 4 pages static",
+                max_iterations=8,
+            )
+            run = service.wait_for_run(run["id"], timeout=20)
+            self.assertEqual("completed", run["status"], run.get("error"))
+            page_names = {"index.html", "about.html", "services.html", "contact.html"}
+            self.assertEqual(page_names, {path.name for path in source.glob("*.html")})
+            self.assertTrue((source / "styles.css").is_file())
+            self.assertTrue((source / "app.js").is_file())
+            self.assertFalse((source / "package.json").exists())
+            for page_name in page_names:
+                content = (source / page_name).read_text(encoding="utf-8")
+                for linked_page in page_names:
+                    self.assertIn(f'href="{linked_page}"', content)
+            self.assertTrue(any(item["kind"] == "artifacts" and item["status"] == "passed" for item in run["validation"]))
+            self.assertFalse(any("sign-in" in task["title"].lower() for task in run["tasks"]))
+            self.assertIn("source.publish.completed", {item["type"] for item in service.events(run["id"])})
+
+    def test_running_process_without_exit_code_is_not_treated_as_a_failed_command(self) -> None:
+        self.assertIsNone(CodebaseService._exit_code(None))
+        self.assertIsNone(CodebaseService._exit_code("not-finished"))
+        self.assertEqual(0, CodebaseService._exit_code(0))
+        self.assertEqual(1, CodebaseService._exit_code("1"))
 
     def test_inline_python_is_self_corrected_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -157,6 +157,56 @@ form.addEventListener('submit', event => {
 });
 """
 
+STATIC_SITE_CSS = """* { box-sizing: border-box; }
+:root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f4f7fb; }
+html { scroll-behavior: smooth; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #f4f7fb; }
+a { color: inherit; }
+button { font: inherit; }
+.site-header { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid #dbe3ed; background: rgba(255,255,255,.96); }
+.nav-shell { width: min(1120px, calc(100% - 2rem)); min-height: 72px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 2rem; }
+.brand { display: inline-flex; align-items: center; gap: .7rem; font-weight: 800; text-decoration: none; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 7px; color: white; background: #1261a6; }
+.site-nav { display: flex; align-items: center; gap: .35rem; }
+.site-nav a { padding: .6rem .8rem; border-radius: 6px; color: #506176; font-size: .92rem; font-weight: 650; text-decoration: none; }
+.site-nav a:hover, .site-nav a[aria-current="page"] { color: #0d4f88; background: #e9f2fa; }
+.menu-button { display: none; border: 1px solid #c9d4e2; border-radius: 6px; padding: .55rem .7rem; color: #18344f; background: white; cursor: pointer; }
+main { min-height: calc(100vh - 142px); }
+.hero { padding: clamp(4rem, 10vw, 8rem) 1rem; color: white; background: #12395b; }
+.hero-inner, .content-grid { width: min(1120px, 100%); margin: auto; }
+.eyebrow { margin: 0 0 .8rem; color: #8bc8f5; font-size: .76rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+h1 { max-width: 760px; margin: 0; font-size: clamp(2.5rem, 7vw, 5.4rem); line-height: 1; }
+.hero p:last-child { max-width: 650px; margin: 1.4rem 0 0; color: #d2e5f4; font-size: clamp(1rem, 2vw, 1.18rem); line-height: 1.75; }
+.content { padding: clamp(3rem, 7vw, 6rem) 1rem; }
+.content-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(250px, .65fr); gap: clamp(2rem, 6vw, 5rem); align-items: start; }
+.content h2 { margin: 0 0 1rem; font-size: clamp(1.7rem, 4vw, 2.6rem); }
+.content p { color: #526276; line-height: 1.75; }
+.feature-list { display: grid; gap: .8rem; margin: 1.7rem 0 0; padding: 0; list-style: none; }
+.feature-list li { border-left: 3px solid #1870b9; padding: .75rem 1rem; background: white; box-shadow: 0 1px 2px rgba(20,45,70,.06); }
+.side-note { border: 1px solid #d9e3ed; border-radius: 8px; padding: 1.4rem; background: white; }
+.side-note strong { display: block; margin-bottom: .45rem; color: #164f80; }
+.site-footer { min-height: 70px; display: grid; place-items: center; border-top: 1px solid #dbe3ed; padding: 1rem; color: #627286; background: white; }
+@media (max-width: 760px) { .menu-button { display: inline-flex; } .site-nav { position: absolute; top: 64px; right: 1rem; left: 1rem; display: none; align-items: stretch; flex-direction: column; border: 1px solid #d5dfeb; border-radius: 8px; padding: .55rem; background: white; box-shadow: 0 16px 38px rgba(18,57,91,.16); } .site-nav[data-open="true"] { display: flex; } .content-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
+"""
+
+STATIC_SITE_JS = """const menuButton = document.querySelector('.menu-button');
+const navigation = document.querySelector('.site-nav');
+
+menuButton?.addEventListener('click', () => {
+  const isOpen = navigation.dataset.open === 'true';
+  navigation.dataset.open = String(!isOpen);
+  menuButton.setAttribute('aria-expanded', String(!isOpen));
+});
+
+navigation?.addEventListener('click', event => {
+  if (event.target.closest('a')) {
+    navigation.dataset.open = 'false';
+    menuButton?.setAttribute('aria-expanded', 'false');
+  }
+});
+"""
+
 REACT_LOGIN_PACKAGE = """{
   "name": "responsive-login",
   "private": true,
@@ -998,7 +1048,8 @@ class CodebaseService:
                         break
                     if tool in {"write_file", "patch_file", "delete_file", "move_file"}:
                         changed = True
-                    if int(result.get("exit_code", 0)) not in {0, -1}:
+                    exit_code = self._exit_code(result.get("exit_code"))
+                    if exit_code is not None and exit_code not in {0, -1}:
                         last_feedback = f"Command failed.\nCommand: {result.get('command')}\nstdout:\n{result.get('stdout', '')}\nstderr:\n{result.get('stderr', '')}"
                         self._event(run_id, "repair.requested", task_id=task["id"], error=last_feedback[-20_000:])
                         failed = True
@@ -1179,9 +1230,18 @@ class CodebaseService:
 
     def _plan(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], architecture: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if self._standalone_web_request(run["user_prompt"], project_map):
-            stack = "React application" if self._react_request(run["user_prompt"]) else "web page"
+            goal = run["user_prompt"]
+            if self._static_web_request(goal):
+                page_count = self._requested_page_count(goal)
+                return [
+                    {"id": "T1", "title": f"Create a responsive static website with {page_count} linked pages and shared navigation", "assigned_agent": "programmer", "depends_on": []},
+                    {"id": "T2", "title": "Add polished shared responsive styling and interaction behavior", "assigned_agent": "programmer", "depends_on": ["T1"]},
+                    {"id": "T3", "title": f"Inspect all {page_count} pages and validate links and assets", "assigned_agent": "tester", "depends_on": ["T2"]},
+                ]
+            stack = "React application" if self._react_request(goal) else "web page"
+            outcome = "sign-in component" if self._login_request(goal) else "requested user experience"
             return [
-                {"id": "T1", "title": f"Create the responsive {stack} structure and sign-in component", "assigned_agent": "programmer", "depends_on": []},
+                {"id": "T1", "title": f"Create the responsive {stack} structure and {outcome}", "assigned_agent": "programmer", "depends_on": []},
                 {"id": "T2", "title": "Add polished responsive styling and interaction behavior", "assigned_agent": "programmer", "depends_on": ["T1"]},
                 {"id": "T3", "title": "Inspect the generated files and validate the page artifacts", "assigned_agent": "tester", "depends_on": ["T2"]},
             ]
@@ -1268,6 +1328,16 @@ class CodebaseService:
             )
             if implementation_task and not any(str(action.get("tool", "")) in {"write_file", "patch_file"} for action in actions if isinstance(action, dict)):
                 invalid = True
+            if self._static_web_request(run["user_prompt"]):
+                requested_pages = self._requested_page_count(run["user_prompt"])
+                written_pages = {
+                    str((action.get("arguments") or {}).get("path", "")).replace("\\", "/").lower()
+                    for action in actions if isinstance(action, dict)
+                    and str(action.get("tool", "")) in {"write_file", "patch_file"}
+                    and str((action.get("arguments") or {}).get("path", "")).lower().endswith(".html")
+                }
+                if ("linked pages" in title or "static website" in title) and len(written_pages) < requested_pages:
+                    invalid = True
             if self._react_request(run["user_prompt"]):
                 written_paths = {
                     str((action.get("arguments") or {}).get("path", "")).replace("\\", "/").lower()
@@ -1356,6 +1426,30 @@ class CodebaseService:
     @classmethod
     def _empty_web_fallback(cls, goal: str, task: dict[str, Any]) -> dict[str, Any]:
         title = str(task.get("title", "")).lower()
+        if cls._static_web_request(goal):
+            page_names = cls._static_page_names(cls._requested_page_count(goal))
+            if "linked pages" in title or "static website" in title or "structure" in title:
+                return {
+                    "summary": f"Created {len(page_names)} linked static pages",
+                    "actions": [
+                        {"tool": "write_file", "arguments": {"path": filename, "content": cls._static_page_html(filename, label, page_names)}}
+                        for filename, label in page_names
+                    ],
+                    "done": True,
+                }
+            if "styling" in title or "interaction" in title:
+                return {
+                    "summary": "Added shared responsive styling and navigation behavior",
+                    "actions": [
+                        {"tool": "write_file", "arguments": {"path": "styles.css", "content": STATIC_SITE_CSS}},
+                        {"tool": "write_file", "arguments": {"path": "app.js", "content": STATIC_SITE_JS}},
+                    ],
+                    "done": True,
+                }
+            if "validate" in title or "inspect" in title:
+                paths = [filename for filename, _label in page_names] + ["styles.css", "app.js"]
+                return {"summary": f"Inspected all {len(page_names)} pages and shared assets", "actions": [{"tool": "read_files", "arguments": {"paths": paths}}], "done": True}
+            return {}
         if cls._react_request(goal):
             if "structure" in title or "component" in title:
                 return {
@@ -1391,6 +1485,103 @@ class CodebaseService:
     @staticmethod
     def _react_request(goal: str) -> bool:
         return bool(re.search(r"\breact(?:\.js|js)?\b", str(goal), re.I))
+
+    @staticmethod
+    def _login_request(goal: str) -> bool:
+        return bool(re.search(r"\b(login|log in|sign[ -]?in|sign[ -]?up|auth(?:entication)?)\b", str(goal), re.I))
+
+    @classmethod
+    def _static_web_request(cls, goal: str) -> bool:
+        text = str(goal).lower()
+        return not cls._react_request(goal) and any(term in text for term in ("static", "html and css", "html/css", "plain html"))
+
+    @staticmethod
+    def _requested_page_count(goal: str) -> int:
+        text = str(goal).lower()
+        match = re.search(r"\b(\d{1,2})\s*(?:static\s+)?pages?\b", text)
+        if match:
+            return max(1, min(int(match.group(1)), 20))
+        words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+        for word, count in words.items():
+            if re.search(rf"\b{word}\s+(?:static\s+)?pages?\b", text):
+                return count
+        return 1
+
+    @staticmethod
+    def _static_page_names(count: int) -> list[tuple[str, str]]:
+        labels = ["Home", "About", "Services", "Contact", "Work", "Insights", "Pricing", "FAQ", "Team", "Careers"]
+        pages: list[tuple[str, str]] = []
+        for index in range(max(1, min(int(count), 20))):
+            label = labels[index] if index < len(labels) else f"Page {index + 1}"
+            filename = "index.html" if index == 0 else re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") + ".html"
+            pages.append((filename, label))
+        return pages
+
+    @staticmethod
+    def _static_page_html(filename: str, label: str, pages: list[tuple[str, str]]) -> str:
+        navigation = "\n".join(
+            f'        <a href="{path}"' + (' aria-current="page"' if path == filename else "") + f">{name}</a>"
+            for path, name in pages
+        )
+        descriptions = {
+            "Home": "A clear, fast starting point built for every screen.",
+            "About": "The principles, people, and practical thinking behind the work.",
+            "Services": "Focused capabilities designed around useful outcomes.",
+            "Contact": "A straightforward way to start a conversation.",
+        }
+        description = descriptions.get(label, f"Explore {label.lower()} with a focused, accessible layout.")
+        return f'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{description}">
+  <title>{label} | Northstar</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="nav-shell">
+      <a class="brand" href="index.html"><span class="brand-mark">N</span> Northstar</a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="site-navigation">Menu</button>
+      <nav class="site-nav" id="site-navigation" aria-label="Primary" data-open="false">
+{navigation}
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="hero-inner">
+        <p class="eyebrow">Northstar / {label}</p>
+        <h1>{label}</h1>
+        <p>{description}</p>
+      </div>
+    </section>
+    <section class="content">
+      <div class="content-grid">
+        <div>
+          <h2>Designed for clarity</h2>
+          <p>This page shares one visual system with the rest of the site while keeping its own purpose and content. Navigation remains usable with a keyboard, touch input, or a narrow viewport.</p>
+          <ul class="feature-list"><li>Responsive from small screens upward</li><li>Shared navigation and consistent page structure</li><li>Semantic HTML with accessible controls</li></ul>
+        </div>
+        <aside class="side-note"><strong>{label} at a glance</strong><span>{description}</span></aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">Northstar · Built with plain HTML, CSS, and JavaScript</footer>
+  <script src="app.js"></script>
+</body>
+</html>
+'''
+
+    @staticmethod
+    def _exit_code(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _standalone_web_request(goal: str, project_map: dict[str, Any]) -> bool:
@@ -1557,7 +1748,9 @@ class CodebaseService:
                 continue
             self._event(run["id"], f"{kind}.started", command=command)
             output = self._invoke(run, "", "run_shell", {"command": command, "timeout_seconds": item.get("timeout_seconds", 900)})
-            status = "passed" if int(output.get("exit_code", -1)) == 0 else "failed"
+            normalized_exit_code = self._exit_code(output.get("exit_code"))
+            status = "passed" if normalized_exit_code == 0 else "failed"
+            output["exit_code"] = normalized_exit_code if normalized_exit_code is not None else -1
             result = {"kind": kind, "status": status, **output}
             results.append(result)
             self._record_test(run["id"], kind, result)
@@ -1869,7 +2062,17 @@ class CodebaseService:
                     break
         source_map = RepositoryIntelligence(workspace["source_path"]).scan()
         profile = classify_request(run["user_prompt"], source_map)
+        if self._static_web_request(run["user_prompt"]):
+            profile = {**profile, "framework": "browser", "language": "javascript", "explicit_stack": True}
         missing = check_artifact_contract(root, profile) if profile["mode"] == "greenfield" else []
+        requested_pages = self._requested_page_count(run["user_prompt"]) if self._static_web_request(run["user_prompt"]) else 0
+        if requested_pages:
+            actual_pages = [
+                path for path in root.rglob("*.html")
+                if not any(part in {".git", "node_modules", ".venv", "dist", "build"} for part in path.relative_to(root).parts)
+            ]
+            if len(actual_pages) < requested_pages:
+                missing.append(f"at least {requested_pages} linked HTML pages (found {len(actual_pages)})")
         status = "passed" if not files and not missing else "failed"
         return {
             "kind": "artifacts",
