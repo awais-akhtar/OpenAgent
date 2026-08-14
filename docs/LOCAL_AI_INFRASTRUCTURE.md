@@ -1,8 +1,8 @@
 # Local AI Infrastructure
 
-Stage 6 is implemented as a local AI infrastructure manager.
+Stage 6 provides a local model-management and runtime-planning layer.
 
-## Implemented Features
+## Local Features
 
 - Local model registry
 - Model download manager

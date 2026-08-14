@@ -2,7 +2,7 @@
 
 Stage 8 is implemented as a local-first developer platform layer.
 
-The Developer screen is an operations console rather than a feature gallery. It keeps source ingestion, API and SDK inspection, local diagnostics and backups, model lifecycle controls, measured inference, MCP servers, audited terminal runs, scheduler state, and skill packaging in one place. Personal notes, gallery demonstrations, canned bridge writes, test-image generation, and simulated OAuth callbacks are not shown in this console; their APIs remain available to the modules that own them.
+The Developer screen is an operations console rather than a feature gallery. It keeps source ingestion, API and SDK inspection, local diagnostics and backups, model lifecycle controls, measured inference, MCP servers, audited terminal runs, capability planning, scheduler state, and skill packaging in one place. Personal notes, gallery demonstrations, canned bridge writes, test-image generation, and simulated OAuth callbacks are not shown in this console; their APIs remain available to the modules that own them.
 
 ```mermaid
 flowchart LR
@@ -31,6 +31,9 @@ flowchart LR
 - Generated Python SDK artifact
 - Agent, workflow, and plugin SDK starter helpers
 - Local integration hub for pairing, diagnostics, backups, preferences, and safe local checks
+- Unified tool runtime with typed requests/results, local policy decisions, trace identifiers, bounded output, and a SafeTerminal adapter
+- Capability planning over the provider registry and adaptive-engine health; plans are advisory unless a provider reports measured evidence
+- Bounded stdio and HTTP JSON-RPC MCP invocation with schema validation, explicit external approval, connection events, and audit records
 
 ## APIs
 
@@ -76,6 +79,23 @@ POST /api/developer/extensions
 GET /api/developer/sdk
 POST /api/developer/sdk
 ```
+
+Unified runtime and capability planning:
+
+```bash
+GET /api/tools/runtime
+POST /api/tools/runtime/execute
+GET /api/compute/status
+POST /api/compute/plan
+POST /api/mcp/tools/{tool_id}/invoke
+```
+
+The current common registry contains the audited local `terminal.run`
+adapter. Existing CodeQ, browser, workflow, and provider APIs remain available
+through their established routes while they are migrated behind the shared
+contract. An invocation over HTTP or another external boundary must include a
+valid approval record; a registered MCP server is not contacted merely because
+it appears in the configuration list.
 
 Local operations and integration hub:
 

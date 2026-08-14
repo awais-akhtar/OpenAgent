@@ -30,9 +30,13 @@ The retry loop also detects no-progress command failures. An identical command m
 
 CodeQ uses the repository map and the request together. An existing application is inspected before changes are proposed; selected source regions, symbols, dependencies, routes, tests, and stored project commands become the working context. A new or effectively empty folder follows a bootstrap path that creates concrete artifacts first and validates them immediately. Empty directories do not make a workspace look like an established codebase.
 
+The project-manager model plans both existing and greenfield work. If the user names a stack, that choice becomes part of the delivery contract. If no stack is named, the profile remains `model-selected`; CodeQ passes the product goal, repository map, project memory, and independent specialist reports to the manager instead of silently choosing React or Python. The resulting task graph is accepted only when it contains implementation and validation work. An empty or malformed model plan uses a stack-neutral deterministic plan so the run can continue through the normal model, tool, repair, and verification loop.
+
 The project manager chooses the smallest useful set of roles for each run. A narrow function can stay with one programmer and one tester. A larger product can involve architecture, frontend, backend, database, security, testing, debugging, review, and documentation specialists. Independent specialists examine the request and repository concurrently and produce a shared architecture and acceptance contract. The project manager then creates the dependency graph from that contract.
 
 Tasks without dependencies can generate their next action batches concurrently. File mutations are applied in a stable order. If two agents propose changes to the same path, the later decision is discarded and regenerated against the updated repository. This preserves parallel analysis and code generation without accepting last-writer-wins corruption. Parent task identifiers and dependencies remain durable, so a model can create focused sub-work instead of starting an unbounded agent conversation.
+
+Planner output is normalized before execution. A dependency may use a task ID or the exact title of one uniquely named task; title references are converted to durable IDs. Duplicate, self-referential, cyclic, and nonexistent edges are recorded and removed. The same normalization runs when an older failed run is resumed and once more if execution reaches a graph with unfinished work but no runnable task. If the graph still cannot move, the run reports the blocked task IDs and their unresolved dependencies instead of returning a generic failure.
 
 Lightweight local models occasionally use a correct tool with a different argument name, such as `query` instead of `symbol`. CodeQ normalizes a bounded set of these aliases before validation. It also catches narration masquerading as execution, including an `echo` or process launch that only says a file is being created. For small Python and standalone web requests, the controller replaces that action with file creation and focused tests. The replacement is visible as `model.action_replaced` in the run history.
 
@@ -111,7 +115,89 @@ The `browser_inspect` tool opens a supplied loopback HTTP application with Playw
 
 CodeQ classifies a new request by product type, language, and framework before it creates the task graph. The profile covers browser applications, services, command-line tools, libraries, desktop and mobile applications, games, and data projects across the repository-native stack or an explicitly requested stack. New projects receive foundation, implementation, test, and validation tasks; existing projects continue to use repository-aware planning. Structural delivery contracts prevent a React request becoming one HTML file, a Rust request completing without `Cargo.toml`, or a Go service completing without a module and entrypoint.
 
-Small malformed-model recovery remains available where a deterministic result is honest: standalone browser pages, Vite/React sign-in work, and focused Python functions. Every other project stays in the general model-tool-repair loop. Narration-only implementation steps and validation steps without executable evidence are rejected and retried instead of being marked complete. Completion commands are rediscovered after greenfield files are created, so generated test and build scripts become real gates once their toolchain and dependencies are present.
+Small malformed-model recovery remains available where a deterministic result is honest: standalone browser pages, Vite/React sign-in work, focused Python functions, and compact Django sites. These adapters are not the primary coding path. The model receives each task first; an adapter is selected only when the response is missing, invalid, or does not create the framework artifacts required by that task. Every other project stays in the general model-tool-repair loop. Narration-only implementation steps and validation steps without executable evidence are rejected and retried instead of being marked complete. Completion commands are rediscovered after greenfield files are created, so generated test and build scripts become real gates once their toolchain and dependencies are present.
+
+The controller and file tools are language-neutral. Current structural contracts recognize React, Next.js, Vue, Svelte, Angular, Django, FastAPI, Flask, Node, Go, Rust, Tauri, .NET, Spring, Flutter, React Native, native Android and iOS, Electron, Solidity, Rails, Laravel, Phoenix, Godot, Unity, Unreal, CMake, and Zig projects. A different stack can still be planned and edited through the general path, but CodeQ reports missing executables or unavailable dependencies as real validation failures; it does not claim a build passed when the required toolchain is absent.
+
+## Framework and environment preflight
+
+CodeQ separates source generation, local validation, and external release work. Before specialists propose an architecture, the preflight classifies the requested stack, checks the current host, resolves required executables from `PATH`, and records platform or provider requirements. The result is included in the architecture contract and emitted as `environment.preflight.completed` so the IDE can show the selected stack and toolchain state while work is running.
+
+```mermaid
+flowchart LR
+    A["Request and repository map"] --> B["Framework profile"]
+    B --> C["Host and executable probes"]
+    C --> D["Architecture and task graph"]
+    D --> E["Source changes"]
+    E --> F["Build, tests, runtime, security and acceptance gates"]
+    F -->|"all pass"| G["Verified files published"]
+    F -->|"missing SDK or failed gate"| H["Setup requirement or repair evidence"]
+    G --> I["Approved external release, when requested"]
+```
+
+The catalog covers browser and server frameworks, native desktop and mobile stacks, C/C++, Rust, Go, Zig, JVM and .NET applications, Flutter, game engines, and Solidity projects. Repository scanning recognizes their common manifests and source extensions, then discovers native validation commands such as `cargo test`, `go test`, `forge test`, `mix test`, `flutter test`, and `zig build test` where the project provides enough structure.
+
+Preflight does not claim that unavailable host software has been installed. Xcode cannot be supplied by a Windows run, an Android build still needs the Android SDK, Unreal and Unity need their editors and target modules, firmware needs physical hardware, and Kubernetes or enterprise integrations need their real environments. CodeQ can prepare source, manifests, tests, and deployment definitions in the protected workspace; certification remains pending until the corresponding compiler, SDK, emulator, database, cluster, device, or provider is available and the requested gates pass.
+
+Model selection follows the same evidence rule. The project manager and relevant specialists receive the repository context and preflight, while implementation, debugging, security review, and acceptance review can use role-specific model policies. A response is never accepted merely because a model says the work is complete. Concrete file changes, executable checks, whole-project acceptance review, and independent diff review determine completion.
+
+Production deployment, cloud mutations, app-store submission, payment configuration, DNS changes, pushes, and secret-bearing provider setup remain outside unattended execution. They require explicit approval and real credentials delivered through the secret boundary; secrets are not copied into prompts or persisted tool output.
+
+## CodeQ generator SDK
+
+The same contracts used by the desktop service are available as a Python SDK. This is the supported extension point for a framework, compiler, internal platform, or domain-specific project type that is not part of the built-in catalog.
+
+```python
+from openagent.codebase import (
+    CodeQSDK,
+    DeclarativeFrameworkAdapter,
+    GeneratorRegistry,
+)
+from openagent.codebase.frameworks import FrameworkSpec
+
+registry = GeneratorRegistry()
+registry.register(DeclarativeFrameworkAdapter(
+    FrameworkSpec(
+        id="acme-runtime",
+        label="Acme Runtime",
+        languages=("acme",),
+        manifests=("acme.toml",),
+        required_tools=(("acmec",),),
+        external_requirements=("Acme target simulator or device",),
+    ),
+    keywords=("acme runtime",),
+    artifacts={
+        "all": ["acme.toml"],
+        "any_suffix": [".acme"],
+        "minimum_files": 3,
+    },
+    commands={"test": "acmec test", "build": "acmec build"},
+))
+
+contract = CodeQSDK(registry).prepare("Build an Acme Runtime service")
+```
+
+An adapter provides detection, framework metadata, artifact requirements, validation commands, and preflight behavior. Advanced adapters may implement the `FrameworkAdapter` protocol directly. Installed packages can publish adapters through the `openagent.codeq.frameworks` entry-point group; discovery errors are isolated in `GeneratorRegistry.plugin_errors` rather than preventing OpenAgent from starting.
+
+The returned generation contract contains:
+
+- repository and request profile;
+- framework and artifact contract;
+- host, compiler, SDK and external-environment preflight;
+- validation commands and mandatory gates;
+- role-routed model capability requirements;
+- explicit acceptance criteria;
+- environment preparation steps that distinguish local setup from approved external work.
+
+Command-line access uses the installed `openagent-codeq` command:
+
+```powershell
+openagent-codeq catalog
+openagent-codeq inspect D:\work\my-project
+openagent-codeq preflight "Build a Rust command-line package" --repository D:\work\my-project --accept "cargo test passes"
+```
+
+The CLI emits JSON so it can be used by IDE extensions, build systems, and orchestration services. It creates contracts and repository maps; autonomous editing remains owned by the CodeQ service so task history, approvals, snapshots, and source publication stay durable and auditable.
 
 Static-site requests carry an explicit page-count contract. For example, a request for four static pages must leave four linked HTML documents plus their shared assets in the selected folder. CodeQ treats `static` as a plain browser project rather than silently substituting React, checks the requested page count during artifact validation, and publishes only after that check passes. Managed preview or dependency processes may report a running state without an exit code; the controller waits for real completion evidence instead of interpreting that state as a command failure.
 
@@ -128,8 +214,8 @@ Routine reads, edits, tests, builds, local managed processes, and loopback brows
 The endpoint `GET /api/codebase/runs/{id}/events/stream` emits server-sent events. Event types include:
 
 - `run.created`, `run.completed`, `run.failed` and `run.cancelled`;
-- `repository.analysed`, parallel-specialist lifecycle events, and `plan.created`;
-- `agent.started`, `agent.thinking`, `agent.handoff`, `task.created`, `task.completed`, `task.continued` and `repair.requested`;
+- `repository.analysed`, parallel-specialist lifecycle events, `plan.model.accepted`, `plan.fallback.selected`, and `plan.created`;
+- `agent.started`, `agent.thinking`, `agent.handoff`, `task.created`, `task.completed`, `task.continued`, `plan.dependencies_repaired` and `repair.requested`;
 - `tool.started`, `tool.completed` and `tool.failed`;
 - `command.stdout` and `command.stderr`;
 - validation start/pass/fail, process lifecycle and browser-evidence events;
@@ -144,6 +230,8 @@ Primary routes:
 
 - `POST /api/codebase/projects`
 - `POST /api/codebase/folder-picker`
+- `GET /api/codebase/frameworks`
+- `POST /api/codebase/preflight`
 - `GET /api/codebase/projects`
 - `GET /api/codebase/projects/{id}/tree`
 - `GET|POST /api/codebase/projects/{id}/file`

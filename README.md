@@ -6,13 +6,13 @@ The repository contains a runnable local-first implementation: a native desktop 
 
 ## Principles
 
-- 100% self-hosted by default
+- Self-hosted and local by default
 - User-owned data
-- Local-first and offline-capable
-- No telemetry
-- No external network calls unless explicitly configured
+- Local-first operation with offline paths where the installed provider supports them
+- No telemetry is configured by default
+- No external network calls unless explicitly configured and approved
 - Modular architecture
-- Vendor-independent model routing
+- Provider-independent model routing
 - Open standards and inspectable behavior
 
 ## What Works Today
@@ -45,25 +45,27 @@ The repository contains a runnable local-first implementation: a native desktop 
 - Stage 3 multi-agent runtime with permissions, delegation, parallel execution, verification, approvals, and marketplace manifests
 - Stage 4 workflow automation with scheduled/event triggers, conditions, file actions, browser/API actions, rollback hooks, background worker, and visual builder model
 - Stage 5 communication hub with connectors, contacts, inbox, summaries, follow-ups, drafts, approval-gated sending, calendar, and analytics
-- Stage 6 local AI infrastructure with model registry/downloads, smooth 8 GB runtime planning, sub-2-bit CPU survival planning, auto quantization plan records, benchmarks, hardware detection, acceleration adapters, cluster planning, and marketplace
-- Stage 7 enterprise/team deployment with RBAC, multi-user workspaces, organization memory, audit exports, SSO config records, local HS256 SSO validation, backups, disaster recovery plans, policies, and Kubernetes manifests
+- Stage 6 local AI infrastructure with model registry/downloads, memory-fit and quantization planning, benchmarks, hardware detection, acceleration adapters, cluster planning, and marketplace records
+- Stage 7 enterprise/team deployment with RBAC, multi-user workspaces, organization memory, audit exports, SSO configuration and local validation, backups, disaster recovery plans, policies, and Kubernetes manifests
 - Stage 8 developer platform with GraphQL-style queries, webhooks, API key records, plugin/tool registries, MCP manifests, extension packages, and generated SDK artifacts
 - Stage 9 security/privacy hardening with encrypted local secret vault implementation, retention controls, egress approvals, sharing grants, audit-chain sealing, privacy reports, and sandbox policy profiles
 - Stage 10 workspace and personal assistant layer with folders, docs, wiki pages, dashboards, canvases, whiteboards, mind maps, templates, chat branching/search/import/export/replay, tasks, goals, meeting briefs, travel plans, CRM records, and productivity coaching
 - Stage 11 semantic, media, voice, and UI runtime layer with typed semantic memories, local vector collections, reranking, graph analytics, media ingestion, voice sessions, connector sync workers, command palette, shortcuts, and drag/drop workflow layout saves
-- Stage 12 production runtime layer with policy gates, queue jobs, append-only audit anchoring, production vector indexes, semantic science metrics, production reranking, connector polling adapters, OIDC/JWKS validation, encrypted envelopes, desktop/browser automation records, package manifests, agent marketplace records, GPU/fine-tune plans, proactive jobs, federated aggregation, encrypted sync bundles, and sandboxed plugin run records
+- Stage 12 production-control layer with policy gates, queue jobs, append-only audit anchoring, vector indexes, semantic metrics, reranking, connector polling adapters, OIDC/JWKS validation, encrypted envelopes, desktop/browser automation records, package manifests, marketplace records, GPU/fine-tune plans, proactive jobs, federated aggregation, encrypted sync bundles, and plugin sandbox records
 - Advanced local RAG with SQLite lineage, FAISS acceleration, a persistent ChromaDB mirror, reciprocal-rank fusion, source-grounded answers, conflict flags, and generation-aware caching
 - Adaptive CPU inference with prompt compaction, intent-based token budgets, warm local model sessions, exact-response caching, and measured first-token telemetry
 - Ultra-scale sharded GGUF orchestration with honest 200B feasibility math, resident/out-of-core/private-RPC plans, safe loopback `llama-server` lifecycle, warm prompt/KV caches, speculative decoding, and grounded output rejection
-- Adaptive CPU/GPU/NPU compiler with GGUF, SafeTensors, ONNX, and OpenVINO frontends; graph/tensor/kernel IR; transfer-aware prefill/decode planning; mixed-precision budgeting; paged KV metadata; deadline batching; vendor compilation; exact-model differential calibration; and a persistent network-free OpenVINO hardware worker
+- Adaptive CPU/GPU/NPU planning engine with GGUF, SafeTensors, ONNX, and OpenVINO frontends; graph/tensor/kernel IR; transfer-aware prefill/decode planning; mixed-precision budgeting; paged KV metadata; deadline batching; vendor compilation hooks; exact-model differential calibration; and an optional persistent network-free OpenVINO worker
 - Advanced Engine workspace with persistent model roles, per-role identity prompts, live provider/model assignment, native direct token streaming, custom model sequences, and an audited reasoning-code-supervisor revision loop
 - Scientific AI workspace with a finite-difference heat solver, Fourier ridge surrogate, real DeepONet branch/trunk model, constrained engineering optimisation, native local vision routing, structured verification, and materials discovery workflows
 - Scientific AI tooling with validated local-model planning and deterministic fallback, evidence-bound result analysis, project-scoped memory, traceback-driven self-correction, AST execution policy, SymPy and Pint checks, an optional FEniCS heat adapter, experiment planning, runtime profiles, and a collapsible workbench navigation; FNO and PINN remain clearly labeled baselines
-- CodeQ IDE directly below Chat with a native folder chooser, protected working copies, verified write-back to the selected folder, Explorer, closable multi-file tabs, terminal and Git panels, a live agent feed and editor, repository intelligence, stack-aware greenfield and existing-project planning, permission-aware tools, repair loops, independent review, snapshots, resumable state, and evidence-based completion gates
+- CodeQ IDE directly below Chat with a native folder chooser, protected working copies, verified write-back to the selected folder, Explorer, closable multi-file tabs, terminal and Git panels, a live agent feed and editor, model-planned greenfield and existing-project work without a forced default framework, cross-framework host and toolchain preflight, permission-aware tools, repair loops, independent review, snapshots, resumable state, and evidence-based completion gates
+- Public CodeQ generator SDK with declarative or protocol-based framework adapters, Python entry-point discovery, artifact and validation contracts, environment preparation plans, and the `openagent-codeq` catalog/inspect/preflight CLI
 - Private PhD Application Studio with reusable academic data, local CV/SOP evidence uploads, position tracking, approval-gated professor and lab research, evidence-grounded document generation, revision history, local quality review, and DOCX/PDF/ZIP exports
-- Stage 13 full local product runtime with submitted-audio STT, local voiceprint clone records, generated WAV voice audio, browser/form automation, approved desktop file automation, and real PWA/mobile/desktop package directories
+- Stage 13 local product runtime with submitted-audio STT, local voiceprint clone records, generated WAV voice audio, offline HTML form simulation, approved desktop file automation, and PWA/mobile/desktop package directories. Optional Playwright browser control is documented separately.
 - Stage 14 native Windows desktop installability with a standard-library desktop shell, local status command, Start Menu/Desktop launcher scripts, and hard-audit proof that no browser is required
-- Stage 15 native desktop workbench with mission-control tabs for the full local OpenAgent feature set
+- Stage 15 native desktop workbench exposing the current local OpenAgent feature set through one stable workbench
+- Unified runtime foundation with typed tool requests/results, local policy decisions, trace IDs, bounded output, an audited terminal adapter, bounded MCP invocation, and capability-aware model planning. The shared registry is intentionally small today; the existing CodeQ, browser, workflow, and provider surfaces remain separate until they are migrated with contract tests.
 - Knowledge upgrades with automatic tags, timeline generation, hybrid search, and source-attributed local synthesis
 - Workflow data actions for SQLite reads, CSV spreadsheet read/write, report generation, monitoring checks, and alerts
 - Static web workspace for adding notes, searching memory, and running agents
@@ -71,6 +73,44 @@ The repository contains a runnable local-first implementation: a native desktop 
 - Docker deployment skeleton
 
 ## Quick Start
+
+### Package Install
+
+Install the base local runtime from PyPI:
+
+```bash
+pip install openagent
+openagent
+```
+
+Optional capability groups remain opt-in:
+
+```bash
+pip install "openagent[browser,office]"
+playwright install chromium
+```
+
+`browser` enables approval-aware Playwright automation. `office` enables local
+DOCX, PPTX, and XLSX artifact export. Neither group is required for local chat,
+memory, workflows, or the desktop workbench.
+
+### Google Colab
+
+In a Colab notebook, install the package and start the same local HTTP runtime:
+
+```python
+!pip install openagent
+
+from openagent.colab import launch
+runtime = launch()
+print(runtime.url, runtime.recommended_model)
+```
+
+The launcher probes available NVIDIA memory when `nvidia-smi` is present,
+chooses a conservative model recommendation, and stores data under
+`/content/openagent` unless `data_dir` is provided. It deliberately does not
+create a public tunnel; expose the returned local URL only through an approved
+notebook proxy or tunnel.
 
 ### Windows Desktop App
 
@@ -191,6 +231,25 @@ share `%LOCALAPPDATA%\OpenAgent\data` by default.
 python -m unittest discover -s tests
 ```
 
+## Publish to PyPI
+
+The distribution name is `openagent`. Add a repository secret named
+`PYPI_API_TOKEN` with a PyPI project-scoped API token. Publishing is tag-only:
+ordinary pushes and pull requests run CI but do not upload a package.
+
+After the version in `pyproject.toml` is ready, create and push the matching
+tag:
+
+```bash
+git tag v0.13.0
+git push origin v0.13.0
+```
+
+The `Publish to PyPI` workflow verifies that the tag matches the package
+version, runs the test suite, builds and validates the artifacts, then uploads
+them. PyPI must make the `openagent` project name available to your account;
+the first upload is the final ownership check.
+
 ## API Preview
 
 ```bash
@@ -256,7 +315,7 @@ curl -X POST http://127.0.0.1:8765/api/semantic/memories \
 
 ## Model Providers
 
-OpenAgent Auto routing tries local model servers first and falls back to the offline `local` provider when no local model server is available. The built-in CPU stack uses Phi-4 Mini for chat/research, Qwen2.5 Coder 3B for code, Gemma 3 2B for speed, DeepSeek Coder 1.3B for low-resource coding, and Qwen2.5 7B only for 16 GB+ research.
+OpenAgent Auto routing tries local model servers first and falls back to the offline `local` provider when no local model server is available. The default role policy names lightweight model families for chat, code, speed, and research; they are recommendations, not bundled weights. Actual availability and speed depend on the installed server, model file, backend, and hardware.
 
 Ollama:
 
@@ -321,10 +380,11 @@ linked documents below.
 - [Privacy and security](docs/PRIVACY_SECURITY.md) - local ownership, secrets, approvals, and egress controls
 - [Windows desktop](docs/WINDOWS_DESKTOP.md) - install, launch, stable port, and desktop lifecycle
 - [Developer platform](docs/DEVELOPER_PLATFORM.md) - APIs, SDKs, webhooks, plugins, and MCP
+- [Unified runtime and capability routing](docs/UNIFIED_RUNTIME_AND_CAPABILITY_ROUTING.md) - shared tool execution, MCP invocation, approvals, traces, and model/device planning
 
 ## Project Status
 
-OpenAgent currently implements the local runtime areas listed above, including chat and model routing, knowledge retrieval, multi-agent execution, workflows, communication records, local model operations, semantic memory, media and voice handling, browser and desktop tools, Windows installation, and the desktop workbench. The repository tests these contracts at the service, route, and browser levels. Provider certification, credentials, hardware-specific performance, and operating-system packaging still depend on the target deployment and are documented as such rather than treated as universal guarantees.
+OpenAgent contains tested local implementations for chat and model routing, knowledge retrieval, multi-agent execution, workflows, communication records, local model operations, semantic memory, media and voice handling, browser and desktop tool boundaries, Windows installation, and the desktop workbench. Some areas also expose planning or record layers rather than a complete external service. The repository tests the local contracts at service, route, and browser levels. Provider certification, credentials, hardware-specific performance, and operating-system packaging still depend on the target deployment.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the staged build plan.
 

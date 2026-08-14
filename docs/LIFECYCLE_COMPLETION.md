@@ -1,8 +1,10 @@
-# Operational Lifecycle Completion
+# Operational Lifecycle Surfaces
 
-This document describes the runnable lifecycle surfaces that close the ten
-operational areas covered by the 2026-07-12 completion pass. Every mutating
-operation writes an audit event or a durable lifecycle record.
+This document describes the local lifecycle surfaces for the ten operational
+areas covered by the 2026-07-12 completion pass. Every mutating operation
+writes an audit event or a durable lifecycle record. These are local
+implementations and control paths; provider certification, external delivery,
+and heavyweight model execution still depend on the target environment.
 
 ## Research Lifecycle
 

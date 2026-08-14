@@ -19,6 +19,7 @@ ROUTES = (
     ("GET", "/api/mcp/permissions"),
     ("POST", "/api/mcp/servers"),
     ("POST", "/api/mcp/servers/{id}/reconnect"),
+    ("POST", "/api/mcp/tools/{id}/invoke"),
     ("PATCH", "/api/mcp/tools/{id}"),
 )
 
@@ -86,11 +87,27 @@ def handle_post(path: str, deps: MCPRuntimeRouteDependencies) -> JsonRouteResult
             return JsonRouteResult({"server": server}, HTTPStatus.CREATED)
         if path.startswith("/api/mcp/servers/") and path.endswith("/reconnect"):
             server_id = unquote(path.removeprefix("/api/mcp/servers/").removesuffix("/reconnect")).strip("/")
-            return JsonRouteResult({"server": deps.runtime.reconnect(server_id)})
+            return JsonRouteResult({"server": deps.runtime.reconnect(server_id, project=project, owner=owner)})
+        if path.startswith("/api/mcp/tools/") and path.endswith("/invoke"):
+            tool_id = unquote(path.removeprefix("/api/mcp/tools/").removesuffix("/invoke")).strip("/")
+            result = deps.runtime.invoke_tool(
+                tool_id,
+                arguments=payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {},
+                project=project,
+                owner=owner,
+                approval_id=str(payload.get("approval_id", "")).strip(),
+                timeout_seconds=float(payload.get("timeout_seconds", 30) or 30),
+                max_output_bytes=deps.parse_int(payload.get("max_output_bytes"), default=100_000),
+            )
+            return JsonRouteResult({"result": result})
     except KeyError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+    except PermissionError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.PRECONDITION_REQUIRED)
     except ValueError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
     return None
 
 
@@ -102,6 +119,8 @@ def handle_patch(path: str, deps: MCPRuntimeRouteDependencies) -> JsonRouteResul
     try:
         tool = deps.runtime.patch_tool(
             tool_id,
+            project=str(payload.get("project", "default")).strip() or "default",
+            owner=deps.payload_owner(payload),
             enabled=deps.parse_bool(payload.get("enabled"), default=True) if "enabled" in payload else None,
             approval_required=deps.parse_bool(payload.get("approval_required"), default=True) if "approval_required" in payload else None,
             reason=str(payload.get("reason", "")),

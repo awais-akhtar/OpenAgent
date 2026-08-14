@@ -362,7 +362,7 @@ const VIEW_LOADERS = {
   agents:         () => loadAgents().catch(() => {}),
   knowledge:      () => Promise.resolve(),
   workspace:      () => loadWorkspaceItems().catch(() => {}),
-  automation:     () => loadWorkflows().catch(() => {}),
+  automation:     () => Promise.allSettled([loadWorkflows(), loadRuntimeTools()]),
   assistant:      () => Promise.allSettled([getDailyBrief()]),
   communications: () => loadCommunicationHub().catch(() => {}),
   models:         () => Promise.allSettled([loadProviders(), loadModelPolicy(), loadSmoothRuntime("chat")]),
@@ -1937,6 +1937,11 @@ async function startCodebaseRun() {
   if (sendButton) sendButton.disabled = true;
   if (status) { status.textContent = "Connecting"; status.className = "badge badge-info"; }
   try {
+    const preflightPayload = await api("/api/codebase/preflight", {
+      method: "POST",
+      body: JSON.stringify({ codebase_project_id: state.codebase.selectedProjectId, goal: prompt }),
+    });
+    renderCodebasePreflight(preflightPayload.preflight || {});
     const payload = await api("/api/codebase/runs", {
       method: "POST",
       body: JSON.stringify({
@@ -1969,6 +1974,20 @@ async function startCodebaseRun() {
       ? "The CodeQ service disconnected. OpenAgent is still running; retry once after the workspace reconnects."
       : error.message);
   }
+}
+
+function renderCodebasePreflight(preflight) {
+  const target = qs("#codebaseToolchainStatus");
+  if (!target) return;
+  const framework = preflight.framework?.label || preflight.profile?.framework || "Model-selected stack";
+  const missing = Array.isArray(preflight.missing_toolchains) ? preflight.missing_toolchains.length : 0;
+  const hostReady = preflight.host?.supported !== false;
+  target.textContent = hostReady && !missing
+    ? `${framework} · toolchain ready`
+    : `${framework} · ${!hostReady ? "target host required" : `${missing} toolchain item${missing === 1 ? "" : "s"} missing`}`;
+  target.title = (preflight.external_boundaries || []).length
+    ? "External release operations require their real environment and explicit approval."
+    : "Source generation and local validation are evaluated separately.";
 }
 
 async function recoverCodebaseRun(prompt) {
@@ -2108,6 +2127,7 @@ function renderCodebaseEvents() {
 function codeqEventLabel(event) {
   const labels = {
     "repository.analysed": "Repository understood",
+    "environment.preflight.completed": "Host and toolchain checked",
     "specialists.parallel.started": "Specialists reviewing in parallel",
     "specialists.parallel.completed": "Architecture contract ready",
     "agents.parallel.started": "Independent agents generating in parallel",
@@ -2146,6 +2166,11 @@ function codeqEventLabel(event) {
 
 function codeqEventDetail(event) {
   const payload = event.payload || {};
+  if (payload.preflight) {
+    const framework = payload.preflight.framework?.label || payload.preflight.profile?.framework || "selected stack";
+    const missing = payload.preflight.missing_toolchains?.length || 0;
+    return `${framework} · ${missing ? `${missing} missing toolchain item${missing === 1 ? "" : "s"}` : "local validation ready"}`;
+  }
   if (payload.path) return String(payload.path);
   if (payload.tool) return String(payload.tool).replace(/_/g, " ");
   if (payload.agent) return String(payload.agent).replace(/_/g, " ");
@@ -3969,6 +3994,34 @@ async function createWorkflowFromEditor() {
     loadWorkflows();
     toast("Workflow saved", name);
   } catch(e) { toast("Workflow error", e.message); }
+}
+
+async function loadRuntimeTools() {
+  try {
+    const payload = await api("/api/runtime-tools/status");
+    setOutput("#runtimeToolsOutput", payload);
+  } catch (error) {
+    toast("Runtime tools unavailable", error.message);
+  }
+}
+
+async function runRuntimeBrowserTest() {
+  const url = qs("#runtimeBrowserUrl")?.value.trim() || "";
+  if (!url) { toast("Browser URL required"); return; }
+  try {
+    const payload = await api("/api/runtime-tools/browser-test", {
+      method: "POST",
+      body: JSON.stringify({
+        url,
+        project: getProject(),
+        approved_external: Boolean(qs("#runtimeBrowserApproval")?.checked),
+      }),
+    });
+    setOutput("#runtimeToolsOutput", payload);
+    toast("Browser test completed");
+  } catch (error) {
+    toast("Browser test did not run", error.message);
+  }
 }
 
 // =============================================
@@ -5801,7 +5854,11 @@ async function loadMcpRuntime() {
         listItem(server.name, `${server.transport} · ${server.status}`, `${(server.command || []).join(" ") || server.endpoint || "configured locally"}`)
       );
       const toolLine = listItem("Tools", `${(tools.tools || []).length} registered`, `${(permissions.permissions || []).length} permission changes`);
-      feed.innerHTML = [toolLine, ...serverItems].join("") || emptyState("No MCP servers registered yet.");
+      const toolItems = (tools.tools || []).slice(0, 8).map(tool => {
+        const action = `<button class="btn btn-soft btn-small" data-mcp-invoke="${escapeHtml(tool.id)}">Test</button>`;
+        return listItem(tool.name, `${tool.enabled ? "enabled" : "disabled"} · ${tool.approval_required ? "approval required" : "local call"}`, action);
+      });
+      feed.innerHTML = [toolLine, ...toolItems, ...serverItems].join("") || emptyState("No MCP servers registered yet.");
     }
     return { servers, tools, permissions };
   } catch(e) {
@@ -5809,6 +5866,67 @@ async function loadMcpRuntime() {
     if (feed) feed.innerHTML = emptyState(`MCP runtime unavailable: ${e.message}`);
     return null;
   }
+}
+
+async function invokeMcpTool(toolId) {
+  const raw = window.prompt("Arguments as JSON", "{}");
+  if (raw === null) return;
+  let argumentsPayload;
+  try { argumentsPayload = raw.trim() ? JSON.parse(raw) : {}; } catch (_) { toast("MCP call stopped", "Arguments must be valid JSON."); return; }
+  if (!window.confirm("Allow this registered MCP tool to run locally now?")) return;
+  try {
+    const payload = await api(`/api/mcp/tools/${encodeURIComponent(toolId)}/invoke`, {
+      method: "POST",
+      body: JSON.stringify({ project: getProject(), arguments: argumentsPayload, approval_id: "ui-confirmed" }),
+    });
+    setOutput("#developerOutput", payload);
+    toast("MCP tool completed", toolId.slice(0, 8));
+    await loadMcpRuntime();
+  } catch (e) { toast("MCP tool failed", e.message); }
+}
+
+async function loadRuntimeFabric() {
+  try {
+    const [runtime, compute] = await Promise.all([api("/api/tools/runtime"), api("/api/compute/status")]);
+    const providers = compute.providers || [];
+    const ready = providers.filter(item => item.available && (item.local || item.id === "auto")).length;
+    const local = providers.filter(item => item.available && item.local && item.id !== "auto").length;
+    const hardware = compute.hardware || {};
+    const devices = hardware.backends || [];
+    const badge = qs("#runtimeFabricBadge");
+    if (badge) { badge.textContent = `${local} local ready`; badge.className = local ? "badge badge-success" : "badge badge-warning"; }
+    const feed = qs("#runtimeFabricFeed");
+    if (feed) {
+      feed.innerHTML = [
+        `<div class="runtime-fabric-metrics"><div><strong>${ready}</strong><span>routable providers</span></div><div><strong>${runtime.tools?.length || 0}</strong><span>shared tools</span></div><div><strong>${devices.length || 0}</strong><span>hardware profiles</span></div></div>`,
+        listItem("Policy", compute.policy?.routing_policy || "local-first", "The plan is advisory; ModelGateway owns the actual call."),
+        listItem("Hardware evidence", devices.length ? `${devices.length} backend profile(s) reported` : "No refreshed device profile", hardware.status || "capability probe available"),
+      ].join("");
+    }
+    return { runtime, compute };
+  } catch (e) {
+    const feed = qs("#runtimeFabricFeed");
+    if (feed) feed.innerHTML = emptyState(`Runtime capability check unavailable: ${e.message}`);
+    const badge = qs("#runtimeFabricBadge");
+    if (badge) { badge.textContent = "Unavailable"; badge.className = "badge badge-warning"; }
+    return null;
+  }
+}
+
+async function planRuntimeFabric() {
+  try {
+    const payload = await api("/api/compute/plan", {
+      method: "POST",
+      body: JSON.stringify({
+        task: qs("#runtimePlanTask")?.value.trim() || "chat",
+        model: qs("#runtimePlanModel")?.value.trim() || "",
+        allow_external: Boolean(qs("#runtimePlanExternal")?.checked),
+      }),
+    });
+    setOutput("#developerOutput", payload);
+    const selected = payload.selected;
+    toast("Execution plan ready", selected ? `${selected.provider} · ${selected.model || "automatic model"}` : "Needs local setup");
+  } catch (e) { toast("Execution planning failed", e.message); }
 }
 
 async function registerMcpServer() {
@@ -7499,6 +7617,7 @@ async function refreshAll() {
     loadConversations(), loadWorkflows(), loadCommunicationHub(),
     loadIntegrationStatus(), loadPersonalOsStatus(), loadCalendarEvents(), loadCalendarSyncStatus(), loadTwinSuggestions(), loadVaultEntries(),
     loadScraperJobs(), loadFinetuneStatus(), loadModelJobs(), loadOperationalModules(),
+    loadRuntimeFabric(),
   ]);
 }
 
@@ -7669,6 +7788,8 @@ async function init() {
   qs("#runDueWorkflows")?.addEventListener("click", async () => {
     try { const d = await api("/api/workflows/run-due", { method: "POST", body: JSON.stringify({ project: getProject() }) }); setOutput("#workflowOutput", d); } catch(e) { toast("Run due error", e.message); }
   });
+  qs("#loadRuntimeTools")?.addEventListener("click", loadRuntimeTools);
+  qs("#runRuntimeBrowserTest")?.addEventListener("click", runRuntimeBrowserTest);
   qs("#createTask")?.addEventListener("click", createTask);
   qs("#createGoal")?.addEventListener("click", createGoal);
   qs("#dailyBrief")?.addEventListener("click", getDailyBrief);
@@ -7788,6 +7909,12 @@ async function init() {
   });
   qs("#refreshMcpRuntime")?.addEventListener("click", loadMcpRuntime);
   qs("#registerMcpServer")?.addEventListener("click", registerMcpServer);
+  qs("#mcpRuntimeFeed")?.addEventListener("click", event => {
+    const button = event.target.closest("[data-mcp-invoke]");
+    if (button) invokeMcpTool(button.dataset.mcpInvoke);
+  });
+  qs("#refreshRuntimeFabric")?.addEventListener("click", loadRuntimeFabric);
+  qs("#planRuntimeFabric")?.addEventListener("click", planRuntimeFabric);
   qs("#refreshTerminalRuns")?.addEventListener("click", loadTerminalRuns);
   qs("#runTerminalVersion")?.addEventListener("click", runTerminalVersion);
   qs("#refreshScheduler")?.addEventListener("click", loadSchedulerStatus);

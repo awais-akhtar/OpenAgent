@@ -41,7 +41,17 @@ class DocumentProcessingDepthTests(unittest.TestCase):
         paths = {path for _, path in ROUTES}
         self.assertIn("/api/document/{id}/render-page", paths)
         self.assertIn("/api/document/{id}/redact", paths)
+        self.assertIn("/api/document/{id}/export-docx", paths)
+        self.assertIn("/api/document/{id}/export-pptx", paths)
+        self.assertIn("/api/document/{id}/export-xlsx", paths)
         self.assertIn("/api/documents/compare", paths)
+
+    def test_office_exports_explain_the_optional_dependency(self) -> None:
+        with TemporaryDirectory() as temp:
+            processing = DocumentProcessing(OpenAgentStore(temp))
+            imported = processing.import_office_or_text(filename="source.txt", content=b"Office artifact", project="core")
+            with self.assertRaisesRegex(ValueError, r"openagent\[office\]"):
+                processing.export_docx(imported["document"]["doc_id"])
 
 
 if __name__ == "__main__":

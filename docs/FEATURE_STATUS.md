@@ -1,6 +1,6 @@
 # Feature Status
 
-OpenAgent is being built in layers. This file tracks what is implemented versus what is currently Completed or planned.
+OpenAgent is built in layers. This is a source-backed inventory of local functionality, not a claim that every optional integration is installed or configured on every machine.
 
 The 2026-07-12 operational closure adds durable research SSE, batch image
 tagging, task output delivery records, a signed local skill marketplace with
@@ -15,13 +15,13 @@ draft/review/finalization, revisioned deliverables, local authenticity review,
 and styled DOCX/PDF/Markdown/ZIP exports. See
 [PHD_APPLICATION_STUDIO.md](PHD_APPLICATION_STUDIO.md).
 
-## Implemented
+## Present local surfaces
 
 - Local HTTP API
 - CodeQ IDE directly below Chat with a native folder chooser, protected copied local and Docker workspaces, closable multi-file tabs, terminal and Git panels, and a versioned adapter for a separately configured hosted worker
 - Durable software-engineering runs, structured task graphs, tool calls, file changes, validation evidence, approvals, snapshots, events, and project memory
 - Repository maps with languages, frameworks, database hints, entry points, commands, dependencies, configuration, tests, database models, symbols, imports, dependency and Python call graphs, routes, Git state, search, and bounded context selection
-- Permission-aware filesystem, terminal, managed-process, Git, test, build, lint, typecheck, and Playwright browser-inspection tools with explicit risk levels
+- Permission-aware filesystem, terminal, managed-process, Git, test, build, lint, typecheck, and browser-inspection tools with explicit risk levels. Real Playwright control requires the optional browser dependency and installed Chromium.
 - Error-to-repair iterations, role-specific model routing, structured agent handoffs, independent diff review, explicit completion criteria, cancellation, interruption recovery, run history, and resume support
 - SQLite storage
 - Context events
@@ -220,9 +220,9 @@ and styled DOCX/PDF/Markdown/ZIP exports. See
 - Transfer-aware CPU/GPU/NPU placement with migration hysteresis and separate prefill/decode plans
 - Sensitivity-weighted mixed-precision planning with explicit conversion-required state
 - Isolated OpenVINO/ONNX accelerator runtime and reproducible Windows setup script
-- Verified Intel CPU, Arc GPU, and Intel NPU execution paths with numerical reference checks
+- Local CPU and Arc GPU numerical probes with reference checks; Intel NPU discovery is recorded separately when the vendor compiler cannot execute the workload
 - Vendor-backed ONNX/OpenVINO model compilation with local cache and audited evidence
-- Persistent pipe-only OpenVINO CPU/GPU/NPU worker with resident compiled models and infer requests
+- Persistent pipe-only OpenVINO worker with resident compiled models and infer requests when the isolated accelerator environment and model are installed
 - Native OpenVINO GenAI token streaming with first-token and total-latency telemetry
 - Project-scoped model-role profiles for chat, code, reasoning, research, supervisor, draft, vision, and voice
 - Audited multi-model sequences and bounded reasoning-code-supervisor revision workflows with explicit external-provider authorization
@@ -256,12 +256,12 @@ and styled DOCX/PDF/Markdown/ZIP exports. See
 - Audited local cryptography envelopes
 - Production vector database implementation
 - Semantic memory science metrics
-- Production OCR, vision, audio, and video metadata analysis path
+- Local OCR, vision, audio, and video metadata analysis path; heavier engines remain optional adapters
 - Desktop automation action runtime
-- Desktop browser automation action runtime
+- Offline HTML form simulation runtime; optional Playwright browser tests are available through the desktop workbench and coding-agent tool surface when installed
 - Mobile app/PWA package manifest
 - Desktop app package manifest with native `openagent-desktop` entrypoint
-- External/community agent marketplace records
+- External/community agent marketplace records; this is a local catalog and lifecycle surface, not a hosted marketplace
 - End-to-end encrypted local envelopes
 - Enterprise federation policy hooks
 - Sandboxed plugin execution records
@@ -275,13 +275,9 @@ and styled DOCX/PDF/Markdown/ZIP exports. See
 - Source package manifest including docs, web assets, deployment manifests, and Windows installer assets
 - Standard-library tests
 
-## Completed
+## Validation Boundary
 
-No items from the current local build rule are incomplete after Stage 15. External hosted services, store distribution, signed Windows installers, and hardware-backed integrations are explicit deployment integrations, not hidden default behavior.
-
-## No Absent Local Items
-
-No current roadmap item is completely absent from the local codebase after Stage 15. Production deployments can still replace local implementations with provider-specific adapters, hardware security modules, signed installers, mobile store builds, and certified cryptography without changing the local-first trust model.
+The local code paths in this inventory are covered by the repository test suite and capability checks. A few bullets describe records, plans, manifests, or adapters rather than a live external service. Optional dependencies, model servers, provider credentials, browser binaries, external connectors, signed installers, app-store builds, and hardware-backed integrations are not assumed to be available. Their readiness must be checked on the target machine before use.
 
 ## Build Rule
 

@@ -19,7 +19,9 @@ test("desktop workspace loads and core lifecycle controls are usable", async ({ 
   await expect(page.locator("#codebaseBoundary")).toContainText(/workspace/i);
   await expect(page.locator("#codebaseFolderPicker")).toBeVisible();
   await expect(page.locator("#codebaseOpenTabs")).toBeAttached();
-  await expect(page.locator("#codebaseAutonomySummary")).toContainText("Fully autonomous");
+  await expect(page.locator("#codebaseCopilotFeed")).toContainText("Work with your repository");
+  await expect(page.locator("#codebaseGoal")).toHaveAttribute("placeholder", /build, fix, explain, or review/i);
+  await expect(page.locator("#startCodebaseRun")).toBeAttached();
   await page.locator('[data-view-link="chat"]').click();
   await expect(page.locator("#chatLog")).toBeVisible();
 

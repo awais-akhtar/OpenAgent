@@ -16,12 +16,18 @@ from uuid import uuid4
 
 from .repository import RepositoryIntelligence
 from .sandbox import SandboxManager
+from ..tools.browser import BrowserRuntime
 
 
 RISK = {"automatic": 0, "sandbox": 1, "approval": 2, "denied": 3}
 DENIED_COMMANDS = {"format", "mkfs", "shutdown", "reboot", "diskpart", "reg", "regedit", "net", "netsh", "sc", "sudo", "su"}
 MUTATING_GIT = {"push", "reset", "clean", "rebase", "merge", "cherry-pick", "tag"}
-SAFE_RUNNERS = {"python", "python.exe", "pytest", "ruff", "mypy", "node", "npm", "npm.cmd", "npx", "pnpm", "yarn", "git", "cargo", "go", "dotnet", "java", "mvn", "gradle"}
+SAFE_RUNNERS = {
+    "python", "python.exe", "pytest", "ruff", "mypy", "node", "npm", "npm.cmd", "npx", "pnpm", "yarn",
+    "git", "cargo", "rustc", "go", "dotnet", "java", "javac", "mvn", "gradle", "gradlew", "gradlew.bat",
+    "cmake", "ctest", "ninja", "make", "zig", "ruby", "bundle", "php", "composer", "elixir", "mix",
+    "dart", "flutter", "swift", "xcodebuild", "forge", "solc", "godot", "godot4",
+}
 SECRET_RE = re.compile(r"(?i)(token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*([^\s\"']+)")
 SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"}
 
@@ -44,7 +50,11 @@ class ToolPolicy:
             raw_command = arguments.get("command", [])
             command = shlex.split(raw_command, posix=False) if isinstance(raw_command, str) else [str(item) for item in raw_command]
             executable = Path(command[0]).name.lower() if command else ""
-            package_managers = {"python", "python.exe", "pip", "pip.exe", "uv", "npm", "npm.cmd", "pnpm", "yarn", "poetry", "cargo", "go", "dotnet", "mvn", "gradle"}
+            package_managers = {
+                "python", "python.exe", "pip", "pip.exe", "uv", "npm", "npm.cmd", "pnpm", "yarn", "poetry",
+                "cargo", "go", "dotnet", "mvn", "gradle", "gradlew", "gradlew.bat", "bundle", "gem", "composer",
+                "mix", "dart", "flutter", "swift", "forge",
+            }
             if executable not in package_managers:
                 return {"risk": 3, "label": "denied", "reason": "dependency setup must use a recognized package manager"}
             return {"risk": 1, "label": "sandbox", "reason": "dependency setup inside protected workspace"}
@@ -54,14 +64,14 @@ class ToolPolicy:
             "git_commit", "git_checkout", "git_revert", "git_reset", "restore_snapshot",
         }:
             return {"risk": 1, "label": "sandbox", "reason": "bounded sandbox operation"}
-        if tool == "browser_inspect":
+        if tool in {"browser_inspect", "browser_automate"}:
             raw_url = str(arguments.get("url", "")).strip()
             parsed = urlparse(raw_url)
             if not raw_url or parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 return {
                     "risk": 3,
                     "label": "denied",
-                    "reason": "browser_inspect requires a complete HTTP URL; create the page and start its local server before inspecting it",
+                    "reason": f"{tool} requires a complete HTTP URL; create the page and start its local server before inspecting it",
                 }
             host = (parsed.hostname or "").lower()
             risk = 1 if host in {"127.0.0.1", "localhost", "::1"} else 2
@@ -111,6 +121,8 @@ class CodebaseTools:
 
     def execute(self, tool: str, arguments: dict[str, Any], *, approved: bool = False) -> dict[str, Any]:
         arguments = self._normalize_arguments(tool, arguments)
+        if tool == "browser_automate":
+            arguments["approved"] = approved
         handler = getattr(self, f"tool_{tool}", None)
         if handler is None:
             raise ValueError(f"unknown codebase tool: {tool}")
@@ -329,6 +341,23 @@ await browser.close(); process.stdout.write(JSON.stringify(result));})().catch(e
         finally:
             script_path.unlink(missing_ok=True)
             payload_path.unlink(missing_ok=True)
+
+    def tool_browser_automate(
+        self,
+        url: str,
+        actions: list[dict[str, Any]] | None = None,
+        timeout_seconds: int = 120,
+        approved: bool = False,
+    ) -> dict[str, Any]:
+        runtime = BrowserRuntime(self.root / ".openagent")
+        result = runtime.run(url, actions=actions, approved=approved, timeout_seconds=timeout_seconds)
+        artifact = str(result.get("artifact", ""))
+        if artifact:
+            try:
+                result["artifact"] = Path(artifact).relative_to(self.root).as_posix()
+            except ValueError:
+                pass
+        return result
 
     def tool_install_dependency(self, command: list[str] | str) -> dict[str, Any]:
         return self.tool_run_shell(command, timeout_seconds=900)

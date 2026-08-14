@@ -429,6 +429,23 @@ body.sidebar-collapsed .privacy-card { justify-content: center; padding: 12px 8p
 }
 .system-row span { color: var(--muted-2); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; }
 .system-row strong { color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.runtime-fabric-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.runtime-fabric-controls label { display: grid; gap: 5px; color: var(--muted-2); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.runtime-fabric-controls input { width: 100%; }
+.runtime-fabric-controls .setting-row { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 7px 9px; border: 1px solid var(--line); background: var(--surface-2); text-transform: none; letter-spacing: 0; }
+.runtime-fabric-controls .setting-row small { display: block; margin-top: 2px; color: var(--muted-2); font-size: 10px; }
+.runtime-fabric-feed { display: grid; gap: 8px; }
+.runtime-fabric-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--surface-2); }
+.runtime-fabric-metrics div { min-width: 0; padding: 12px; border-right: 1px solid var(--line); }
+.runtime-fabric-metrics div:last-child { border-right: 0; }
+.runtime-fabric-metrics strong { display: block; color: var(--accent); font: 700 21px var(--font-mono); }
+.runtime-fabric-metrics span { display: block; margin-top: 3px; color: var(--muted-2); font-size: 10px; text-transform: uppercase; }
+.btn-small { min-height: 26px; padding: 3px 8px; font-size: 10px; }
+@media (max-width: 720px) {
+  .runtime-fabric-controls, .runtime-fabric-metrics { grid-template-columns: 1fr; }
+  .runtime-fabric-metrics div { border-right: 0; border-bottom: 1px solid var(--line); }
+  .runtime-fabric-metrics div:last-child { border-bottom: 0; }
+}
 @media (max-width: 1100px) { .technical-hero { grid-template-columns: 1fr; } }
 
 /* Dashboard control surface */

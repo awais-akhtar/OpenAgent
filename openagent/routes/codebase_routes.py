@@ -14,6 +14,7 @@ from ._contracts import route_contract
 
 ROUTE_GROUP = "codebase"
 ROUTES = (
+    ("GET", "/api/codebase/frameworks"),
     ("GET", "/api/codebase/projects"),
     ("GET", "/api/codebase/projects/{id}"),
     ("GET", "/api/codebase/projects/{id}/tree"),
@@ -24,6 +25,7 @@ ROUTES = (
     ("GET", "/api/codebase/runs/{id}/events/stream"),
     ("POST", "/api/codebase/projects"),
     ("POST", "/api/codebase/folder-picker"),
+    ("POST", "/api/codebase/preflight"),
     ("POST", "/api/codebase/projects/{id}/scan"),
     ("POST", "/api/codebase/projects/{id}/file"),
     ("POST", "/api/codebase/projects/{id}/paths"),
@@ -58,6 +60,8 @@ def handle_get(path: str, query: str, deps: CodebaseRouteDependencies) -> JsonRo
     params = parse_qs(query)
     owner = deps.query_owner(params) or "local"
     try:
+        if path == "/api/codebase/frameworks":
+            return JsonRouteResult({"frameworks": deps.codebase.framework_catalog()})
         if path == "/api/codebase/projects":
             return JsonRouteResult({"projects": deps.codebase.list_projects(project=deps.first(params, "project") or "default", owner=owner)})
         if path == "/api/codebase/runs":
@@ -90,6 +94,16 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
     payload = deps.read_json()
     owner = deps.payload_owner(payload)
     try:
+        if path == "/api/codebase/preflight":
+            acceptance_criteria = payload.get("acceptance_criteria", [])
+            if not isinstance(acceptance_criteria, list):
+                raise ValueError("acceptance_criteria must be a list")
+            return JsonRouteResult({"preflight": deps.codebase.framework_preflight(
+                str(payload.get("goal", "")).strip(),
+                codebase_project_id=str(payload.get("codebase_project_id", "")).strip(),
+                owner=owner,
+                acceptance_criteria=tuple(str(item).strip() for item in acceptance_criteria if str(item).strip()),
+            )})
         if path == "/api/codebase/folder-picker":
             return JsonRouteResult({"path": deps.codebase.pick_source_folder()})
         if path == "/api/codebase/projects":

@@ -23,6 +23,9 @@ ROUTES = (
     ("POST", "/api/document/{id}/ocr-overlay"),
     ("POST", "/api/document/{id}/redact"),
     ("POST", "/api/document/{id}/export-pdf"),
+    ("POST", "/api/document/{id}/export-docx"),
+    ("POST", "/api/document/{id}/export-pptx"),
+    ("POST", "/api/document/{id}/export-xlsx"),
     ("POST", "/api/documents/compare"),
     ("POST", "/api/documents/export-zip"),
 )
@@ -44,7 +47,7 @@ def handle_post(path: str, deps: DocumentProcessingRouteDependencies) -> JsonRou
         path in {"/api/documents/import-pdf", "/api/documents/import", "/api/documents/export-zip"}
         or (path.startswith("/api/document/") and path.endswith("/extract-pdf-text"))
         or (path.startswith("/api/document/") and path.endswith("/render-preview"))
-        or (path.startswith("/api/document/") and any(path.endswith(suffix) for suffix in ("/render-page", "/annotations", "/ocr-overlay", "/redact", "/export-pdf")))
+        or (path.startswith("/api/document/") and any(path.endswith(suffix) for suffix in ("/render-page", "/annotations", "/ocr-overlay", "/redact", "/export-pdf", "/export-docx", "/export-pptx", "/export-xlsx")))
         or path == "/api/documents/compare"
     )
     if not is_known_path:
@@ -99,6 +102,15 @@ def handle_post(path: str, deps: DocumentProcessingRouteDependencies) -> JsonRou
         if path.startswith("/api/document/") and path.endswith("/export-pdf"):
             doc_id = unquote(path.removeprefix("/api/document/").removesuffix("/export-pdf")).strip("/")
             return JsonRouteResult(deps.processing.export_pdf(doc_id, owner=owner if owner != "local" else "", signing_key=str(payload.get("signing_key", ""))))
+        if path.startswith("/api/document/") and path.endswith("/export-docx"):
+            doc_id = unquote(path.removeprefix("/api/document/").removesuffix("/export-docx")).strip("/")
+            return JsonRouteResult(deps.processing.export_docx(doc_id, owner=owner if owner != "local" else ""))
+        if path.startswith("/api/document/") and path.endswith("/export-pptx"):
+            doc_id = unquote(path.removeprefix("/api/document/").removesuffix("/export-pptx")).strip("/")
+            return JsonRouteResult(deps.processing.export_pptx(doc_id, owner=owner if owner != "local" else ""))
+        if path.startswith("/api/document/") and path.endswith("/export-xlsx"):
+            doc_id = unquote(path.removeprefix("/api/document/").removesuffix("/export-xlsx")).strip("/")
+            return JsonRouteResult(deps.processing.export_xlsx(doc_id, owner=owner if owner != "local" else ""))
         if path == "/api/documents/compare":
             return JsonRouteResult(deps.processing.compare(str(payload.get("left_doc_id", "")), str(payload.get("right_doc_id", "")), owner=owner if owner != "local" else ""))
         if path == "/api/documents/export-zip":

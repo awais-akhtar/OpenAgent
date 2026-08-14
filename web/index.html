@@ -213,6 +213,7 @@
             <textarea id="codebaseGoal" rows="4" placeholder="Ask CodeQ to build, fix, explain, or review…"></textarea>
             <div class="codebase-run-buttons">
               <button id="startCodebaseRun" class="codeq-action-button" aria-label="Send request" title="Send request">↑</button>
+              <button id="resumeCodebaseRun" class="codeq-action-button" aria-label="Resume failed run" title="Resume failed run" disabled>↻</button>
               <button id="cancelCodebaseRun" class="codeq-action-button codeq-stop-button" aria-label="Stop run" title="Stop run" disabled>■</button>
             </div></div>
             <div class="codebase-tabs" role="tablist">
@@ -240,6 +241,7 @@
           <footer class="codebase-statusbar" aria-label="CodeQ status">
             <span id="codebaseBranchStatus">⑂ no repository</span>
             <span id="codebaseSandboxStatus">Local boundary</span>
+            <span id="codebaseToolchainStatus">Toolchain pending</span>
             <span class="codebase-status-spacer"></span>
             <span id="codebaseCursorStatus">Ln 1, Col 1</span>
             <span>UTF-8</span>
@@ -564,7 +566,7 @@
     <section class="view" id="view-automation" data-view-panel="automation" aria-label="Automation">
       <div class="automation-shell">
         <aside class="automation-list"><div><strong>Workflows</strong><button id="createWorkflow" class="icon-button" aria-label="New workflow">＋</button></div><div id="workflows" class="stack-list"></div></aside>
-        <article class="automation-builder"><div id="workflowCanvas" class="workflow-canvas" aria-label="Workflow canvas"><div class="workflow-authoring"><input id="workflowName" placeholder="Workflow name"><div class="workflow-node-editor"><label><span>When</span><select id="workflowTrigger"><option value="manual">Started manually</option><option value="scheduled">On a schedule</option><option value="event">When an event arrives</option></select></label><span class="workflow-connector">→</span><label><span>Do</span><select id="workflowAction"><option value="run_agent">Run an agent</option><option value="search_context">Search memory</option><option value="chat">Ask a model</option><option value="report_generate">Generate a report</option><option value="file_list">List local files</option><option value="monitor_check">Check a monitor</option><option value="alert">Create an alert</option></select></label></div><textarea id="workflowInstruction" rows="5" placeholder="Describe the goal, query, message, or report content…"></textarea><button id="saveWorkflow" class="btn btn-primary" type="button">Save workflow</button></div></div><div class="automation-runbar"><span id="workflowOutput" aria-live="polite"></span><button id="runDueWorkflows" class="btn btn-primary">Run due workflows</button></div></article>
+        <article class="automation-builder"><div id="workflowCanvas" class="workflow-canvas" aria-label="Workflow canvas"><div class="workflow-authoring"><input id="workflowName" placeholder="Workflow name"><div class="workflow-node-editor"><label><span>When</span><select id="workflowTrigger"><option value="manual">Started manually</option><option value="scheduled">On a schedule</option><option value="event">When an event arrives</option></select></label><span class="workflow-connector">→</span><label><span>Do</span><select id="workflowAction"><option value="run_agent">Run an agent</option><option value="search_context">Search memory</option><option value="chat">Ask a model</option><option value="report_generate">Generate a report</option><option value="file_list">List local files</option><option value="monitor_check">Check a monitor</option><option value="alert">Create an alert</option></select></label></div><textarea id="workflowInstruction" rows="5" placeholder="Describe the goal, query, message, or report content…"></textarea><button id="saveWorkflow" class="btn btn-primary" type="button">Save workflow</button></div></div><div class="automation-runbar"><span id="workflowOutput" aria-live="polite"></span><button id="runDueWorkflows" class="btn btn-primary">Run due workflows</button></div><section class="card" aria-label="Runtime tools"><div class="card-header"><div><p class="eyebrow">Runtime tools</p><h3>Browser and export readiness</h3></div><button id="loadRuntimeTools" class="btn btn-soft">Refresh</button></div><p class="muted">HTML form simulation stays offline. Browser testing uses optional Playwright and needs approval for external URLs.</p><div class="protocol-grid"><label><span>Browser URL</span><input id="runtimeBrowserUrl" value="http://127.0.0.1:8765/"></label><label><span>External URL</span><input id="runtimeBrowserApproval" type="checkbox"> Approve this browser navigation</label></div><div class="toolbar"><button id="runRuntimeBrowserTest" class="btn btn-primary">Run browser test</button></div><pre id="runtimeToolsOutput" class="output">Runtime readiness has not been loaded.</pre></section></article>
       </div>
     </section>
 
@@ -907,6 +909,22 @@
             <button id="registerMcpServer" class="btn btn-primary">Register Local Server</button>
           </div>
           <div id="mcpRuntimeFeed" class="stack-list" style="margin-top:12px"></div>
+        </article>
+        <article class="card runtime-fabric-card">
+          <div class="card-header">
+            <div><p class="eyebrow">Runtime fabric</p><h3>Capability-aware execution</h3></div>
+            <span id="runtimeFabricBadge" class="badge badge-soft">Checking</span>
+          </div>
+          <div class="runtime-fabric-controls">
+            <label><span>Workload</span><input id="runtimePlanTask" value="chat" placeholder="chat, code, research"></label>
+            <label><span>Requested model (optional)</span><input id="runtimePlanModel" placeholder="leave on automatic routing"></label>
+            <label class="setting-row setting-row-toggle"><span><strong>Allow external provider</strong><small>Only affects this plan</small></span><input id="runtimePlanExternal" type="checkbox" role="switch"></label>
+          </div>
+          <div class="toolbar">
+            <button id="refreshRuntimeFabric" class="btn btn-soft">Refresh Runtime</button>
+            <button id="planRuntimeFabric" class="btn btn-primary">Plan Execution</button>
+          </div>
+          <div id="runtimeFabricFeed" class="runtime-fabric-feed" style="margin-top:12px"></div>
         </article>
         <article class="card">
           <div class="card-header">

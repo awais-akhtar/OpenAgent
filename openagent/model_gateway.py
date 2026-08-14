@@ -831,6 +831,51 @@ class OpenAICompatibleProvider(BaseProvider):
             )
 
 
+class ConfiguredOpenAICompatibleProvider(OpenAICompatibleProvider):
+    """A named provider using the OpenAI-compatible chat and embedding API."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        label: str,
+        environment_prefix: str,
+        default_base_url: str,
+        default_model: str,
+    ) -> None:
+        self.id = provider_id
+        self.label = label
+        self.environment_prefix = environment_prefix
+        self.base_url = os.environ.get(f"{environment_prefix}_BASE_URL", default_base_url).rstrip("/")
+        self.api_key = os.environ.get(f"{environment_prefix}_API_KEY", "")
+        self.default_model = os.environ.get(f"{environment_prefix}_MODEL", default_model)
+        self.default_embedding_model = os.environ.get(f"{environment_prefix}_EMBED_MODEL", "")
+
+    def embed(self, texts: list[str], *, model: str | None = None) -> EmbeddingResult:
+        if not (model or self.default_embedding_model):
+            raise ProviderConfigurationError(
+                f"{self.environment_prefix}_EMBED_MODEL is required because {self.label} embedding defaults are not assumed."
+            )
+        return super().embed(texts, model=model or self.default_embedding_model)
+
+    def require_configured(self) -> None:
+        if not self.available():
+            raise ProviderConfigurationError(f"{self.environment_prefix}_API_KEY is required for provider '{self.id}'.")
+
+
+COMPATIBLE_PROVIDER_SPECS = (
+    ("deepseek", "DeepSeek", "OPENAGENT_DEEPSEEK", "https://api.deepseek.com/v1", "deepseek-chat"),
+    ("mistral", "Mistral", "OPENAGENT_MISTRAL", "https://api.mistral.ai/v1", "mistral-small-latest"),
+    ("groq", "Groq", "OPENAGENT_GROQ", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    ("together", "Together AI", "OPENAGENT_TOGETHER", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+    ("openrouter", "OpenRouter", "OPENAGENT_OPENROUTER", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini"),
+    ("xai", "xAI", "OPENAGENT_XAI", "https://api.x.ai/v1", "grok-2-latest"),
+    ("fireworks", "Fireworks AI", "OPENAGENT_FIREWORKS", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/llama-v3p1-8b-instruct"),
+    ("perplexity", "Perplexity", "OPENAGENT_PERPLEXITY", "https://api.perplexity.ai", "sonar"),
+    ("qwen", "Qwen", "OPENAGENT_QWEN", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+)
+
+
 class ModelGateway:
     def __init__(self, *, direct_hardware: Any = None) -> None:
         self.providers: dict[str, ModelProvider] = {
@@ -840,6 +885,18 @@ class ModelGateway:
             "llamacpp": LlamaCppProvider(),
             "openai-compatible": OpenAICompatibleProvider(),
         }
+        self.providers.update(
+            {
+                provider_id: ConfiguredOpenAICompatibleProvider(
+                    provider_id=provider_id,
+                    label=label,
+                    environment_prefix=environment_prefix,
+                    default_base_url=base_url,
+                    default_model=default_model,
+                )
+                for provider_id, label, environment_prefix, base_url, default_model in COMPATIBLE_PROVIDER_SPECS
+            }
+        )
         self.routing_policy = os.environ.get("OPENAGENT_MODEL_ROUTING", "local-first")
         self.fallback_policy = os.environ.get("OPENAGENT_MODEL_FALLBACK", "local")
         self.inference = AdaptiveCPUInferenceEngine()
@@ -882,6 +939,7 @@ class ModelGateway:
         ]
 
     def policies(self) -> dict[str, Any]:
+        external_providers = [provider_id for provider_id, provider in self.providers.items() if not provider.local]
         return {
             "routing_policy": self.routing_policy,
             "fallback_policy": self.fallback_policy,
@@ -889,7 +947,7 @@ class ModelGateway:
                 "local-first": ["openvino-direct", "ollama", "llamacpp", "local"],
                 "local-server-first": ["openvino-direct", "ollama", "llamacpp", "local"],
                 "offline": ["local"],
-                "cloud-allowed": ["openai-compatible", "openvino-direct", "ollama", "llamacpp", "local"],
+                "cloud-allowed": [*external_providers, "openvino-direct", "ollama", "llamacpp", "local"],
             },
             "fallbacks": {
                 "none": [],

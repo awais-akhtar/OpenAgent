@@ -1,8 +1,14 @@
 # Vision Coverage Cross-Check
 
-This document cross-verifies the original OpenAgent vision against the current codebase.
+This document cross-verifies the original OpenAgent vision against the current
+codebase. It is a coverage map, not a product certification report.
 
-Verdict: OpenAgent has completed the Stage 0-15 local-first product runtime. Every requested roadmap area now has runnable local behavior with tests, documentation, privacy-boundary notes, and audit records when it performs an action. Provider-specific services, certified cryptography modules, signed installers, mobile store distribution, and enterprise IdP hardening remain explicit deployment additions rather than hidden defaults.
+The repository has a broad local runtime across the Stage 0-15 roadmap. Some
+rows describe working local behavior; others describe adapters, records,
+manifests, or planning surfaces. The evidence column is the source of truth for
+that distinction. Provider-specific services, certified cryptography modules,
+signed installers, mobile store distribution, and enterprise IdP hardening
+still require their real deployment environment.
 
 The same coverage report is available from a running local server:
 
@@ -20,8 +26,10 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 
 ## Status Legend
 
-- Implemented: runnable local implementation exists with code, API surface, tests, and docs.
-- implementation: runnable local implementation exists; provider-specific or hardware-certified integrations can replace it at deployment time.
+- Implemented: the named local code path, API surface, record, or contract exists and is covered at the level shown in the evidence column.
+- Partial: a useful local path exists, but the requested capability still depends on an optional engine, provider, hardware backend, or deeper protocol work.
+- Record / plan: OpenAgent stores or validates the configuration and lifecycle data, but does not claim that the external service is running.
+- Not claimed: the repository does not present the capability as available.
 
 ## Executive Summary
 
@@ -34,8 +42,8 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | Workflow automation, desktop automation records, and action audit | Implemented | `openagent/workflows.py`, `openagent/production_runtime.py`, `tests/test_workflow_automation.py`, `tests/test_production_runtime.py` |
 | Communication, connectors, calendar, assistant, voice, media | Implemented | `openagent/communication.py`, `openagent/assistant.py`, `openagent/media.py`, `openagent/voice.py`, `tests/test_communication.py`, `tests/test_media_voice.py` |
 | Local AI infrastructure, GPU plans, fine-tuning, LoRA | Implemented | `openagent/local_ai.py`, `openagent/production_runtime.py`, `tests/test_local_ai.py`, `tests/test_production_runtime.py` |
-| Enterprise, developer, security, privacy, deployment | Implemented | `openagent/enterprise.py`, `openagent/developer.py`, `openagent/security_privacy.py`, `openagent/production_runtime.py`, `deploy/kubernetes/` |
-| Full local product runtime | Implemented | `openagent/production_runtime.py`, `openagent/voice.py`, `tests/test_production_runtime.py`, `tests/test_media_voice.py`, `docs/PRODUCTION_RUNTIME.md` |
+| Enterprise, developer, security, privacy, deployment | Partial | `openagent/enterprise.py`, `openagent/developer.py`, `openagent/security_privacy.py`, `openagent/production_runtime.py`, `deploy/kubernetes/` |
+| Full local product runtime | Partial | `openagent/production_runtime.py`, `openagent/voice.py`, `tests/test_production_runtime.py`, `tests/test_media_voice.py`, `docs/PRODUCTION_RUNTIME.md` |
 | Native Windows desktop installability | Implemented | `openagent/desktop.py`, `installers/windows/`, `tests/test_desktop.py`, `docs/WINDOWS_DESKTOP.md` |
 | Native desktop workbench | Implemented | `openagent/desktop.py`, `tests/test_desktop.py`, `docs/WINDOWS_DESKTOP.md` |
 
@@ -43,7 +51,7 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 
 | Requirement | Status | Notes |
 | --- | --- | --- |
-| 100% self-hosted | Implemented | Native desktop shell, local HTTP server, SQLite store, Docker skeleton, Kubernetes manifests, and package manifests exist. |
+| Self-hosted by default | Implemented | Native desktop shell, local HTTP server, SQLite store, Docker skeleton, Kubernetes manifests, and package manifests exist; a deployment still needs its own infrastructure. |
 | User owns all data | Implemented | Data persists in the configured local data directory. |
 | Local-first architecture | Implemented | Local provider and local storage are defaults. |
 | Offline-capable | Implemented | Core, chat, context, agents, workflows, docs, and local model provider run offline. |
@@ -51,10 +59,10 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | Data never leaves unless authorized | Implemented | External model, workflow network, model download, webhook, connector polling, and egress paths are approval-gated. |
 | Open standards | Implemented | HTTP/JSON, SQLite, CalDAV metadata, OpenAI-compatible models, GraphQL-style reads, MCP manifests, JWKS records, and SDK artifacts exist. |
 | Vendor-independent | Implemented | Local, Ollama, llama.cpp, OpenAI-compatible, adapter, package, and connector records exist. |
-| Cross-platform | Implemented | Python package, native Windows desktop install path, web app, container, Kubernetes, desktop package, mobile/PWA package, and air-gap metadata records exist. |
+| Cross-platform surfaces | Partial | Python package, native Windows desktop install path, web app, container, Kubernetes, desktop package, mobile/PWA package, and air-gap metadata records exist; each target needs its own build and runtime proof. |
 | Modular architecture | Implemented | Modules are split by context, models, agents, workflows, knowledge, communication, enterprise, developer, security, and production runtime. |
-| High performance and hardware acceleration | Implemented | Lightweight local runtime, streaming, worker queues, hardware detection, benchmarks, adapter registry, GPU plans, and cluster planning exist. |
-| Enterprise-ready | Implemented | RBAC, workspaces, SSO/JWKS validation implementations, audit, backups, policies, Kubernetes, and federation policy hooks exist. |
+| Performance measurement and hardware planning | Partial | Lightweight local runtime, streaming, worker queues, hardware detection, benchmarks, adapter registry, GPU plans, and cluster planning exist. They do not establish a universal speed claim. |
+| Enterprise controls | Partial | RBAC, workspaces, SSO/JWKS validation implementations, audit, backups, policies, Kubernetes, and federation policy hooks exist; provider and deployment certification remains external. |
 | Extensible ecosystem | Implemented | Plugin, tool, MCP, SDK, extension package, sandbox run, and community agent marketplace records exist. |
 
 ## Unified Context Engine
@@ -123,7 +131,7 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | Requirement | Status | Notes |
 | --- | --- | --- |
 | PDFs, documents, images, audio, video, websites, emails, notes, databases | Implemented | Text/files, local PDF text scan, image header understanding, audio/video metadata, websites through fetch, emails/messages, notes, and SQLite reads exist. |
-| OCR, vision, audio, video understanding | Implemented | Header/metadata understanding and production media analysis records exist; deployments can attach heavier OCR/STT/vision engines through local adapters. |
+| OCR, vision, audio, video understanding | Partial | Header/metadata understanding and local media-analysis records exist; heavier OCR, STT, and vision engines remain optional local adapters. |
 | Semantic chunking, metadata extraction, entity recognition | Implemented | Chunking, metadata, entities, and graph relationships exist. |
 | Vector, hybrid, graph, multi-stage retrieval, reranking, source attribution | Implemented | SQLite FTS, local vectors, production vector index records, graph retrieval, source attribution, hybrid search, and reranking exist. |
 
@@ -132,10 +140,10 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | Requirement | Status | Notes |
 | --- | --- | --- |
 | Ollama, llama.cpp, OpenAI-compatible, DeepSeek-compatible | Implemented | Ollama, llama.cpp, and OpenAI-compatible providers exist; DeepSeek can use OpenAI-compatible config. |
-| vLLM, TensorRT, ONNX Runtime | Implemented | Adapter metadata and production GPU planning records exist. |
+| vLLM, TensorRT, ONNX Runtime | Record / plan | Adapter metadata and production GPU planning records exist; this checkout does not claim each backend is an active inference path. |
 | Model downloads, marketplace, versioning, quantization, benchmarking, performance analytics | Implemented | Registry, downloads, marketplace, quantization metadata, benchmarks, performance analytics records, and status endpoints exist. |
 | Fine-tuning, LoRA, embedding management | Implemented | Fine-tune, LoRA, and embedding job records exist with local audit metadata. |
-| CPU, NVIDIA, AMD, Apple Silicon, multi-GPU, distributed inference, clusters | Implemented | Detection, adapter records, GPU model plans, distributed configuration records, and cluster planning exist. |
+| CPU, NVIDIA, AMD, Apple Silicon, multi-GPU, distributed inference, clusters | Partial | Detection, adapter records, GPU model plans, distributed configuration records, and cluster planning exist; direct execution depends on the installed backend and device. |
 
 ## Developer Platform
 
@@ -146,7 +154,7 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | Webhooks | Implemented | Registry, delivery logs, and Stage 12 queue jobs for retry workers exist. |
 | SDK | Implemented | Generated Python SDK artifacts and local package publishing records exist. |
 | Plugin SDK, Agent SDK, Workflow SDK | Implemented | Starter helper artifacts exist. |
-| MCP support | Implemented | MCP manifest and server configuration records exist. |
+| MCP support | Partial | MCP server/tool records and bounded stdio/HTTP JSON-RPC invocation exist; long-lived sessions, provider authentication, and broad protocol coverage remain separate. |
 | Tool creation framework | Implemented | Local tool registry, invocation records, and sandboxed plugin run records exist. |
 | Extension marketplace/community packages | Implemented | Local extension catalog and external/community agent marketplace records exist. |
 
@@ -158,10 +166,10 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | RBAC | Implemented | Roles, memberships, and access checks exist. |
 | Audit logging | Implemented | Local audit events, audit-chain sealing, and Stage 12 audit anchors exist. |
 | Secret management | Implemented | Local encrypted secret vault implementation exists. |
-| Hardware security key support | Implemented | Hardware key metadata and secure enclave metadata records exist for deployments to bind to concrete devices. |
-| Zero-trust architecture | Implemented | Policy records, egress approvals, sandbox profiles, production policy gates, and audit anchors exist. |
-| Secure enclaves | Implemented | Secure enclave metadata records exist. |
-| Sandboxed execution | Implemented | Sandbox policy profiles and sandboxed plugin execution records exist. |
+| Hardware security key support | Record / plan | Hardware key metadata and secure enclave metadata records exist for deployments to bind to concrete devices; a device-backed implementation is not certified here. |
+| Zero-trust controls | Partial | Policy records, egress approvals, sandbox profiles, production policy gates, and audit anchors exist; this is not a complete zero-trust deployment certification. |
+| Secure enclaves | Record / plan | Secure enclave metadata records exist. |
+| Sandboxed execution | Partial | Sandbox policy profiles, copied workspaces, optional Docker boundaries, and sandboxed plugin records exist; local process isolation is not an operating-system security boundary. |
 | Air-gapped operation | Implemented | Local core can run offline, and package/sync records keep deployment choices explicit. |
 | Selective cloud access, permission sharing, retention, transparency | Implemented | Egress approvals, share grants, retention policies, privacy reports, and external model privacy policies exist. |
 
@@ -171,10 +179,10 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | --- | --- | --- |
 | Desktop application | Implemented | Native `openagent-desktop` workbench, Windows installer scripts, shortcuts, desktop package manifests, and build records exist. |
 | Web application | Implemented | Static web workspace exists. |
-| Mobile application | Implemented | Mobile/PWA package manifests and build records exist. |
-| Docker and single-node deployment | Implemented | Dockerfile and compose exist. |
-| Kubernetes and multi-node deployment | Implemented | Manifests, queue records, cluster planning, resource metadata, and deployment records exist. |
-| Edge and air-gapped deployment | Implemented | Local-first architecture, package manifests, sync bundles, and explicit external gates support edge/air-gap deployments. |
+| Mobile application | Record / plan | Mobile/PWA package manifests and build records exist; a store-ready mobile build is not produced by the Windows test environment. |
+| Docker and single-node deployment | Local surface | Dockerfile and compose exist and need a target-host smoke test. |
+| Kubernetes and multi-node deployment | Record / plan | Manifests, queue records, cluster planning, resource metadata, and deployment records exist; a live cluster is not part of the repository tests. |
+| Edge and air-gapped deployment | Partial | Local-first architecture, package manifests, sync bundles, and explicit external gates support an air-gap design, subject to the selected model and package set. |
 | Backup, disaster recovery, monitoring, logging, health checks, resource management | Implemented | Backups, DR plans, health, audit, queue status, GPU plans, and production status endpoints exist. |
 
 ## User Experience and Advanced Capabilities
@@ -185,23 +193,28 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | Live Canvas | Implemented | Workflow canvas and layout persistence exist. |
 | Command palette, drag-and-drop workflows, custom dashboards, personalization, accessibility | Implemented | Command palette, shortcuts, draggable workflow layout saves, dashboard/canvas records, personalization profiles, and native desktop feature tabs exist. |
 | Instant search, streaming responses, keyboard shortcuts, context-aware actions, smart recommendations | Implemented | Search, streaming, keyboard shortcuts, context actions, and proactive job recommendations exist. |
-| Digital twin, personal operating memory, autonomous project management, continuous research, intent prediction, predictive assistance | Implemented | Assistant goals, typed memories, proactive jobs, workflow queues, semantic metrics, and local search provide the runnable implementation. |
-| Self-optimizing agents, real-time knowledge graph visualization, personal AI search engine, local AI app store | Implemented | Verification records, graph analytics snapshots, search APIs, model marketplace, and agent marketplace records exist. |
-| Federated private learning, multi-device sync, encrypted memory vault | Implemented | Federated aggregation records, encrypted sync bundles, and local encrypted vault records exist. |
-| Persistent autonomous agents, proactive assistance, goal tracking, long-horizon planning, life/team/enterprise intelligence | Implemented | Proactive jobs, goals, workflow queues, organization memory, and enterprise policy records exist. |
+| Digital twin, personal operating memory, autonomous project management, continuous research, intent prediction, predictive assistance | Partial | Assistant goals, typed memories, proactive jobs, workflow queues, semantic metrics, and local search provide local foundations; they are not a general autonomous life-management system. |
+| Self-optimizing agents, knowledge graph visualization, personal AI search engine, local AI app store | Partial | Verification records, graph analytics snapshots, search APIs, model marketplace, and agent marketplace records exist; autonomous optimization and a hosted app store are not claimed. |
+| Federated private learning, multi-device sync, encrypted memory vault | Record / plan | Federated aggregation records, encrypted sync bundles, and local encrypted vault records exist; a live federated network and multi-device product are not included. |
+| Persistent autonomous agents, proactive assistance, goal tracking, long-horizon planning, life/team/enterprise intelligence | Partial | Proactive jobs, goals, workflow queues, organization memory, and enterprise policy records exist; long-horizon autonomy still needs deployment-specific agents and evaluation. |
 
 ## Performance Goals
 
 | Requirement | Status | Notes |
 | --- | --- | --- |
-| Faster than existing AI assistants/workspaces | Implemented | Local deterministic paths, queues, and benchmarks provide a runnable local measurement base; competitor benchmarking is deployment policy. |
-| Sub-second interactions | Implemented | Local deterministic calls are lightweight, and queue/benchmark records make performance observable. |
-| GPU optimized | Implemented | Adapter records, hardware detection, benchmark records, GPU plans, and fine-tune job records exist. |
-| Parallel execution | Implemented | Multi-agent parallel execution and queued production jobs exist. |
-| Low memory footprint | Implemented | Dependency-light design exists. |
-| Massive context support | Implemented | SQLite search, vectors, graph records, semantic consolidation, and production vector indexes provide the local base. |
-| Real-time indexing and instant retrieval | Implemented | Local writes/search are immediate for local data, and queue records make indexing work auditable. |
+| Faster than existing AI assistants/workspaces | Not claimed | Local deterministic paths, queues, and benchmarks provide a measurement base; no competitor benchmark is asserted. |
+| Sub-second interactions | Partial | Some local deterministic calls are lightweight, but model load and generation time vary by model, backend, and hardware. |
+| GPU optimized | Partial | Capability probes, adapter records, benchmarks, and GPU plans exist; actual execution depends on the installed backend and model. |
+| Parallel execution | Implemented | Multi-agent parallel execution and queued production jobs exist in the local runtime. |
+| Low memory footprint | Partial | The base package is dependency-light, while optional models and engines have their own memory requirements. |
+| Large-context handling | Partial | SQLite search, vectors, graph records, semantic consolidation, and production vector indexes provide local retrieval; they do not remove model context limits. |
+| Real-time indexing and instant retrieval | Partial | Local writes and searches are immediate for many small records; larger ingestion and optional indexes still depend on queue and backend state. |
 
 ## Bottom Line
 
-The repository satisfies a Stage 0-15 local-first product runtime for the original OpenAgent vision. The build rule is met for the local implementation: each marked feature is runnable locally, covered by critical tests, documented with a privacy boundary, and auditable when it performs an action. Deployment teams can still swap in certified cryptography, hardware-backed keys, external provider adapters, signed installers, mobile store builds, HSMs, or enterprise IdP-specific policies without changing the privacy-first trust model.
+The repository provides a substantial Stage 0-15 local-first foundation for the
+original OpenAgent vision. The local code paths are tested at the level shown in
+the evidence column. Planning records, manifests, optional adapters, and local
+simulations are kept distinct from live provider, hardware, store, cluster, and
+identity certification. Those deployment checks remain part of delivering a
+production system and are not inferred from the presence of a database row.

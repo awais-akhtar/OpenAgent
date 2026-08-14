@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from openagent.desktop import (
     desktop_feature_manifest,
+    desktop_runtime_status,
     desktop_layout_manifest,
     desktop_status,
     main,
@@ -144,6 +145,8 @@ class DesktopTests(unittest.TestCase):
             self.assertIn("security_developer", module_ids)
             self.assertEqual(status["desktop_layout"]["shell"], "native-desktop-workbench")
             self.assertEqual(status["modern_workbench"]["mode"], "modern-desktop-workbench")
+            self.assertIn("browser", status["runtime_tools"])
+            self.assertIn("providers", status["runtime_tools"])
 
     def test_desktop_feature_manifest_exposes_mission_modules(self) -> None:
         modules = desktop_feature_manifest()
@@ -164,8 +167,16 @@ class DesktopTests(unittest.TestCase):
         features = " ".join(feature for module in modules for feature in module["features"])
         self.assertIn("RAG synthesis", features)
         self.assertIn("grounding review", features)
-        self.assertIn("browser forms", features)
+        self.assertIn("HTML form simulation", features)
+        self.assertIn("optional browser tests", features)
         self.assertIn("SDK", features)
+
+    def test_desktop_runtime_status_reports_optional_tools_without_starting_them(self) -> None:
+        status = desktop_runtime_status()
+        self.assertIn("installed", status["browser"])
+        self.assertIn("office_exports", status)
+        self.assertIn("colab", status)
+        self.assertIn("openai-compatible", status["providers"]["registered"])
 
     def test_desktop_layout_manifest_exposes_native_workbench(self) -> None:
         layout = desktop_layout_manifest()

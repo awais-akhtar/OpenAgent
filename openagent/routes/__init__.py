@@ -63,6 +63,8 @@ DOMAIN_ROUTE_MODULES: tuple[str, ...] = (
     "scheduler_routes",
     "terminal_routes",
     "mcp_runtime_routes",
+    "tool_runtime_routes",
+    "compute_routes",
     "agent_bridge_routes",
     "skill_routes",
     "conversation_routes",

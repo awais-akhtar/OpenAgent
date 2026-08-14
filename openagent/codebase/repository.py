@@ -21,12 +21,15 @@ TEXT_SUFFIXES = {
     ".c", ".h", ".cpp", ".hpp", ".cs", ".php", ".rb", ".swift", ".sql", ".html",
     ".css", ".scss", ".sass", ".vue", ".svelte", ".md", ".toml", ".yaml", ".yml",
     ".json", ".xml", ".sh", ".ps1", ".bat", ".cmd", ".ini", ".cfg", ".txt", ".prisma",
+    ".sol", ".dart", ".ex", ".exs", ".gd", ".zig", ".scala", ".lua",
 }
 LANGUAGE_BY_SUFFIX = {
     ".py": "python", ".pyi": "python", ".js": "javascript", ".jsx": "javascript",
     ".ts": "typescript", ".tsx": "typescript", ".java": "java", ".kt": "kotlin",
     ".go": "go", ".rs": "rust", ".c": "c", ".cpp": "cpp", ".cs": "csharp",
     ".rb": "ruby", ".php": "php", ".swift": "swift", ".sql": "sql",
+    ".sol": "solidity", ".dart": "dart", ".ex": "elixir", ".exs": "elixir",
+    ".gd": "gdscript", ".zig": "zig", ".scala": "scala", ".lua": "lua",
 }
 SYMBOL_RE = re.compile(
     r"^\s*(?:export\s+)?(?:async\s+)?(?:def|class|function|interface|type|enum|struct|trait)\s+([A-Za-z_$][\w$]*)",
@@ -98,6 +101,9 @@ class RepositoryIntelligence:
                 "package.json", "pyproject.toml", "requirements.txt", "cargo.toml", "go.mod",
                 "pom.xml", "build.gradle", "docker-compose.yml", "docker-compose.yaml", "dockerfile",
                 ".env.example", "readme.md", "manage.py", "vite.config.ts", "next.config.js",
+                "composer.json", "gemfile", "mix.exs", "pubspec.yaml", "cmakelists.txt",
+                "build.zig", "foundry.toml", "project.godot", "settings.gradle", "settings.gradle.kts",
+                "hardhat.config.js", "hardhat.config.ts", "artisan", "package.swift",
             }:
                 important.append(rel)
             if size > self.max_file_bytes or path.suffix.lower() not in TEXT_SUFFIXES:
@@ -335,6 +341,33 @@ class RepositoryIntelligence:
                 break
         if not framework and "manage.py" in names:
             framework = "django"
+        manifest_stacks = (
+            (("foundry.toml", "hardhat.config.js", "hardhat.config.ts"), "solidity"),
+            (("config/application.rb",), "rails"),
+            (("artisan",), "laravel"),
+            (("mix.exs",), "phoenix"),
+            (("pubspec.yaml",), "flutter"),
+            (("project.godot",), "godot"),
+            (("cmakelists.txt",), "cmake"),
+            (("build.zig",), "zig"),
+            (("cargo.toml",), "rust"),
+            (("go.mod",), "go"),
+        )
+        if not framework:
+            framework = next(
+                (label for markers, label in manifest_stacks if any(marker in names for marker in markers)),
+                "",
+            )
+        if not framework and any(name.endswith((".csproj", ".sln")) for name in names):
+            framework = "dotnet"
+        if not framework and any(name.endswith(".uproject") for name in names):
+            framework = "unreal"
+        if not framework and "projectsettings/projectversion.txt" in names:
+            framework = "unity"
+        if not framework and any(name.endswith(".xcodeproj/project.pbxproj") for name in names):
+            framework = "ios"
+        if not framework and any(name in names for name in ("settings.gradle", "settings.gradle.kts")):
+            framework = "android" if any("androidmanifest.xml" in name for name in names) else "spring"
         if not framework and any(name.endswith("app.py") for name in names):
             framework = "python"
         corpus = " ".join(names) + " " + json.dumps(deps)
@@ -373,12 +406,27 @@ class RepositoryIntelligence:
             commands.update({"test": "cargo test", "build": "cargo build", "lint": "cargo clippy"})
         if "go.mod" in names:
             commands.update({"test": "go test ./...", "build": "go build ./..."})
+        if "build.zig" in names:
+            commands.update({"test": "zig build test", "build": "zig build"})
+        if "foundry.toml" in names:
+            commands.update({"test": "forge test", "build": "forge build"})
+        if "mix.exs" in names:
+            commands.update({"test": "mix test", "build": "mix compile --warnings-as-errors"})
+        if "artisan" in names:
+            commands.setdefault("test", "php artisan test")
+        if "gemfile" in names and "config/application.rb" in {path.relative_to(self.root).as_posix().lower() for path in files}:
+            commands.setdefault("test", "bundle exec rails test")
+        if "pubspec.yaml" in names:
+            commands.update({"test": "flutter test", "build": "flutter build bundle"})
+        if "project.godot" in names:
+            commands.setdefault("runtime", "godot --headless --path . --quit")
         return commands
 
     def _entrypoints(self, files: list[Path]) -> list[str]:
         preferred = {
             "main.py", "app.py", "manage.py", "server.py", "index.js", "index.ts", "src/index.ts",
             "src/main.ts", "src/main.tsx", "src/app/page.tsx", "src/app.tsx", "cmd/main.go",
+            "lib/main.dart", "src/main.rs", "src/main.zig", "package.swift", "project.godot",
         }
         rels = [path.relative_to(self.root).as_posix() for path in files]
         return [rel for rel in rels if rel.lower() in preferred or Path(rel).name.lower() in preferred][:50]

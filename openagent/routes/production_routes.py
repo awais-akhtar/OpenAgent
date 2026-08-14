@@ -11,6 +11,7 @@ ROUTES = (
     ("GET", "/api/production/policies"),
     ("GET", "/api/production/queue"),
     ("GET", "/api/production/audit-anchors"),
+    ("GET", "/api/runtime-tools/status"),
     ("POST", "/api/production/policies"),
     ("POST", "/api/production/policies/evaluate"),
     ("POST", "/api/production/queue"),
@@ -39,6 +40,7 @@ ROUTES = (
     ("POST", "/api/production/sync/bundles"),
     ("POST", "/api/production/sdk/publish"),
     ("POST", "/api/production/sandbox/run"),
+    ("POST", "/api/runtime-tools/browser-test"),
 )
 
 

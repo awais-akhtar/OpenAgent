@@ -1,8 +1,8 @@
 # Enterprise and Team Deployment
 
-Stage 7 is implemented as a local-first enterprise layer.
+Stage 7 provides local enterprise controls and deployment manifests.
 
-## Implemented Features
+## Local Features
 
 - Role-based access control
 - Multi-user records

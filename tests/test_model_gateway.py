@@ -80,7 +80,10 @@ class ModelGatewayTests(unittest.TestCase):
         provider_ids = {provider["id"] for provider in gateway.specs()}
         self.assertSetEqual(
             provider_ids,
-            {"auto", "local", "openvino-direct", "ollama", "llamacpp", "openai-compatible"},
+            {
+                "auto", "local", "openvino-direct", "ollama", "llamacpp", "openai-compatible",
+                "deepseek", "mistral", "groq", "together", "openrouter", "xai", "fireworks", "perplexity", "qwen",
+            },
         )
         self.assertIn("local-first", gateway.policies()["routes"])
         self.assertIn("local-server-first", gateway.policies()["routes"])
@@ -94,6 +97,15 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertEqual(settings["chat_model"], CPU_MODEL_STACK["chat"])
         self.assertEqual(settings["code_model"], CPU_MODEL_STACK["code"])
         self.assertEqual(settings["research_model"], CPU_MODEL_STACK["research"])
+
+    def test_compatible_providers_are_external_and_require_explicit_egress_approval(self) -> None:
+        gateway = ModelGateway()
+        deepseek = next(provider for provider in gateway.specs() if provider["id"] == "deepseek")
+        self.assertFalse(deepseek["local"])
+        self.assertTrue(deepseek["network"])
+        self.assertFalse(deepseek["available"])
+        with self.assertRaises(ProviderConfigurationError):
+            gateway.complete([{"role": "user", "content": "Use DeepSeek."}], provider_id="deepseek")
 
     def test_auto_route_falls_back_to_offline_local_when_no_server_is_running(self) -> None:
         with patch("openagent.model_gateway.OllamaProvider.available", return_value=False), patch(

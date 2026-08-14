@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +34,7 @@ from ..chat import ChatService
 from ..chat_artifacts import ChatArtifactService
 from ..codebase import CodebaseService
 from ..communication import CommunicationApprovalRequired, CommunicationHub
+from ..compute_router import ComputeRouter
 from ..conversation_organization import ConversationOrganization
 from ..config import auth_enforcement_enabled, web_root as default_web_root
 from ..contacts import ContactsManager
@@ -66,6 +68,7 @@ from ..science.service import ScientificService
 from ..safe_terminal import SafeTerminal
 from ..scheduler import Scheduler
 from ..skill_ecosystem import SkillEcosystem
+from ..tools.runtime import ToolRuntime, register_safe_terminal
 from .agent_bridge_routes import AgentBridgeRouteDependencies, handle_get as handle_agent_bridge_get, handle_post as handle_agent_bridge_post
 from .advanced_rag_routes import AdvancedRAGRouteDependencies, handle_get as handle_advanced_rag_get, handle_post as handle_advanced_rag_post
 from .adaptive_engine_routes import AdaptiveEngineRouteDependencies, handle_get as handle_adaptive_engine_get, handle_post as handle_adaptive_engine_post
@@ -75,6 +78,7 @@ from .codebase_routes import CodebaseRouteDependencies, handle_get as handle_cod
 from .communication_routes import CommunicationRouteDependencies, handle_get as handle_communication_get, handle_post as handle_communication_post
 from .conversation_routes import ConversationRouteDependencies, handle_delete as handle_conversation_delete, handle_get as handle_conversation_get, handle_patch as handle_conversation_patch, handle_post as handle_conversation_post
 from .contacts_routes import ContactsRouteDependencies, handle_delete as handle_contacts_delete, handle_get as handle_contacts_get, handle_patch as handle_contacts_patch, handle_post as handle_contacts_post
+from .compute_routes import ComputeRouteDependencies, handle_get as handle_compute_get, handle_post as handle_compute_post
 from .document_processing_routes import DocumentProcessingRouteDependencies, handle_post as handle_document_processing_post
 from .handlers import handler_specs
 from .health_routes import HealthRouteDependencies, handle_get as handle_health_get
@@ -88,6 +92,7 @@ from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_s
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
 from .skill_routes import SkillRouteDependencies, handle_get as handle_skill_get, handle_post as handle_skill_post
 from .terminal_routes import TerminalRouteDependencies, handle_get as handle_terminal_get, handle_post as handle_terminal_post
+from .tool_runtime_routes import ToolRuntimeRouteDependencies, handle_get as handle_tool_runtime_get, handle_post as handle_tool_runtime_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
 from .vector_routes import VectorRouteDependencies, handle_get as handle_vector_get, handle_post as handle_vector_post
 from .worker_routes import WorkerRouteDependencies, handle_get as handle_worker_get, handle_post as handle_worker_post
@@ -359,6 +364,9 @@ def build_http_server(
     skills = SkillEcosystem(store)
     conversation_organization = ConversationOrganization(store)
     safe_terminal = SafeTerminal(store, workspace_root=Path.cwd())
+    tool_runtime = ToolRuntime(store)
+    register_safe_terminal(tool_runtime, safe_terminal)
+    compute_router = ComputeRouter(gateway, adaptive_engine)
     mcp_runtime = MCPRuntime(store)
     agent_bridge = AgentBridge(store)
     root = (web_root or default_web_root()).resolve()
@@ -388,6 +396,39 @@ def build_http_server(
     def module_health(project: str = "default") -> dict[str, object]:
         modules: list[dict[str, object]] = []
 
+        def check_module(
+            module_id: str,
+            label: str,
+            fn: object,
+            *,
+            degraded: bool = False,
+            reason: str = "",
+        ) -> dict[str, object]:
+            started = time.perf_counter()
+            try:
+                evidence = fn()  # type: ignore[operator]
+                status = "degraded" if degraded else "ready"
+                return {
+                    "id": module_id,
+                    "label": label,
+                    "status": status,
+                    "reason": reason,
+                    "evidence": evidence,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            except Exception as exc:
+                return {
+                    "id": module_id,
+                    "label": label,
+                    "status": "error",
+                    "reason": str(exc),
+                    "evidence": {},
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+
+        futures = []
+        executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="openagent-health")
+
         def add_module(
             module_id: str,
             label: str,
@@ -396,28 +437,16 @@ def build_http_server(
             degraded: bool = False,
             reason: str = "",
         ) -> None:
-            try:
-                evidence = fn()  # type: ignore[operator]
-                status = "degraded" if degraded else "ready"
-                modules.append(
-                    {
-                        "id": module_id,
-                        "label": label,
-                        "status": status,
-                        "reason": reason,
-                        "evidence": evidence,
-                    }
+            futures.append(
+                executor.submit(
+                    check_module,
+                    module_id,
+                    label,
+                    fn,
+                    degraded=degraded,
+                    reason=reason,
                 )
-            except Exception as exc:
-                modules.append(
-                    {
-                        "id": module_id,
-                        "label": label,
-                        "status": "error",
-                        "reason": str(exc),
-                        "evidence": {},
-                    }
-                )
+            )
 
         model_tools = local_ai.model_tool_status()
         provider_specs = gateway.specs()
@@ -466,7 +495,11 @@ def build_http_server(
         add_module("scheduler", "Scheduler and notifications", lambda: {"tasks": scheduler.list_tasks(project=project, limit=3), "notifications": scheduler.notifications(project=project, limit=3)})
         add_module("conversation_organization", "Conversation organization", lambda: {"conversations": conversation_organization.list(project=project, limit=3)})
         add_module("mcp_runtime", "MCP runtime", lambda: {"servers": mcp_runtime.list_servers(project=project, limit=3), "tools": mcp_runtime.tools(project=project)})
+        add_module("tool_runtime", "Unified tool runtime", lambda: tool_runtime.describe())
+        add_module("compute_router", "Compute capability router", lambda: compute_router.readiness(project=project))
         add_module("agent_bridge", "Agent bridge", lambda: agent_bridge.capabilities())
+        modules.extend(future.result() for future in futures)
+        executor.shutdown(wait=True)
         counts = {
             "ready": sum(1 for item in modules if item["status"] == "ready"),
             "degraded": sum(1 for item in modules if item["status"] == "degraded"),
@@ -647,6 +680,16 @@ def build_http_server(
             read_json=read_json,
         )
 
+    def tool_runtime_route_dependencies(read_json, payload_owner) -> ToolRuntimeRouteDependencies:
+        return ToolRuntimeRouteDependencies(
+            runtime=tool_runtime,
+            payload_owner=payload_owner,
+            read_json=read_json,
+        )
+
+    def compute_route_dependencies(read_json) -> ComputeRouteDependencies:
+        return ComputeRouteDependencies(router=compute_router, read_json=read_json)
+
     def agent_bridge_route_dependencies(read_json, query_owner, payload_owner) -> AgentBridgeRouteDependencies:
         return AgentBridgeRouteDependencies(
             bridge=agent_bridge,
@@ -809,6 +852,17 @@ def build_http_server(
             )
             if mcp_runtime_route is not None:
                 self.send_json(mcp_runtime_route.payload, status=mcp_runtime_route.status)
+                return
+            tool_runtime_route = handle_tool_runtime_get(
+                parsed.path,
+                tool_runtime_route_dependencies(self.read_json, self._payload_owner),
+            )
+            if tool_runtime_route is not None:
+                self.send_json(tool_runtime_route.payload, status=tool_runtime_route.status)
+                return
+            compute_route = handle_compute_get(parsed.path, compute_route_dependencies(self.read_json))
+            if compute_route is not None:
+                self.send_json(compute_route.payload, status=compute_route.status)
                 return
             agent_bridge_route = handle_agent_bridge_get(
                 parsed.path,
@@ -1059,6 +1113,35 @@ def build_http_server(
                 return
             if parsed.path == "/api/models":
                 self.send_json({"providers": gateway.specs()})
+                return
+            if parsed.path == "/api/runtime-tools/status":
+                from importlib.util import find_spec
+
+                from ..runtimes.colab import detect_colab, recommend_model
+
+                office_modules = {name: find_spec(name) is not None for name in ("docx", "pptx", "openpyxl")}
+                self.send_json(
+                    {
+                        "browser": {
+                            "installed": find_spec("playwright") is not None,
+                            "install_hint": "pip install openagent[browser] && playwright install chromium",
+                        },
+                        "office_exports": {
+                            "modules": office_modules,
+                            "ready": all(office_modules.values()),
+                            "install_hint": "pip install openagent[office]",
+                        },
+                        "colab": {
+                            "detected": detect_colab(),
+                            "recommended_model_without_probe": recommend_model({"gpu": False}),
+                            "launch_import": "from openagent.colab import launch",
+                        },
+                        "providers": {
+                            "registered": sorted(gateway.providers),
+                            "external_requires_explicit_approval": sorted(provider_id for provider_id, provider in gateway.providers.items() if not provider.local),
+                        },
+                    }
+                )
                 return
             if parsed.path == "/api/model-policy":
                 self.send_json(gateway.policies())
@@ -1972,6 +2055,28 @@ def build_http_server(
             if document_processing_route is not None:
                 self.send_json(document_processing_route.payload, status=document_processing_route.status)
                 return
+            if parsed.path == "/api/runtime-tools/browser-test":
+                from ..tools.browser import BrowserRuntime, BrowserRuntimeError
+
+                payload = self.read_json()
+                url = str(payload.get("url", "")).strip()
+                approved = parse_bool(payload.get("approved_external"), default=False)
+                try:
+                    result = BrowserRuntime(store.data_dir).run(url, approved=approved)
+                except (BrowserRuntimeError, PermissionError) as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                store.add_audit_event(
+                    AuditEvent(
+                        actor="web-workbench",
+                        action="runtime_tools.browser_test",
+                        resource="browser:playwright",
+                        project=str(payload.get("project", "default")).strip() or "default",
+                        metadata={"url": url, "approved_external": approved, "artifact": result.get("artifact", "")},
+                    )
+                )
+                self.send_json(result, status=HTTPStatus.CREATED)
+                return
             image_studio_route = handle_image_studio_post(
                 parsed.path,
                 image_studio_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
@@ -2024,6 +2129,17 @@ def build_http_server(
             )
             if mcp_runtime_route is not None:
                 self.send_json(mcp_runtime_route.payload, status=mcp_runtime_route.status)
+                return
+            tool_runtime_route = handle_tool_runtime_post(
+                parsed.path,
+                tool_runtime_route_dependencies(self.read_json, self._payload_owner),
+            )
+            if tool_runtime_route is not None:
+                self.send_json(tool_runtime_route.payload, status=tool_runtime_route.status)
+                return
+            compute_route = handle_compute_post(parsed.path, compute_route_dependencies(self.read_json))
+            if compute_route is not None:
+                self.send_json(compute_route.payload, status=compute_route.status)
                 return
             agent_bridge_route = handle_agent_bridge_post(
                 parsed.path,

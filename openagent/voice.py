@@ -726,7 +726,7 @@ class VoiceRuntime:
             "next_step": (
                 "Vosk is ready for local STT."
                 if package_available
-                else "Install the optional Python package with: python -m pip install \"openagent-ai[voice]\""
+                else "Install the optional Python package with: python -m pip install \"openagent[voice]\""
             ),
             "privacy_boundary": "The Vosk acoustic model is downloaded into the local OpenAgent data directory and used only by local speech-to-text.",
             "stt": {"engines": local_stt_engines()},
@@ -948,7 +948,7 @@ def local_stt_engines() -> list[dict[str, Any]]:
     if vosk_package and vosk_model:
         vosk_reason = ""
     elif vosk_model:
-        vosk_reason = "Vosk model is configured, but the Python vosk package is not installed. Run: python -m pip install \"openagent-ai[voice]\""
+        vosk_reason = "Vosk model is configured, but the Python vosk package is not installed. Run: python -m pip install \"openagent[voice]\""
     elif vosk_package:
         vosk_reason = "Vosk package is installed; run Setup Vosk to extract or download a local model."
     else:

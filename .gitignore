@@ -58,3 +58,4 @@ browser-*/
 .env
 .env.*
 !.env.example
+codex-thread*.jsonl

@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from openagent.codebase.repository import RepositoryBoundaryError, RepositoryIntelligence
-from openagent.codebase.profiles import check_artifact_contract, classify_request
+from openagent.codebase.profiles import check_artifact_contract, classify_request, task_needs_file_change
 from openagent.codebase.sandbox import SandboxManager
 from openagent.codebase.service import CodebaseService
 from openagent.codebase.tools import CodebaseTools, ToolPolicy
@@ -147,6 +147,39 @@ class FastApiCreationGateway(FakeGateway):
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
 
 
+class ModelSelectedNodeGateway(FakeGateway):
+    """Chooses a non-React stack for a request that names no framework."""
+
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "project manager" in system:
+            payload = {"tasks": [
+                {"id": "T1", "title": "Create the Node command-line project foundation", "agent": "programmer", "depends_on": []},
+                {"id": "T2", "title": "Implement inventory item normalization", "agent": "programmer", "depends_on": ["T1"]},
+                {"id": "T3", "title": "Test and validate the command-line behavior", "agent": "tester", "depends_on": ["T2"]},
+            ]}
+        elif "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "final acceptance auditor" in system:
+            payload = {"status": "passed", "missing_tasks": [], "evidence": ["generated tests passed"]}
+        elif "project foundation" in user:
+            payload = {"summary": "created the Node project", "actions": [
+                {"tool": "write_file", "arguments": {"path": "package.json", "content": "{\n  \"name\": \"inventory-cli\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\"test\": \"node --test\"}\n}\n"}},
+                {"tool": "write_file", "arguments": {"path": "src/index.js", "content": "export { normalizeItem } from './inventory.js';\n"}},
+            ], "done": True}
+        elif "item normalization" in user:
+            payload = {"summary": "implemented inventory behavior", "actions": [
+                {"tool": "write_file", "arguments": {"path": "src/inventory.js", "content": "export function normalizeItem(name) {\n  const value = String(name).trim();\n  if (!value) throw new Error('name is required');\n  return { name: value };\n}\n"}},
+            ], "done": True}
+        else:
+            payload = {"summary": "tested inventory behavior", "actions": [
+                {"tool": "write_file", "arguments": {"path": "test/inventory.test.js", "content": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeItem } from '../src/inventory.js';\ntest('normalizes an item', () => assert.deepEqual(normalizeItem(' desk '), { name: 'desk' }));\n"}},
+                {"tool": "run_tests", "arguments": {"command": ["npm", "test"]}},
+            ], "done": True}
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
 class ParallelPlanningGateway(FakeGateway):
     def complete(self, messages, **kwargs):
         system = messages[0]["content"].lower()
@@ -167,7 +200,60 @@ class ParallelPlanningGateway(FakeGateway):
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
 
 
+class TitleDependencyPageUpdateGateway(FakeGateway):
+    """Planner fixture matching title-based dependencies from a page-update request."""
+
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        if "project manager" in system:
+            payload = {
+                "tasks": [
+                    {"id": "T1", "title": "Review existing pages for updates", "agent": "programmer", "depends_on": ["T0"]},
+                    {"id": "T2", "title": "Update templates and content for each page", "agent": "programmer", "depends_on": ["Review existing pages for updates"]},
+                    {"id": "T3", "title": "Ensure all dependencies are up-to-date and tested", "agent": "tester", "depends_on": ["Update templates and content for each page"]},
+                ],
+            }
+        elif "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "final acceptance auditor" in system:
+            payload = {"status": "passed", "missing_tasks": [], "evidence": ["page update and validation completed"]}
+        elif "agent role: tester" in messages[-1]["content"].lower():
+            payload = {
+                "summary": "validated the updated page files",
+                "actions": [{"tool": "run_tests", "arguments": {"command": ["python", "-m", "compileall", "-q", "."]}}],
+                "done": True,
+            }
+        else:
+            payload = {
+                "summary": "updated page content",
+                "actions": [{"tool": "write_file", "arguments": {"path": "pages-updated.txt", "content": "Updated page content and data.\n"}}],
+                "done": True,
+            }
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
+class DependencyOnlyPlanGateway(FakeGateway):
+    """Return the malformed setup-only plan that previously caused a loop."""
+
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        if "project manager" in system:
+            payload = {
+                "tasks": [
+                    {"id": "T1", "title": "Ensure all dependencies are installed and configured correctly", "agent": "tester", "depends_on": []},
+                ],
+            }
+        else:
+            return super().complete(messages, **kwargs)
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
 class RepositoryIntelligenceTests(unittest.TestCase):
+    def test_task_classifier_keeps_validation_setup_out_of_file_edit_tasks(self) -> None:
+        self.assertFalse(task_needs_file_change("Ensure all dependencies are installed and configured correctly", "tester"))
+        self.assertTrue(task_needs_file_change("Update templates and content for each page", "programmer"))
+        self.assertTrue(task_needs_file_change("Implement frontend module", "frontend"))
+
     def test_scan_context_and_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -197,6 +283,9 @@ class RepositoryIntelligenceTests(unittest.TestCase):
             "Make a Flutter mobile app": ("mobile application", "flutter", "dart"),
             "Build a desktop application with Electron": ("desktop application", "electron", "javascript"),
             "Create a Go web service": ("service", "go", "go"),
+            "Create a Solidity smart contract with Foundry": ("application", "solidity", "solidity"),
+            "Build a Ruby on Rails portal": ("web application", "rails", "ruby"),
+            "Create a C++ command line tool with CMake": ("command-line application", "cmake", "cpp"),
         }
         for prompt, expected in cases.items():
             with self.subTest(prompt=prompt):
@@ -204,7 +293,8 @@ class RepositoryIntelligenceTests(unittest.TestCase):
                 self.assertEqual(expected, (profile["kind"], profile["framework"], profile["language"]))
 
         default = classify_request("Build an inventory management product", empty)
-        self.assertEqual(("web application", "react"), (default["kind"], default["framework"]))
+        self.assertEqual(("application", "model-selected"), (default["kind"], default["framework"]))
+        self.assertFalse(default["explicit_stack"])
         full_stack = classify_request("Build a login system with PostgreSQL, Google login, and a dashboard", empty)
         self.assertEqual("full-stack", full_stack["architecture"])
         misspelled_django = classify_request(
@@ -271,6 +361,8 @@ class SandboxAndPolicyTests(unittest.TestCase):
         missing_browser = policy.classify("browser_inspect", {})
         self.assertEqual(3, missing_browser["risk"])
         self.assertIn("complete HTTP URL", missing_browser["reason"])
+        self.assertEqual(1, policy.classify("browser_automate", {"url": "http://localhost:8000"})["risk"])
+        self.assertEqual(2, policy.classify("browser_automate", {"url": "https://example.com"})["risk"])
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             source = base / "source"
@@ -351,6 +443,69 @@ class SandboxAndPolicyTests(unittest.TestCase):
 
 
 class CodebaseServiceTests(unittest.TestCase):
+    def test_dependency_only_model_plan_falls_back_without_iteration_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "README.md").write_text("existing project\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), DependencyOnlyPlanGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Dependency plan", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Update pages with content and data", max_iterations=8)
+            run = service.wait_for_run(run["id"], timeout=20)
+
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue(any(event["type"] == "plan.fallback.selected" for event in service.events(run["id"])))
+            self.assertLessEqual(run["iteration"], 8)
+
+    def test_title_based_page_update_dependencies_are_resolved_and_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "index.html").write_text("<h1>Before</h1>\n", encoding="utf-8")
+            (source / "about.html").write_text("<h1>About</h1>\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), TitleDependencyPageUpdateGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Pages", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Update pages with content and data", max_iterations=8)
+            run = service.wait_for_run(run["id"], timeout=20)
+
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue((source / "pages-updated.txt").is_file())
+            completed_ids = {task["id"] for task in run["tasks"] if task["status"] == "completed"}
+            for task in run["tasks"]:
+                self.assertTrue(set(task["depends_on"]).issubset(completed_ids))
+            repairs = next(event["payload"]["dependency_repairs"] for event in service.events(run["id"]) if event["type"] == "plan.created")
+            self.assertTrue(any(item["action"] == "resolved" for item in repairs))
+            self.assertTrue(any(item["action"] == "removed_unknown" and item["dependency"].endswith(":T0") for item in repairs))
+
+    def test_resume_repairs_legacy_invalid_dependencies_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "main.py").write_text("print('ready')\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), NeverDoneGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Legacy graph", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Repair existing page content", max_iterations=1)
+            run = service.wait_for_run(run["id"], timeout=10)
+            self.assertEqual("failed", run["status"])
+            task_id = run["tasks"][0]["id"]
+            with service.store.session() as connection:
+                connection.execute(
+                    "UPDATE codebase_tasks SET depends_on_json = ? WHERE id = ?",
+                    (json.dumps([f"{run['id']}:Review existing pages for updates"]), task_id),
+                )
+                connection.execute("UPDATE codebase_runs SET max_iterations = ? WHERE id = ?", (8, run["id"]))
+            service.gateway = FakeGateway()  # type: ignore[assignment]
+            resumed = service.resume_run(run["id"])
+            resumed = service.wait_for_run(resumed["id"], timeout=15)
+
+            self.assertEqual("completed", resumed["status"], resumed.get("error"))
+            repairs = [event for event in service.events(run["id"]) if event["type"] == "plan.dependencies_repaired"]
+            self.assertTrue(repairs)
+            self.assertTrue(any(item["action"] == "removed_unknown" for item in repairs[-1]["payload"]["repairs"]))
+
     def test_independent_specialist_tasks_generate_in_parallel_and_publish(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -367,6 +522,7 @@ class CodebaseServiceTests(unittest.TestCase):
             events = {item["type"] for item in service.events(run["id"])}
             self.assertIn("agents.parallel.started", events)
             self.assertIn("agents.parallel.completed", events)
+            self.assertIn("plan.model.accepted", events)
 
     def test_explorer_operations_sync_workspace_and_selected_folder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -418,6 +574,24 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertTrue((source / "test_inventory.py").is_file())
             self.assertTrue(any(item["kind"] == "runtime" and item["status"] == "passed" for item in run["validation"]))
             self.assertIn("source.publish.completed", {item["type"] for item in service.events(run["id"])})
+
+    def test_unspecified_greenfield_stack_is_chosen_by_model_not_forced_to_react(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            service = CodebaseService(OpenAgentStore(base / "data"), ModelSelectedNodeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Inventory product", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Build an inventory management product", max_iterations=10)
+            run = service.wait_for_run(run["id"], timeout=25)
+
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue((source / "src" / "inventory.js").is_file())
+            self.assertTrue((source / "test" / "inventory.test.js").is_file())
+            self.assertNotIn("react", (source / "package.json").read_text(encoding="utf-8").lower())
+            events = {item["type"] for item in service.events(run["id"])}
+            self.assertIn("plan.model.accepted", events)
+            self.assertNotIn("plan.fallback.selected", events)
 
     def test_native_folder_picker_returns_resolved_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,5 @@
 [project]
-name = "openagent-ai"
+name = "openagent"
 version = "0.13.0"
 description = "Privacy-first self-hosted AI operating system."
 readme = "README.md"
@@ -33,6 +33,14 @@ media = [
 security = [
   "webauthn>=3,<4",
 ]
+browser = [
+  "playwright>=1.48,<2",
+]
+office = [
+  "python-docx>=1.1,<2",
+  "python-pptx>=1.0,<2",
+  "openpyxl>=3.1,<4",
+]
 full = [
   "faster-whisper>=1.0.0",
   "vosk>=0.3.45",
@@ -47,6 +55,10 @@ full = [
   "pypdfium2>=4,<6",
   "reportlab>=4,<5",
   "webauthn>=3,<4",
+  "playwright>=1.48,<2",
+  "python-docx>=1.1,<2",
+  "python-pptx>=1.0,<2",
+  "openpyxl>=3.1,<4",
 ]
 
 [project.scripts]
@@ -56,6 +68,7 @@ openagent-workbench = "openagent.workbench:main"
 openagent-hard-check = "openagent.hard_check:main"
 openagent-worker = "openagent.worker:main"
 openagent-production-proof = "openagent.production_proof:main"
+openagent-codeq = "openagent.codebase.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["openagent*"]

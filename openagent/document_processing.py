@@ -251,6 +251,61 @@ class DocumentProcessing:
         signature = hmac.new(signing_key.encode("utf-8"), path.read_bytes(), hashlib.sha256).hexdigest() if signing_key else ""
         return {"document": document, "artifact": artifact, "signature": signature, "signature_algorithm": "HMAC-SHA256" if signature else "", "deterministic": True}
 
+    def export_docx(self, doc_id: str, *, owner: str = "") -> dict[str, Any]:
+        try:
+            from docx import Document
+        except ImportError as exc:
+            raise ValueError("DOCX export requires `pip install openagent[office]`.") from exc
+        document = self.documents.get_document(doc_id, owner=owner)
+        path = self.artifact_dir / f"{doc_id}-v{document['version']}.docx"
+        output = Document()
+        output.add_heading(str(document["title"]), level=1)
+        for paragraph in str(document.get("content", "")).split("\n\n"):
+            output.add_paragraph(paragraph)
+        output.save(path)
+        artifact = self._register_artifact(doc_id, path, project=document["project"], kind="docx-export", metadata={"version": document["version"]})
+        self._audit_export(document, "docx", path)
+        return {"document": document, "artifact": artifact, "format": "docx"}
+
+    def export_pptx(self, doc_id: str, *, owner: str = "") -> dict[str, Any]:
+        try:
+            from pptx import Presentation
+        except ImportError as exc:
+            raise ValueError("PPTX export requires `pip install openagent[office]`.") from exc
+        document = self.documents.get_document(doc_id, owner=owner)
+        path = self.artifact_dir / f"{doc_id}-v{document['version']}.pptx"
+        presentation = Presentation()
+        for index, paragraph in enumerate(str(document.get("content", "")).split("\n\n")):
+            slide = presentation.slides.add_slide(presentation.slide_layouts[0 if index == 0 else 1])
+            slide.shapes.title.text = str(document["title"]) if index == 0 else f"{document['title']} ({index + 1})"
+            if len(slide.placeholders) > 1:
+                slide.placeholders[1].text = paragraph
+        presentation.save(path)
+        artifact = self._register_artifact(doc_id, path, project=document["project"], kind="pptx-export", metadata={"version": document["version"]})
+        self._audit_export(document, "pptx", path)
+        return {"document": document, "artifact": artifact, "format": "pptx"}
+
+    def export_xlsx(self, doc_id: str, *, owner: str = "") -> dict[str, Any]:
+        try:
+            from openpyxl import Workbook
+        except ImportError as exc:
+            raise ValueError("XLSX export requires `pip install openagent[office]`.") from exc
+        document = self.documents.get_document(doc_id, owner=owner)
+        path = self.artifact_dir / f"{doc_id}-v{document['version']}.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "OpenAgent Export"
+        sheet.append(["Document", str(document["title"])])
+        sheet.append(["Version", document["version"]])
+        sheet.append([])
+        sheet.append(["Line", "Content"])
+        for index, line in enumerate(str(document.get("content", "")).splitlines(), start=1):
+            sheet.append([index, line])
+        workbook.save(path)
+        artifact = self._register_artifact(doc_id, path, project=document["project"], kind="xlsx-export", metadata={"version": document["version"]})
+        self._audit_export(document, "xlsx", path)
+        return {"document": document, "artifact": artifact, "format": "xlsx"}
+
     def compare(self, left_doc_id: str, right_doc_id: str, *, owner: str = "") -> dict[str, Any]:
         left = self.documents.get_document(left_doc_id, owner=owner)
         right = self.documents.get_document(right_doc_id, owner=owner)
@@ -311,6 +366,17 @@ class DocumentProcessing:
         with self.store.session() as connection:
             row = connection.execute("SELECT * FROM document_artifacts WHERE doc_id = ? AND kind = ? ORDER BY rowid DESC LIMIT 1", (doc_id, kind)).fetchone()
         return dict(row) if row else None
+
+    def _audit_export(self, document: dict[str, Any], export_format: str, path: Path) -> None:
+        self.store.add_audit_event(
+            AuditEvent(
+                actor="document-processing",
+                action=f"document.export_{export_format}",
+                resource=f"document:{document['doc_id']}",
+                project=document["project"],
+                metadata={"path": str(path), "version": document["version"]},
+            )
+        )
 
 
 def extract_pdf_text(content: bytes) -> str:

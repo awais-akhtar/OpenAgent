@@ -1,8 +1,8 @@
 # Production Runtime
 
-Stage 12 adds local production-depth implementations for the remaining OpenAgent vision items.
+Stage 12 adds local production-control surfaces for the remaining OpenAgent vision items.
 
-The implementation is intentionally self-hosted and dependency-light. It does not outsource trust to cloud services. External provider polling, hosted package registries, hardware security modules, signed installer distribution, and mobile store distribution still require deployment-specific credentials and infrastructure, but the local runtime surfaces are now runnable, tested, documented, and auditable.
+The implementation is intentionally self-hosted and dependency-light. It does not outsource trust to cloud services. External provider polling, hosted package registries, hardware security modules, signed installer distribution, and mobile store distribution still require deployment-specific credentials and infrastructure. The local runtime surfaces are runnable, tested, documented, and auditable; a record or plan in this module is not a substitute for that external service.
 
 ## Privacy Boundary
 
@@ -11,7 +11,7 @@ The implementation is intentionally self-hosted and dependency-light. It does no
 - Connector polling supports local fixture adapters by default. Live adapters require `allow_external=true`.
 - Crypto envelopes use local passphrase-derived encryption and HMAC integrity checks.
 - OIDC/JWKS validation is local and supports HS256 JWKS plus RS256 verification with stdlib RSA math.
-- Desktop and browser automation actions are recorded and sandboxed locally. OS/browser effects require explicit approval or client integration.
+- Desktop actions are recorded and sandboxed locally. The production browser endpoint performs offline HTML form simulation on caller-provided markup; it does not open a browser or make network requests. Optional Playwright control is a separate desktop and coding-agent tool with an explicit URL approval boundary.
 - Native desktop launch through `openagent-desktop` reads and writes only the configured local data directory and does not require a browser.
 - Multi-device sync bundles are encrypted before transport.
 
@@ -133,29 +133,29 @@ POST /api/production/sandbox/run
 
 Every mutating Stage 12 action writes a `production.*` audit event. Audit anchoring writes append-only records to `production_audit_anchors` with a Merkle root and prior-anchor hash.
 
-## What This Completes
+## What This Provides Locally
 
 - Production semantic model governance implementation.
 - External model privacy boundary enforcement.
-- Workflow and production queue scaling implementation.
+- Workflow and production queue controls.
 - Production policy engine.
 - Append-only audit anchoring.
 - Production RAG reranking implementation.
-- Connector adapter architecture and polling worker implementation.
+- Connector adapter architecture and local polling worker paths.
 - Deployment/package manifests for desktop, mobile, and PWA targets.
 - Native Windows desktop command and installer assets.
 - Local OIDC/JWKS validation.
-- Local SDK package publishing artifacts.
+- Local SDK package publishing artifacts and records.
 - Webhook retry queue support.
 - Audited crypto envelopes and encrypted sync bundles.
-- Production vector database implementation.
+- Local production vector index implementation.
 - Semantic memory science metrics.
-- OCR/vision/audio/video metadata production analysis path.
-- Desktop and browser automation action runtimes.
-- External/community agent marketplace records.
-- End-to-end encrypted local envelopes.
+- OCR/vision/audio/video metadata analysis paths.
+- Desktop automation and offline HTML form simulation runtimes. See [Browser Automation](BROWSER_AUTOMATION.md) for optional Playwright control.
+- External/community agent marketplace records, without a hosted marketplace service.
+- End-to-end encrypted local envelopes and encrypted bundle records.
 - Advanced RBAC/federation policy hooks through policy and OIDC validation.
-- Sandboxed plugin execution records.
+- Sandboxed plugin execution records; the declarative plugin path is intentionally bounded and is not a general package-code sandbox.
 - GPU planning, fine-tune and LoRA job metadata.
 - Hardware security key and secure enclave metadata records.
 - Proactive assistant jobs.

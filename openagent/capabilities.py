@@ -23,7 +23,7 @@ class CapabilitySection:
 
 
 STATUS_LABELS = {
-    "implemented": "Runnable local implementation with code, API surface, tests, docs, privacy boundaries, and audit records for actions.",
+    "implemented": "A local implementation with cited source evidence. Optional dependencies, local services, or explicit external approval can still be required for some paths.",
 }
 
 

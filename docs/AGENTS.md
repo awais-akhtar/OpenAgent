@@ -37,7 +37,9 @@ An agent should return:
 
 ## Starter Agents
 
-The current repository includes deterministic starter agents for every built-in role:
+The current repository includes a local implementation for every built-in role.
+Each role can return a deterministic local result, and model-backed execution
+is available when a configured gateway responds:
 
 - `executive`
 - `research`
@@ -51,15 +53,10 @@ The current repository includes deterministic starter agents for every built-in 
 - `security`
 - `operations`
 
-They prove the local agent lifecycle without sending data to any model provider.
+They prove the local agent lifecycle without requiring a model provider. A
+model-backed run still follows the provider and external-network policy.
 
-## Future Requirements
-
-- Agent manifests
-- Agent memory
-- Agent verification hooks
-- Agent delegation graph
-- Parallel execution
-- Human approval checkpoints
-- Tool permission scopes
-- Marketplace packaging format
+The shared runtime also records agent manifests, memory, verification hooks,
+delegation, parallel work, approval checkpoints, tool scopes, and marketplace
+metadata. These records do not by themselves make an agent autonomous or grant
+it access to an external service.

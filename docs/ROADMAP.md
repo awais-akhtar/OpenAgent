@@ -1,10 +1,13 @@
 # OpenAgent Roadmap
 
-This roadmap turns the full AI operating system vision into staged releases. Each stage should remain runnable, local-first, and useful on its own.
+This roadmap turns the AI operating system vision into staged releases. The
+status below refers to the local code, API, tests, and records in this
+repository. It does not mean that an external provider, compiler, device,
+credential, or deployment environment has been certified.
 
 ## Stage 0: Local Core implementation
 
-Status: implemented.
+Status: local implementation.
 
 - Local HTTP API
 - SQLite data store
@@ -17,7 +20,7 @@ Status: implemented.
 
 ## Stage 1: Model Gateway
 
-Status: implemented.
+Status: local implementation.
 
 - Provider interface for local and remote models
 - Ollama adapter
@@ -31,7 +34,7 @@ Status: implemented.
 
 ## Stage 2: Memory and Knowledge
 
-Status: implemented.
+Status: local implementation.
 
 - Conversation memory
 - Document ingestion
@@ -46,7 +49,7 @@ Status: implemented.
 
 ## Stage 3: Multi-Agent Runtime
 
-Status: implemented.
+Status: local implementation.
 
 - Agent registry
 - Agent permissions
@@ -59,7 +62,7 @@ Status: implemented.
 
 ## Stage 4: Workflow Automation
 
-Status: implemented.
+Status: local implementation with provider boundaries.
 
 - Workflow definition format
 - Scheduled triggers
@@ -74,7 +77,7 @@ Status: implemented.
 
 ## Stage 5: Communication Hub
 
-Status: implemented.
+Status: local implementation with optional backends.
 
 - Email connector
 - CalDAV calendar support
@@ -87,7 +90,7 @@ Status: implemented.
 
 ## Stage 6: Local AI Infrastructure
 
-Status: implemented.
+Status: local controls and deployment manifests.
 
 - Model download manager
 - Quantization metadata
@@ -99,7 +102,7 @@ Status: implemented.
 
 ## Stage 7: Enterprise and Team Deployment
 
-Status: implemented.
+Status: local implementation and extension records.
 
 - Role-based access control
 - Multi-user workspaces
@@ -112,7 +115,7 @@ Status: implemented.
 
 ## Stage 8: Developer Platform and Extensibility
 
-Status: implemented.
+Status: local security controls.
 
 - GraphQL-style read API
 - Webhook registry and delivery logs
@@ -126,7 +129,7 @@ Status: implemented.
 
 ## Stage 9: Security and Privacy Hardening
 
-Status: implemented.
+Status: local implementation.
 
 - Encrypted local secret vault implementation
 - Secret reveal and rotation controls
@@ -140,7 +143,7 @@ Status: implemented.
 
 ## Stage 10: Workspace and Personal Assistant Layer
 
-Status: implemented.
+Status: local implementation with optional engines.
 
 - Workspace object model for folders, documents, notes, wiki pages, dashboards, research canvases, whiteboards, mind maps, and templates
 - Workspace dashboard and canvas graph APIs
@@ -162,7 +165,7 @@ Status: implemented.
 
 ## Stage 11: Semantic, Media, Voice, and UI Runtime
 
-Status: implemented.
+Status: local controls and records.
 
 - Typed local semantic memory records
 - Profile-scoped memory facts
@@ -181,7 +184,7 @@ Status: implemented.
 
 ## Stage 12: Production Runtime and Final Coverage
 
-Status: implemented.
+Status: local product paths and package surfaces.
 
 - Production policy engine
 - External model privacy boundary enforcement
@@ -206,20 +209,20 @@ Status: implemented.
 
 ## Stage 13: Full Local Product Runtime
 
-Status: implemented.
+Status: local product paths and package surfaces.
 
 - Local TTS WAV generation stored as media assets
 - Submitted-audio speech-to-text records with local audio storage
 - Browser/form automation with local HTML parsing, field filling, assertions, extraction, and filled HTML output
 - Desktop automation with approved local file execution inside the OpenAgent data directory
 - PWA, mobile, and desktop package directories with manifests, launch scripts, service worker, and README files
-- Capability API verdict upgraded to 53/53 implemented local runtime items
+- Capability API reports the local runtime items that its checks cover
 - Executable hard audit endpoint for local runtime proof
-- Documentation status upgraded to completed local product runtime language
+- Documentation records the local boundary and the deployment work that remains
 
 ## Stage 14: Native Windows Desktop Installability
 
-Status: implemented.
+Status: local Windows implementation.
 
 - Native `openagent-desktop` command using the local Python runtime and SQLite store directly
 - Windows PowerShell installer that creates a private virtual environment under `%LOCALAPPDATA%\OpenAgent`
@@ -231,7 +234,7 @@ Status: implemented.
 
 ## Stage 15: Native Desktop Workbench
 
-Status: implemented.
+Status: local workbench implementation.
 
 - Desktop tabs for Chat, Agents, Memory, Workspace, Knowledge, Assistant, Models, Voice + Media, Automation, Security + Dev, and Audit
 - Workspace UI actions for folders, documents, notes, wiki pages, dashboards, canvases, whiteboards, mind maps, and templates

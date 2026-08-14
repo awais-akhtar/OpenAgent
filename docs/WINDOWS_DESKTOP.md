@@ -122,9 +122,16 @@ openagent-desktop --feature-smoke-json --project core
 - Local AI model registry, hardware detection, benchmarks, and GPU planning
 - Voice sessions, local STT sample, local TTS WAV, voiceprint clone records, and media status
 - Workflow runs, browser form automation, desktop file automation, queue jobs, and app packaging
-- Privacy reports, sandbox checks, API keys, SDK artifacts, and capability ledger
+- Privacy reports, sandbox checks, API keys, SDK artifacts, capability ledger, unified tool runtime, compute capability planning, and bounded live MCP invocation
 - Audit log viewing
 - Executable hard audit
+
+The unified runtime currently exposes the audited local terminal adapter and a
+capability-aware planning view through the Developer screen. MCP servers can be
+invoked only through their registered tool, schema, transport, output limit,
+and approval rules. Long-lived SSE sessions, vendor authentication flows, and
+uncertified accelerator backends are not presented as available desktop
+features.
 
 ## Privacy Boundary
 

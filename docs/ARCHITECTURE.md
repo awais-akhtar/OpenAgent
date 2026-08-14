@@ -1,6 +1,6 @@
 # OpenAgent Architecture
 
-OpenAgent is a local-first AI operating system made of small, auditable layers. The first implementation in this repository focuses on the local core, context engine, storage, starter agents, and workspace UI.
+OpenAgent is a local-first AI workspace made of small, auditable layers. The repository includes the local core, model gateway, context and memory services, agents, tools, knowledge/RAG, research, CodeQ, scientific workflows, and the workspace UI. The sections below describe the current boundaries rather than a promise that every optional provider is installed.
 
 ```mermaid
 flowchart TB
@@ -43,35 +43,38 @@ The user-facing surface for chats, projects, dashboards, agents, workflows, and 
 
 ### Local Core API
 
-The local HTTP boundary for the platform. It should remain self-hosted, explicit, and safe by default. The current core exposes health, event ingestion, context, search, and agent-run endpoints.
+The local HTTP boundary for the platform. It remains self-hosted, explicit, and safe by default. `openagent.server` preserves the public entry point while the route package owns the domain handlers. The current API includes health, event ingestion, context, chat, model, agent, knowledge, workflow, CodeQ, research, voice, developer, and production-control routes.
 
 ### Unified Context Engine
 
-Builds a living local context from events, documents, conversations, tasks, and actions. The current implementation creates a basic snapshot from local events and top terms.
+Builds a living local context from events, documents, conversations, tasks, and actions. The current implementation builds snapshots from local events, conversations, documents, and project-scoped records. Retrieval is selective: a model call does not receive every historical record simply because it exists in the database.
 
 ### Local Data Store
 
-Owns durable user data. The bootstrap uses SQLite because it is local, portable, inspectable, and easy to back up. Future versions can add vector indexes, graph storage, and encrypted vaults without replacing the core ownership model.
+Owns durable user data. The runtime uses SQLite because it is local, portable,
+inspectable, and easy to back up. Vector indexes, graph records, and the local
+encrypted vault are kept behind their own services while SQLite remains the
+authoritative local store.
 
 ### Agent Runtime
 
-Runs specialized agents over shared context. The starter agents are deterministic and local. Future agents should use the model gateway and permissioned tools rather than calling providers directly.
+Runs specialized agents over shared context. Built-in roles can use the model gateway, and deterministic local fallbacks keep basic plans available when no model server answers. Model-backed work still depends on the configured provider and its installed model.
 
 ### Tool and Action Layer
 
-Executes browser, desktop, file, API, communication, and workflow actions. Every action should be permissioned, auditable, and reversible where possible.
+Executes the local file, terminal, browser, communication, and workflow paths present in the repository. The shared runtime provides typed requests, policy decisions, traces, bounded output, and an audited terminal adapter. CodeQ and workflow tools retain their established contracts while additional adapters are migrated behind the shared runtime.
 
 ### Model Gateway
 
-Routes requests across local, cloud, and hybrid models. It should support Ollama, llama.cpp, vLLM, OpenAI-compatible APIs, ONNX Runtime, TensorRT, and future providers through explicit configuration.
+Routes requests across the local provider, Ollama, llama.cpp, and OpenAI-compatible endpoints. The adaptive engine can add local OpenVINO and other capability-aware plans when the optional runtime is installed. Metadata for other backends is not the same as a working backend, so the gateway reports availability instead of assuming that CUDA, Metal, vLLM, TensorRT, or an NPU is usable.
 
 ### Knowledge and RAG
 
-Ingests documents, media, messages, notes, and websites. It should provide hybrid retrieval, vector retrieval, graph retrieval, reranking, source attribution, and memory consolidation.
+Ingests local documents and other supported records. The current path provides FTS search, local vectors, optional FAISS and Chroma adapters, graph records, reranking, source attribution, and memory consolidation. External web evidence requires the relevant research or connector path and its approval boundary.
 
 ### Connectors
 
-Integrates email, calendar, chat, CRM, files, and external APIs. Connectors must be opt-in and scoped by permission.
+Stores and processes email, calendar, chat, CRM, files, and external API records. Local fixtures and configured adapters are available in the core; live provider exchange is opt-in, credential-dependent, and scoped by permission.
 
 ### Audit and Permissions
 

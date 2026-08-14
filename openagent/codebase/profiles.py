@@ -30,6 +30,13 @@ STACK_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("swiftui", "swift", "ios"), "ios", "swift"),
     (("unity",), "unity", "csharp"),
     (("unreal",), "unreal", "cpp"),
+    (("solidity", "foundry", "hardhat", "smart contract", "web3"), "solidity", "solidity"),
+    (("ruby on rails", "rails", "ruby"), "rails", "ruby"),
+    (("laravel", "php"), "laravel", "php"),
+    (("phoenix", "elixir"), "phoenix", "elixir"),
+    (("godot",), "godot", "gdscript"),
+    (("cmake", "c++", "cpp"), "cmake", "cpp"),
+    (("zig",), "zig", "zig"),
 )
 
 FUZZY_STACK_WORDS: dict[str, tuple[str, str]] = {
@@ -121,13 +128,7 @@ def classify_request(goal: str, project_map: dict[str, Any]) -> dict[str, Any]:
     backend_terms = ("database", "postgres", "mysql", "mongodb", "backend", "api", "oauth", "google login", "stripe", "webhook", "authentication system")
     architecture = "full-stack" if kind == "web application" and any(term in text for term in backend_terms) else "single-runtime"
     if greenfield and not framework:
-        if kind in {"application", "web application"}:
-            kind = "web application"
-            framework, language = "react", "javascript"
-        elif kind in {"service", "command-line application", "library", "data application", "desktop application"}:
-            framework, language = "python", "python"
-        elif kind == "interactive application":
-            framework, language = "browser", "javascript"
+        framework, language = "model-selected", "model-selected"
 
     return {
         "mode": "greenfield" if greenfield else "existing",
@@ -164,8 +165,19 @@ def artifact_contract(profile: dict[str, Any]) -> dict[str, Any]:
         "spring": {"any": ["pom.xml", "build.gradle", "build.gradle.kts"], "any_suffix": [".java", ".kt"], "minimum_files": 4},
         "flutter": {"all": ["pubspec.yaml"], "any": ["lib/main.dart"], "minimum_files": 3},
         "react-native": {"all": ["package.json"], "any": ["App.tsx", "App.jsx", "app/index.tsx"], "minimum_files": 4},
+        "android": {"any": ["settings.gradle", "settings.gradle.kts"], "any_suffix": [".kt", ".java"], "minimum_files": 5},
+        "ios": {"any": ["Package.swift"], "any_suffix": [".swift"], "minimum_files": 3},
         "electron": {"all": ["package.json"], "any": ["main.js", "src/main.js", "src/main.ts"], "minimum_files": 4},
         "browser": {"all": ["index.html"], "any_suffix": [".js"], "minimum_files": 3},
+        "solidity": {"any": ["foundry.toml", "hardhat.config.js", "hardhat.config.ts"], "any_suffix": [".sol"], "minimum_files": 3},
+        "rails": {"all": ["Gemfile"], "any": ["config/application.rb"], "minimum_files": 4},
+        "laravel": {"all": ["composer.json", "artisan"], "minimum_files": 4},
+        "phoenix": {"all": ["mix.exs"], "minimum_files": 3},
+        "godot": {"all": ["project.godot"], "any_suffix": [".gd"], "minimum_files": 3},
+        "cmake": {"all": ["CMakeLists.txt"], "any_suffix": [".c", ".cc", ".cpp", ".cxx"], "minimum_files": 3},
+        "zig": {"all": ["build.zig"], "any_suffix": [".zig"], "minimum_files": 2},
+        "unity": {"all": ["ProjectSettings/ProjectVersion.txt"], "any_suffix": [".cs"], "minimum_files": 4},
+        "unreal": {"any_suffix": [".uproject", ".cpp"], "minimum_files": 4},
     }
     return contracts.get(framework, {"minimum_files": 2})
 
@@ -206,6 +218,11 @@ def check_artifact_contract(root: Path, profile: dict[str, Any]) -> list[str]:
 
 def task_needs_file_change(title: str, agent: str) -> bool:
     text = str(title).lower()
-    if str(agent).lower() not in {"programmer", "debugger", "tester"}:
+    role = str(agent).lower()
+    if role not in {"programmer", "frontend", "backend", "database", "debugger", "tester"}:
         return False
-    return bool(re.search(r"\b(create|implement|build|add|fix|repair|refactor|integrate|scaffold|style|configure)\b", text))
+    if role == "tester":
+        # A tester may add a test file, but validation tasks such as
+        # "ensure dependencies are configured" must remain evidence tasks.
+        return bool(re.search(r"\b(add|create|write|update)\b.*\b(test|tests|test suite|test coverage)\b", text))
+    return bool(re.search(r"\b(create|implement|build|add|update|fix|repair|refactor|integrate|scaffold|style|configure)\b", text))

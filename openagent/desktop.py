@@ -112,7 +112,7 @@ DESKTOP_MODULES = (
     {
         "id": "models",
         "name": "Models and Local AI",
-        "features": ("model registry", "hardware detection", "benchmarks", "GPU planning", "fine-tune records"),
+        "features": ("model registry", "hardware detection", "provider readiness", "Colab detection", "benchmarks", "GPU planning", "fine-tune records"),
     },
     {
         "id": "voice_media",
@@ -122,12 +122,23 @@ DESKTOP_MODULES = (
     {
         "id": "automation",
         "name": "Automation and Production",
-        "features": ("workflows", "browser forms", "desktop file actions", "queues", "packages", "hard audit"),
+        "features": ("workflows", "HTML form simulation", "optional browser tests", "desktop file actions", "queues", "packages", "hard audit"),
     },
     {
         "id": "security_developer",
         "name": "Security and Developer",
-        "features": ("privacy report", "secrets", "sandbox", "API keys", "SDK", "plugins", "MCP"),
+        "features": (
+            "privacy report",
+            "secrets",
+            "sandbox",
+            "API keys",
+            "SDK",
+            "plugins",
+            "MCP",
+            "unified tool runtime",
+            "compute capability planning",
+            "live MCP invocation",
+        ),
     },
 )
 
@@ -159,6 +170,7 @@ def desktop_status(data_dir: Path | str | None = None, *, project: str = "defaul
         "current_release": coverage["summary"]["current_release"],
         "implemented_items": coverage["summary"]["counts"].get("implemented", 0),
         "desktop_modules": desktop_feature_manifest(),
+        "runtime_tools": desktop_runtime_status(),
         "desktop_layout": desktop_layout_manifest(),
         "modern_workbench": workbench_status(data_path, project=project),
         "privacy_boundary": DESKTOP_PRIVACY_BOUNDARY,
@@ -206,6 +218,38 @@ def desktop_feature_manifest() -> list[dict[str, Any]]:
         {"id": module["id"], "name": module["name"], "features": list(module["features"])}
         for module in DESKTOP_MODULES
     ]
+
+
+def desktop_runtime_status() -> dict[str, Any]:
+    """Report optional runtime readiness without starting a browser or model server."""
+
+    from importlib.util import find_spec
+
+    from .runtimes.colab import detect_colab, recommend_model
+
+    gateway = ModelGateway()
+    office_modules = {name: find_spec(name) is not None for name in ("docx", "pptx", "openpyxl")}
+    browser_ready = find_spec("playwright") is not None
+    return {
+        "browser": {
+            "installed": browser_ready,
+            "install_hint": "pip install openagent[browser] && playwright install chromium" if not browser_ready else "ready for user-triggered local or approved external browser tests",
+        },
+        "office_exports": {
+            "modules": office_modules,
+            "ready": all(office_modules.values()),
+            "install_hint": "pip install openagent[office]" if not all(office_modules.values()) else "DOCX, PPTX, and XLSX export dependencies are installed",
+        },
+        "colab": {
+            "detected": detect_colab(),
+            "recommended_model_without_probe": recommend_model({"gpu": False}),
+            "launch_import": "from openagent.colab import launch",
+        },
+        "providers": {
+            "registered": sorted(gateway.providers),
+            "external_requires_explicit_approval": sorted(provider_id for provider_id, provider in gateway.providers.items() if not provider.local),
+        },
+    }
 
 
 def run_desktop_feature_smoke(data_dir: Path | str | None = None, *, project: str = "desktop-smoke") -> dict[str, Any]:
@@ -415,6 +459,8 @@ class DesktopShell:
         self.voice_input: Any = None
         self.voice_output: Any = None
         self.automation_output: Any = None
+        self.browser_url: Any = None
+        self.browser_external_approval: Any = None
         self.security_output: Any = None
         self.audit_output: Any = None
 
@@ -914,6 +960,7 @@ class DesktopShell:
         self.ttk.Button(row, text="Register Local Model", command=self.register_local_model).pack(side="left")
         self.ttk.Button(row, text="Benchmark", command=self.benchmark_local_model).pack(side="left", padx=8)
         self.ttk.Button(row, text="GPU Plan", command=self.plan_gpu).pack(side="left")
+        self.ttk.Button(row, text="Runtime Readiness", command=self.show_runtime_readiness).pack(side="left", padx=8)
         self.models_output = self._text(tab)
 
     def _build_voice_media_tab(self, notebook: Any) -> None:
@@ -933,17 +980,27 @@ class DesktopShell:
         self.voice_output = self._text(tab)
 
     def _build_automation_tab(self, notebook: Any) -> None:
+        import tkinter as tk
+
         tab = self.ttk.Frame(notebook, padding=10)
         notebook.add(tab, text="Automation")
-        self._tab_header(tab, "Automation Runtime", "Workflow runs, safe local file actions, queue jobs, app packaging, and audits.")
+        self._tab_header(tab, "Automation Runtime", "Run workflows and local actions. The form demo is offline HTML simulation; browser tests use optional Playwright.")
         row = self.ttk.Frame(tab)
         row.pack(fill="x", pady=(0, 8))
         self.ttk.Button(row, text="Run Workflow", command=self.run_desktop_workflow).pack(side="left")
-        self.ttk.Button(row, text="Browser Form", command=self.run_browser_form).pack(side="left", padx=8)
+        self.ttk.Button(row, text="HTML Form Simulation", command=self.run_browser_form).pack(side="left", padx=8)
         self.ttk.Button(row, text="Desktop File Action", command=self.run_desktop_file_action).pack(side="left")
         self.ttk.Button(row, text="Queue Job", command=self.create_queue_job).pack(side="left", padx=8)
         self.ttk.Button(row, text="Package App", command=self.package_desktop_app).pack(side="left")
         self.ttk.Button(row, text="Hard Audit", command=self.run_hard_audit).pack(side="left", padx=8)
+        browser_row = self.ttk.Frame(tab)
+        browser_row.pack(fill="x", pady=(4, 0))
+        self.browser_url = self.ttk.Entry(browser_row)
+        self.browser_url.insert(0, "http://127.0.0.1:8765/")
+        self.browser_url.pack(side="left", fill="x", expand=True)
+        self.browser_external_approval = tk.BooleanVar(value=False)
+        self.ttk.Checkbutton(browser_row, text="Approve external URL", variable=self.browser_external_approval).pack(side="left", padx=8)
+        self.ttk.Button(browser_row, text="Run Browser Test", command=self.run_browser_test).pack(side="left")
         self.automation_output = self._text(tab)
 
     def _build_security_developer_tab(self, notebook: Any) -> None:
@@ -1113,6 +1170,9 @@ class DesktopShell:
     def show_models(self) -> None:
         self._run_to(self.models_output, self.local_ai.models)
 
+    def show_runtime_readiness(self) -> None:
+        self._run_to(self.models_output, desktop_runtime_status)
+
     def register_local_model(self) -> None:
         self._run_to(self.models_output, lambda: self.local_ai.register_model(name="openagent-desktop-local", provider="local", metadata={"client": "desktop"}))
 
@@ -1187,6 +1247,26 @@ class DesktopShell:
                 html='<title>OpenAgent Desktop</title><form><input name="email" value=""></form>',
             ),
         )
+
+    def run_browser_test(self) -> None:
+        def action() -> dict[str, Any]:
+            from .tools.browser import BrowserRuntime
+
+            url = self.browser_url.get().strip()
+            approved = bool(self.browser_external_approval.get())
+            result = BrowserRuntime(self.data_dir).run(url, approved=approved)
+            self.store.add_audit_event(
+                AuditEvent(
+                    actor="desktop",
+                    action="desktop.browser_test",
+                    resource="browser:playwright",
+                    project=self.project,
+                    metadata={"url": url, "approved_external": approved, "artifact": result.get("artifact", "")},
+                )
+            )
+            return result
+
+        self._run_to(self.automation_output, action)
 
     def run_desktop_file_action(self) -> None:
         self._run_to(

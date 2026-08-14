@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
@@ -20,6 +20,7 @@ from uuid import uuid4
 from ..model_gateway import ModelGateway, ProviderConfigurationError
 from ..models import AuditEvent, utc_now
 from ..storage import OpenAgentStore
+from .sdk import CodeQSDK, GenerationRequest
 from .repository import IGNORED_NAMES, RepositoryIntelligence
 from .profiles import check_artifact_contract, classify_request, task_needs_file_change
 from .sandbox import SandboxManager
@@ -417,6 +418,7 @@ class CodebaseService:
     def __init__(self, store: OpenAgentStore, gateway: ModelGateway) -> None:
         self.store = store
         self.gateway = gateway
+        self.sdk = CodeQSDK()
         self.sandboxes = SandboxManager(store.data_dir / "codebase-workspaces")
         self._threads: dict[str, threading.Thread] = {}
         self._cancel: dict[str, threading.Event] = {}
@@ -654,6 +656,30 @@ class CodebaseService:
             connection.execute("UPDATE codebase_projects SET map_json = ?, updated_at = ? WHERE id = ? AND owner = ?", (json.dumps(project_map), utc_now(), codebase_project_id, owner))
         return project_map
 
+    def framework_catalog(self) -> list[dict[str, Any]]:
+        return self.sdk.registry.catalog()
+
+    def framework_preflight(
+        self,
+        goal: str,
+        *,
+        codebase_project_id: str = "",
+        owner: str = "local",
+        acceptance_criteria: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        if not str(goal).strip():
+            raise ValueError("software-engineering goal is required")
+        project_map: dict[str, Any] = {"file_count": 0, "framework": "", "languages": []}
+        if codebase_project_id:
+            project_map = self.get_project(codebase_project_id, owner=owner)["map"]
+        return self.sdk.prepare(
+            GenerationRequest(
+                goal=goal,
+                acceptance_criteria=tuple(acceptance_criteria),
+            ),
+            project_map,
+        )
+
     def file_tree(self, codebase_project_id: str, *, owner: str = "local") -> dict[str, Any]:
         project = self.get_project(codebase_project_id, owner=owner)
         workspace = project["workspace"]
@@ -819,6 +845,9 @@ class CodebaseService:
         run = self.get_run(run_id, owner=owner)
         if run["status"] not in {"blocked", "failed", "interrupted"}:
             raise ValueError("only blocked, failed, or interrupted runs can resume")
+        dependency_repairs = self._repair_task_dependencies(run_id)
+        if dependency_repairs:
+            self._event(run_id, "plan.dependencies_repaired", repairs=dependency_repairs, source="resume")
         self._set_run(run_id, status="queued", error="", finished=False)
         cancel = threading.Event()
         thread = threading.Thread(target=self._execute_run, args=(run_id,), name=f"codebase-run-{run_id[:8]}", daemon=True)
@@ -1012,10 +1041,12 @@ class CodebaseService:
             # inspection, but they must not redefine the next request's stack.
             project_map = RepositoryIntelligence(project["source_path"]).scan()
             self._event(run_id, "repository.analysed", project_map=self._compact_map(project_map))
-            architecture = self._consult_specialists(run, project, project_map)
+            environment = self.sdk.prepare(run["user_prompt"], project_map)
+            self._event(run_id, "environment.preflight.completed", preflight=environment)
+            architecture = self._consult_specialists(run, project, project_map, environment)
             tasks = self._plan(run, project, project_map, architecture)
-            self._store_tasks(run_id, tasks)
-            self._event(run_id, "plan.created", tasks=tasks, architecture=architecture, delivery_profile=classify_request(run["user_prompt"], project_map))
+            dependency_repairs = self._store_tasks(run_id, tasks)
+            self._event(run_id, "plan.created", tasks=tasks, architecture=architecture, delivery_profile=classify_request(run["user_prompt"], project_map), dependency_repairs=dependency_repairs)
             self._set_run(run_id, status="running")
             last_feedback = ""
             changed = False
@@ -1031,8 +1062,19 @@ class CodebaseService:
                 if task is None:
                     unfinished = self._unfinished_tasks(run_id)
                     if unfinished:
-                        self._set_run(run_id, status="failed", error="Task graph has unfinished tasks with unsatisfied dependencies", finished=True)
-                        self._event(run_id, "run.failed", unfinished_tasks=unfinished)
+                        dependency_repairs = self._repair_task_dependencies(run_id)
+                        if dependency_repairs and self._next_task(run_id) is not None:
+                            self._event(
+                                run_id,
+                                "plan.dependencies_repaired",
+                                repairs=dependency_repairs,
+                                source="execution-deadlock",
+                            )
+                            continue
+                        unresolved = self._unfinished_tasks(run_id)
+                        error = self._task_graph_error(unresolved)
+                        self._set_run(run_id, status="failed", error=error, finished=True)
+                        self._event(run_id, "run.failed", unfinished_tasks=unresolved, error=error)
                         return
                     self._set_run(run_id, status="validating")
                     if active_agent != "tester":
@@ -1104,6 +1146,7 @@ class CodebaseService:
                 if not actions:
                     self._set_task(task["id"], "blocked", {"reason": "model returned no executable actions", "response": decision})
                     last_feedback = "No executable action was returned. Inspect relevant files and return a JSON tool action."
+                    self._event(run_id, "task.blocked", task_id=task["id"], reason=last_feedback)
                     continue
                 failed = False
                 for action in actions[:24]:
@@ -1184,7 +1227,13 @@ class CodebaseService:
             with self._lock:
                 self._threads.pop(run_id, None)
 
-    def _consult_specialists(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any]) -> dict[str, Any]:
+    def _consult_specialists(
+        self,
+        run: dict[str, Any],
+        project: dict[str, Any],
+        project_map: dict[str, Any],
+        environment: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Ask independent specialists for a compact architecture contract."""
 
         profile = classify_request(run["user_prompt"], project_map)
@@ -1204,7 +1253,8 @@ class CodebaseService:
                 "\"acceptance_criteria\":[string],\"recommended_tasks\":[string]}. "
                 "Be concrete and repository-aware. Do not write code and do not claim execution.\n"
                 f"Role: {role}\nGoal: {run['user_prompt']}\nDelivery profile: {json.dumps(profile)}\n"
-                f"Project map: {json.dumps(self._compact_map(project_map))}\nProject memory: {json.dumps(project['memory'])}"
+                f"Project map: {json.dumps(self._compact_map(project_map))}\nProject memory: {json.dumps(project['memory'])}\n"
+                f"Host and toolchain preflight: {json.dumps(environment or {})}"
             )
             result = self._model_json(run, [
                 {"role": "system", "content": f"You are the independent {role} specialist in a software engineering team."},
@@ -1225,7 +1275,7 @@ class CodebaseService:
             for item in report.get("acceptance_criteria", [])
             if str(item).strip()
         ))[:40]
-        result = {"profile": profile, "reports": reports, "acceptance_criteria": acceptance}
+        result = {"profile": profile, "reports": reports, "acceptance_criteria": acceptance, "environment": environment or {}}
         self._event(run["id"], "specialists.parallel.completed", agents=list(reports), acceptance_criteria=acceptance)
         return result
 
@@ -1335,6 +1385,30 @@ class CodebaseService:
             self._event(run_id, "task.created", task_id=task_id, title=task["title"], assigned_agent=task["agent"], source="completion-audit")
 
     def _plan(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], architecture: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        profile = classify_request(run["user_prompt"], project_map)
+        prompt = (
+            "Create a concise dependency-aware software engineering plan made only of executable repository changes and validation. Return JSON only using this shape: "
+            f"{json.dumps(PLAN_SCHEMA)}. Do not include markdown. Choose the architecture and stack from the request and repository; do not default to a web framework when the request does not require one. "
+            "Assign specialist roles only when useful. Do not add framework research, requirements definition, documentation, backend integration, or deployment unless the user explicitly requested it. "
+            "Every implementation task must name a concrete code outcome; finish with tests/build/runtime checks supported by the project.\n"
+            f"Goal: {run['user_prompt']}\nDelivery profile: {json.dumps(profile)}\nProject map: {json.dumps(self._compact_map(project_map))}\n"
+            f"Project memory: {json.dumps(project['memory'])}\nSpecialist architecture review: {json.dumps(architecture or {})}"
+        )
+        parsed = self._model_json(run, [{"role": "system", "content": "You are the project manager. Inspect before editing, choose a fitting stack, delegate only useful work, and never claim success without validation."}, {"role": "user", "content": prompt}], role="project_manager")
+        tasks = parsed.get("tasks", []) if isinstance(parsed, dict) else []
+        normalized = []
+        valid_agents = {"architect", "frontend", "backend", "database", "programmer", "tester", "debugger", "security", "reviewer", "documentation"}
+        for index, task in enumerate(tasks[:100], start=1):
+            if not isinstance(task, dict) or not str(task.get("title", "")).strip():
+                continue
+            task_id = str(task.get("id", f"T{index}")).strip() or f"T{index}"
+            agent = str(task.get("agent", "programmer")).strip().lower()
+            normalized.append({"id": task_id, "title": str(task["title"]).strip(), "assigned_agent": agent if agent in valid_agents else "programmer", "depends_on": [str(item) for item in task.get("depends_on", []) if str(item).strip()], "parent": str(task.get("parent", "")).strip()})
+        if self._usable_model_plan(normalized, profile):
+            self._event(run["id"], "plan.model.accepted", task_count=len(normalized), profile=profile)
+            return normalized
+        self._event(run["id"], "plan.fallback.selected", reason="model plan was empty or lacked implementation and validation tasks", profile=profile)
+
         if self._standalone_web_request(run["user_prompt"], project_map):
             goal = run["user_prompt"]
             if self._static_web_request(goal):
@@ -1356,7 +1430,6 @@ class CodebaseService:
                 {"id": "T1", "title": f"Implement the requested Python function: {run['user_prompt']}", "assigned_agent": "programmer", "depends_on": []},
                 {"id": "T2", "title": "Create and run focused tests for the Python function", "assigned_agent": "tester", "depends_on": ["T1"]},
             ]
-        profile = classify_request(run["user_prompt"], project_map)
         if profile["mode"] == "greenfield":
             stack = f"{profile['framework']} {profile['kind']}"
             implementation = "Implement the complete user-requested behavior"
@@ -1370,41 +1443,38 @@ class CodebaseService:
                 {"id": "T3", "title": "Add focused automated tests for core behavior and failure paths", "assigned_agent": "tester", "depends_on": ["T2"]},
                 {"id": "T4", "title": "Run available tests, build, static checks, and runtime smoke validation; repair every failure", "assigned_agent": "tester", "depends_on": ["T3"]},
             ]
-        prompt = (
-            "Create a concise dependency-aware software engineering plan made only of executable repository changes and validation. Return JSON only using this shape: "
-            f"{json.dumps(PLAN_SCHEMA)}. Do not include markdown. Assign specialist roles only when useful.\n"
-            "Do not add framework research, requirements definition, documentation, backend integration, or deployment unless the user explicitly requested it. "
-            "Every implementation task must name a concrete code outcome; finish with tests/build/runtime checks supported by the project.\n"
-            f"Goal: {run['user_prompt']}\nProject map: {json.dumps(self._compact_map(project_map))}\n"
-            f"Project memory: {json.dumps(project['memory'])}\nSpecialist architecture review: {json.dumps(architecture or {})}"
+        return [
+            {"id": "T1", "title": "Inspect the repository and identify affected files", "assigned_agent": "architect", "depends_on": []},
+            {"id": "T2", "title": "Implement the requested coherent changes", "assigned_agent": "programmer", "depends_on": ["T1"]},
+            {"id": "T3", "title": "Run project validation and repair failures", "assigned_agent": "tester", "depends_on": ["T2"]},
+            {"id": "T4", "title": "Independently review the final diff", "assigned_agent": "reviewer", "depends_on": ["T3"]},
+        ]
+
+    @staticmethod
+    def _usable_model_plan(tasks: list[dict[str, Any]], profile: dict[str, Any]) -> bool:
+        if not tasks:
+            return False
+        has_implementation = any(
+            task_needs_file_change(str(task.get("title", "")), str(task.get("assigned_agent", "")))
+            for task in tasks
         )
-        parsed = self._model_json(run, [{"role": "system", "content": "You are the project manager. Inspect before editing and never claim success without validation."}, {"role": "user", "content": prompt}], role="project_manager")
-        tasks = parsed.get("tasks", []) if isinstance(parsed, dict) else []
-        normalized = []
-        valid_agents = {"architect", "frontend", "backend", "database", "programmer", "tester", "debugger", "security", "reviewer", "documentation"}
-        for index, task in enumerate(tasks[:100], start=1):
-            if not isinstance(task, dict) or not str(task.get("title", "")).strip():
-                continue
-            task_id = str(task.get("id", f"T{index}")).strip() or f"T{index}"
-            agent = str(task.get("agent", "programmer")).strip().lower()
-            normalized.append({"id": task_id, "title": str(task["title"]).strip(), "assigned_agent": agent if agent in valid_agents else "programmer", "depends_on": [str(item) for item in task.get("depends_on", []) if str(item).strip()], "parent": str(task.get("parent", "")).strip()})
-        if not normalized:
-            normalized = [
-                {"id": "T1", "title": "Inspect the repository and identify affected files", "assigned_agent": "architect", "depends_on": []},
-                {"id": "T2", "title": "Implement the requested coherent changes", "assigned_agent": "programmer", "depends_on": ["T1"]},
-                {"id": "T3", "title": "Run project validation and repair failures", "assigned_agent": "tester", "depends_on": ["T2"]},
-                {"id": "T4", "title": "Independently review the final diff", "assigned_agent": "reviewer", "depends_on": ["T3"]},
-            ]
-        return normalized
+        has_validation = any(
+            str(task.get("assigned_agent", "")).lower() == "tester"
+            or re.search(r"\b(test|build|lint|typecheck|validate|verification|smoke)\b", str(task.get("title", "")), re.I)
+            for task in tasks
+        )
+        # Existing repositories still need a real implementation task. A
+        # model plan containing only review, setup, or dependency prose is not
+        # executable and must fall back to the repository-native plan.
+        if profile.get("mode") != "greenfield":
+            return has_implementation
+        if len(tasks) < 2:
+            return False
+        return has_implementation and has_validation
 
     def _model_actions(self, run: dict[str, Any], project: dict[str, Any], project_map: dict[str, Any], context: list[dict[str, Any]], task: dict[str, Any], feedback: str, architecture: dict[str, Any] | None = None) -> dict[str, Any]:
         source_map = RepositoryIntelligence(project["source_path"]).scan()
         profile = classify_request(run["user_prompt"], source_map)
-        if profile["mode"] == "greenfield" and profile["framework"] == "django":
-            fallback = self._django_fallback(run["user_prompt"], task)
-            if fallback:
-                self._event(run["id"], "framework.scaffold.selected", task_id=task["id"], framework="django")
-                return fallback
         messages = [
             {"role": "system", "content": (
                 "You are an autonomous software engineer operating only through supplied workspace tools. "
@@ -1426,6 +1496,51 @@ class CodebaseService:
             )},
         ]
         parsed = self._model_json(run, messages, role=str(task.get("assigned_agent", "programmer")))
+        if profile["mode"] == "greenfield" and profile["framework"] == "django":
+            actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
+            valid_actions = [
+                action for action in actions
+                if isinstance(action, dict)
+                and str(action.get("tool", "")) in ACTION_TOOLS
+                and not self._action_argument_error(
+                    str(action.get("tool", "")),
+                    self._normalized_action_arguments(
+                        str(action.get("tool", "")),
+                        action.get("arguments") if isinstance(action.get("arguments"), dict) else {},
+                    ),
+                )
+            ]
+            title = str(task.get("title", "")).lower()
+            written_paths = {
+                str((action.get("arguments") or {}).get("path", "")).replace("\\", "/").lower()
+                for action in valid_actions
+                if str(action.get("tool", "")) in {"write_file", "patch_file"}
+            }
+            foundation_task = any(term in title for term in ("foundation", "entrypoint", "configuration", "scaffold"))
+            has_django_foundation = "manage.py" in written_paths and any(path.endswith("settings.py") for path in written_paths)
+            behavior_task = any(term in title for term in ("complete user-requested behavior", "usable web application", "client"))
+            has_django_behavior = any(path.endswith("views.py") for path in written_paths) and any(
+                path.endswith("urls.py") for path in written_paths
+            ) and any(path.endswith(".html") for path in written_paths)
+            test_task = any(term in title for term in ("automated tests", "failure paths"))
+            has_test_evidence = any(
+                path.startswith("test") or "/test" in path for path in written_paths
+            ) or any(str(action.get("tool", "")) == "run_tests" for action in valid_actions)
+            validation_task = any(term in title for term in ("validation", "validate", "repair", "runtime", "static checks"))
+            evidence_tools = {"run_tests", "run_linter", "run_typechecker", "run_build", "run_shell", "read_files", "browser_test", "browser_inspect"}
+            has_validation_evidence = any(str(action.get("tool", "")) in evidence_tools for action in valid_actions)
+            incompatible = (
+                (foundation_task and not has_django_foundation)
+                or (behavior_task and not has_django_behavior)
+                or (test_task and not has_test_evidence)
+                or (validation_task and not has_validation_evidence)
+            )
+            if not valid_actions or incompatible:
+                fallback = self._django_fallback(run["user_prompt"], task)
+                if fallback:
+                    reason = "model action did not satisfy the Django task contract" if valid_actions else "model action was not executable"
+                    self._event(run["id"], "framework.scaffold.selected", task_id=task["id"], framework="django", reason=reason)
+                    return fallback
         if self._standalone_web_request(run["user_prompt"], source_map):
             actions = parsed.get("actions", []) if isinstance(parsed, dict) else []
             title = str(task.get("title", "")).lower()
@@ -1527,11 +1642,29 @@ class CodebaseService:
                     "done": False,
                 }
         title_text = str(task.get("title", "")).lower()
-        if str(task.get("assigned_agent", "")).lower() == "tester" and bool(parsed.get("done", False)) and not task_needs_file_change(title_text, "tester"):
-            evidence_tools = {"run_tests", "run_linter", "run_typechecker", "run_build", "browser_test", "browser_inspect", "run_shell", "read_files"}
+        if str(task.get("assigned_agent", "")).lower() == "tester" and not task_needs_file_change(title_text, "tester"):
+            evidence_tools = {"run_tests", "run_linter", "run_typechecker", "run_build", "browser_test", "browser_inspect", "run_shell", "read_files", "project_map"}
             if not any(isinstance(action, dict) and str(action.get("tool", "")) in evidence_tools for action in actions):
+                if not source_map.get("commands"):
+                    self._event(run["id"], "model.action_replaced", task_id=task["id"], reason="no repository validation command is configured")
+                    return {
+                        "summary": "Recorded the repository map; no project-specific validation command is configured for this workspace.",
+                        "actions": [{"tool": "project_map", "arguments": {}}],
+                        "done": True,
+                    }
                 self._event(run["id"], "model.action_rejected", task_id=task["id"], reason="validation task returned no executable evidence", profile=profile)
                 return {"summary": "Run the repository's available validation commands and inspect their real output.", "actions": [{"tool": "project_map", "arguments": {}}], "done": False}
+            # Dependency/configuration checks are often represented by a
+            # project-map or manifest inspection when the repository has no
+            # package-manager command configured. Treat that inspection as
+            # the task's evidence instead of sending the same tester back
+            # through an endless repair cycle.
+            if not bool(parsed.get("done", False)) and re.search(r"\b(dependenc|configur|setup|ensure)\w*\b", title_text):
+                return {
+                    "summary": "Inspected the repository configuration for this validation step; no project-specific dependency command was configured.",
+                    "actions": actions,
+                    "done": True,
+                }
         return parsed if isinstance(parsed, dict) else {}
 
     @classmethod
@@ -2251,19 +2384,122 @@ if __name__ == '__main__':
         completed = {task["id"] for task in tasks if task["status"] == "completed"}
         return [
             task for task in tasks
-            if task["status"] in {"pending", "needs_fix", "blocked"}
+            # blocked means the controller has exhausted that task's safe
+            # recovery path. Selecting it again turns a useful failure into a
+            # repair loop that consumes the whole run budget.
+            if task["status"] in {"pending", "needs_fix"}
             and all(dependency in completed for dependency in task["depends_on"])
         ]
 
-    def _store_tasks(self, run_id: str, tasks: list[dict[str, Any]]) -> None:
+    def _store_tasks(self, run_id: str, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         now = utc_now()
         with self.store.session() as connection:
             count = connection.execute("SELECT COUNT(*) FROM codebase_tasks WHERE run_id = ?", (run_id,)).fetchone()[0]
-            if count:
-                return
-            for task in tasks:
-                parent = str(task.get("parent", "")).strip()
-                connection.execute("INSERT INTO codebase_tasks (id, run_id, parent_task_id, title, assigned_agent, depends_on_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (f"{run_id}:{task['id']}", run_id, f"{run_id}:{parent}" if parent else "", task["title"], task["assigned_agent"], json.dumps([f"{run_id}:{item}" for item in task["depends_on"]]), now, now))
+            if not count:
+                for task in tasks:
+                    parent = str(task.get("parent", "")).strip()
+                    connection.execute("INSERT INTO codebase_tasks (id, run_id, parent_task_id, title, assigned_agent, depends_on_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (f"{run_id}:{task['id']}", run_id, f"{run_id}:{parent}" if parent else "", task["title"], task["assigned_agent"], json.dumps([f"{run_id}:{item}" for item in task["depends_on"]]), now, now))
+        return self._repair_task_dependencies(run_id)
+
+    def _repair_task_dependencies(self, run_id: str) -> list[dict[str, Any]]:
+        """Make persisted planner dependencies executable without changing task order.
+
+        Models sometimes refer to another task by its title rather than its
+        generated identifier. Persisted title references otherwise become IDs
+        that cannot exist, leaving every dependent task permanently blocked.
+        This repair retains valid IDs, resolves unique title references, removes
+        invalid or self references, and drops only cycle-forming edges.
+        """
+
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT id, title, depends_on_json FROM codebase_tasks WHERE run_id = ? ORDER BY created_at, id",
+                (run_id,),
+            ).fetchall()
+            task_ids = {str(row["id"]) for row in rows}
+            references: dict[str, str | None] = {}
+            for row in rows:
+                task_id = str(row["id"])
+                references[task_id.casefold()] = task_id
+                references[task_id.rsplit(":", 1)[-1].casefold()] = task_id
+                title_key = self._task_dependency_key(str(row["title"]))
+                if title_key:
+                    references[title_key] = task_id if title_key not in references else None
+
+            graph: dict[str, set[str]] = {task_id: set() for task_id in task_ids}
+            repairs: list[dict[str, Any]] = []
+            for row in rows:
+                task_id = str(row["id"])
+                try:
+                    raw_dependencies = json.loads(row["depends_on_json"] or "[]")
+                except json.JSONDecodeError:
+                    raw_dependencies = []
+                normalized: list[str] = []
+                for raw_dependency in raw_dependencies if isinstance(raw_dependencies, list) else []:
+                    raw_text = str(raw_dependency).strip()
+                    candidate = self._resolve_task_dependency(raw_text, run_id, references)
+                    if candidate is None:
+                        repairs.append({"task_id": task_id, "dependency": raw_text, "action": "removed_unknown"})
+                        continue
+                    if candidate == task_id:
+                        repairs.append({"task_id": task_id, "dependency": raw_text, "action": "removed_self"})
+                        continue
+                    if candidate in normalized:
+                        continue
+                    if self._dependency_reaches(graph, candidate, task_id):
+                        repairs.append({"task_id": task_id, "dependency": raw_text, "action": "removed_cycle"})
+                        continue
+                    normalized.append(candidate)
+                    graph[task_id].add(candidate)
+                    if candidate != raw_text:
+                        repairs.append({"task_id": task_id, "dependency": raw_text, "resolved_to": candidate, "action": "resolved"})
+                if normalized != (raw_dependencies if isinstance(raw_dependencies, list) else []):
+                    connection.execute(
+                        "UPDATE codebase_tasks SET depends_on_json = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(normalized), utc_now(), task_id),
+                    )
+        return repairs
+
+    @staticmethod
+    def _task_dependency_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+
+    @classmethod
+    def _resolve_task_dependency(cls, value: str, run_id: str, references: dict[str, str | None]) -> str | None:
+        cleaned = str(value).strip()
+        if cleaned.startswith(f"{run_id}:"):
+            cleaned = cleaned.removeprefix(f"{run_id}:")
+        direct = references.get(cleaned.casefold())
+        if direct:
+            return direct
+        return references.get(cls._task_dependency_key(cleaned))
+
+    @staticmethod
+    def _dependency_reaches(graph: dict[str, set[str]], start: str, target: str) -> bool:
+        pending = [start]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current == target:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(graph.get(current, ()))
+        return False
+
+    @staticmethod
+    def _task_graph_error(tasks: list[dict[str, Any]]) -> str:
+        blocked: list[str] = []
+        for task in tasks[:8]:
+            dependencies = ", ".join(
+                str(item).rsplit(":", 1)[-1] for item in task.get("depends_on", [])
+            ) or "none"
+            task_id = str(task.get("id", "")).rsplit(":", 1)[-1]
+            blocked.append(f"{task_id} ({task.get('title', 'untitled')}): {dependencies}")
+        if blocked:
+            return "Task graph cannot continue. Unfinished task dependencies: " + "; ".join(blocked)
+        return "Task graph cannot continue because no runnable task remains."
 
     def _add_repair_task(self, run_id: str, title: str, feedback: str, *, assigned_agent: str) -> str:
         with self.store.session() as connection:
