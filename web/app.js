@@ -6548,6 +6548,42 @@ function initSettings() {
   applyPrivacySettingsToUi();
 }
 
+function initDeveloperConsole() {
+  const view = qs("#view-developer");
+  if (!view) return;
+  const sectionCards = {
+    models: ["#settingsModelFeed", "#modelCookbookFeed", "#inferenceEngineFeed", "#ultraModelEngineFeed"],
+    runtime: ["#mcpRuntimeFeed", "#runtimeFabricFeed", "#terminalFeed", "#schedulerFeed"],
+    knowledge: ["#uploadZone"],
+    api: ["#developerFeed", "#developerOutput"],
+    operations: ["#integrationStatusCards"],
+    skills: ["#skillEditorList"],
+  };
+  Object.entries(sectionCards).forEach(([section, selectors]) => {
+    selectors.forEach(selector => {
+      const card = qs(selector)?.closest("article");
+      if (card) card.dataset.developerPanel = section;
+    });
+  });
+  const activate = section => {
+    qsa("[data-developer-section]", view).forEach(button => {
+      const selected = button.dataset.developerSection === section;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+    qsa("[data-developer-panel]", view).forEach(card => {
+      card.hidden = card.dataset.developerPanel !== section;
+    });
+    try { localStorage.setItem("oa-developer-section", section); } catch (_) {}
+  };
+  qsa("[data-developer-section]", view).forEach(button => {
+    button.addEventListener("click", () => activate(button.dataset.developerSection));
+  });
+  let saved = "models";
+  try { saved = localStorage.getItem("oa-developer-section") || "models"; } catch (_) {}
+  activate(sectionCards[saved] ? saved : "models");
+}
+
 async function saveSettings() {
   const theme = qs("#settingsTheme")?.value || "system";
   applyTheme(theme);
@@ -6578,6 +6614,8 @@ async function saveSettings() {
       }),
     });
     toast("Settings saved", "Local model and quantization controls are active in the running OpenAgent core.");
+    const saveState = qs("#settingsSaveState");
+    if (saveState) saveState.textContent = `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     setOutput("#settingsOutput", { theme, saved: true, model_settings: state.modelSettings, privacy: state.privacySettings, runtime: payload.settings });
     loadSmoothRuntime("chat").catch(() => {});
   } catch(e) {
@@ -6619,6 +6657,9 @@ async function loadModelJobs() {
     const payload = await api(`/api/local-ai/jobs?project=${encodeURIComponent(getProject())}&limit=8`);
     state.modelSetupJobs = payload.jobs || [];
     renderModelJobs();
+    state.modelSetupJobs
+      .filter(job => !["completed", "failed", "cancelled"].includes(job.status))
+      .forEach(job => pollModelJob(job.id));
     return state.modelSetupJobs;
   } catch(e) {
     renderModelJobs([{ status: "failed", current_step: e.message, progress: 100 }]);
@@ -6645,35 +6686,14 @@ function renderModelSetupStatus(payload = {}) {
   const installedOllamaCount = Number(ollama.installed_model_count || (Array.isArray(ollama.installed_models) ? ollama.installed_models.length : 0));
   const runnerReady = ollama.model_ready || llamacpp.model_ready;
   const runnerInstalled = ollama.available || llamacpp.available;
-  const title = runnerReady
-    ? "Real local chat model is ready"
-    : ggufModels.length
-      ? "Local GGUF models are downloaded"
-    : runnerInstalled
-      ? "Runner installed, chat model not ready yet"
-      : "No local model runner found on PATH";
-  const next = runnerReady
-    ? "Keep Chat provider on Auto. OpenAgent will use the reachable local server."
-    : ggufModels.length
-      ? "Start llama-server with one downloaded GGUF, or install Ollama and use Setup Chat Model for one-click serving."
-    : ollama.available
-      ? "Click Setup Chat Model to pull the CPU chat model through Ollama."
-      : llamacpp.available
-        ? "Paste a .gguf path in Existing local path, click Register GGUF Model, then run the returned llama-server command."
-        : "Install Ollama for one-click model downloads, or install llama.cpp and register a GGUF file.";
   const statusMarkup = `
-    <div class="mini-status-row">
-      <strong>${escapeHtml(title)}</strong>
-      <span class="badge ${runnerReady ? "badge-success" : runnerInstalled ? "badge-warn" : ""}">${runnerReady ? "ready" : runnerInstalled ? "setup" : "missing"}</span>
-    </div>
-    <p>${escapeHtml(next)}</p>
-    <div class="mini-chip-row">
-      <span>Ollama: ${escapeHtml(ollama.available ? "installed" : "missing")} · ${escapeHtml(ollama.server_available ? "server on" : "server off")} · ${escapeHtml(installedOllamaCount ? `${installedOllamaCount} model(s)` : "no models")} · ${escapeHtml(ollama.selected_model || ollama.model || "")}</span>
-      <span>llama.cpp: ${escapeHtml(llamacpp.available ? "installed" : "missing")} · ${escapeHtml(llamacpp.server_available ? "server on" : "server off")} · ${escapeHtml(llamacpp.model_ready ? "model ready" : "model missing")}</span>
-      <span>Downloaded: ${escapeHtml(String(localModels.length))} total · ${escapeHtml(String(ggufModels.length))} GGUF · code ${escapeHtml(String(roleCount("code")))} · reasoning ${escapeHtml(String(roleCount("reasoning")))}</span>
-    </div>
-    ${ggufModels.length ? `<div class="mini-chip-row">${ggufModels.slice(0, 4).map(model => `<span>${escapeHtml(model.name || model.id)} · ${escapeHtml(formatBytes(model.size_bytes))}</span>`).join("")}</div>` : ""}
-    ${latestJob.current_step ? `<p><strong>Latest setup job:</strong> ${escapeHtml(latestJob.current_step)}</p>` : ""}`;
+    <span class="runtime-indicator ${runnerReady ? "is-ready" : runnerInstalled ? "is-warm" : "is-offline"}"></span>
+    <strong>${runnerReady ? "Inference ready" : runnerInstalled ? "Runtime available" : "Runtime missing"}</strong>
+    <span>Ollama ${installedOllamaCount}</span>
+    <span>GGUF ${ggufModels.length}</span>
+    <span>Code ${roleCount("code")}</span>
+    <span>Reasoning ${roleCount("reasoning")}</span>
+    ${latestJob.current_step && !["completed", "failed", "cancelled"].includes(latestJob.status) ? `<span class="runtime-current-step">${escapeHtml(latestJob.current_step)}</span>` : ""}`;
   if (el) el.innerHTML = statusMarkup;
   if (chatEl) {
     chatEl.className = runnerReady ? "mini-status mini-status-success" : runnerInstalled ? "mini-status mini-status-warning" : "mini-status";
@@ -6686,10 +6706,14 @@ function renderModelJobs(overrideJobs = null) {
   if (!el) return;
   const jobs = overrideJobs || state.modelSetupJobs || [];
   if (!jobs.length) {
-    el.innerHTML = emptyState("No model setup jobs yet. Click Setup Chat Model to pull and verify the CPU chat model.");
+    el.innerHTML = "";
     return;
   }
-  el.innerHTML = jobs.map(job => {
+  const activeJobs = jobs.filter(job => !["completed", "failed", "cancelled"].includes(job.status));
+  const latestTerminal = jobs.find(job => ["completed", "failed", "cancelled"].includes(job.status));
+  const visibleJobs = [...activeJobs, ...(latestTerminal ? [latestTerminal] : [])]
+    .filter((job, index, items) => items.findIndex(item => item.id === job.id) === index);
+  el.innerHTML = visibleJobs.map(job => {
     const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
     const terminal = ["completed", "failed", "cancelled"].includes(job.status);
     const badgeClass = job.status === "completed" ? "badge-success" : job.status === "failed" ? "badge-danger" : job.status === "cancelled" ? "badge-warn" : "badge-info";
@@ -6697,15 +6721,14 @@ function renderModelJobs(overrideJobs = null) {
     const benchmarkText = benchmark.tokens_per_second
       ? `${benchmark.tokens_per_second} tok/s · ${benchmark.provider || "local"}`
       : "";
-    return listItem(
-      job.model_name || "Chat model setup",
-      `${job.current_step || job.status || "queued"}${benchmarkText ? ` · ${benchmarkText}` : ""}`,
-      `<div class="job-actions">
+    return `<div class="model-job">
+      <div class="model-job-copy"><strong>${escapeHtml(job.model_name || "Model setup")}</strong><span>${escapeHtml(job.current_step || job.status || "queued")}${benchmarkText ? ` · ${escapeHtml(benchmarkText)}` : ""}</span></div>
+      <div class="job-actions">
         <span class="badge ${badgeClass}">${escapeHtml(job.status || "queued")}</span>
         <div class="progress-bar" title="${progress}%"><div class="progress-bar-fill" style="width:${progress}%"></div></div>
         ${terminal ? "" : `<button class="btn btn-mini btn-outline" data-cancel-model-job="${escapeHtml(job.id)}">Cancel</button>`}
-      </div>`
-    );
+      </div>
+    </div>`;
   }).join("");
   qsa("[data-cancel-model-job]").forEach(button => {
     button.addEventListener("click", () => cancelModelJob(button.dataset.cancelModelJob));
@@ -6726,6 +6749,7 @@ async function pollModelJob(jobId) {
       setOutput("#developerOutput", payload);
       if (["completed", "failed", "cancelled"].includes(job.status)) {
         activeModelJobPolls.delete(jobId);
+        setModelSetupButtonBusy(String(job.kind || "").replace("setup-", ""), false);
         await Promise.allSettled([loadSettingsModels(), loadProviders(), loadModelSetupStatus(), loadDashboardTelemetry()]);
         await loadModelJobs();
         if (job.status === "completed") toast("Chat model ready", job.model_name || "Local chat model");
@@ -6775,6 +6799,7 @@ async function setupModelForTask(task = "chat") {
   const model = normalizeKnownModelName(modelByTask[task] || modelByTask.chat);
   const label = task === "code" ? "code model" : task === "reasoning" ? "reasoning model" : task === "vision" ? "vision model" : "chat model";
   try {
+    setModelSetupButtonBusy(task, true);
     toast(`Setting up ${label}`, `Started local setup job for ${model}.`);
     const payload = await api("/api/local-ai/models/setup/job", {
       method: "POST",
@@ -6788,6 +6813,7 @@ async function setupModelForTask(task = "chat") {
     pollModelJob(job.id);
     await Promise.allSettled([loadModelSetupStatus(), loadModelJobs()]);
   } catch(e) {
+    setModelSetupButtonBusy(task, false);
     const message = e.message || "Ollama pull failed";
     const payload = {
       error: message,
@@ -6800,6 +6826,22 @@ async function setupModelForTask(task = "chat") {
     loadModelSetupStatus().catch(() => {});
     toast("Model download error", message);
   }
+}
+
+function setModelSetupButtonBusy(task, busy) {
+  const selectors = {
+    chat: "#pullRecommendedOllamaModel",
+    reasoning: "#setupReasoningModel",
+    research: "#setupReasoningModel",
+    code: "#setupCodeModel",
+    vision: "#setupVisionModel",
+  };
+  const button = qs(selectors[task]);
+  if (!button) return;
+  button.disabled = busy;
+  button.classList.toggle("is-busy", busy);
+  const action = button.querySelector("small");
+  if (action) action.textContent = busy ? "Working" : "Install";
 }
 
 async function setupVoskStt() {
@@ -6935,12 +6977,16 @@ function renderSettingsModels() {
   const feed = qs("#settingsModelFeed");
   if (feed) {
     feed.innerHTML = state.localModels.length
-      ? state.localModels.slice(0, 8).map(m => listItem(
-          m.name || m.id,
-          `${m.provider} · ${m.status} · ${formatBytes(m.size_bytes || 0)}`,
-          `<span class="badge">${escapeHtml((m.metadata?.tier || m.metadata?.quantization || "local"))}</span>`
-        )).join("")
-      : emptyState("Register a local model, local file path, or local provider model.");
+      ? state.localModels.map(m => `<div class="model-inventory-row">
+          <span class="model-provider-mark">${escapeHtml(String(m.provider || "L").slice(0, 1).toUpperCase())}</span>
+          <span class="model-inventory-copy"><strong>${escapeHtml(m.name || m.id)}</strong><small>${escapeHtml(m.provider)} · ${escapeHtml(m.status)}${m.size_bytes ? ` · ${escapeHtml(formatBytes(m.size_bytes))}` : ""}</small></span>
+          <span class="badge">${escapeHtml((m.metadata?.tier || m.metadata?.quantization || "local"))}</span>
+          <button class="icon-button danger" data-remove-model="${escapeHtml(m.id)}" title="Remove model" aria-label="Remove ${escapeHtml(m.name || m.id)}">×</button>
+        </div>`).join("")
+      : '<div class="model-empty">No models installed</div>';
+    qsa("[data-remove-model]", feed).forEach(button => {
+      button.addEventListener("click", () => deleteSettingsModel(button.dataset.removeModel));
+    });
   }
 }
 
@@ -7023,17 +7069,19 @@ async function quantizeSettingsModel() {
   } catch(e) { toast("Quantization error", e.message); }
 }
 
-async function deleteSettingsModel() {
-  const modelId = selectedSettingsModelId();
+async function deleteSettingsModel(requestedModelId = "") {
+  const modelId = requestedModelId || selectedSettingsModelId();
   if (!modelId) { toast("Select a model first"); return; }
+  const model = (state.localModels || []).find(item => item.id === modelId);
+  if (!window.confirm(`Remove ${model?.name || "this model"} from this computer?`)) return;
   try {
     const payload = await api("/api/local-ai/models/delete", {
       method: "POST",
-      body: JSON.stringify({ model_id: modelId, delete_file: false }),
+      body: JSON.stringify({ model_id: modelId, delete_file: true }),
     });
     setOutput("#settingsOutput", payload);
-    toast("Model record deleted");
-    await loadSettingsModels();
+    toast("Model removed", payload.deleted_runtime_artifact || payload.deleted_file ? "Files removed from disk." : "Registration removed.");
+    await Promise.allSettled([loadSettingsModels(), loadProviders(), loadModelSetupStatus()]);
   } catch(e) { toast("Delete model error", e.message); }
 }
 
@@ -7960,6 +8008,7 @@ async function init() {
   initUpload();
   initKnowledgeWorkspace();
   initSettings();
+  initDeveloperConsole();
   exposeInlineHandlers();
 
   // Bind buttons

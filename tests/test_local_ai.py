@@ -3,11 +3,30 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from io import StringIO
 import unittest
 from unittest.mock import patch
 
 from openagent.local_ai import LocalAIInfrastructure, ModelDownloadError
 from openagent.storage import OpenAgentStore
+
+
+class CompletedPullProcess:
+    def __init__(self, output: str = "pulling manifest\n50%\n100%\n") -> None:
+        self.stdout = StringIO(output)
+        self.returncode = 0
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 1
+
+    def kill(self) -> None:
+        self.returncode = 1
 
 
 class LocalAIInfrastructureTests(unittest.TestCase):
@@ -107,9 +126,8 @@ class LocalAIInfrastructureTests(unittest.TestCase):
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
             completed = SimpleNamespace(returncode=0, stdout="pulled", stderr="")
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.run",
-                return_value=completed,
-            ):
+                "openagent.local_ai.subprocess.Popen", return_value=CompletedPullProcess()
+            ), patch("openagent.local_ai.subprocess.run", return_value=completed):
                 result = infra.setup_chat_model(
                     model_name="phi4-mini",
                     allow_network=True,
@@ -125,9 +143,8 @@ class LocalAIInfrastructureTests(unittest.TestCase):
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
             completed = SimpleNamespace(returncode=0, stdout="pulled", stderr="")
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.run",
-                return_value=completed,
-            ):
+                "openagent.local_ai.subprocess.Popen", return_value=CompletedPullProcess()
+            ), patch("openagent.local_ai.subprocess.run", return_value=completed):
                 job = infra.create_setup_chat_job(
                     model_name="phi4-mini",
                     allow_network=True,
@@ -150,9 +167,8 @@ class LocalAIInfrastructureTests(unittest.TestCase):
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
             completed = SimpleNamespace(returncode=0, stdout="pulled", stderr="")
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.run",
-                return_value=completed,
-            ):
+                "openagent.local_ai.subprocess.Popen", return_value=CompletedPullProcess()
+            ), patch("openagent.local_ai.subprocess.run", return_value=completed):
                 job = infra.create_setup_chat_job(
                     model_name="qwen2.5-coder:3b",
                     allow_network=True,
@@ -165,6 +181,37 @@ class LocalAIInfrastructureTests(unittest.TestCase):
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["model_name"], "qwen2.5-coder:3b")
         self.assertEqual(job["result"]["setup"]["ollama_model"], "qwen2.5-coder:3b")
+
+    def test_delete_ollama_model_removes_runtime_artifact(self) -> None:
+        with TemporaryDirectory() as tmp:
+            infra = LocalAIInfrastructure(OpenAgentStore(tmp))
+            model = infra.register_model(
+                name="phi4-mini",
+                provider="ollama",
+                source_url="ollama://phi4-mini",
+                local_path="ollama://phi4-mini",
+            )
+            completed = SimpleNamespace(returncode=0, stdout="deleted", stderr="")
+            with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
+                "openagent.local_ai.subprocess.run", return_value=completed
+            ) as run:
+                result = infra.delete_model(model["id"], delete_file=True)
+            self.assertTrue(result["deleted_runtime_artifact"])
+            self.assertIsNone(infra.get_model(model["id"]))
+            self.assertEqual(run.call_args.args[0], ["ollama", "rm", "phi4-mini"])
+
+    def test_delete_imported_model_preserves_external_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / "outside-openagent.gguf"
+            source.write_bytes(b"external model")
+            infra = LocalAIInfrastructure(OpenAgentStore(Path(tmp) / "data"))
+            model = infra.register_model(name="External GGUF", provider="llamacpp", local_path=str(source))
+
+            result = infra.delete_model(model["id"], delete_file=True)
+
+            self.assertTrue(result["preserved_external_file"])
+            self.assertTrue(source.exists())
+            self.assertIsNone(infra.get_model(model["id"]))
 
     def test_ollama_http_pull_works_when_cli_is_not_on_path(self) -> None:
         class FakeResponse:

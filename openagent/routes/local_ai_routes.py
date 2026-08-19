@@ -14,6 +14,7 @@ ROUTES = (
     ("GET", "/api/local-ai/jobs"),
     ("POST", "/api/local-ai/jobs"),
     ("GET", "/api/local-ai/jobs/{id}"),
+    ("POST", "/api/local-ai/jobs/cancel"),
     ("GET", "/api/local-ai/status"),
     ("GET", "/api/local-ai/setup/status"),
     ("GET", "/api/local-ai/smooth-runtime"),

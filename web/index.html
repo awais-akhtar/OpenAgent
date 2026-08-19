@@ -8,9 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260819-knowledge-graph-01">
+  <link rel="manifest" href="/manifest.json?v=20260819-model-ops-01">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260819-knowledge-graph-01">
+  <link rel="stylesheet" href="/styles.css?v=20260819-model-ops-01">
   <script>
     // Apply saved theme immediately to prevent flash
     (function() {
@@ -826,6 +826,14 @@
 
     <!-- ===== DEVELOPER ===== -->
     <section class="view" id="view-developer" data-view-panel="developer" aria-label="Developer platform">
+      <div class="developer-console-nav" role="tablist" aria-label="Developer sections">
+        <button class="is-active" data-developer-section="models" role="tab" aria-selected="true">Models</button>
+        <button data-developer-section="runtime" role="tab" aria-selected="false">Runtime</button>
+        <button data-developer-section="knowledge" role="tab" aria-selected="false">Knowledge</button>
+        <button data-developer-section="api" role="tab" aria-selected="false">API</button>
+        <button data-developer-section="operations" role="tab" aria-selected="false">Operations</button>
+        <button data-developer-section="skills" role="tab" aria-selected="false">Skills</button>
+      </div>
       <div class="workbench-grid">
         <article class="card developer-knowledge-card">
           <div class="card-header"><div><p class="eyebrow">Chat knowledge</p><h3>Local source library</h3></div><span class="badge badge-success">Automatic RAG</span></div>
@@ -860,34 +868,42 @@
           </div>
           <div id="integrationFeed" class="stack-list" style="margin-top:12px"></div>
         </article>
-        <article class="card">
+        <article class="card model-operations-card">
           <div class="card-header">
-            <div><p class="eyebrow">Model operations</p><h3>Register, download, quantize, fine-tune</h3></div>
+            <div><h3>Model manager</h3></div>
             <button class="btn btn-mini btn-soft" data-view-jump="finetune">Fine-Tune</button>
           </div>
-          <div class="form-stack">
-            <select id="settingsModelSelect" aria-label="Registered local model"></select>
-            <input id="settingsModelName" type="text" placeholder="Model name">
-            <input id="settingsModelProvider" type="text" placeholder="Provider, e.g. ollama, llamacpp, local">
-            <input id="settingsModelSource" type="text" placeholder="Source URL or local file path">
-            <input id="settingsModelLocalPath" type="text" placeholder="Existing local path">
+          <div class="model-role-actions" aria-label="Install a model">
+            <button id="pullRecommendedOllamaModel" class="model-role-action"><span>Chat</span><strong>Phi-4 Mini</strong><small>Install</small></button>
+            <button id="setupReasoningModel" class="model-role-action"><span>Reasoning</span><strong>Phi-4 Mini</strong><small>Install</small></button>
+            <button id="setupCodeModel" class="model-role-action"><span>Code</span><strong>Qwen Coder 3B</strong><small>Install</small></button>
+            <button id="setupVisionModel" class="model-role-action"><span>Vision</span><strong>Qwen VL 3B</strong><small>Install</small></button>
+            <button id="setupVoskModel" class="model-role-action"><span>Speech</span><strong>Vosk English</strong><small>Install</small></button>
           </div>
-          <div class="toolbar">
-            <button id="refreshSettingsModels" class="btn btn-soft">Refresh Models</button>
-            <button id="registerSettingsModel" class="btn btn-primary">Register Model</button>
-            <button id="pullRecommendedOllamaModel" class="btn btn-primary">Setup Chat Model</button>
-            <button id="setupReasoningModel" class="btn btn-soft">Setup Reasoning Model</button>
-            <button id="setupCodeModel" class="btn btn-soft">Setup Code Model</button>
-            <button id="setupVisionModel" class="btn btn-soft">Setup Vision Model</button>
-            <button id="setupVoskModel" class="btn btn-outline">Setup Vosk STT</button>
-            <button id="registerLlamaCppModel" class="btn btn-soft">Register GGUF Model</button>
-            <button id="downloadSettingsModel" class="btn btn-soft">Download Local/File</button>
-            <button id="quantizeSettingsModel" class="btn btn-outline">Plan Quantization</button>
-            <button id="deleteSettingsModel" class="btn btn-danger">Delete Record</button>
+          <div id="modelSetupJobs" class="model-job-list"></div>
+          <div class="model-inventory-head">
+            <h4>Installed models</h4>
+            <button id="refreshSettingsModels" class="icon-button" title="Refresh models" aria-label="Refresh models">↻</button>
           </div>
-          <div id="modelSetupStatus" class="mini-status"></div>
-          <div id="modelSetupJobs" class="stack-list" style="margin-top:10px"></div>
-          <div id="settingsModelFeed" class="stack-list"></div>
+          <div id="settingsModelFeed" class="model-inventory"></div>
+          <details class="model-advanced">
+            <summary>Register or import a model</summary>
+            <div class="form-grid compact-form-grid">
+              <label><span>Name</span><input id="settingsModelName" type="text" placeholder="Local model"></label>
+              <label><span>Provider</span><select id="settingsModelProvider"><option value="local">Local file</option><option value="llamacpp">llama.cpp</option><option value="ollama">Ollama</option></select></label>
+              <label class="wide-field"><span>Source URL or file</span><input id="settingsModelSource" type="text" placeholder="HTTPS URL or local file path"></label>
+              <label class="wide-field"><span>Existing GGUF path</span><input id="settingsModelLocalPath" type="text" placeholder="D:\models\model.gguf"></label>
+              <label class="wide-field"><span>Registered model</span><select id="settingsModelSelect" aria-label="Registered local model"></select></label>
+            </div>
+            <div class="toolbar">
+              <button id="registerSettingsModel" class="btn btn-primary">Register</button>
+              <button id="registerLlamaCppModel" class="btn btn-soft">Register GGUF</button>
+              <button id="downloadSettingsModel" class="btn btn-soft">Copy to OpenAgent</button>
+              <button id="quantizeSettingsModel" class="btn btn-outline">Quantization plan</button>
+              <button id="deleteSettingsModel" class="btn btn-danger">Remove from disk</button>
+            </div>
+          </details>
+          <div id="modelSetupStatus" class="model-runtime-strip"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -1035,113 +1051,47 @@
 
     <!-- ===== SETTINGS ===== -->
     <section class="view" id="view-settings" data-view-panel="settings" aria-label="Settings">
-      <div class="settings-grid">
-        <div>
-          <article class="card">
-            <div class="settings-section">
-              <h4>Appearance</h4>
-              <div class="setting-row">
-                <div><div class="setting-label">Color theme</div><div class="setting-desc">Choose your visual preference</div></div>
-                <div class="setting-control">
-                  <select id="settingsTheme" style="width:auto">
-                    <option value="dark">Dark</option>
-                    <option value="light">Light</option>
-                    <option value="system">System</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <h4>Privacy</h4>
-              <div class="setting-row setting-row-toggle">
-                <div><div class="setting-label">Local-only mode</div><div class="setting-desc">Block all external network calls</div></div>
-                <div class="setting-control">
-                  <label class="toggle"><input type="checkbox" id="settingLocalOnly" checked><span class="toggle-slider"></span></label>
-                </div>
-              </div>
-              <div class="setting-row setting-row-toggle">
-                <div><div class="setting-label">Audit all actions</div><div class="setting-desc">Log every agent and workflow action</div></div>
-                <div class="setting-control">
-                  <label class="toggle"><input type="checkbox" id="settingAuditAll" checked><span class="toggle-slider"></span></label>
-                </div>
-              </div>
-            </div>
-          </article>
+      <div class="settings-console">
+        <section class="settings-pane">
+          <h3>General</h3>
+          <label class="settings-field"><span>Theme</span><select id="settingsTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label>
+          <label class="settings-switch"><span>Local-only mode</span><span class="toggle"><input type="checkbox" id="settingLocalOnly" checked><span class="toggle-slider"></span></span></label>
+          <label class="settings-switch"><span>Audit actions</span><span class="toggle"><input type="checkbox" id="settingAuditAll" checked><span class="toggle-slider"></span></span></label>
+        </section>
+        <section class="settings-pane">
+          <h3>Model routing</h3>
+          <div class="settings-form-grid">
+            <label><span>Chat</span><input id="settingChatModel" type="text" placeholder="phi4-mini"></label>
+            <label><span>Code</span><input id="settingCodeModel" type="text" placeholder="qwen2.5-coder:3b"></label>
+            <label><span>Research</span><input id="settingResearchModel" type="text" placeholder="phi4-mini"></label>
+            <label><span>Speech</span><input id="settingVoiceModel" type="text" placeholder="faster-whisper:base.en"></label>
+          </div>
+        </section>
+        <section class="settings-pane">
+          <h3>Performance</h3>
+          <div class="settings-form-grid">
+            <label><span>Quantization</span><select id="settingQuantMode"><option value="auto">Automatic</option><option value="quality">Quality Q4+</option><option value="maximum-compression">Maximum compression</option><option value="below-2bit">Sub-2-bit</option></select></label>
+            <label><span>RAM budget (GB)</span><input id="settingTargetRam" type="number" min="2" step="0.5" placeholder="Auto"></label>
+            <label><span>Timeout (seconds)</span><input id="settingModelTimeout" type="number" min="5" max="120" step="1" placeholder="35"></label>
+            <label><span>Parameters (billions)</span><input id="settingModelParameterCount" type="number" min="0.1" step="0.1" placeholder="Auto"></label>
+          </div>
+        </section>
+        <details class="settings-pane settings-advanced">
+          <summary>Provider endpoints</summary>
+          <div class="settings-form-grid">
+            <label><span>Ollama URL</span><input id="settingOllamaUrl" type="url" placeholder="http://127.0.0.1:11434"></label>
+            <label><span>Ollama model</span><input id="settingOllamaModel" type="text" placeholder="phi4-mini"></label>
+            <label><span>llama.cpp URL</span><input id="settingLlamaCppUrl" type="url" placeholder="http://127.0.0.1:8080"></label>
+            <label><span>llama.cpp model</span><input id="settingLlamaCppModel" type="text" placeholder="local-gguf"></label>
+          </div>
+        </details>
+        <div class="settings-actions">
+          <span id="settingsSaveState" role="status">Saved locally</span>
+          <button id="applyCpuModelStack" class="btn btn-soft">Use CPU defaults</button>
+          <button id="loadSystemStatus" class="btn btn-soft">Test runtime</button>
+          <button id="saveSettings" class="btn btn-primary">Save changes</button>
         </div>
-        <div>
-          <article class="card">
-            <div class="settings-section">
-              <h4>Model providers</h4>
-              <div class="setting-row">
-                <div><div class="setting-label">Ollama URL</div><div class="setting-desc">Local Ollama server address</div></div>
-                <div class="setting-control"><input id="settingOllamaUrl" type="text" placeholder="http://127.0.0.1:11434" style="width:210px"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Default model</div><div class="setting-desc">Model to use for Ollama</div></div>
-                <div class="setting-control"><input id="settingOllamaModel" type="text" placeholder="phi4-mini" style="width:210px"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">llama.cpp URL</div><div class="setting-desc">Local llama-server address</div></div>
-                <div class="setting-control"><input id="settingLlamaCppUrl" type="text" placeholder="http://127.0.0.1:8080" style="width:210px"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">llama.cpp model</div><div class="setting-desc">Model name reported by llama-server</div></div>
-                <div class="setting-control"><input id="settingLlamaCppModel" type="text" placeholder="local-gguf" style="width:210px"></div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <h4>Core model routing</h4>
-              <div class="setting-row">
-                <div><div class="setting-label">Chat model</div><div class="setting-desc">Used by chat and general assistant turns</div></div>
-                <div class="setting-control"><input id="settingChatModel" type="text" placeholder="phi4-mini"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Code model</div><div class="setting-desc">Small coding profile for CPU machines</div></div>
-                <div class="setting-control"><input id="settingCodeModel" type="text" placeholder="qwen2.5-coder:3b"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Research model</div><div class="setting-desc">Used by deep research synthesis</div></div>
-                <div class="setting-control"><input id="settingResearchModel" type="text" placeholder="phi4-mini"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Voice STT model</div><div class="setting-desc">Local speech-to-text model or engine</div></div>
-                <div class="setting-control"><input id="settingVoiceModel" type="text" placeholder="faster-whisper:base.en"></div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <h4>CPU quantization controls</h4>
-              <div class="setting-row">
-                <div><div class="setting-label">Quantization mode</div><div class="setting-desc">Auto, quality, maximum compression, or sub-2-bit survival mode</div></div>
-                <div class="setting-control">
-                  <select id="settingQuantMode">
-                    <option value="auto">Auto</option>
-                    <option value="quality">Quality Q4+</option>
-                    <option value="maximum-compression">Maximum compression</option>
-                    <option value="below-2bit">Sub-2-bit CPU survival</option>
-                  </select>
-                </div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Target RAM GB</div><div class="setting-desc">Override detected RAM for planning</div></div>
-                <div class="setting-control"><input id="settingTargetRam" type="number" min="2" step="0.5" placeholder="8"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Model timeout seconds</div><div class="setting-desc">Local server timeout guard</div></div>
-                <div class="setting-control"><input id="settingModelTimeout" type="number" min="5" max="120" step="1" placeholder="35"></div>
-              </div>
-              <div class="setting-row">
-                <div><div class="setting-label">Parameter count B</div><div class="setting-desc">Optional estimate for quantization memory planning</div></div>
-                <div class="setting-control"><input id="settingModelParameterCount" type="number" min="0.1" step="0.1" placeholder="1.7"></div>
-              </div>
-            </div>
-            <div class="toolbar" style="margin-top:8px">
-              <button id="applyCpuModelStack" class="btn btn-soft">Apply CPU Stack</button>
-              <button id="saveSettings" class="btn btn-primary">Save Settings</button>
-              <button id="loadSystemStatus" class="btn btn-soft">System Status</button>
-            </div>
-            <pre id="settingsOutput" class="output" style="margin-top:12px">Settings output will appear here.</pre>
-          </article>
-        </div>
+        <pre id="settingsOutput" class="output" hidden></pre>
       </div>
     </section>
 
@@ -1511,11 +1461,11 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260819-knowledge-graph-01" type="module"></script>
+<script src="/app.js?v=20260819-model-ops-01" type="module"></script>
 <script>
   // Register service worker for PWA offline support
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260819-knowledge-graph-01').catch(function() {});
+    navigator.serviceWorker.register('/sw.js?v=20260819-model-ops-01').catch(function() {});
   }
 </script>
 

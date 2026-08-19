@@ -7,11 +7,13 @@ import json
 import os
 from pathlib import Path
 import platform
+import queue
+import re
 import shutil
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -435,6 +437,9 @@ class LocalAIInfrastructure:
         allow_network: bool = False,
         project: str = "default",
         timeout_seconds: int = 3600,
+        progress_callback: Callable[[int, str], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+        role: str = "chat",
     ) -> dict[str, Any]:
         pull_name = ollama_pull_name(model_name)
         if not pull_name:
@@ -445,7 +450,15 @@ class LocalAIInfrastructure:
         stdout = ""
         stderr = ""
         returncode = 0
-        if executable:
+        if executable and progress_callback is not None:
+            stdout = self._pull_ollama_cli_streaming(
+                executable,
+                pull_name,
+                timeout_seconds=timeout_seconds,
+                progress_callback=progress_callback,
+                cancel_requested=cancel_requested,
+            )
+        elif executable:
             completed = subprocess.run(
                 [executable, "pull", pull_name],
                 capture_output=True,
@@ -470,14 +483,33 @@ class LocalAIInfrastructure:
                 )
             request = Request(
                 f"{base_url}/api/pull",
-                data=json.dumps({"name": pull_name, "stream": False}).encode("utf-8"),
+                data=json.dumps({"name": pull_name, "stream": progress_callback is not None}).encode("utf-8"),
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
             )
             try:
                 with urlopen(request, timeout=timeout_seconds) as response:
-                    stdout = response.read().decode("utf-8", errors="replace")
+                    if progress_callback is None:
+                        stdout = response.read().decode("utf-8", errors="replace")
+                    else:
+                        chunks: list[str] = []
+                        try:
+                            iterator = iter(response)
+                        except TypeError:
+                            iterator = iter(response.read().splitlines())
+                        for raw_line in iterator:
+                            if cancel_requested and cancel_requested():
+                                raise ModelDownloadError("Model download cancelled.")
+                            line = raw_line.decode("utf-8", errors="replace").strip()
+                            if not line:
+                                continue
+                            chunks.append(line)
+                            progress, message = ollama_progress(line)
+                            progress_callback(progress, message)
+                        stdout = "\n".join(chunks)
             except Exception as exc:
+                if isinstance(exc, ModelDownloadError):
+                    raise
                 raise ModelDownloadError(f"Ollama HTTP pull failed: {exc}") from exc
         model = self.register_model(
             name=pull_name,
@@ -486,7 +518,8 @@ class LocalAIInfrastructure:
             local_path=f"ollama://{pull_name}",
             metadata={
                 "pulled_by": "ollama",
-                "downloaded_for": "openagent-chat",
+                "downloaded_for": f"openagent-{role}",
+                "roles": [role],
                 "runtime": "local-model-server",
             },
         )
@@ -507,6 +540,75 @@ class LocalAIInfrastructure:
             "stderr": stderr[-1200:],
             "privacy_boundary": "The user explicitly requested an Ollama pull. Model files are downloaded by the local Ollama runtime into its local model store.",
         }
+
+    def _pull_ollama_cli_streaming(
+        self,
+        executable: str,
+        model_name: str,
+        *,
+        timeout_seconds: int,
+        progress_callback: Callable[[int, str], None],
+        cancel_requested: Callable[[], bool] | None,
+    ) -> str:
+        process = subprocess.Popen(
+            [executable, "pull", model_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        output: list[str] = []
+        lines: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    lines.put(line)
+            finally:
+                lines.put(None)
+
+        threading.Thread(target=read_output, daemon=True).start()
+        started = time.monotonic()
+        last_progress = 1
+        reader_finished = False
+        while process.poll() is None or not reader_finished:
+            if cancel_requested and cancel_requested():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                raise ModelDownloadError("Model download cancelled.")
+            if time.monotonic() - started > timeout_seconds:
+                process.kill()
+                raise ModelDownloadError(f"Ollama pull timed out after {timeout_seconds} seconds.")
+            try:
+                line = lines.get(timeout=0.25)
+            except queue.Empty:
+                elapsed_progress = min(12, 2 + int(time.monotonic() - started) // 5)
+                if elapsed_progress > last_progress:
+                    last_progress = elapsed_progress
+                    progress_callback(last_progress, "Downloading model layers")
+                continue
+            if line is None:
+                reader_finished = True
+                continue
+            clean = line.strip()
+            if not clean:
+                continue
+            output.append(clean)
+            progress, message = ollama_progress(clean)
+            last_progress = max(last_progress, progress)
+            progress_callback(last_progress, message)
+        returncode = process.wait()
+        combined = "\n".join(output)
+        if returncode != 0:
+            raise ModelDownloadError((combined or "ollama pull failed")[-600:])
+        progress_callback(100, "Download complete")
+        return combined
 
     def model_tool_status(self) -> dict[str, Any]:
         """Report local model runner availability without starting downloads."""
@@ -575,6 +677,8 @@ class LocalAIInfrastructure:
         model_name: str = "",
         allow_network: bool = False,
         project: str = "default",
+        progress_callback: Callable[[int, str], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Prepare the default chat model using the best available local runner."""
         task = (task or "chat").strip().lower()
@@ -593,6 +697,9 @@ class LocalAIInfrastructure:
                 requested,
                 allow_network=allow_network,
                 project=project,
+                progress_callback=progress_callback,
+                cancel_requested=cancel_requested,
+                role=task,
             )
             return {
                 "runner": "ollama",
@@ -706,7 +813,18 @@ class LocalAIInfrastructure:
                 self._update_model_job(job_id, status="cancelled", progress=100, current_step="Cancelled before model setup.", completed=True)
                 return
             self._update_model_job(job_id, progress=35, current_step=f"Preparing {model_name} for local {task}.")
-            result = self.setup_task_model(task=task, model_name=model_name, allow_network=allow_network, project=project)
+            result = self.setup_task_model(
+                task=task,
+                model_name=model_name,
+                allow_network=allow_network,
+                project=project,
+                progress_callback=lambda progress, message: self._update_model_job(
+                    job_id,
+                    progress=35 + round(max(0, min(100, progress)) * 0.4),
+                    current_step=message,
+                ),
+                cancel_requested=lambda: self._job_cancel_requested(job_id),
+            )
             model = result.get("model") if isinstance(result.get("model"), dict) else {}
             model_id = str(model.get("id", ""))
             self._update_model_job(
@@ -743,6 +861,16 @@ class LocalAIInfrastructure:
                 )
             )
         except Exception as exc:
+            if self._job_cancel_requested(job_id):
+                self._update_model_job(
+                    job_id,
+                    status="cancelled",
+                    progress=100,
+                    current_step="Model setup cancelled.",
+                    error="",
+                    completed=True,
+                )
+                return
             self._update_model_job(
                 job_id,
                 status="failed",
@@ -1041,17 +1169,24 @@ class LocalAIInfrastructure:
         if dependents:
             raise ValueError(f"Model is still required by {len(dependents)} dependent resource(s).")
         deleted_file = ""
+        deleted_runtime_artifact = False
+        preserved_external_file = False
         if delete_file and model.get("local_path"):
-            candidate = Path(str(model["local_path"])).resolve()
-            model_root = self.model_root.resolve()
-            try:
-                candidate.relative_to(model_root)
-            except ValueError:
-                pass
+            local_path = str(model["local_path"])
+            if model.get("provider") == "ollama" or local_path.startswith("ollama://"):
+                self._delete_ollama_artifact(local_path.removeprefix("ollama://") or str(model.get("name", "")))
+                deleted_runtime_artifact = True
             else:
-                if candidate.exists() and candidate.is_file():
-                    candidate.unlink()
-                    deleted_file = str(candidate)
+                candidate = Path(local_path).resolve()
+                model_root = self.model_root.resolve()
+                try:
+                    candidate.relative_to(model_root)
+                except ValueError:
+                    preserved_external_file = candidate.exists()
+                else:
+                    if candidate.exists() and candidate.is_file():
+                        candidate.unlink()
+                        deleted_file = str(candidate)
         with self.store.session() as connection:
             connection.execute("DELETE FROM model_quantizations WHERE model_id = ?", (model_id,))
             connection.execute("DELETE FROM model_benchmarks WHERE model_id = ?", (model_id,))
@@ -1066,7 +1201,47 @@ class LocalAIInfrastructure:
                 metadata={"deleted_file": bool(deleted_file), "name": model.get("name", "")},
             )
         )
-        return {"deleted": True, "model": model, "deleted_file": deleted_file}
+        return {
+            "deleted": True,
+            "model": model,
+            "deleted_file": deleted_file,
+            "deleted_runtime_artifact": deleted_runtime_artifact,
+            "preserved_external_file": preserved_external_file,
+        }
+
+    def _delete_ollama_artifact(self, model_name: str) -> None:
+        name = ollama_pull_name(model_name)
+        if not name:
+            raise ValueError("The Ollama model name is missing.")
+        executable = shutil.which("ollama")
+        if executable:
+            completed = subprocess.run(
+                [executable, "rm", name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                check=False,
+            )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "ollama rm failed").strip()
+                raise ValueError(detail[-600:])
+            return
+        base_url = os.environ.get("OPENAGENT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+        if not local_http_available(f"{base_url}/api/tags"):
+            raise ValueError("Ollama is not reachable, so its model files were not removed.")
+        request = Request(
+            f"{base_url}/api/delete",
+            data=json.dumps({"name": name}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        try:
+            with urlopen(request, timeout=120):
+                return
+        except Exception as exc:
+            raise ValueError(f"Ollama could not remove the model: {exc}") from exc
 
     def detect_hardware(self) -> dict[str, Any]:
         profile = {
@@ -1326,6 +1501,36 @@ def ollama_pull_name(model_name: str) -> str:
         "qwen2.5:7b-instruct-q4_K_M": "qwen2.5:7b",
     }
     return aliases.get(value, aliases.get(value.lower(), value))
+
+
+def ollama_progress(line: str) -> tuple[int, str]:
+    """Convert Ollama CLI or HTTP progress output into a stable percentage."""
+    text = str(line or "").strip()
+    status = text
+    completed = 0
+    total = 0
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = {}
+    if isinstance(payload, dict):
+        status = str(payload.get("status", status)).strip() or "Downloading model"
+        completed = int(payload.get("completed", 0) or 0)
+        total = int(payload.get("total", 0) or 0)
+    percent_match = re.search(r"(?<!\d)(\d{1,3})\s*%", text)
+    if percent_match:
+        progress = max(1, min(99, int(percent_match.group(1))))
+    elif total > 0:
+        progress = max(1, min(99, round(completed * 100 / total)))
+    elif any(token in status.lower() for token in ("success", "complete", "writing manifest")):
+        progress = 99
+    elif "verifying" in status.lower():
+        progress = 96
+    elif "pulling manifest" in status.lower():
+        progress = 3
+    else:
+        progress = 10
+    return progress, status[:160]
 
 
 def file_sha256(path: Path) -> str:

@@ -35,15 +35,22 @@ POST /api/local-ai/models/register
 POST /api/local-ai/models/download
 GET /api/local-ai/setup/status
 POST /api/local-ai/models/setup-chat
+POST /api/local-ai/models/setup/job
+GET /api/local-ai/jobs
+GET /api/local-ai/jobs/{job_id}
+POST /api/local-ai/jobs/cancel
 POST /api/local-ai/ollama/pull
 POST /api/local-ai/llamacpp/register
+POST /api/local-ai/models/delete
 ```
 
 Chat model setup:
 
 - `GET /api/local-ai/setup/status` checks only local executables and loopback servers. It reports whether `ollama`, `llama-server`, or `llama-cli` are available and whether their local servers are reachable.
 - `POST /api/local-ai/models/setup-chat` chooses the best local setup path. When Ollama is installed or its local server is reachable, it pulls the model only if `allow_network=true`, using the CLI when available or Ollama's local HTTP pull API when the Windows app is running without `ollama.exe` on PATH. It then registers the pulled model as a local provider record. If only llama.cpp is installed, it tells the UI to register a local `.gguf` file because llama.cpp does not provide a built-in model marketplace pull command.
+- `POST /api/local-ai/models/setup/job` runs the same setup in the background. Ollama output is converted into durable progress updates, the UI polls the job record, and cancellation terminates a CLI pull instead of merely changing the displayed status.
 - `POST /api/local-ai/llamacpp/register` registers an existing local `.gguf` file and returns a local command like `llama-server -m "model.gguf" --host 127.0.0.1 --port 8080`. Start that command, then keep Chat provider on Auto or llama.cpp.
+- `POST /api/local-ai/models/delete` checks model dependencies before removal. With `delete_file=true`, an Ollama model is removed through `ollama rm` or the loopback Ollama API. A managed model file can be deleted only when it is inside OpenAgent's model directory. Removing an imported external model unregisters it but leaves the original file untouched.
 
 Quantization:
 
@@ -80,7 +87,7 @@ The model gateway passes bounded request options to Ollama and llama.cpp: contex
 
 Auto-quantize records a safe local quantization plan for a registered model. It can plan `quality`, `maximum-compression`, or `below-2bit` modes and estimates runtime memory from parameter count, effective bits, context size, and CPU strategy. It does not upload the model and does not claim a converted artifact exists until a local converter or engine produces one.
 
-The Settings screen exposes runtime controls for chat, code, research, and voice models, Ollama and llama.cpp local server URLs, quantization mode, target RAM, local model timeout, and a one-click CPU model stack restore. Developer tools expose local runner status, smart chat-model setup, GGUF registration, model registration, local/file download, quantization planning, fine-tune navigation, and model record deletion.
+Settings contains the preferences that affect the running application: appearance, privacy, model routing, resource limits, and provider endpoints. Model installation and removal live in Developer > Models. Each recommended role has an install action, running jobs show live progress, and installed models can be removed from the same inventory.
 
 Benchmark:
 

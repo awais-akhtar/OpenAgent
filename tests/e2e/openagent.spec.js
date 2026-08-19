@@ -26,6 +26,7 @@ test("desktop workspace loads and core lifecycle controls are usable", async ({ 
   await expect(page.locator("#chatLog")).toBeVisible();
 
   await page.locator('[data-view-link="developer"]').click();
+  await page.locator('[data-developer-section="skills"]').click();
   await expect(page.locator("#skillEditorName")).toBeVisible();
   await page.locator("#skillEditorName").fill("Browser proof skill");
   await page.locator("#skillEditorMarkdown").fill("# Browser proof skill\n\nRuns locally without network access.");
