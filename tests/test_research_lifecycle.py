@@ -3,6 +3,7 @@ from __future__ import annotations
 from tempfile import TemporaryDirectory
 import threading
 import unittest
+import json
 from urllib.request import urlopen
 
 from openagent.model_gateway import StreamChunk
@@ -79,6 +80,7 @@ class ResearchLifecycleTests(unittest.TestCase):
         paths = {path for _, path in ROUTES}
         self.assertIn("/api/research/sessions/{id}/cancel", paths)
         self.assertIn("/api/research/sessions/{id}/source-graph", paths)
+        self.assertIn("/api/research/sessions/{id}/report", paths)
         self.assertIn("/api/research/sessions/{id}/delete", paths)
         self.assertIn("/api/research/sessions/{id}/stream", paths)
 
@@ -116,6 +118,29 @@ class ResearchLifecycleTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+    def test_http_report_returns_persisted_report_and_sources(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = OpenAgentStore(temp)
+            lifecycle = ResearchLifecycle(store)
+            session = lifecycle.create("Persisted report")
+            lifecycle.start(session["id"])
+            lifecycle.complete(session["id"], {"report": "A durable local report.", "sources": [{"id": "s1", "title": "Local source"}]})
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                payload = json.loads(urlopen(
+                    f"http://127.0.0.1:{server.server_address[1]}/api/research/sessions/{session['id']}/report",
+                    timeout=5,
+                ).read())
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertEqual(payload["report"], "A durable local report.")
+        self.assertEqual(payload["sources"][0]["title"], "Local source")
 
 
 if __name__ == "__main__":

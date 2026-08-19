@@ -225,7 +225,7 @@ class HardwareProfiler:
             str(self.project_root / ".accelerator-venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
         ]
         for candidate in candidates:
-            if not candidate or not Path(candidate).is_file():
+            if not candidate or not Path(candidate).is_file() or not self._looks_like_executable(candidate):
                 continue
             resolved = str(Path(candidate).resolve())
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -243,6 +243,18 @@ class HardwareProfiler:
             if probe.returncode == 0 and probe.stdout.strip():
                 return resolved
         return ""
+
+    @staticmethod
+    def _looks_like_executable(candidate: str) -> bool:
+        path = Path(candidate)
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(4)
+        except OSError:
+            return False
+        if os.name == "nt":
+            return header.startswith(b"MZ")
+        return os.access(path, os.X_OK) and (header.startswith(b"#!") or header.startswith(b"\x7fELF"))
 
     def _os_devices(self) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
         if os.name == "nt":

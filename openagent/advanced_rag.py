@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 import re
 import time
 from typing import Any
@@ -123,6 +124,7 @@ class AdvancedRAGEngine:
         model: str | None = None,
         allow_external: bool = False,
         use_cache: bool = True,
+        embedding_provider: str = "",
     ) -> dict[str, Any]:
         started = time.perf_counter()
         query = " ".join(query.split()).strip()
@@ -131,6 +133,9 @@ class AdvancedRAGEngine:
         project = project.strip() or "default"
         limit = max(1, min(int(limit), 20))
         context_token_budget = max(128, min(int(context_token_budget), 8192))
+        embedding_provider = (
+            embedding_provider or os.getenv("OPENAGENT_EMBEDDING_PROVIDER", "local-hash")
+        ).strip() or "local-hash"
         generation = self._knowledge_generation(project)
         cache_key = self._cache_key(
             query=query,
@@ -141,6 +146,7 @@ class AdvancedRAGEngine:
             generate=generate,
             provider=provider,
             model=model or "",
+            embedding_provider=embedding_provider,
         )
         if use_cache:
             cached = self._get_cache(cache_key)
@@ -172,7 +178,10 @@ class AdvancedRAGEngine:
                 variant, project=project, limit=candidate_limit
             )
         lanes["semantic"] = self.knowledge.semantic_search(
-            query, project=project, limit=candidate_limit
+            query,
+            project=project,
+            limit=candidate_limit,
+            embedding_provider=embedding_provider,
         )
         fused = fuse_rankings(query, lanes)
         selected = diverse_evidence(query, fused, limit=limit)
@@ -226,6 +235,7 @@ class AdvancedRAGEngine:
             "retrieval": {
                 "algorithm": self.algorithm,
                 "query_variants": variants,
+                "embedding_provider": embedding_provider,
                 "lanes": {name: len(items) for name, items in lanes.items()},
                 "candidate_count": len(fused),
                 "selected_count": len(selected),

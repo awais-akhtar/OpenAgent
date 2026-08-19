@@ -54,6 +54,19 @@ class NeverDoneGateway(FakeGateway):
         return ModelResult("fake", "fake-code", json.dumps({"summary": "still working", "actions": [{"tool": "list_directory", "arguments": {}}], "done": False}), {})
 
 
+class WritesWithoutDoneGateway(FakeGateway):
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        if "project manager" in system or "independent code reviewer" in system or "final acceptance auditor" in system:
+            return super().complete(messages, **kwargs)
+        payload = {
+            "summary": "wrote the requested implementation",
+            "actions": [{"tool": "write_file", "arguments": {"path": "feature.py", "content": "VALUE = 42\n"}}],
+            "done": False,
+        }
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
 class InlineCodeRepairGateway(FakeGateway):
     def complete(self, messages, **kwargs):
         system = messages[0]["content"].lower()
@@ -229,6 +242,82 @@ class TitleDependencyPageUpdateGateway(FakeGateway):
                 "actions": [{"tool": "write_file", "arguments": {"path": "pages-updated.txt", "content": "Updated page content and data.\n"}}],
                 "done": True,
             }
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
+class MalformedVueMigrationGateway(FakeGateway):
+    """Reproduces a local-model reply that previously froze a dependent plan."""
+
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "project manager" in system:
+            payload = {
+                "tasks": [
+                    {"id": "T1", "title": "Review architecture and dependencies for changes.", "agent": "programmer", "depends_on": []},
+                    {"id": "T2", "title": "Update package.json to include new page files.", "agent": "programmer", "depends_on": ["T1"]},
+                    {"id": "T3", "title": "Integrate new page into existing Vue.js template.", "agent": "programmer", "depends_on": ["T2"]},
+                    {"id": "T4", "title": "Test new page functionality in both development and production environments.", "agent": "tester", "depends_on": ["T3"]},
+                ],
+            }
+        elif "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "final acceptance auditor" in system:
+            payload = {"status": "passed", "missing_tasks": [], "evidence": ["Vue files and local checks completed"]}
+        elif "review architecture" in user:
+            # This is the malformed response stored in the user's failed run:
+            # it describes an edit but names neither a file nor a CodeQ tool.
+            payload = {"search": "home.html", "replace": "new_page.html"}
+        elif "update package.json" in user:
+            payload = {
+                "summary": "created the Vue project files",
+                "actions": [
+                    {"tool": "write_file", "arguments": {"path": "package.json", "content": "{\n  \"name\": \"site-client\",\n  \"private\": true,\n  \"scripts\": {\"build\": \"vite build\"},\n  \"dependencies\": {\"vue\": \"^3.5.0\"}\n}\n"}},
+                    {"tool": "write_file", "arguments": {"path": "index.html", "content": "<div id=\"app\"></div><script type=\"module\" src=\"/src/main.js\"></script>\n"}},
+                    {"tool": "write_file", "arguments": {"path": "src/main.js", "content": "import { createApp } from 'vue';\nimport App from './App.vue';\ncreateApp(App).mount('#app');\n"}},
+                ],
+                "done": True,
+            }
+        elif "integrate new page" in user:
+            payload = {
+                "summary": "integrated the new Vue page",
+                "actions": [
+                    {"tool": "write_file", "arguments": {"path": "src/App.vue", "content": "<template><main><h1>Updated site</h1><p>Sample page content.</p></main></template>\n"}},
+                    {"tool": "write_file", "arguments": {"path": "src/pages.js", "content": "export const pages = [{ title: 'Home', body: 'Sample home content.' }, { title: 'New page', body: 'Sample page content.' }];\n"}},
+                ],
+                "done": True,
+            }
+        else:
+            payload = {
+                "summary": "validated source files",
+                "actions": [{"tool": "run_tests", "arguments": {"command": ["python", "-m", "compileall", "-q", "."]}}],
+                "done": True,
+            }
+        return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+
+class NewPageGateway(FakeGateway):
+    """Model plan with several page preparation steps.
+
+    The service should execute these steps against one generated artifact,
+    even when the model gives each step a different implementation title.
+    """
+
+    def complete(self, messages, **kwargs):
+        system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
+        if "project manager" in system:
+            payload = {"tasks": [
+                {"id": "T1", "title": "Configure the page builder", "agent": "programmer", "depends_on": []},
+                {"id": "T2", "title": "Prepare dummy content for the new page", "agent": "programmer", "depends_on": ["T1"]},
+                {"id": "T3", "title": "Inspect and validate the generated page", "agent": "tester", "depends_on": ["T2"]},
+            ]}
+        elif "independent code reviewer" in system:
+            payload = {"status": "passed", "findings": []}
+        elif "final acceptance auditor" in system:
+            payload = {"status": "passed", "missing_tasks": [], "evidence": ["generated page was inspected"]}
+        else:
+            payload = {"summary": "model attempted a non-writing page action", "actions": [{"tool": "project_map", "arguments": {}}], "done": False}
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
 
 
@@ -443,6 +532,39 @@ class SandboxAndPolicyTests(unittest.TestCase):
 
 
 class CodebaseServiceTests(unittest.TestCase):
+    def test_git_read_tools_do_not_walk_into_parent_repository(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=str(repo_root)) as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            manager = SandboxManager(base / "sandboxes")
+            manager.create("workspace", source=source)
+            tools = CodebaseTools(manager, "workspace")
+
+            result = tools.tool_git_diff()
+
+            self.assertFalse(result["repository"])
+            self.assertEqual("", result["stdout"])
+            self.assertNotIn("web/sw.js", result["stderr"])
+
+    def test_new_page_dummy_content_is_idempotent_across_plan_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "index.html").write_text("<h1>Home</h1>\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), NewPageGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Page builder", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Implement a new page with dummy content", max_iterations=12)
+            run = service.wait_for_run(run["id"], timeout=20)
+
+            self.assertEqual("completed", run["status"], run.get("error"))
+            generated = sorted(source.glob("new-page*.html"))
+            self.assertEqual(1, len(generated))
+            self.assertIn('data-codeq-generated="page"', generated[0].read_text(encoding="utf-8"))
+            self.assertEqual(3, len([task for task in run["tasks"] if task["status"] == "completed"]))
+
     def test_dependency_only_model_plan_falls_back_without_iteration_loop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -478,6 +600,60 @@ class CodebaseServiceTests(unittest.TestCase):
             repairs = next(event["payload"]["dependency_repairs"] for event in service.events(run["id"]) if event["type"] == "plan.created")
             self.assertTrue(any(item["action"] == "resolved" for item in repairs))
             self.assertTrue(any(item["action"] == "removed_unknown" and item["dependency"].endswith(":T0") for item in repairs))
+
+    def test_malformed_review_action_does_not_deadlock_a_vue_migration_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "selected-django-project"
+            source.mkdir()
+            (source / "manage.py").write_text("print('Django entrypoint')\n", encoding="utf-8")
+            templates = source / "templates"
+            templates.mkdir()
+            (templates / "home.html").write_text("<h1>Home</h1>\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), MalformedVueMigrationGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Vue migration", source_path=str(source))
+            run = service.create_run(
+                codebase_project_id=project["id"],
+                prompt="read whole code and add one more page and also in all pages add dummy content also frontend convert in vue js",
+                max_iterations=12,
+            )
+            run = service.wait_for_run(run["id"], timeout=20)
+
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertTrue((source / "package.json").is_file())
+            self.assertTrue((source / "src" / "App.vue").is_file())
+            self.assertTrue(all(task["status"] == "completed" for task in run["tasks"]))
+            self.assertFalse(any(task["status"] == "blocked" for task in run["tasks"]))
+            events = service.events(run["id"])
+            self.assertTrue(any(
+                item["type"] == "model.action_replaced"
+                and item["payload"].get("reason") == "analysis task received no executable action"
+                for item in events
+            ))
+
+    def test_resume_recovers_legacy_malformed_action_block(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "main.py").write_text("print('ready')\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Legacy malformed action", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Update the existing application", max_iterations=1)
+            run = service.wait_for_run(run["id"], timeout=10)
+            self.assertEqual("failed", run["status"])
+            task_id = run["tasks"][0]["id"]
+            with service.store.session() as connection:
+                connection.execute(
+                    "UPDATE codebase_tasks SET status = 'blocked', result_json = ? WHERE id = ?",
+                    (json.dumps({"reason": "model returned no executable actions"}), task_id),
+                )
+                connection.execute("UPDATE codebase_runs SET max_iterations = ? WHERE id = ?", (8, run["id"]))
+            resumed = service.resume_run(run["id"])
+            resumed = service.wait_for_run(resumed["id"], timeout=15)
+
+            self.assertEqual("completed", resumed["status"], resumed.get("error"))
+            self.assertTrue(any(item["type"] == "tasks.recovered" for item in service.events(run["id"])))
 
     def test_resume_repairs_legacy_invalid_dependencies_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -683,6 +859,21 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertEqual("failed", run["status"])
             self.assertIn("Iteration limit", run["error"])
             self.assertNotEqual("completed", run["tasks"][0]["status"])
+
+    def test_successful_file_evidence_advances_task_when_model_omits_done_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "main.py").write_text("print('ready')\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), WritesWithoutDoneGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Evidence completion", source_path=str(source))
+            run = service.create_run(codebase_project_id=project["id"], prompt="Add a feature", max_iterations=4)
+            run = service.wait_for_run(run["id"], timeout=20)
+
+            self.assertEqual("completed", run["status"], run.get("error"))
+            self.assertEqual("VALUE = 42\n", (source / "feature.py").read_text(encoding="utf-8"))
+            self.assertIn("task.completion.inferred", {item["type"] for item in service.events(run["id"])})
 
     def test_interactive_tool_session_is_created_before_agent_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

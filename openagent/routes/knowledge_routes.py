@@ -7,6 +7,7 @@ from ._contracts import not_handled, route_contract
 ROUTE_GROUP = "knowledge"
 ROUTES = (
     ("GET", "/api/knowledge/status"),
+    ("GET", "/api/knowledge/documents"),
     ("GET", "/api/knowledge/search"),
     ("GET", "/api/knowledge/graph"),
     ("GET", "/api/knowledge/tags"),

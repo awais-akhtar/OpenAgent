@@ -363,31 +363,70 @@ await browser.close(); process.stdout.write(JSON.stringify(result));})().catch(e
         return self.tool_run_shell(command, timeout_seconds=900)
 
     def tool_git_status(self) -> dict[str, Any]:
+        if not self._has_local_git_repository():
+            return self._git_unavailable("status")
         return self.tool_run_shell(["git", "status", "--short"])
 
     def tool_git_diff(self, staged: bool = False) -> dict[str, Any]:
+        if not self._has_local_git_repository():
+            return self._git_unavailable("diff")
         command = ["git", "diff", "--cached"] if staged else ["git", "diff"]
         return self.tool_run_shell(command)
 
     def tool_git_log(self, limit: int = 20) -> dict[str, Any]:
+        if not self._has_local_git_repository():
+            return self._git_unavailable("log")
         return self.tool_run_shell(["git", "log", f"-{max(1, min(int(limit), 100))}", "--oneline", "--decorate"])
 
     def tool_git_commit(self, message: str) -> dict[str, Any]:
+        self._require_local_git_repository()
         self.tool_run_shell(["git", "add", "-A"])
         return self.tool_run_shell(["git", "commit", "-m", message])
 
     def tool_git_checkout(self, branch: str) -> dict[str, Any]:
+        self._require_local_git_repository()
         return self.tool_run_shell(["git", "checkout", self.sandbox.safe_branch(branch)])
 
     def tool_git_revert(self, revision: str) -> dict[str, Any]:
+        self._require_local_git_repository()
         if not re.fullmatch(r"[A-Fa-f0-9]{7,40}", revision):
             raise ValueError("revision must be a Git commit hash")
         return self.tool_run_shell(["git", "revert", "--no-edit", revision])
 
     def tool_git_reset(self, revision: str = "HEAD") -> dict[str, Any]:
+        self._require_local_git_repository()
         if revision != "HEAD" and not re.fullmatch(r"[A-Fa-f0-9]{7,40}", revision):
             raise ValueError("revision must be HEAD or a Git commit hash")
         return self.tool_run_shell(["git", "reset", "--hard", revision])
+
+    def _has_local_git_repository(self) -> bool:
+        marker = self.root / ".git"
+        return marker.is_dir() or marker.is_file()
+
+    def _require_local_git_repository(self) -> None:
+        """Keep Git operations inside the selected repository boundary.
+
+        Git otherwise searches parent directories. That is surprising for a
+        folder opened from the IDE when the folder happens to live below the
+        OpenAgent checkout, and can expose or mutate the wrong repository.
+        """
+
+        if not self._has_local_git_repository():
+            raise ValueError("selected workspace is not a Git repository")
+
+    @staticmethod
+    def _git_unavailable(operation: str) -> dict[str, Any]:
+        return {
+            "repository": False,
+            "operation": operation,
+            "command": ["git", operation],
+            "cwd": "",
+            "stdout": "",
+            "stderr": "selected workspace is not a Git repository",
+            "exit_code": 0,
+            "duration_ms": 0,
+            "timed_out": False,
+        }
 
     def _run_named(self, name: str, command: list[str] | str | None) -> dict[str, Any]:
         if command is None:

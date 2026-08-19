@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
 
 from .context import STOPWORDS, TOKEN_RE
-from .model_gateway import local_hash_embedding
 from .models import AuditEvent, ContextEvent, utc_now
 from .storage import OpenAgentStore
 from .vector_store import VectorStore
@@ -152,12 +152,14 @@ class KnowledgeEngine:
         source: str = "manual",
         source_path: str = "",
         metadata: dict[str, Any] | None = None,
+        embedding_provider: str = "",
     ) -> dict[str, Any]:
         title = title.strip() or "Untitled document"
         content = content.strip()
         if not content:
             raise ValueError("Document content is required.")
         project = project.strip() or "default"
+        embedding_provider = (embedding_provider or os.getenv("OPENAGENT_EMBEDDING_PROVIDER", "local-hash")).strip() or "local-hash"
         document_id = stable_id("document", project, title, content)
         created_at = utc_now()
         chunks = semantic_chunks(content)
@@ -227,7 +229,11 @@ class KnowledgeEngine:
                         "INSERT INTO document_chunks_fts (chunk_id, project, title, content) VALUES (?, ?, ?, ?)",
                         (chunk_id, project, title, chunk),
                     )
-                vector = local_hash_embedding(chunk, dimensions=64)
+                embedding = self.vector_store.embeddings.embed(
+                    chunk,
+                    provider=embedding_provider,
+                    dimensions=128,
+                )
                 connection.execute(
                     """
                     INSERT OR REPLACE INTO chunk_embeddings (
@@ -237,10 +243,10 @@ class KnowledgeEngine:
                     (
                         chunk_id,
                         project,
-                        "local",
-                        "openagent-local-hash-embedding",
-                        64,
-                        json.dumps(vector),
+                        embedding.provider,
+                        embedding.model,
+                        embedding.dimensions,
+                        json.dumps(embedding.vector),
                         created_at,
                     ),
                 )
@@ -250,6 +256,8 @@ class KnowledgeEngine:
                         "source_id": document_id,
                         "chunk_id": chunk_id,
                         "content": chunk,
+                        "embedding": embedding,
+                        "embedding_provider": embedding.provider,
                         "metadata": {
                             "document_id": document_id,
                             "title": title,
@@ -357,6 +365,51 @@ class KnowledgeEngine:
         )
         return {"deleted": True, "document_id": document_id, "chunks": len(chunk_ids), "vector_chunks": vector_result["deleted"]}
 
+    def list_documents(self, *, project: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+        """Return the durable source library without exposing local file paths."""
+
+        project = project.strip() or "default"
+        with self.store.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    documents.id,
+                    documents.project,
+                    documents.title,
+                    documents.source,
+                    documents.metadata_json,
+                    documents.created_at,
+                    COUNT(document_chunks.id) AS chunk_count,
+                    GROUP_CONCAT(DISTINCT document_tags.tag) AS tags
+                FROM documents
+                LEFT JOIN document_chunks
+                    ON document_chunks.document_id = documents.id
+                    AND document_chunks.project = documents.project
+                LEFT JOIN document_tags
+                    ON document_tags.target_id = documents.id
+                    AND document_tags.project = documents.project
+                    AND document_tags.target_type = 'document'
+                WHERE documents.project = ?
+                GROUP BY documents.id
+                ORDER BY documents.created_at DESC
+                LIMIT ?
+                """,
+                (project, max(1, min(limit, 500))),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"]),
+                "project": str(row["project"]),
+                "title": str(row["title"]),
+                "source": str(row["source"]),
+                "chunk_count": int(row["chunk_count"] or 0),
+                "tags": [tag for tag in str(row["tags"] or "").split(",") if tag],
+                "metadata": json.loads(row["metadata_json"] or "{}"),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     def search(self, query: str, *, project: str = "default", limit: int = 10) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
@@ -385,14 +438,17 @@ class KnowledgeEngine:
         *,
         project: str = "default",
         limit: int = 10,
+        embedding_provider: str = "",
     ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 50))
-        self.sync_vector_index(project=project)
+        embedding_provider = (embedding_provider or os.getenv("OPENAGENT_EMBEDDING_PROVIDER", "local-hash")).strip() or "local-hash"
+        self.sync_vector_index(project=project, embedding_provider=embedding_provider)
         accelerated = self.vector_store.search(
             query,
             collection="knowledge",
             project=project,
             limit=limit,
+            embedding_provider=embedding_provider,
         )
         if accelerated["results"]:
             return [
@@ -415,7 +471,11 @@ class KnowledgeEngine:
                 for item in accelerated["results"]
             ]
 
-        query_vector = local_hash_embedding(query, dimensions=64)
+        query_vector = self.vector_store.embeddings.embed(
+            query,
+            provider=embedding_provider,
+            dimensions=128,
+        ).vector
         with self.store.session() as connection:
             rows = connection.execute(
                 """
@@ -433,10 +493,17 @@ class KnowledgeEngine:
         scored.sort(key=lambda item: item[0], reverse=True)
         return [{**item, "score": round(score, 6)} for score, item in scored[:limit]]
 
-    def sync_vector_index(self, *, project: str = "default", force: bool = False) -> dict[str, Any]:
+    def sync_vector_index(
+        self,
+        *,
+        project: str = "default",
+        force: bool = False,
+        embedding_provider: str = "",
+    ) -> dict[str, Any]:
         """Reconcile durable knowledge chunks into the accelerated vector collection."""
 
         project = project.strip() or "default"
+        embedding_provider = (embedding_provider or os.getenv("OPENAGENT_EMBEDDING_PROVIDER", "local-hash")).strip() or "local-hash"
         collection = self.vector_store.ensure_collection("knowledge", project=project, dimensions=128)
         with self.store.session() as connection:
             source_count = int(
@@ -451,9 +518,13 @@ class KnowledgeEngine:
                     (project, collection["id"]),
                 ).fetchone()[0]
             )
-            if not force and project in self._vector_sync_projects and indexed_count == source_count:
-                return {"project": project, "source_count": source_count, "indexed_count": indexed_count, "synced": 0}
-            if not force and indexed_count == source_count:
+            indexed_with_provider = int(
+                connection.execute(
+                    "SELECT count(*) FROM vector_store_chunks WHERE project = ? AND collection_id = ? AND embedding_provider = ?",
+                    (project, collection["id"], embedding_provider),
+                ).fetchone()[0]
+            )
+            if not force and indexed_with_provider == source_count and indexed_count == source_count:
                 self._vector_sync_projects.add(project)
                 return {"project": project, "source_count": source_count, "indexed_count": indexed_count, "synced": 0}
             rows = connection.execute(
@@ -470,6 +541,7 @@ class KnowledgeEngine:
                 chunk_id=str(row["id"]),
                 content=str(row["content"]),
                 dimensions=128,
+                embedding_provider=embedding_provider,
                 metadata={
                     **metadata,
                     "document_id": str(row["document_id"]),
@@ -481,9 +553,21 @@ class KnowledgeEngine:
         self._vector_sync_projects.add(project)
         return {"project": project, "source_count": source_count, "indexed_count": source_count, "synced": synced}
 
-    def hybrid_search(self, query: str, *, project: str = "default", limit: int = 10) -> list[dict[str, Any]]:
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        project: str = "default",
+        limit: int = 10,
+        embedding_provider: str = "",
+    ) -> list[dict[str, Any]]:
         lexical = self.search(query, project=project, limit=limit)
-        semantic = self.semantic_search(query, project=project, limit=limit)
+        semantic = self.semantic_search(
+            query,
+            project=project,
+            limit=limit,
+            embedding_provider=embedding_provider,
+        )
         merged: dict[str, dict[str, Any]] = {}
         for rank, item in enumerate(lexical, start=1):
             score = 1.0 / rank
@@ -567,8 +651,20 @@ class KnowledgeEngine:
         )
         return sorted(items, key=lambda item: str(item["timestamp"]), reverse=True)[:limit]
 
-    def synthesize(self, query: str, *, project: str = "default", limit: int = 8) -> dict[str, Any]:
-        results = self.hybrid_search(query, project=project, limit=limit)
+    def synthesize(
+        self,
+        query: str,
+        *,
+        project: str = "default",
+        limit: int = 8,
+        embedding_provider: str = "",
+    ) -> dict[str, Any]:
+        results = self.hybrid_search(
+            query,
+            project=project,
+            limit=limit,
+            embedding_provider=embedding_provider,
+        )
         graph = self.graph(project=project, limit=50)
         tags = self.tags(project=project, limit=25)
         source_titles = []
@@ -613,7 +709,7 @@ class KnowledgeEngine:
                 action="knowledge.synthesize",
                 resource=f"query:{query[:80]}",
                 project=project,
-                metadata={"source_count": len(results)},
+                metadata={"source_count": len(results), "embedding_provider": embedding_provider or "configured-default"},
             )
         )
         return synthesis
@@ -627,18 +723,72 @@ class KnowledgeEngine:
         return [chunk_row(row) for row in rows]
 
     def graph(self, *, project: str = "default", limit: int = 100) -> dict[str, Any]:
+        bounded_limit = max(1, min(int(limit), 500))
         with self.store.session() as connection:
             entity_rows = connection.execute(
                 "SELECT * FROM knowledge_entities WHERE project = ? ORDER BY created_at DESC LIMIT ?",
-                (project, limit),
+                (project, bounded_limit),
             ).fetchall()
             relationship_rows = connection.execute(
                 "SELECT * FROM knowledge_relationships WHERE project = ? ORDER BY created_at DESC LIMIT ?",
-                (project, limit),
+                (project, bounded_limit),
             ).fetchall()
+        entities = [entity_row(row) for row in entity_rows]
+        relationships = [relationship_row(row) for row in relationship_rows]
+        nodes_by_name: dict[str, dict[str, Any]] = {}
+
+        def ensure_node(name: str, entity_type: str = "entity", source_id: str = "") -> dict[str, Any]:
+            key = name.casefold().strip()
+            node = nodes_by_name.get(key)
+            if node is None:
+                node = {
+                    "id": stable_id("graph-node", project, key),
+                    "name": name.strip(),
+                    "entity_type": entity_type or "entity",
+                    "degree": 0,
+                    "source_ids": [],
+                }
+                nodes_by_name[key] = node
+            if source_id and source_id not in node["source_ids"]:
+                node["source_ids"].append(source_id)
+            return node
+
+        for entity in entities:
+            ensure_node(entity["name"], entity["entity_type"], entity["source_id"])
+
+        edges: list[dict[str, Any]] = []
+        seen_edges: set[tuple[str, str, str]] = set()
+        for relationship in relationships:
+            source = ensure_node(relationship["subject"], source_id=relationship["source_id"])
+            target = ensure_node(relationship["object"], source_id=relationship["source_id"])
+            edge_key = (source["id"], relationship["predicate"], target["id"])
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            source["degree"] += 1
+            target["degree"] += 1
+            edges.append({
+                "id": stable_id("graph-edge", project, *edge_key),
+                "source": source["id"],
+                "target": target["id"],
+                "label": relationship["predicate"],
+                "weight": float(relationship["weight"]),
+                "source_id": relationship["source_id"],
+            })
+
+        nodes = sorted(nodes_by_name.values(), key=lambda item: (-int(item["degree"]), item["name"].casefold()))
         return {
-            "entities": [entity_row(row) for row in entity_rows],
-            "relationships": [relationship_row(row) for row in relationship_rows],
+            "project": project,
+            "nodes": nodes,
+            "edges": edges,
+            "stats": {
+                "nodes": len(nodes),
+                "edges": len(edges),
+                "connected_nodes": sum(1 for node in nodes if node["degree"] > 0),
+                "isolated_nodes": sum(1 for node in nodes if node["degree"] == 0),
+            },
+            "entities": entities,
+            "relationships": relationships,
         }
 
     def compress_memory(self, *, project: str = "default", limit: int = 100) -> dict[str, Any]:

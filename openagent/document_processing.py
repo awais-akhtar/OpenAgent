@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from .documents import DocumentManager
+from .knowledge import KnowledgeEngine
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
 
@@ -23,9 +24,10 @@ from .storage import OpenAgentStore
 class DocumentProcessing:
     """Converts local files into versioned OpenAgent documents."""
 
-    def __init__(self, store: OpenAgentStore) -> None:
+    def __init__(self, store: OpenAgentStore, *, knowledge: KnowledgeEngine | None = None) -> None:
         self.store = store
         self.documents = DocumentManager(store)
+        self.knowledge = knowledge or KnowledgeEngine(store)
         self.artifact_dir = self.store.data_dir / "document_processing"
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.initialize()
@@ -91,7 +93,15 @@ class DocumentProcessing:
                 metadata={"filename": filename, "artifact": str(artifact), "chars": len(text)},
             )
         )
-        return {"document": doc, "chars_extracted": len(text), "artifact_path": str(artifact)}
+        indexed = self.knowledge.ingest_text(
+            title=filename,
+            content=text,
+            project=project,
+            source="document-import",
+            source_path=filename,
+            metadata={"editor_document_id": doc["doc_id"], "format": "pdf"},
+        )
+        return {"document": doc, "chars_extracted": len(text), "artifact_path": str(artifact), "knowledge_document": indexed}
 
     def import_office_or_text(
         self,
@@ -125,7 +135,15 @@ class DocumentProcessing:
                 metadata={"filename": filename, "artifact": str(artifact), "chars": len(text)},
             )
         )
-        return {"document": doc, "chars_extracted": len(text), "artifact_path": str(artifact)}
+        indexed = self.knowledge.ingest_text(
+            title=filename,
+            content=text,
+            project=project,
+            source="document-import",
+            source_path=filename,
+            metadata={"editor_document_id": doc["doc_id"], "format": Path(filename).suffix.lower().lstrip(".") or "text"},
+        )
+        return {"document": doc, "chars_extracted": len(text), "artifact_path": str(artifact), "knowledge_document": indexed}
 
     def extract_document_text(self, doc_id: str, *, owner: str = "") -> dict[str, Any]:
         doc = self.documents.get_document(doc_id, owner=owner)
@@ -405,6 +423,16 @@ def extract_pdf_text(content: bytes) -> str:
 
 def extract_office_text(filename: str, content: bytes) -> str:
     lowered = filename.lower()
+    if lowered.endswith(".docx"):
+        try:
+            from docx import Document as WordDocument
+
+            document = WordDocument(BytesIO(content))
+            paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+            if paragraphs:
+                return "\n\n".join(paragraphs)
+        except (ImportError, ValueError, zipfile.BadZipFile):
+            pass
     if lowered.endswith((".docx", ".pptx", ".xlsx")):
         try:
             with zipfile.ZipFile(BytesIO(content)) as archive:

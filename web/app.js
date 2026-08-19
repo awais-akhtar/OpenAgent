@@ -26,6 +26,7 @@ const PALETTE_COMMANDS = [
   { label: "Chat",                   icon: "💬", group: "Navigate", action: () => setView("chat") },
   { label: "CodeQ",                  icon: "⌘", group: "Navigate", action: () => setView("codebase") },
   { label: "Agents",                 icon: "🤖", group: "Navigate", action: () => setView("agents") },
+  { label: "Knowledge",              icon: "✦", group: "Navigate", action: () => setView("knowledge") },
   { label: "Documents",              icon: "🗂", group: "Navigate", action: () => setView("workspace") },
   { label: "Automation",             icon: "⚡", group: "Navigate", action: () => setView("automation") },
   { label: "Assistant",              icon: "📋", group: "Navigate", action: () => setView("assistant") },
@@ -144,6 +145,17 @@ const state = {
   researchAbortController: null,
   researchSessionId: null,
   lastResearchResult: null,
+  knowledge: {
+    status: {},
+    rag: {},
+    documents: [],
+    tags: [],
+    timeline: [],
+    filter: "",
+    mode: "search",
+    hasResult: false,
+    selectedDocumentId: "",
+  },
   ultraModel: { status: {}, manifests: [], sessions: [], plan: null, manifestId: "", sessionId: "" },
   adaptiveEngine: { status: {}, plans: [], benchmarks: [], calibrations: [], direct: {}, busy: false },
   engineRoles: [],
@@ -169,7 +181,7 @@ const state = {
     liveEditQueue: Promise.resolve(),
   },
   selectedEngineRole: "chat",
-  theme: "dark",
+  theme: "system",
   authToken: (() => { try { return sessionStorage.getItem("oa-auth-token") || ""; } catch (e) { return ""; } })(),
   authUser: null,
   selectedSkillId: "",
@@ -210,6 +222,9 @@ async function refreshProjectContext() {
   const selected = getProject();
   state.conversationId = null;
   state.voiceSessionId = null;
+  state.knowledge.hasResult = false;
+  state.knowledge.selectedDocumentId = "";
+  state.knowledge.filter = "";
   const loader = VIEW_LOADERS[state.activeView];
   if (loader) await loader();
   toast("Project loaded", selected);
@@ -333,21 +348,52 @@ function renderMarkdown(text) {
 // Theme management
 // =============================================
 
-function applyTheme(theme) {
-  state.theme = theme;
-  document.documentElement.setAttribute("data-theme", theme);
-  try { localStorage.setItem("oa-theme", theme); } catch(e) {}
+const THEME_PREFERENCES = new Set(["dark", "light", "system"]);
+let systemThemeListenerBound = false;
+
+function normalizeThemePreference(theme) {
+  return THEME_PREFERENCES.has(theme) ? theme : "system";
+}
+
+function resolveTheme(theme) {
+  const preference = normalizeThemePreference(theme);
+  if (preference !== "system") return preference;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme, { persist = true } = {}) {
+  const preference = normalizeThemePreference(theme);
+  const resolvedTheme = resolveTheme(preference);
+  state.theme = preference;
+  document.documentElement.setAttribute("data-theme", resolvedTheme);
+  document.documentElement.setAttribute("data-theme-preference", preference);
+  if (persist) {
+    try { localStorage.setItem("oa-theme", preference); } catch(e) {}
+  }
   qsa("[data-theme-select]").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.themeSelect === theme);
+    const selected = btn.dataset.themeSelect === preference;
+    btn.classList.toggle("active", selected);
+    btn.setAttribute("aria-pressed", String(selected));
   });
   const sel = qs("#settingsTheme");
-  if (sel) sel.value = theme;
+  if (sel) sel.value = preference;
+  const meta = qs('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", resolvedTheme === "dark" ? "#0b0f16" : "#f5f7fb");
 }
 
 function initTheme() {
-  let saved = "dark";
-  try { saved = localStorage.getItem("oa-theme") || "dark"; } catch(e) {}
+  let saved = "system";
+  try { saved = localStorage.getItem("oa-theme") || "system"; } catch(e) {}
   applyTheme(saved);
+  if (!systemThemeListenerBound && window.matchMedia) {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const refresh = () => {
+      if (state.theme === "system") applyTheme("system", { persist: false });
+    };
+    if (typeof media.addEventListener === "function") media.addEventListener("change", refresh);
+    else if (typeof media.addListener === "function") media.addListener(refresh);
+    systemThemeListenerBound = true;
+  }
 }
 
 // =============================================
@@ -360,7 +406,7 @@ const VIEW_LOADERS = {
   codebase:       () => loadCodebaseProjects().catch(error => toast("CodeQ unavailable", error.message)),
   voice:          () => loadVoiceStatus().catch(() => {}),
   agents:         () => loadAgents().catch(() => {}),
-  knowledge:      () => Promise.resolve(),
+  knowledge:      () => loadKnowledgeWorkspace().catch(error => toast("Knowledge unavailable", error.message)),
   workspace:      () => loadWorkspaceItems().catch(() => {}),
   automation:     () => Promise.allSettled([loadWorkflows(), loadRuntimeTools()]),
   assistant:      () => Promise.allSettled([getDailyBrief()]),
@@ -3639,7 +3685,8 @@ async function loadKnowledgeStatus() {
     api(`/api/knowledge/status?project=${encodeURIComponent(getProject())}`),
     api(`/api/rag/status?project=${encodeURIComponent(getProject())}`),
   ]);
-  const el = qs("#knowledgeOutput");
+  state.knowledge.status = payload;
+  state.knowledge.rag = rag;
   const backendStatus = qs("#ragBackendStatus");
   const accelerators = rag.vector_store?.active_accelerators || [];
   if (backendStatus) {
@@ -3649,19 +3696,221 @@ async function loadKnowledgeStatus() {
       rag.algorithm || "Advanced RAG ready",
     ].map(label => `<span>${escapeHtml(label)}</span>`).join("");
   }
-  if (!el) return;
-  el.innerHTML = `
-    <div class="knowledge-summary-card">
-      <strong>Knowledge engine ready</strong>
-      <p>${escapeHtml(payload.fts_available ? "Full-text search is available." : "Fallback lexical search is active.")} Vector adapter: ${escapeHtml(payload.vector_adapter || "local")}.</p>
+  const embeddingSelect = qs("#knowledgeEmbeddingProvider");
+  if (embeddingSelect) {
+    const providers = rag.vector_store?.embedding_providers || [];
+    const fastembed = providers.find(provider => provider.id === "fastembed");
+    const option = [...embeddingSelect.options].find(item => item.value === "fastembed");
+    if (option) {
+      option.disabled = !fastembed?.available;
+      option.textContent = fastembed?.available
+        ? `FastEmbed · ${fastembed.model || "local"}`
+        : "FastEmbed · setup needed";
+      if (option.disabled && embeddingSelect.value === "fastembed") embeddingSelect.value = "local-hash";
+    }
+  }
+  renderKnowledgeIndexStatus();
+  if (!state.knowledge.hasResult) renderKnowledgeLanding();
+  return { payload, rag };
+}
+
+function setKnowledgeOutput(html, { result = true } = {}) {
+  for (const el of [qs("#knowledgeOutput"), qs("#knowledgeWorkspaceOutput")]) {
+    if (!el) continue;
+    el.innerHTML = html;
+    el.dataset.knowledgeResult = result ? "true" : "false";
+  }
+  state.knowledge.hasResult = result;
+}
+
+function renderKnowledgeLanding() {
+  const payload = state.knowledge.status || {};
+  const rag = state.knowledge.rag || {};
+  setKnowledgeOutput(`
+    <div class="knowledge-empty-state">
+      <span>✦</span>
+      <strong>${payload.documents ? "Search your local sources" : "Build a local source library"}</strong>
+      <p>${payload.documents
+        ? `${payload.documents} source${payload.documents === 1 ? "" : "s"} and ${payload.chunks || 0} indexed chunks are ready for retrieval.`
+        : "Add a PDF, document, note, or dataset to begin."}</p>
     </div>
-    <div class="research-meta-grid">
-      <article><span>Documents</span><strong>${escapeHtml(payload.documents ?? 0)}</strong></article>
-      <article><span>Chunks</span><strong>${escapeHtml(payload.chunks ?? 0)}</strong></article>
-      <article><span>Entities</span><strong>${escapeHtml(payload.entities ?? 0)}</strong></article>
-      <article><span>RAG runs</span><strong>${escapeHtml(rag.query_runs ?? 0)}</strong></article>
+  `, { result: false });
+  const output = qs("#knowledgeOutput");
+  if (output) output.innerHTML = `
+    <div class="knowledge-summary-card">
+      <strong>Knowledge index</strong>
+      <p>${escapeHtml(payload.fts_available ? "Full-text retrieval is enabled." : "Fallback lexical retrieval is enabled.")} ${escapeHtml(rag.algorithm || "Local retrieval is ready.")}</p>
     </div>
   `;
+}
+
+function renderKnowledgeIndexStatus() {
+  const status = state.knowledge.status || {};
+  const rag = state.knowledge.rag || {};
+  const el = qs("#knowledgeWorkspaceStatus");
+  if (!el) return;
+  const accelerators = rag.vector_store?.active_accelerators || [];
+  const retrieval = [
+    status.fts_available ? "Full-text" : "Lexical",
+    accelerators.length ? accelerators.map(item => String(item).toUpperCase()).join(" + ") : "Local vectors",
+  ];
+  el.innerHTML = `
+    <div><strong>${escapeHtml(String(status.documents ?? 0))}</strong><span>sources</span></div>
+    <div><strong>${escapeHtml(String(status.chunks ?? 0))}</strong><span>chunks</span></div>
+    <div><strong>${escapeHtml(String(status.entities ?? 0))}</strong><span>entities</span></div>
+    <p>${escapeHtml(retrieval.join(" · "))}</p>
+  `;
+}
+
+async function loadKnowledgeWorkspace() {
+  const project = encodeURIComponent(getProject());
+  const [status, documents, tags, timeline] = await Promise.all([
+    loadKnowledgeStatus(),
+    api(`/api/knowledge/documents?project=${project}&limit=200`),
+    api(`/api/knowledge/tags?project=${project}&limit=48`),
+    api(`/api/knowledge/timeline?project=${project}&limit=8`),
+  ]);
+  state.knowledge.status = status.payload;
+  state.knowledge.rag = status.rag;
+  state.knowledge.documents = documents.documents || [];
+  state.knowledge.tags = tags.tags || [];
+  state.knowledge.timeline = timeline.timeline || [];
+  renderKnowledgeLibrary();
+  renderKnowledgeInspector();
+}
+
+function renderKnowledgeLibrary() {
+  const list = qs("#knowledgeDocumentList");
+  const summary = qs("#knowledgeLibrarySummary");
+  if (!list || !summary) return;
+  const filter = state.knowledge.filter.trim().toLowerCase();
+  const documents = state.knowledge.documents.filter(document => {
+    if (!filter) return true;
+    return [document.title, document.source, ...(document.tags || [])]
+      .join(" ").toLowerCase().includes(filter);
+  });
+  summary.textContent = `${documents.length} of ${state.knowledge.documents.length} sources`;
+  list.innerHTML = documents.length ? documents.map(document => `
+    <button class="knowledge-document${document.id === state.knowledge.selectedDocumentId ? " active" : ""}" type="button" data-knowledge-document="${escapeHtml(document.id)}">
+      <span class="knowledge-document-icon">${escapeHtml(knowledgeSourceIcon(document.source))}</span>
+      <span class="knowledge-document-copy"><strong>${escapeHtml(document.title || "Untitled source")}</strong><small>${escapeHtml(String(document.chunk_count || 0))} chunks · ${escapeHtml(formatCompactDate(document.created_at))}</small></span>
+    </button>
+  `).join("") : `<div class="knowledge-library-empty">${state.knowledge.documents.length ? "No sources match this filter." : "No local sources yet."}</div>`;
+}
+
+function knowledgeSourceIcon(source) {
+  const value = String(source || "").toLowerCase();
+  if (value.includes("pdf")) return "PDF";
+  if (value.includes("csv") || value.includes("dataset")) return "CSV";
+  if (value.includes("web")) return "WEB";
+  if (value.includes("note") || value.includes("manual")) return "NOTE";
+  return "DOC";
+}
+
+function formatCompactDate(value) {
+  if (!value) return "local";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "local";
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function renderKnowledgeInspector() {
+  const tagList = qs("#knowledgeWorkspaceTags");
+  const timeline = qs("#knowledgeTimelinePreview");
+  if (tagList) {
+    const tags = [...new Map(state.knowledge.tags.map(tag => [tag.tag, tag])).values()].slice(0, 14);
+    tagList.innerHTML = tags.length ? tags.map(tag => `<button type="button" data-knowledge-tag="${escapeHtml(tag.tag)}">${escapeHtml(tag.tag)}</button>`).join("") : `<span class="knowledge-muted">Tags appear after sources are indexed.</span>`;
+  }
+  if (timeline) {
+    const items = state.knowledge.timeline.slice(0, 5);
+    timeline.innerHTML = items.length ? items.map(item => `<button type="button" data-knowledge-timeline="${escapeHtml(item.source_id || "")}"><span>${escapeHtml(formatCompactDate(item.timestamp))}</span><strong>${escapeHtml(item.title || item.type || "Source activity")}</strong></button>`).join("") : `<span class="knowledge-muted">No source activity yet.</span>`;
+  }
+}
+
+function initKnowledgeWorkspace() {
+  const fileInput = qs("#knowledgeLibraryFileInput");
+  qs("#knowledgeAddFile")?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", async event => {
+    await uploadFiles([...event.target.files]);
+    event.target.value = "";
+  });
+  qs("#knowledgeLibraryFilter")?.addEventListener("input", event => {
+    state.knowledge.filter = event.target.value || "";
+    renderKnowledgeLibrary();
+  });
+  qsa("#knowledgeModeSearch, #knowledgeModeSynthesize, #knowledgeModeRag").forEach(button => {
+    button.addEventListener("click", () => {
+      state.knowledge.mode = button.dataset.knowledgeMode || "search";
+      qsa("#knowledgeModeSearch, #knowledgeModeSynthesize, #knowledgeModeRag").forEach(item => item.classList.toggle("active", item === button));
+    });
+  });
+  qs("#runKnowledgeWorkspace")?.addEventListener("click", runKnowledgeWorkspace);
+  qs("#knowledgeWorkspaceQuery")?.addEventListener("keydown", event => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      runKnowledgeWorkspace();
+    }
+  });
+  qs("#showKnowledgeGraphWorkspace")?.addEventListener("click", showKnowledgeGraph);
+  qs("#showKnowledgeTimeline")?.addEventListener("click", showKnowledgeTimeline);
+}
+
+async function runKnowledgeWorkspace() {
+  const query = qs("#knowledgeWorkspaceQuery")?.value.trim() || "";
+  if (!query) {
+    toast("Enter a knowledge question");
+    qs("#knowledgeWorkspaceQuery")?.focus();
+    return;
+  }
+  const button = qs("#runKnowledgeWorkspace");
+  if (button) button.disabled = true;
+  try {
+    if (state.knowledge.mode === "synthesize") await synthesizeKnowledge(query);
+    else if (state.knowledge.mode === "rag") {
+      await runAdvancedRag({
+        query,
+        button,
+        generate: Boolean(qs("#knowledgeGenerateAnswer")?.checked),
+      });
+    } else await searchKnowledge(query);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function showKnowledgeGraph() {
+  try {
+    const payload = await api(`/api/knowledge/graph?project=${encodeURIComponent(getProject())}`);
+    renderKnowledgeGraph(payload);
+  } catch (error) {
+    toast("Knowledge graph unavailable", error.message);
+  }
+}
+
+async function showKnowledgeTimeline() {
+  try {
+    const payload = await api(`/api/knowledge/timeline?project=${encodeURIComponent(getProject())}&limit=40`);
+    const items = payload.timeline || [];
+    state.knowledge.timeline = items;
+    renderKnowledgeInspector();
+    setKnowledgeOutput(`
+      <div class="knowledge-summary-card"><strong>Source timeline</strong><p>${escapeHtml(items.length)} local events in this project.</p></div>
+      <div class="knowledge-result-list">
+        ${items.length ? items.map(item => `<article class="list-item"><strong>${escapeHtml(item.title || item.type || "Source activity")}</strong><p>${escapeHtml(formatDateTime(item.timestamp) || "Local source activity")}</p></article>`).join("") : emptyState("No source activity yet.")}
+      </div>
+    `);
+  } catch (error) {
+    toast("Timeline unavailable", error.message);
+  }
+}
+
+function selectKnowledgeDocument(documentId) {
+  const document = state.knowledge.documents.find(item => item.id === documentId);
+  if (!document) return;
+  state.knowledge.selectedDocumentId = document.id;
+  renderKnowledgeLibrary();
+  const query = qs("#knowledgeWorkspaceQuery");
+  if (query && !query.value.trim()) query.value = `What does ${document.title} cover?`;
 }
 
 function initUpload() {
@@ -3686,6 +3935,7 @@ async function uploadFiles(files) {
   for (const file of files) await uploadFile(file);
   const input = qs("#fileInput");
   if (input) input.value = "";
+  await loadKnowledgeWorkspace().catch(() => {});
 }
 
 async function uploadFile(file) {
@@ -3694,6 +3944,7 @@ async function uploadFile(file) {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("project", getProject());
+  formData.append("embedding_provider", qs("#knowledgeEmbeddingProvider")?.value || "");
   try {
     const res = await fetch("/api/knowledge/upload", { method: "POST", body: formData });
     const data = await res.json();
@@ -3714,44 +3965,45 @@ async function ingestKnowledge() {
   try {
     const payload = await api("/api/knowledge/ingest", {
       method: "POST",
-      body: JSON.stringify({ title, content, project: getProject() }),
+      body: JSON.stringify({ title, content, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" }),
     });
     renderKnowledgeIngest(payload.document || payload, "Text ingested");
+    await loadKnowledgeWorkspace().catch(() => {});
     toast("Ingested", title);
   } catch(e) { toast("Ingest error", e.message); }
 }
 
-async function searchKnowledge() {
-  const q = qs("#knowledgeQuery")?.value.trim();
+async function searchKnowledge(query = "") {
+  const q = query.trim() || qs("#knowledgeQuery")?.value.trim() || "";
   if (!q) return;
   try {
     const payload = await api("/api/knowledge/hybrid-search", {
       method: "POST",
-      body: JSON.stringify({ query: q, project: getProject() }),
+      body: JSON.stringify({ query: q, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" }),
     });
     renderKnowledgeSearch(q, payload.results || []);
   } catch(e) { toast("Search error", e.message); }
 }
 
-async function synthesizeKnowledge() {
-  const q = qs("#knowledgeQuery")?.value.trim() || "summary";
+async function synthesizeKnowledge(query = "") {
+  const q = query.trim() || qs("#knowledgeQuery")?.value.trim() || "summary";
   try {
     const payload = await api("/api/knowledge/synthesize", {
       method: "POST",
-      body: JSON.stringify({ query: q, project: getProject() }),
+      body: JSON.stringify({ query: q, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" }),
     });
     renderKnowledgeSynthesis(payload);
   } catch(e) { toast("Synthesis error", e.message); }
 }
 
-async function runAdvancedRag() {
-  const query = qs("#knowledgeQuery")?.value.trim();
+async function runAdvancedRag(options = {}) {
+  const query = String(options.query || qs("#knowledgeQuery")?.value || "").trim();
   if (!query) { toast("Enter a knowledge question first"); return; }
-  const button = qs("#runAdvancedRag");
+  const button = options.button || qs("#runAdvancedRag");
   const original = button?.textContent || "Deep RAG";
   if (button) { button.disabled = true; button.textContent = "Retrieving…"; }
   try {
-    const generate = Boolean(qs("#ragGenerate")?.checked);
+    const generate = options.generate ?? Boolean(qs("#ragGenerate")?.checked);
     const provider = qs("#providerSelect")?.value || "auto";
     const model = provider === "auto" ? "" : normalizeKnownModelName(state.modelSettings.chatModel || "");
     const payload = await api("/api/rag/query", {
@@ -3766,6 +4018,7 @@ async function runAdvancedRag() {
         model,
         allow_external: false,
         use_cache: true,
+        embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "",
       }),
     });
     renderAdvancedRag(payload);
@@ -3777,14 +4030,12 @@ async function runAdvancedRag() {
 }
 
 function renderAdvancedRag(payload) {
-  const el = qs("#knowledgeOutput");
-  if (!el) return;
   const sources = payload.sources || [];
   const confidence = payload.confidence || {};
   const retrieval = payload.retrieval || {};
   const conflicts = payload.conflicts || [];
   const cache = payload.cache || {};
-  el.innerHTML = `
+  setKnowledgeOutput(`
     <div class="knowledge-summary-card rag-answer-card">
       <div class="list-item-row">
         <strong>Grounded answer</strong>
@@ -3815,14 +4066,12 @@ function renderAdvancedRag(payload) {
         </article>
       `).join("") : emptyState("No evidence met the grounding threshold.")}
     </div>
-  `;
+  `);
 }
 
 function renderKnowledgeIngest(document, title = "Knowledge saved") {
-  const el = qs("#knowledgeOutput");
-  if (!el) return;
   const tags = document.tags || [];
-  el.innerHTML = `
+  setKnowledgeOutput(`
     <div class="knowledge-summary-card">
       <strong>${escapeHtml(title)}</strong>
       <p>${escapeHtml(document.title || "Document")} · ${escapeHtml(document.chunk_count ?? 0)} chunks · source ${escapeHtml(document.source || "local")}</p>
@@ -3830,13 +4079,11 @@ function renderKnowledgeIngest(document, title = "Knowledge saved") {
     <div class="mini-chip-row">
       ${tags.length ? tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join("") : `<span>No automatic tags yet</span>`}
     </div>
-  `;
+  `);
 }
 
 function renderKnowledgeSearch(query, results) {
-  const el = qs("#knowledgeOutput");
-  if (!el) return;
-  el.innerHTML = `
+  setKnowledgeOutput(`
     <div class="knowledge-summary-card">
       <strong>${escapeHtml(results.length)} results</strong>
       <p>${escapeHtml(query)} · ranked with local hybrid retrieval.</p>
@@ -3854,17 +4101,15 @@ function renderKnowledgeSearch(query, results) {
         </article>
       `).join("") : emptyState("No matching knowledge found yet.")}
     </div>
-  `;
+  `);
 }
 
 function renderKnowledgeSynthesis(payload) {
-  const el = qs("#knowledgeOutput");
-  if (!el) return;
   const sources = payload.sources || payload.results || [];
   const entities = payload.related_entities || [];
   const relationships = payload.related_relationships || [];
   const synthesis = payload.synthesis || payload.summary || payload.answer || "No synthesis text returned.";
-  el.innerHTML = `
+  setKnowledgeOutput(`
     <div class="knowledge-summary-card">
       <strong>Source-backed synthesis</strong>
       <p>${renderMarkdown(synthesis)}</p>
@@ -3886,28 +4131,64 @@ function renderKnowledgeSynthesis(payload) {
         </article>
       `).join("") : emptyState("No direct source chunks were returned.")}
     </div>
-  `;
+  `);
 }
 
 function renderKnowledgeGraph(payload) {
-  const el = qs("#knowledgeOutput");
-  if (!el) return;
-  const entities = payload.entities || [];
-  const relationships = payload.relationships || [];
-  el.innerHTML = `
+  const nodes = (payload.nodes || []).slice(0, 32);
+  const edges = payload.edges || [];
+  const stats = payload.stats || { nodes: nodes.length, edges: edges.length, connected_nodes: 0 };
+  if (!nodes.length) {
+    setKnowledgeOutput(`
+      <div class="knowledge-summary-card"><strong>Knowledge graph</strong><p>No connected concepts yet.</p></div>
+      ${emptyState("Add a document with named concepts, then open the graph again.")}
+    `);
+    return;
+  }
+
+  const width = 760;
+  const height = 390;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const positions = new Map(nodes.map((node, index) => {
+    if (nodes.length === 1) return [node.id, { x: centerX, y: centerY }];
+    const ring = index < 12 ? 0 : 1;
+    const ringIndex = ring ? index - 12 : index;
+    const ringSize = ring ? Math.max(1, nodes.length - 12) : Math.min(12, nodes.length);
+    const angle = (Math.PI * 2 * ringIndex / ringSize) - Math.PI / 2;
+    const radiusX = ring ? 325 : 205;
+    const radiusY = ring ? 158 : 112;
+    return [node.id, { x: centerX + Math.cos(angle) * radiusX, y: centerY + Math.sin(angle) * radiusY }];
+  }));
+  const visibleEdges = edges.filter(edge => positions.has(edge.source) && positions.has(edge.target));
+  const edgeMarkup = visibleEdges.map(edge => {
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    return `<line class="knowledge-graph-edge" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml(edge.label || "related to")}</title></line>`;
+  }).join("");
+  const nodeMarkup = nodes.map(node => {
+    const point = positions.get(node.id);
+    const radius = Math.min(16, 7 + Number(node.degree || 0) * 1.5);
+    const label = String(node.name || "Entity");
+    const shortLabel = label.length > 18 ? `${label.slice(0, 16)}…` : label;
+    return `<g class="knowledge-graph-node" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})">
+      <circle r="${radius.toFixed(1)}"></circle>
+      <text y="${(radius + 14).toFixed(1)}" text-anchor="middle">${escapeHtml(shortLabel)}</text>
+      <title>${escapeHtml(label)} · ${escapeHtml(node.entity_type || "entity")} · ${escapeHtml(node.degree || 0)} connection(s)</title>
+    </g>`;
+  }).join("");
+  setKnowledgeOutput(`
     <div class="knowledge-summary-card">
       <strong>Knowledge graph</strong>
-      <p>${escapeHtml(entities.length)} entities · ${escapeHtml(relationships.length)} relationships.</p>
+      <p>${escapeHtml(stats.nodes || nodes.length)} concepts · ${escapeHtml(stats.edges || edges.length)} links · ${escapeHtml(stats.connected_nodes || 0)} connected.</p>
     </div>
-    <div class="knowledge-result-list">
-      ${entities.slice(0, 12).map(entity => `
-        <article class="list-item">
-          <strong>${escapeHtml(entity.name || "Entity")}</strong>
-          <p>${escapeHtml(entity.entity_type || "entity")} · ${escapeHtml(formatDateTime(entity.created_at) || "")}</p>
-        </article>
-      `).join("") || emptyState("No graph entities yet.")}
+    <div class="knowledge-graph-shell" role="img" aria-label="Knowledge graph with ${escapeHtml(nodes.length)} visible concepts and ${escapeHtml(visibleEdges.length)} visible links">
+      <svg class="knowledge-graph-canvas" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+        <g>${edgeMarkup}</g>
+        <g>${nodeMarkup}</g>
+      </svg>
     </div>
-  `;
+  `);
 }
 
 // =============================================
@@ -6268,7 +6549,7 @@ function initSettings() {
 }
 
 async function saveSettings() {
-  const theme = qs("#settingsTheme")?.value || "dark";
+  const theme = qs("#settingsTheme")?.value || "system";
   applyTheme(theme);
   readModelSettingsFromFields();
   readPrivacySettingsFromFields();
@@ -7552,6 +7833,25 @@ function initNavigation() {
       setScienceSection(scienceCapability.dataset.scienceCapability);
       return;
     }
+    const knowledgeDocument = e.target.closest("[data-knowledge-document]");
+    if (knowledgeDocument) {
+      selectKnowledgeDocument(knowledgeDocument.dataset.knowledgeDocument);
+      return;
+    }
+    const knowledgeTag = e.target.closest("[data-knowledge-tag]");
+    if (knowledgeTag) {
+      const query = qs("#knowledgeWorkspaceQuery");
+      if (query) query.value = knowledgeTag.dataset.knowledgeTag || "";
+      setView("knowledge");
+      runKnowledgeWorkspace();
+      return;
+    }
+    const knowledgeTimeline = e.target.closest("[data-knowledge-timeline]");
+    if (knowledgeTimeline) {
+      const documentId = knowledgeTimeline.dataset.knowledgeTimeline;
+      if (documentId) selectKnowledgeDocument(documentId);
+      return;
+    }
     const viewLink = e.target.closest("[data-view-link]");
     if (viewLink) { setView(viewLink.dataset.viewLink); if (viewLink.dataset.scienceSection) setScienceSection(viewLink.dataset.scienceSection); return; }
     const viewJump = e.target.closest("[data-view-jump]");
@@ -7658,6 +7958,7 @@ async function init() {
   initVoice();
   initResearch();
   initUpload();
+  initKnowledgeWorkspace();
   initSettings();
   exposeInlineHandlers();
 

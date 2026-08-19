@@ -123,7 +123,7 @@ def handle_delete(path: str, deps: ContactsRouteDependencies) -> JsonRouteResult
     if "/" in contact_id:
         return None
     try:
-        result = deps.contacts.delete_contact(contact_id, owner="")
+        result = deps.contacts.delete_contact(contact_id, owner=deps.payload_owner({}, ""))
     except KeyError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
     return JsonRouteResult(result)

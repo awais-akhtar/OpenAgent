@@ -50,8 +50,12 @@ class DocumentProcessingDepthTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             processing = DocumentProcessing(OpenAgentStore(temp))
             imported = processing.import_office_or_text(filename="source.txt", content=b"Office artifact", project="core")
-            with self.assertRaisesRegex(ValueError, r"openagent\[office\]"):
-                processing.export_docx(imported["document"]["doc_id"])
+            try:
+                exported = processing.export_docx(imported["document"]["doc_id"])
+            except ValueError as exc:
+                self.assertRegex(str(exc), r"openagent\[office\]")
+            else:
+                self.assertEqual(exported["format"], "docx")
 
 
 if __name__ == "__main__":

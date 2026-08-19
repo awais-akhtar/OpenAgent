@@ -54,6 +54,8 @@ browser-*/
 /audt.txt
 /bk.md
 /done-things.md
+/docs/CLEAN_ROOM_COMPARISON_AND_ARCHITECTURE.md
+/docs/STAGE_COMPLETION_AUDIT.md
 
 .env
 .env.*

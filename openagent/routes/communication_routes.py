@@ -187,12 +187,13 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
         return None
     communication = deps.communication
     payload = deps.read_json()
-    owner = lambda default="local": deps.payload_owner(payload, default)
+    project = str(payload.get("project", "default")).strip() or "default"
+    owner_for = lambda default="local": deps.payload_owner(payload, default)
 
     try:
         if path == "/api/communication/messages/state":
             return JsonRouteResult({"message": communication.mutate_message(
-                str(payload.get("message_id", "")), owner=owner if owner != "local" else "",
+                str(payload.get("message_id", "")), owner=owner_for(""),
                 folder=str(payload["folder"]) if "folder" in payload else None,
                 read=bool(payload["read"]) if "read" in payload else None,
                 answered=bool(payload["answered"]) if "answered" in payload else None,
@@ -202,11 +203,11 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
         if path == "/api/communication/scheduled":
             return JsonRouteResult({"scheduled": communication.schedule_draft(
                 str(payload.get("draft_id", "")), send_at=str(payload.get("send_at", "")),
-                approval_id=str(payload.get("approval_id", "")), project=project, owner=owner,
+                approval_id=str(payload.get("approval_id", "")), project=project, owner=owner_for(),
             )}, HTTPStatus.CREATED)
         if path == "/api/communication/scheduled/process":
             return JsonRouteResult(communication.process_scheduled_sends(
-                project=project, owner=owner if owner != "local" else "",
+                project=project, owner=owner_for(""),
                 allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
             ))
         if path == "/api/communication/connectors/configure":
@@ -220,7 +221,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             contact = communication.upsert_contact(
                 str(payload.get("name", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 handles=payload.get("handles") if isinstance(payload.get("handles"), dict) else {},
                 notes=str(payload.get("notes", "")),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
@@ -234,7 +235,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 subject=str(payload.get("subject", "")),
                 body=str(payload.get("body", "")),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 thread_id=str(payload.get("thread_id", "")),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             )
@@ -243,7 +244,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             draft = communication.draft_reply(
                 str(payload.get("message_id", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 instructions=str(payload.get("instructions", "")),
             )
             return JsonRouteResult({"draft": draft}, HTTPStatus.CREATED)
@@ -254,14 +255,14 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 subject=str(payload.get("subject", "")),
                 body=str(payload.get("body", "")),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
             )
             return JsonRouteResult({"draft": draft}, HTTPStatus.CREATED)
         if path == "/api/communication/send/request-approval":
             approval = communication.request_send_approval(
                 str(payload.get("draft_id", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 reason=str(payload.get("reason", "")),
             )
             return JsonRouteResult({"approval": approval}, HTTPStatus.CREATED)
@@ -269,7 +270,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             approval = communication.resolve_send_approval(
                 str(payload.get("approval_id", "")).strip(),
                 approved=deps.parse_bool(payload.get("approved"), default=False),
-                owner=owner(""),
+                owner=owner_for(""),
             )
             return JsonRouteResult({"approval": approval})
         if path == "/api/communication/send":
@@ -277,7 +278,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 str(payload.get("draft_id", "")).strip(),
                 approval_id=str(payload.get("approval_id", "")).strip() or None,
                 allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
-                owner=owner(""),
+                owner=owner_for(""),
             )
             return JsonRouteResult({"sent": sent}, HTTPStatus.CREATED)
         if path == "/api/communication/calendar":
@@ -286,7 +287,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 starts_at=str(payload.get("starts_at", "")).strip(),
                 ends_at=str(payload.get("ends_at", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 calendar_id=str(payload.get("calendar_id", "local")).strip() or "local",
                 attendees=[str(item) for item in payload.get("attendees", [])] if isinstance(payload.get("attendees"), list) else [],
                 source=str(payload.get("source", "local")).strip() or "local",
@@ -296,7 +297,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             run = communication.sync_connector(
                 str(payload.get("platform", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
                 allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
             )
@@ -305,7 +306,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             result = communication.sync_connector_resilient(
                 str(payload.get("platform", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
                 allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
                 max_attempts=deps.parse_int(str(payload.get("max_attempts", "")), default=3),
@@ -317,7 +318,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 provider=str(payload.get("provider", "generic")),
                 platform=str(payload.get("platform", "email")),
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 label=str(payload.get("label", "")),
                 client_id=str(payload.get("client_id", "")),
                 client_secret=str(payload.get("client_secret", "")),
@@ -331,7 +332,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
         if path == "/api/communication/oauth/authorize-url":
             auth = communication.oauth_authorization_url(
                 str(payload.get("account_id", "")).strip(),
-                owner=owner(""),
+                owner=owner_for(""),
                 state=str(payload.get("state", "")),
                 code_challenge=str(payload.get("code_challenge", "")),
             )
@@ -339,7 +340,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
         if path == "/api/communication/oauth/refresh":
             refreshed = communication.refresh_oauth_token(
                 str(payload.get("account_id", "")).strip(),
-                owner=owner(""),
+                owner=owner_for(""),
                 allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
                 authorization_code=str(payload.get("authorization_code", "")),
                 code_verifier=str(payload.get("code_verifier", "")),
@@ -355,7 +356,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 filename=str(payload.get("filename", "attachment.bin")),
                 content=content,
                 project=str(payload.get("project", "default")).strip() or "default",
-                owner=owner(),
+                owner=owner_for(),
                 message_id=str(payload.get("message_id", "")),
                 content_type=str(payload.get("content_type", "application/octet-stream")),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},

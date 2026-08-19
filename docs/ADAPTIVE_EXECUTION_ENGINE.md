@@ -306,7 +306,7 @@ standalone Python 3.12 interpreter when the Windows launcher is broken:
 ```powershell
 .\installers\windows\setup-accelerator.ps1 `
   -PythonVersion 3.12 `
-  -BasePython D:\openagent\.python312\python.exe
+  -BasePython C:\Python312\python.exe
 ```
 
 NPU utilization requires an OpenVINO GenAI model exported for NPU. GGUF models

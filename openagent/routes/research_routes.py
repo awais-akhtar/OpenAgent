@@ -9,6 +9,7 @@ ROUTES = (
     ("GET", "/api/research/status"),
     ("GET", "/api/research/sessions"),
     ("GET", "/api/research/sessions/{id}"),
+    ("GET", "/api/research/sessions/{id}/report"),
     ("GET", "/api/research/sessions/{id}/checkpoints"),
     ("GET", "/api/research/sessions/{id}/source-graph"),
     ("GET", "/api/research/sessions/{id}/stream"),

@@ -28,7 +28,7 @@ Open PowerShell in the repository root:
 Install from another source path:
 
 ```powershell
-.\installers\windows\install.ps1 -SourcePath "D:\openagent"
+.\installers\windows\install.ps1 -SourcePath "C:\src\OpenAgent"
 ```
 
 Install without a Desktop shortcut:

@@ -186,6 +186,7 @@ class VectorStore:
         metadata: dict[str, Any] | None = None,
         dimensions: int = 128,
         embedding_provider: str = "local-hash",
+        embedding: Any | None = None,
     ) -> dict[str, Any]:
         content = content.strip()
         if not content:
@@ -193,7 +194,11 @@ class VectorStore:
         collection_record = self.ensure_collection(collection, project=project, dimensions=dimensions)
         source_id = source_id.strip() or stable_id("vector-source", project, collection, content)
         chunk_id = chunk_id.strip() or "0"
-        embedding = self.embeddings.embed(content, provider=embedding_provider, dimensions=collection_record["dimensions"])
+        embedding = embedding or self.embeddings.embed(
+            content,
+            provider=embedding_provider,
+            dimensions=collection_record["dimensions"],
+        )
         now = utc_now()
         record_id = stable_id("vector-chunk", collection_record["id"], source_id, chunk_id)
         digest = sha256(content)

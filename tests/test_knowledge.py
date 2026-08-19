@@ -39,6 +39,12 @@ class KnowledgeEngineTests(unittest.TestCase):
 
             graph = knowledge.graph(project="core")
             self.assertGreaterEqual(len(graph["entities"]), 1)
+            self.assertGreaterEqual(len(graph["nodes"]), 1)
+            self.assertGreaterEqual(len(graph["edges"]), 1)
+            self.assertEqual(len(graph["nodes"]), graph["stats"]["nodes"])
+            node_ids = {node["id"] for node in graph["nodes"]}
+            self.assertTrue(all(edge["source"] in node_ids and edge["target"] in node_ids for edge in graph["edges"]))
+            self.assertTrue(any(node["degree"] > 0 for node in graph["nodes"]))
             tags = knowledge.tags(project="core")
             self.assertGreaterEqual(len(tags), 1)
             timeline = knowledge.timeline(project="core")
@@ -59,6 +65,13 @@ class KnowledgeEngineTests(unittest.TestCase):
             self.assertEqual(status["documents"], 1)
             self.assertGreaterEqual(status["chunks"], 1)
             self.assertGreaterEqual(status["tags"], 1)
+
+            documents = knowledge.list_documents(project="core")
+            self.assertEqual(len(documents), 1)
+            self.assertEqual(documents[0]["title"], "OpenAgent Knowledge")
+            self.assertGreaterEqual(documents[0]["chunk_count"], 1)
+            self.assertIn("openagent", documents[0]["tags"])
+            self.assertNotIn("source_path", documents[0])
 
 
 if __name__ == "__main__":

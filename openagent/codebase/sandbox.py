@@ -240,6 +240,8 @@ class SandboxManager:
         record = self._managed_process(workspace_id, process_id)
         proc: subprocess.Popen[Any] = record["process"]
         exit_code = proc.poll()
+        if exit_code is not None:
+            self._close_process_logs(record)
         return {
             "id": process_id,
             "pid": record["pid"],
@@ -260,9 +262,11 @@ class SandboxManager:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
-        record["stdout_handle"].close()
-        record["stderr_handle"].close()
-        return self.process_status(workspace_id, process_id)
+        self._close_process_logs(record)
+        result = self.process_status(workspace_id, process_id)
+        with self._process_lock:
+            self._processes.pop(process_id, None)
+        return result
 
     def process_logs(self, workspace_id: str, process_id: str, *, limit: int = 100_000) -> dict[str, Any]:
         record = self._managed_process(workspace_id, process_id)
@@ -285,6 +289,17 @@ class SandboxManager:
         if record is None or record["workspace_id"] != workspace_id:
             raise KeyError("managed process not found")
         return record
+
+    @staticmethod
+    def _close_process_logs(record: dict[str, Any]) -> None:
+        for key in ("stdout_handle", "stderr_handle"):
+            handle = record.get(key)
+            if handle is None or getattr(handle, "closed", True):
+                continue
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     @staticmethod
     def _native_command(command: list[str]) -> list[str]:

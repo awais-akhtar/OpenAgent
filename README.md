@@ -367,6 +367,7 @@ linked documents below.
 - [Vision coverage](docs/VISION_COVERAGE.md) - feature-by-feature coverage map
 - [Workspace and assistant](docs/WORKSPACE_ASSISTANT.md) - workspace, chat, assistant, and knowledge workflows
 - [Knowledge engine](docs/KNOWLEDGE_ENGINE.md) - ingestion, retrieval, graph, and source attribution
+- [Local intelligence services](docs/LOCAL_INTELLIGENCE_SERVICES.md) - durable research, embedding lanes, document processing, image studio, email, calendar, and contacts
 - [Advanced RAG and CPU engine](docs/ADVANCED_RAG_AND_CPU_ENGINE.md) - local retrieval and CPU execution controls
 - [Adaptive execution engine](docs/ADAPTIVE_EXECUTION_ENGINE.md) - model compilation, hardware planning, and runtime boundaries
 - [Model gateway](docs/MODEL_GATEWAY.md) - provider routing, fallback, and privacy decisions
@@ -389,8 +390,6 @@ OpenAgent contains tested local implementations for chat and model routing, know
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the staged build plan.
 
 See [docs/RELEASES.md](docs/RELEASES.md) for release and package policy.
-
-See [docs/STAGE_COMPLETION_AUDIT.md](docs/STAGE_COMPLETION_AUDIT.md) for the Stage 0-15 completion check.
 
 See [docs/WORKSPACE_ASSISTANT.md](docs/WORKSPACE_ASSISTANT.md) for the workspace, chat management, assistant, knowledge synthesis, and workflow data-action APIs.
 

@@ -8,8 +8,9 @@ embeddings so neither library downloads a model or sends text over the network.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from contextlib import contextmanager
+from dataclasses import dataclass
+import gc
 import hashlib
 import importlib.util
 import json
@@ -93,9 +94,7 @@ class LocalVectorAccelerator:
             self._chroma_client = None
             self._faiss.clear()
         if client is not None:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
+            self._close_chroma_client(client)
 
     def mirror_upsert(self, collection: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         """Mirror one committed SQLite row into enabled secondary indexes."""
@@ -278,9 +277,24 @@ class LocalVectorAccelerator:
             yield client
         finally:
             if not self._keep_chroma_open:
-                close = getattr(client, "close", None)
-                if callable(close):
-                    close()
+                self._close_chroma_client(client)
+
+    @staticmethod
+    def _close_chroma_client(client: Any) -> None:
+        """Release Chroma's SQLite handle before a Windows workspace is removed."""
+
+        system = getattr(client, "_system", None)
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+        if os.name == "nt" and system is not None:
+            stop = getattr(system, "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:
+                    pass
+        gc.collect()
 
     def _faiss_enabled(self) -> bool:
         return "faiss" in self.requested and _module_available("faiss") and _module_available("numpy")

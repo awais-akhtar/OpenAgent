@@ -56,12 +56,14 @@ def handle_post(path: str, deps: AdvancedRAGRouteDependencies) -> JsonRouteResul
                 model=str(payload.get("model", "")).strip() or None,
                 allow_external=_as_bool(payload.get("allow_external"), False),
                 use_cache=_as_bool(payload.get("use_cache"), True),
+                embedding_provider=str(payload.get("embedding_provider", "")).strip(),
             )
             return JsonRouteResult(result)
         if path == "/api/rag/sync":
             result = deps.rag.knowledge.sync_vector_index(
                 project=project,
                 force=_as_bool(payload.get("force"), False),
+                embedding_provider=str(payload.get("embedding_provider", "")).strip(),
             )
             return JsonRouteResult(result, HTTPStatus.CREATED)
         result = deps.rag.benchmark(

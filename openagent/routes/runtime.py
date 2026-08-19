@@ -358,7 +358,7 @@ def build_http_server(
     personal_os = PersonalOS(store)
     worker_runtime = WorkerRuntime(store, worker_id="openagent-http-worker", gateway=gateway)
     model_cookbook = ModelCookbook(store, gateway)
-    document_processing = DocumentProcessing(store)
+    document_processing = DocumentProcessing(store, knowledge=knowledge)
     image_studio = ImageStudio(store)
     scheduler = Scheduler(store)
     skills = SkillEcosystem(store)
@@ -1293,6 +1293,12 @@ def build_http_server(
                 project = first(params, "project") or "default"
                 self.send_json(knowledge.status(project=project))
                 return
+            if parsed.path == "/api/knowledge/documents":
+                params = parse_qs(parsed.query)
+                project = first(params, "project") or "default"
+                limit = parse_int(first(params, "limit"), default=100)
+                self.send_json({"documents": knowledge.list_documents(project=project, limit=limit)})
+                return
             if parsed.path == "/api/research/status":
                 params = parse_qs(parsed.query)
                 project = first(params, "project") or "default"
@@ -1311,6 +1317,25 @@ def build_http_server(
                 return
             if parsed.path.startswith("/api/research/sessions/"):
                 suffix = unquote(parsed.path.removeprefix("/api/research/sessions/")).strip("/")
+                if suffix.endswith("/report"):
+                    session_id = suffix.removesuffix("/report").strip("/")
+                    session = research_lifecycle.get(session_id)
+                    if session is None:
+                        self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                    else:
+                        self.send_json({
+                            "session_id": session_id,
+                            "project": session["project"],
+                            "query": session["query"],
+                            "status": session["status"],
+                            "title": f"Research report: {session['query']}",
+                            "report": session.get("report", ""),
+                            "sources": session.get("sources", []),
+                            "result": session.get("result", {}),
+                            "created_at": session["created_at"],
+                            "completed_at": session["completed_at"],
+                        })
+                    return
                 if suffix.endswith("/stream"):
                     session_id = suffix.removesuffix("/stream").strip("/")
                     params = parse_qs(parsed.query)
@@ -2725,6 +2750,7 @@ def build_http_server(
                         source=str(payload.get("source", "manual")).strip() or "manual",
                         source_path=str(payload.get("source_path", "")).strip(),
                         metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                        embedding_provider=str(payload.get("embedding_provider", "")).strip(),
                     )
                 except ValueError as exc:
                     self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -2833,6 +2859,7 @@ def build_http_server(
                     str(payload.get("query", "")).strip(),
                     project=str(payload.get("project", "default")).strip() or "default",
                     limit=parse_int(str(payload.get("limit", "10")), default=10),
+                    embedding_provider=str(payload.get("embedding_provider", "")).strip(),
                 )
                 self.send_json({"results": results})
                 return
@@ -2842,6 +2869,7 @@ def build_http_server(
                     str(payload.get("query", "")).strip(),
                     project=str(payload.get("project", "default")).strip() or "default",
                     limit=parse_int(str(payload.get("limit", "10")), default=10),
+                    embedding_provider=str(payload.get("embedding_provider", "")).strip(),
                 )
                 self.send_json({"results": results})
                 return
@@ -2851,6 +2879,7 @@ def build_http_server(
                     str(payload.get("query", "")).strip(),
                     project=str(payload.get("project", "default")).strip() or "default",
                     limit=parse_int(str(payload.get("limit", "8")), default=8),
+                    embedding_provider=str(payload.get("embedding_provider", "")).strip(),
                 )
                 self.send_json(result, status=HTTPStatus.CREATED)
                 return
@@ -5263,10 +5292,15 @@ def build_http_server(
                 self.send_json({"error": "No file was included in the upload."}, status=HTTPStatus.BAD_REQUEST)
                 return
             project_part = next((part for part in parts if part.get("name") == "project"), None)
+            embedding_part = next((part for part in parts if part.get("name") == "embedding_provider"), None)
             project = (
                 bytes(project_part.get("content", b"")).decode("utf-8", errors="replace").strip()
                 if project_part else "default"
             ) or "default"
+            embedding_provider = (
+                bytes(embedding_part.get("content", b"")).decode("utf-8", errors="replace").strip()
+                if embedding_part else ""
+            )
             filename = str(file_part.get("filename", "")).strip() or "attachment.bin"
             content = bytes(file_part.get("content", b""))
             content_type_hint = str(file_part.get("content_type", "")).strip()
@@ -5293,6 +5327,7 @@ def build_http_server(
                     source="chat-attachment",
                     source_path=filename,
                     metadata={"asset_id": asset.get("id", ""), "mime_type": asset.get("mime_type", "")},
+                    embedding_provider=embedding_provider,
                 )
             attachment = {
                 "id": asset.get("id", ""),
