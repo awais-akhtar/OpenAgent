@@ -118,7 +118,7 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 
 | Requirement | Status | Notes |
 | --- | --- | --- |
-| Visual workflow builder | Implemented | Graph model, simple UI canvas, draggable layout saves, and layout audit events exist. |
+| Visual workflow builder | Implemented | Multi-step UI editor, graph model, action reordering, layout persistence, and layout audit events exist. |
 | Trigger-based, scheduled, event-driven workflows | Implemented | Manual, scheduled, and event triggers are implemented. |
 | Agent workflows, background execution, conditional logic, approval checkpoints | Implemented | Agent steps, scheduler loop, queue jobs, conditions, and approval records exist. |
 | Browser automation, desktop automation, form filling, app operation | Implemented | HTTP fetch actions, native desktop shell, Stage 12 browser/desktop automation run records, approval metadata, target metadata, and audit events exist. |
@@ -191,7 +191,7 @@ curl -X POST http://127.0.0.1:8765/api/capabilities/hard-audit \
 | --- | --- | --- |
 | Beautiful modern UI, split workspace, dark mode | Implemented | Native desktop workbench exists for app launch and feature access, and the static workspace UI exists with a split layout and dark styling. |
 | Live Canvas | Implemented | Workflow canvas and layout persistence exist. |
-| Command palette, drag-and-drop workflows, custom dashboards, personalization, accessibility | Implemented | Command palette, shortcuts, draggable workflow layout saves, dashboard/canvas records, personalization profiles, and native desktop feature tabs exist. |
+| Command palette, workflow composition, custom dashboards, personalization, accessibility | Implemented | Command palette, shortcuts, multi-step workflow editing, dashboard/canvas records, personalization profiles, and native desktop feature tabs exist. |
 | Instant search, streaming responses, keyboard shortcuts, context-aware actions, smart recommendations | Implemented | Search, streaming, keyboard shortcuts, context actions, and proactive job recommendations exist. |
 | Digital twin, personal operating memory, autonomous project management, continuous research, intent prediction, predictive assistance | Partial | Assistant goals, typed memories, proactive jobs, workflow queues, semantic metrics, and local search provide local foundations; they are not a general autonomous life-management system. |
 | Self-optimizing agents, knowledge graph visualization, personal AI search engine, local AI app store | Partial | Verification records, graph analytics snapshots, search APIs, model marketplace, and agent marketplace records exist; autonomous optimization and a hosted app store are not claimed. |

@@ -542,6 +542,58 @@ class OpenAgentStore:
             row = connection.execute("SELECT * FROM workflows WHERE id = ?", (workflow_id,)).fetchone()
         return self._workflow_row_to_dict(row) if row else None
 
+    def update_workflow(
+        self,
+        workflow_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        trigger_type: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_workflow(workflow_id)
+        if current is None:
+            raise KeyError(workflow_id)
+        updated = {
+            "name": current["name"] if name is None else (name.strip() or current["name"]),
+            "description": current["description"] if description is None else description.strip(),
+            "trigger_type": current["trigger_type"] if trigger_type is None else (trigger_type.strip() or "manual"),
+            "steps": current["steps"] if steps is None else steps,
+            "enabled": current["enabled"] if enabled is None else bool(enabled),
+        }
+        now = utc_now()
+        with self.session() as connection:
+            connection.execute(
+                """
+                UPDATE workflows
+                SET name = ?, description = ?, trigger_type = ?, steps_json = ?, enabled = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    updated["name"],
+                    updated["description"],
+                    updated["trigger_type"],
+                    json.dumps(updated["steps"], sort_keys=True),
+                    1 if updated["enabled"] else 0,
+                    now,
+                    workflow_id,
+                ),
+            )
+        return self.get_workflow(workflow_id) or current
+
+    def delete_workflow(self, workflow_id: str) -> bool:
+        with self.session() as connection:
+            exists = connection.execute("SELECT 1 FROM workflows WHERE id = ?", (workflow_id,)).fetchone()
+            if exists is None:
+                return False
+            connection.execute("DELETE FROM workflow_runs WHERE workflow_id = ?", (workflow_id,))
+            connection.execute("DELETE FROM workflow_triggers WHERE workflow_id = ?", (workflow_id,))
+            connection.execute("DELETE FROM workflow_layouts WHERE workflow_id = ?", (workflow_id,))
+            connection.execute("DELETE FROM workflow_rollback_records WHERE workflow_id = ?", (workflow_id,))
+            connection.execute("DELETE FROM workflows WHERE id = ?", (workflow_id,))
+        return True
+
     def list_workflows(
         self,
         *,

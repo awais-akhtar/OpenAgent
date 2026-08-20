@@ -925,20 +925,73 @@ body.sidebar-collapsed .privacy-card { justify-content: center; padding: 12px 8p
 .knowledge-mode-row { display: flex; align-items: center; gap: 6px; margin: 9px 0 22px; }
 .knowledge-mode-row button, .knowledge-mode-row label { border: 0; border-radius: 4px; padding: 6px 9px; background: var(--surface-2); color: var(--muted); font-size: 10px; }
 .knowledge-output { min-height: 360px; }
-.automation-shell { grid-template-columns: 260px minmax(0,1fr); }
-.automation-builder { min-height: 0; display: grid; grid-template-rows: minmax(0,1fr) 52px; }
-.automation-builder .workflow-canvas { min-height: 0; margin: 18px; }
-.workflow-authoring { width: min(760px,100%); display: grid; gap: 14px; margin: 18px auto; }
-.workflow-authoring > input { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 10px 2px; background: transparent; color: var(--text); font-size: 20px; outline: 0; }
-.workflow-node-editor { display: grid; grid-template-columns: minmax(0,1fr) 34px minmax(0,1fr); align-items: center; gap: 8px; }
-.workflow-node-editor label { display: grid; gap: 7px; min-height: 90px; border: 1px solid var(--line); border-radius: 5px; padding: 12px; background: var(--bg-2); }
-.workflow-node-editor label span { color: var(--muted-2); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.workflow-node-editor select { border: 0; background: transparent; color: var(--text); outline: 0; }
-.workflow-connector { color: var(--accent-2); font: 18px var(--font-mono); text-align: center; }
-.workflow-authoring textarea { border: 1px solid var(--line); border-radius: 5px; padding: 12px; background: var(--bg-2); color: var(--text); resize: vertical; }
-.workflow-authoring .btn { justify-self: end; }
-.automation-runbar { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); padding: 7px 12px; }
-.automation-runbar span { max-width: 70%; overflow: hidden; color: var(--muted-2); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.automation-shell { grid-template-columns: 248px minmax(520px,1fr) 300px; }
+.automation-list { display: grid; grid-template-rows: auto auto auto minmax(0,1fr) auto; gap: 9px; overflow: hidden; }
+.automation-search { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 4px; padding: 0 9px; background: var(--bg); color: var(--text); outline: 0; }
+.automation-search:focus { border-color: var(--accent); }
+.automation-summary { display: flex; gap: 14px; color: var(--muted-2); font-size: 9px; text-transform: uppercase; }
+.automation-summary b { color: var(--text); font: 600 11px var(--font-mono); }
+.automation-workflow-list, .automation-run-list { min-height: 0; overflow-y: auto; }
+.automation-workflow-row, .automation-run-row { width: 100%; display: grid; grid-template-columns: 8px minmax(0,1fr); align-items: center; gap: 8px; border: 0; border-radius: 4px; padding: 9px 7px; background: transparent; color: var(--text); text-align: left; }
+.automation-workflow-row:hover, .automation-workflow-row.active, .automation-run-row:hover, .automation-run-row.active { background: var(--surface-2); }
+.automation-workflow-row strong, .automation-run-row strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.automation-workflow-row small, .automation-run-row small { display: block; margin-top: 2px; overflow: hidden; color: var(--muted-2); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.automation-workflow-state, .run-status { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); }
+.automation-workflow-state.enabled, .run-status.completed, .run-status.passed { background: var(--success); box-shadow: 0 0 8px color-mix(in srgb,var(--success) 55%,transparent); }
+.run-status.failed { background: var(--danger); }
+.run-status.warning { background: var(--warning); }
+.automation-due-button { width: 100%; }
+.automation-empty { padding: 18px 8px; color: var(--muted-2); font-size: 10px; text-align: center; }
+
+.automation-builder { min-height: 0; display: grid; grid-template-rows: 58px minmax(0,1fr) 54px; border-right: 1px solid var(--line); }
+.automation-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 8px 14px; }
+.automation-title-fields { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.automation-title-fields input { border: 0; padding: 0; background: transparent; color: var(--text); outline: 0; }
+.automation-title-fields #workflowName { font-size: 15px; font-weight: 650; }
+.automation-title-fields #workflowDescription { color: var(--muted); font-size: 10px; }
+.automation-editor-actions { display: flex; align-items: center; gap: 7px; }
+.automation-editor-scroll { min-height: 0; padding: 24px clamp(16px,3vw,42px) 60px; overflow-y: auto; }
+.automation-trigger-panel { display: grid; grid-template-columns: 34px minmax(150px,1fr) minmax(160px,1fr); align-items: end; gap: 12px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 13px; background: var(--bg-2); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+.automation-node-index { color: var(--accent); font: 600 11px var(--font-mono); align-self: center; }
+.automation-trigger-panel > div, .automation-trigger-panel label, .automation-step label { min-width: 0; display: grid; gap: 5px; }
+.automation-trigger-panel small, .automation-trigger-panel label span, .automation-step label > span { color: var(--muted-2); font-size: 8px; text-transform: uppercase; letter-spacing: .07em; }
+.automation-trigger-panel select, .automation-trigger-panel input, .automation-step select, .automation-step input, .automation-step textarea { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 8px; background: var(--bg); color: var(--text); outline: 0; }
+.automation-trigger-panel select:focus, .automation-trigger-panel input:focus, .automation-step select:focus, .automation-step input:focus, .automation-step textarea:focus { border-color: var(--accent); }
+.automation-flow-line { width: 1px; height: 24px; margin-left: 30px; background: var(--line-strong); }
+.automation-step-editor { border: 0; padding: 0; background: transparent; }
+.automation-step-editor > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.automation-step-editor > header > div { display: grid; }
+.automation-step-editor > header strong { font-size: 12px; }
+.automation-step-editor > header span { color: var(--muted-2); font-size: 9px; }
+.automation-steps { display: grid; gap: 9px; }
+.automation-step { position: relative; display: grid; grid-template-columns: 52px minmax(125px,.7fr) minmax(180px,1.35fr) minmax(125px,.8fr) 24px; align-items: end; gap: 9px; border: 1px solid var(--line); border-radius: 6px; padding: 11px; background: var(--bg-2); }
+.automation-step-order { align-self: stretch; display: flex; align-items: center; justify-content: space-between; border-right: 1px solid var(--line); padding-right: 8px; color: var(--muted); font: 10px var(--font-mono); }
+.automation-step-order > div { display: grid; }
+.automation-step-order button, .automation-step-remove { border: 0; padding: 1px 3px; background: transparent; color: var(--muted-2); }
+.automation-step-order button:hover, .automation-step-remove:hover { color: var(--text); }
+.automation-step-order button:disabled { opacity: .2; }
+.automation-step textarea { min-height: 35px; max-height: 100px; resize: vertical; font: 10px/1.45 var(--font-mono); }
+.automation-step-remove { align-self: center; font-size: 17px; }
+.automation-runbar { display: grid; grid-template-columns: auto minmax(80px,1fr) auto auto; align-items: center; gap: 9px; border-top: 1px solid var(--line); padding: 8px 12px; background: var(--bg-2); }
+.automation-runbar label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.automation-runbar > span { overflow: hidden; color: var(--muted-2); font-size: 9px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+
+.automation-inspector { min-height: 0; display: grid; grid-template-rows: 52px minmax(120px,.8fr) minmax(180px,1.2fr); background: var(--bg-2); }
+.automation-inspector > header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 8px 12px; }
+.automation-inspector > header > div { display: grid; }
+.automation-inspector > header strong { font-size: 11px; }
+.automation-inspector > header span { color: var(--muted-2); font-size: 9px; }
+.automation-run-list { border-bottom: 1px solid var(--line); padding: 7px; }
+.automation-run-detail { min-height: 0; padding: 12px; overflow-y: auto; }
+.automation-run-detail > p { margin-top: 20px; color: var(--muted-2); font-size: 10px; text-align: center; }
+.automation-run-detail > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; text-transform: capitalize; }
+.automation-run-detail > header span { color: var(--muted-2); font: 9px var(--font-mono); }
+.automation-run-steps { display: grid; gap: 5px; }
+.automation-run-steps details { border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.automation-run-steps summary { display: grid; grid-template-columns: 7px minmax(0,1fr) auto; align-items: center; gap: 7px; padding: 8px; cursor: pointer; }
+.automation-run-steps summary strong { font-size: 10px; }
+.automation-run-steps summary small { color: var(--muted-2); font-size: 8px; text-transform: uppercase; }
+.automation-run-output { max-height: 220px; border-top: 1px solid var(--line); padding: 9px; overflow: auto; color: var(--muted); font: 9px/1.5 var(--font-mono); white-space: pre-wrap; }
 
 /* Scientific workbench */
 .science-console { grid-template-columns: minmax(380px,.9fr) minmax(460px,1.1fr); }

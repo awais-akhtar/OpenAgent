@@ -115,6 +115,13 @@ const state = {
   providers: [],
   events: [],
   workflows: [],
+  automation: {
+    selectedWorkflowId: "",
+    selectedRunId: "",
+    runs: [],
+    schema: null,
+    draftSteps: [],
+  },
   conversationId: null,
   streamingEnabled: true,
   chatBusy: false,
@@ -408,7 +415,7 @@ const VIEW_LOADERS = {
   agents:         () => loadAgents().catch(() => {}),
   knowledge:      () => loadKnowledgeWorkspace().catch(error => toast("Knowledge unavailable", error.message)),
   workspace:      () => loadWorkspaceItems().catch(() => {}),
-  automation:     () => Promise.allSettled([loadWorkflows(), loadRuntimeTools()]),
+  automation:     () => loadWorkflows(),
   assistant:      () => Promise.allSettled([getDailyBrief()]),
   communications: () => loadCommunicationHub().catch(() => {}),
   models:         () => Promise.allSettled([loadProviders(), loadModelPolicy(), loadSmoothRuntime("chat")]),
@@ -4195,86 +4202,292 @@ function renderKnowledgeGraph(payload) {
 // Workflows
 // =============================================
 
+const WORKFLOW_ACTION_FIELDS = {
+  add_event: { primary: "content", primaryLabel: "Memory content", secondary: "title", secondaryLabel: "Title" },
+  run_agent: { primary: "goal", primaryLabel: "Agent goal", secondary: "agent", secondaryLabel: "Agent role", secondaryDefault: "executive" },
+  search_context: { primary: "query", primaryLabel: "Search query" },
+  chat: { primary: "message", primaryLabel: "Message", secondary: "provider", secondaryLabel: "Provider", secondaryDefault: "auto" },
+  condition: { primary: "condition", primaryLabel: "Condition JSON", json: true, primaryDefault: '{"path":"event.status","op":"equals","value":"ready"}' },
+  file_read: { primary: "path", primaryLabel: "File path" },
+  file_write: { primary: "content", primaryLabel: "File content", secondary: "path", secondaryLabel: "File path" },
+  file_list: { primary: "path", primaryLabel: "Folder path", primaryDefault: "." },
+  spreadsheet_read: { primary: "path", primaryLabel: "CSV path" },
+  spreadsheet_write: { primary: "rows", primaryLabel: "Rows JSON", secondary: "path", secondaryLabel: "CSV path", json: true, primaryDefault: "[]" },
+  database_query: { primary: "query", primaryLabel: "Read-only SELECT", secondary: "path", secondaryLabel: "Database", secondaryDefault: "__openagent__" },
+  report_generate: { primary: "path", primaryLabel: "Report path", secondary: "title", secondaryLabel: "Report title", primaryDefault: "reports/report.md" },
+  monitor_check: { primary: "condition", primaryLabel: "Condition JSON", secondary: "message", secondaryLabel: "Result message", json: true, primaryDefault: '{"path":"steps.1.status","op":"equals","value":"completed"}' },
+  alert: { primary: "message", primaryLabel: "Alert message", secondary: "severity", secondaryLabel: "Severity", secondaryDefault: "info" },
+  browser_fetch: { primary: "url", primaryLabel: "Web address" },
+  api_request: { primary: "url", primaryLabel: "API address", secondary: "method", secondaryLabel: "Method", secondaryDefault: "GET" },
+  audit: { primary: "audit_action", primaryLabel: "Audit action", secondary: "resource", secondaryLabel: "Resource" },
+};
+
+function workflowActionOptions(selected) {
+  const actions = state.automation.schema?.actions || {};
+  return Object.entries(actions).map(([id, item]) =>
+    `<option value="${escapeHtml(id)}" ${id === selected ? "selected" : ""}>${escapeHtml(item.label || id)}</option>`
+  ).join("");
+}
+
+function newWorkflowStep(action = "run_agent") {
+  const fields = WORKFLOW_ACTION_FIELDS[action] || WORKFLOW_ACTION_FIELDS.run_agent;
+  return {
+    action,
+    [fields.primary]: fields.primaryDefault || "",
+    ...(fields.secondary ? { [fields.secondary]: fields.secondaryDefault || "" } : {}),
+  };
+}
+
+function formatWorkflowField(value, json = false) {
+  if (json && typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value ?? "");
+}
+
+function syncWorkflowDraftFields(skipIndex = -1) {
+  state.automation.draftSteps.forEach((step, index) => {
+    if (index === skipIndex) return;
+    const fields = WORKFLOW_ACTION_FIELDS[step.action] || WORKFLOW_ACTION_FIELDS.run_agent;
+    const primaryInput = qs(`[data-step-primary="${index}"]`);
+    if (primaryInput) {
+      const raw = primaryInput.value.trim();
+      if (fields.json) {
+        try { step[fields.primary] = JSON.parse(raw || "{}"); }
+        catch (_) { step[fields.primary] = raw; }
+      } else {
+        step[fields.primary] = raw;
+      }
+    }
+    if (fields.secondary) {
+      const secondaryInput = qs(`[data-step-secondary="${index}"]`);
+      if (secondaryInput) step[fields.secondary] = secondaryInput.value.trim();
+    }
+  });
+}
+
+function renderWorkflowSteps() {
+  const host = qs("#workflowSteps");
+  if (!host) return;
+  if (!state.automation.draftSteps.length) state.automation.draftSteps = [newWorkflowStep()];
+  host.innerHTML = state.automation.draftSteps.map((step, index) => {
+    const fields = WORKFLOW_ACTION_FIELDS[step.action] || WORKFLOW_ACTION_FIELDS.run_agent;
+    const primaryValue = formatWorkflowField(step[fields.primary] ?? fields.primaryDefault, fields.json);
+    const secondary = fields.secondary ? `<label><span>${escapeHtml(fields.secondaryLabel)}</span><input data-step-secondary="${index}" value="${escapeHtml(step[fields.secondary] ?? fields.secondaryDefault ?? "")}"></label>` : "";
+    return `<article class="automation-step" data-step-index="${index}">
+      <div class="automation-step-order"><span>${String(index + 2).padStart(2, "0")}</span><div><button type="button" data-step-move="up" aria-label="Move action up" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" data-step-move="down" aria-label="Move action down" ${index === state.automation.draftSteps.length - 1 ? "disabled" : ""}>↓</button></div></div>
+      <label class="automation-step-action"><span>Action</span><select data-step-action="${index}">${workflowActionOptions(step.action)}</select></label>
+      <label class="automation-step-primary"><span>${escapeHtml(fields.primaryLabel)}</span><textarea rows="2" data-step-primary="${index}">${escapeHtml(primaryValue)}</textarea></label>
+      ${secondary}
+      <button class="automation-step-remove" type="button" data-step-remove="${index}" aria-label="Remove action" title="Remove action">×</button>
+    </article>`;
+  }).join("");
+  const count = state.automation.draftSteps.length;
+  if (qs("#workflowStepCount")) qs("#workflowStepCount").textContent = `${count} ${count === 1 ? "step" : "steps"}`;
+  qsa("[data-step-action]").forEach(select => select.addEventListener("change", () => {
+    const index = Number(select.dataset.stepAction);
+    syncWorkflowDraftFields(index);
+    state.automation.draftSteps[index] = newWorkflowStep(select.value);
+    renderWorkflowSteps();
+  }));
+  qsa("[data-step-remove]").forEach(button => button.addEventListener("click", () => {
+    syncWorkflowDraftFields();
+    state.automation.draftSteps.splice(Number(button.dataset.stepRemove), 1);
+    renderWorkflowSteps();
+  }));
+  qsa("[data-step-move]").forEach(button => button.addEventListener("click", () => {
+    syncWorkflowDraftFields();
+    const row = button.closest("[data-step-index]");
+    const index = Number(row?.dataset.stepIndex || 0);
+    const target = button.dataset.stepMove === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= state.automation.draftSteps.length) return;
+    [state.automation.draftSteps[index], state.automation.draftSteps[target]] = [state.automation.draftSteps[target], state.automation.draftSteps[index]];
+    renderWorkflowSteps();
+  }));
+}
+
+function captureWorkflowSteps() {
+  return state.automation.draftSteps.map((step, index) => {
+    const action = qs(`[data-step-action="${index}"]`)?.value || step.action;
+    const fields = WORKFLOW_ACTION_FIELDS[action] || WORKFLOW_ACTION_FIELDS.run_agent;
+    let primary = qs(`[data-step-primary="${index}"]`)?.value.trim() || "";
+    if (fields.json) {
+      try { primary = JSON.parse(primary || "{}"); }
+      catch (_) { throw new Error(`Action ${index + 1} has invalid JSON.`); }
+    }
+    const result = { action, [fields.primary]: primary };
+    if (fields.secondary) result[fields.secondary] = qs(`[data-step-secondary="${index}"]`)?.value.trim() || "";
+    return result;
+  });
+}
+
+function updateWorkflowTriggerEditor() {
+  const type = qs("#workflowTrigger")?.value || "manual";
+  const wrap = qs("#workflowTriggerConfigWrap");
+  const label = qs("#workflowTriggerConfigLabel");
+  const input = qs("#workflowTriggerConfig");
+  if (!wrap || !label || !input) return;
+  wrap.hidden = type === "manual";
+  label.textContent = type === "scheduled" ? "Interval (seconds)" : "Event name";
+  input.placeholder = type === "scheduled" ? "3600" : "document.created";
+}
+
 async function loadWorkflows() {
-  const payload = await api(`/api/workflows?project=${encodeURIComponent(getProject())}&limit=12`);
+  const [payload, schema, runPayload] = await Promise.all([
+    api(`/api/workflows?project=${encodeURIComponent(getProject())}&limit=100`),
+    api("/api/workflows/builder"),
+    api(`/api/workflow-runs?project=${encodeURIComponent(getProject())}&limit=60`),
+  ]);
   state.workflows = payload.workflows || [];
+  state.automation.schema = schema;
+  state.automation.runs = runPayload.runs || [];
+  renderWorkflowList();
+  renderWorkflowRuns();
+  if (!state.automation.selectedWorkflowId) renderWorkflowAuthoring();
+}
+
+function renderWorkflowList() {
   const el = qs("#workflows");
-  if (el) el.innerHTML = state.workflows.length
-    ? state.workflows.map(w =>
-        listItem(w.name, `${w.description || "workflow"} — ${(w.steps || []).length} steps`,
-          `<div class="toolbar slim">
-            <button class="btn btn-mini btn-soft" data-workflow-run="${escapeHtml(w.id)}">Run</button>
-            <button class="btn btn-mini btn-outline" data-workflow-visual="${escapeHtml(w.id)}">Visual</button>
-          </div>`
-        )
-      ).join("")
-    : emptyState("No workflows yet");
-  qsa("[data-workflow-run]").forEach(b => b.addEventListener("click", () => runWorkflow(b.dataset.workflowRun)));
-  qsa("[data-workflow-visual]").forEach(b => b.addEventListener("click", () => loadWorkflowVisual(b.dataset.workflowVisual)));
+  const query = qs("#automationSearch")?.value.trim().toLowerCase() || "";
+  const filtered = state.workflows.filter(item => !query || `${item.name} ${item.description}`.toLowerCase().includes(query));
+  if (el) el.innerHTML = filtered.length ? filtered.map(workflow => {
+    const trigger = workflow.trigger || {};
+    const schedule = workflow.trigger_type === "scheduled" ? ` · next ${formatCompactDate(trigger.next_run_at)}` : "";
+    return `<button class="automation-workflow-row ${workflow.id === state.automation.selectedWorkflowId ? "active" : ""}" type="button" data-workflow-open="${escapeHtml(workflow.id)}">
+      <span class="automation-workflow-state ${workflow.enabled ? "enabled" : ""}"></span>
+      <span><strong>${escapeHtml(workflow.name)}</strong><small>${escapeHtml(workflow.trigger_type)} · ${(workflow.steps || []).length} actions${escapeHtml(schedule)}</small></span>
+    </button>`;
+  }).join("") : `<div class="automation-empty">${query ? "No matching workflows" : "No workflows saved"}</div>`;
+  if (qs("#automationActiveCount")) qs("#automationActiveCount").textContent = state.workflows.filter(item => item.enabled).length;
+  if (qs("#automationRunCount")) qs("#automationRunCount").textContent = state.automation.runs.length;
+  qsa("[data-workflow-open]").forEach(button => button.addEventListener("click", () => openWorkflow(button.dataset.workflowOpen)));
 }
 
 async function runWorkflow(id) {
   try {
-    const payload = await api(`/api/workflows/${id}/run`, { method: "POST" });
-    setOutput("#workflowOutput", payload);
-    toast("Workflow ran", id.slice(0,8));
+    const output = qs("#workflowOutput");
+    if (output) output.textContent = "Running actions...";
+    const payload = await api(`/api/workflows/${id}/run`, { method: "POST", body: JSON.stringify({ allow_network: Boolean(qs("#workflowNetworkApproval")?.checked) }) });
+    const run = payload.run || {};
+    if (output) output.textContent = run.status === "completed" ? "Run completed" : "Run failed";
+    await loadWorkflowRuns(run.id);
+    toast(run.status === "completed" ? "Workflow completed" : "Workflow failed", state.workflows.find(item => item.id === id)?.name || "");
   } catch(e) { toast("Workflow error", e.message); }
 }
 
-async function loadWorkflowVisual(id) {
-  try {
-    const payload = await api(`/api/workflows/visual?workflow_id=${encodeURIComponent(id)}`);
-    renderWorkflowCanvas(payload.nodes || [], payload.edges || []);
-  } catch(e) { toast("Visual error", e.message); }
+function openWorkflow(id) {
+  const workflow = state.workflows.find(item => item.id === id);
+  if (!workflow) return;
+  state.automation.selectedWorkflowId = id;
+  state.automation.draftSteps = (workflow.steps || []).map(step => ({ ...step }));
+  qs("#workflowName").value = workflow.name || "Untitled workflow";
+  qs("#workflowDescription").value = workflow.description || "";
+  qs("#workflowTrigger").value = workflow.trigger_type || "manual";
+  const config = workflow.trigger?.config || {};
+  qs("#workflowTriggerConfig").value = workflow.trigger_type === "scheduled" ? String(config.interval_seconds || 3600) : String(config.event_name || "");
+  qs("#toggleWorkflow").disabled = false;
+  qs("#toggleWorkflow").textContent = workflow.enabled ? "Disable" : "Enable";
+  qs("#deleteWorkflow").disabled = false;
+  qs("#runSelectedWorkflow").disabled = !workflow.enabled;
+  updateWorkflowTriggerEditor();
+  renderWorkflowSteps();
+  renderWorkflowList();
+  qs("#workflowOutput").textContent = workflow.enabled ? "Ready to run" : "Workflow disabled";
 }
 
-function renderWorkflowCanvas(nodes, edges) {
-  const canvas = qs("#workflowCanvas");
-  if (!canvas) return;
-  canvas.innerHTML = nodes.map((node, i) =>
-    `<div class="canvas-node ${i === 0 ? "trigger" : ""}" data-node-id="${escapeHtml(node.id)}"
-          draggable="true"
-          style="left:${node.x||i*110}px;top:${node.y||10}px">
-       ${escapeHtml(node.label || node.id)}
-     </div>`
-  ).join("");
-  // Persist canvas layout after drag
-  qsa(".canvas-node").forEach(el => {
-    el.addEventListener("dragend", async () => {
-      const layout = Array.from(qsa(".canvas-node")).map(n => ({
-        id: n.dataset.nodeId, x: parseInt(n.style.left, 10), y: parseInt(n.style.top, 10),
-      }));
-      try {
-        await api("/api/workflows/layout", {
-          method: "POST",
-          body: JSON.stringify({ layout, project: getProject() }),
-        });
-      } catch(_) {}
-    });
-  });
+async function loadWorkflowRuns(selectedRunId = "") {
+  const payload = await api(`/api/workflow-runs?project=${encodeURIComponent(getProject())}&limit=60`);
+  state.automation.runs = payload.runs || [];
+  if (selectedRunId) state.automation.selectedRunId = selectedRunId;
+  renderWorkflowRuns();
+  renderWorkflowList();
 }
 
 function renderWorkflowAuthoring() {
-  const canvas = qs("#workflowCanvas");
-  if (!canvas) return;
-  canvas.innerHTML = `<div class="workflow-authoring"><input id="workflowName" placeholder="Workflow name"><div class="workflow-node-editor"><label><span>When</span><select id="workflowTrigger"><option value="manual">Started manually</option><option value="scheduled">On a schedule</option><option value="event">When an event arrives</option></select></label><span class="workflow-connector">→</span><label><span>Do</span><select id="workflowAction"><option value="run_agent">Run an agent</option><option value="search_context">Search memory</option><option value="chat">Ask a model</option><option value="report_generate">Generate a report</option><option value="file_list">List local files</option><option value="monitor_check">Check a monitor</option><option value="alert">Create an alert</option></select></label></div><textarea id="workflowInstruction" rows="5" placeholder="Describe the goal, query, message, or report content…"></textarea><button id="saveWorkflow" class="btn btn-primary" type="button">Save workflow</button></div>`;
-  qs("#saveWorkflow")?.addEventListener("click", createWorkflowFromEditor);
+  state.automation.selectedWorkflowId = "";
+  state.automation.draftSteps = [newWorkflowStep()];
+  qs("#workflowName").value = "Untitled workflow";
+  qs("#workflowDescription").value = "";
+  qs("#workflowTrigger").value = "manual";
+  qs("#workflowTriggerConfig").value = "";
+  qs("#toggleWorkflow").disabled = true;
+  qs("#deleteWorkflow").disabled = true;
+  qs("#runSelectedWorkflow").disabled = true;
+  qs("#workflowOutput").textContent = "Draft not saved";
+  updateWorkflowTriggerEditor();
+  renderWorkflowSteps();
+  renderWorkflowList();
   qs("#workflowName")?.focus();
 }
 
 async function createWorkflowFromEditor() {
   try {
     const name = qs("#workflowName")?.value.trim();
-    const action = qs("#workflowAction")?.value || "run_agent";
-    const instruction = qs("#workflowInstruction")?.value.trim();
-    if (!name || !instruction) { toast("Workflow needs a name and instruction"); return; }
-    const fieldByAction = { run_agent: "goal", search_context: "query", chat: "message", report_generate: "content", file_list: "path", monitor_check: "target", alert: "message" };
-    const step = { action, [fieldByAction[action] || "content"]: instruction };
-    const d = await api("/api/workflows", { method: "POST", body: JSON.stringify({ name, project: getProject(), trigger_type: qs("#workflowTrigger")?.value || "manual", steps: [step] }) });
-    setOutput("#workflowOutput", d);
-    loadWorkflows();
+    if (!name) { toast("Workflow name required"); return; }
+    const steps = captureWorkflowSteps();
+    if (!steps.length) { toast("Add at least one action"); return; }
+    const triggerType = qs("#workflowTrigger")?.value || "manual";
+    const triggerValue = qs("#workflowTriggerConfig")?.value.trim() || "";
+    const trigger = triggerType === "scheduled" ? { interval_seconds: Math.max(1, Number(triggerValue || 3600)) } : triggerType === "event" ? { event_name: triggerValue } : {};
+    if (triggerType === "event" && !trigger.event_name) { toast("Event name required"); return; }
+    const payload = { name, description: qs("#workflowDescription")?.value.trim() || "", project: getProject(), trigger_type: triggerType, trigger, steps };
+    const id = state.automation.selectedWorkflowId;
+    const response = await api(id ? `/api/workflows/${id}` : "/api/workflows", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+    state.automation.selectedWorkflowId = response.workflow?.id || id;
+    qs("#workflowOutput").textContent = "Saved locally";
+    await loadWorkflows();
+    openWorkflow(state.automation.selectedWorkflowId);
     toast("Workflow saved", name);
   } catch(e) { toast("Workflow error", e.message); }
+}
+
+async function toggleSelectedWorkflow() {
+  const workflow = state.workflows.find(item => item.id === state.automation.selectedWorkflowId);
+  if (!workflow) return;
+  try {
+    await api(`/api/workflows/${workflow.id}`, { method: "PUT", body: JSON.stringify({ enabled: !workflow.enabled }) });
+    await loadWorkflows();
+    openWorkflow(workflow.id);
+  } catch (error) { toast("Workflow update failed", error.message); }
+}
+
+async function deleteSelectedWorkflow() {
+  const workflow = state.workflows.find(item => item.id === state.automation.selectedWorkflowId);
+  if (!workflow || !window.confirm(`Delete ${workflow.name} and its run history?`)) return;
+  try {
+    await api(`/api/workflows/${workflow.id}`, { method: "DELETE" });
+    state.automation.selectedWorkflowId = "";
+    state.automation.selectedRunId = "";
+    await loadWorkflows();
+    renderWorkflowAuthoring();
+    toast("Workflow deleted", workflow.name);
+  } catch (error) { toast("Workflow delete failed", error.message); }
+}
+
+function renderWorkflowRuns() {
+  const host = qs("#workflowRuns");
+  if (!host) return;
+  const runs = state.automation.runs;
+  qs("#automationRunStatus").textContent = runs.length ? `${runs.length} recent` : "No runs yet";
+  host.innerHTML = runs.length ? runs.map(run => {
+    const workflow = state.workflows.find(item => item.id === run.workflow_id);
+    return `<button class="automation-run-row ${run.id === state.automation.selectedRunId ? "active" : ""}" type="button" data-workflow-run-detail="${escapeHtml(run.id)}">
+      <span class="run-status ${escapeHtml(run.status)}"></span><span><strong>${escapeHtml(workflow?.name || run.result?.workflow || "Workflow")}</strong><small>${escapeHtml(run.status)} · ${escapeHtml(formatCompactDate(run.completed_at || run.created_at))}</small></span>
+    </button>`;
+  }).join("") : `<div class="automation-empty">Runs appear here after execution</div>`;
+  qsa("[data-workflow-run-detail]").forEach(button => button.addEventListener("click", () => showWorkflowRun(button.dataset.workflowRunDetail)));
+  if (state.automation.selectedRunId) showWorkflowRun(state.automation.selectedRunId, false);
+}
+
+function showWorkflowRun(id, rerender = true) {
+  const run = state.automation.runs.find(item => item.id === id);
+  if (!run) return;
+  state.automation.selectedRunId = id;
+  if (rerender) renderWorkflowRuns();
+  const steps = run.result?.steps || [];
+  qs("#workflowRunDetail").innerHTML = `<header><strong>${escapeHtml(run.status)}</strong><span>${escapeHtml(formatCompactDate(run.completed_at || run.created_at))}</span></header>
+    <div class="automation-run-steps">${steps.map((step, index) => {
+      const detail = Object.fromEntries(Object.entries(step).filter(([key]) => !["status", "action"].includes(key)));
+      return `<details ${step.status === "failed" ? "open" : ""}><summary><span class="run-status ${escapeHtml(step.status)}"></span><strong>${index + 1}. ${escapeHtml(step.action || "action")}</strong><small>${escapeHtml(step.status)}</small></summary><div class="automation-run-output">${escapeHtml(formatStructuredOutput(detail) || "Action completed.")}</div></details>`;
+    }).join("") || "<p>No action output was recorded.</p>"}</div>`;
 }
 
 async function loadRuntimeTools() {
@@ -8135,8 +8348,21 @@ async function init() {
   });
   qs("#createWorkflow")?.addEventListener("click", renderWorkflowAuthoring);
   qs("#saveWorkflow")?.addEventListener("click", createWorkflowFromEditor);
+  qs("#addWorkflowStep")?.addEventListener("click", () => { syncWorkflowDraftFields(); state.automation.draftSteps.push(newWorkflowStep()); renderWorkflowSteps(); });
+  qs("#workflowTrigger")?.addEventListener("change", updateWorkflowTriggerEditor);
+  qs("#automationSearch")?.addEventListener("input", renderWorkflowList);
+  qs("#runSelectedWorkflow")?.addEventListener("click", () => {
+    if (state.automation.selectedWorkflowId) runWorkflow(state.automation.selectedWorkflowId);
+  });
+  qs("#toggleWorkflow")?.addEventListener("click", toggleSelectedWorkflow);
+  qs("#deleteWorkflow")?.addEventListener("click", deleteSelectedWorkflow);
+  qs("#refreshWorkflowRuns")?.addEventListener("click", () => loadWorkflowRuns());
   qs("#runDueWorkflows")?.addEventListener("click", async () => {
-    try { const d = await api("/api/workflows/run-due", { method: "POST", body: JSON.stringify({ project: getProject() }) }); setOutput("#workflowOutput", d); } catch(e) { toast("Run due error", e.message); }
+    try {
+      const d = await api("/api/workflows/run-due", { method: "POST", body: JSON.stringify({ project: getProject(), allow_network: Boolean(qs("#workflowNetworkApproval")?.checked) }) });
+      qs("#workflowOutput").textContent = d.runs?.length ? `${d.runs.length} scheduled run(s) completed` : "No schedules were due";
+      await loadWorkflowRuns();
+    } catch(e) { toast("Run due error", e.message); }
   });
   qs("#loadRuntimeTools")?.addEventListener("click", loadRuntimeTools);
   qs("#runRuntimeBrowserTest")?.addEventListener("click", runRuntimeBrowserTest);

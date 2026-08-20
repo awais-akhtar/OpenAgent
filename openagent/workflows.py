@@ -145,6 +145,72 @@ class WorkflowEngine:
         )
         return {**workflow, "trigger": self.get_trigger(workflow["id"])}
 
+    def update(
+        self,
+        workflow_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
+        trigger_type: str | None = None,
+        trigger: dict[str, Any] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        current = self.store.get_workflow(workflow_id)
+        if current is None:
+            raise KeyError(workflow_id)
+        normalized_steps = None if steps is None else self.validate_definition(steps)
+        next_trigger_type = trigger_type or current["trigger_type"]
+        workflow = self.store.update_workflow(
+            workflow_id,
+            name=name,
+            description=description,
+            trigger_type=next_trigger_type,
+            steps=normalized_steps,
+            enabled=enabled,
+        )
+        current_trigger = self.get_trigger(workflow_id) or {}
+        trigger_record = self.configure_trigger(
+            workflow_id,
+            trigger_type=next_trigger_type,
+            project=workflow["project"],
+            config=trigger if trigger is not None else current_trigger.get("config", {}),
+        )
+        if enabled is not None:
+            with self.store.session() as connection:
+                connection.execute(
+                    "UPDATE workflow_triggers SET enabled = ?, updated_at = ? WHERE workflow_id = ?",
+                    (1 if enabled else 0, utc_now(), workflow_id),
+                )
+            trigger_record = self.get_trigger(workflow_id) or trigger_record
+        self.store.add_audit_event(
+            AuditEvent(
+                actor="workflow",
+                action="workflow.update",
+                resource=f"workflow:{workflow_id}",
+                project=workflow["project"],
+                metadata={"step_count": len(workflow["steps"]), "enabled": workflow["enabled"]},
+            )
+        )
+        return {**workflow, "trigger": trigger_record}
+
+    def delete(self, workflow_id: str) -> dict[str, Any]:
+        workflow = self.store.get_workflow(workflow_id)
+        if workflow is None:
+            raise KeyError(workflow_id)
+        project = workflow["project"]
+        deleted = self.store.delete_workflow(workflow_id)
+        self.store.add_audit_event(
+            AuditEvent(
+                actor="workflow",
+                action="workflow.delete",
+                resource=f"workflow:{workflow_id}",
+                project=project,
+                metadata={"name": workflow["name"]},
+            )
+        )
+        return {"deleted": deleted, "workflow_id": workflow_id}
+
     def validate_definition(self, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(steps, list):
             raise ValueError("Workflow steps must be a list.")
@@ -175,6 +241,10 @@ class WorkflowEngine:
             config = {**config, "interval_seconds": interval_seconds}
         trigger_id = stable_id("trigger", workflow_id, trigger_type)
         with self.store.session() as connection:
+            connection.execute(
+                "DELETE FROM workflow_triggers WHERE workflow_id = ? AND id != ?",
+                (workflow_id, trigger_id),
+            )
             connection.execute(
                 """
                 INSERT OR REPLACE INTO workflow_triggers (
@@ -746,7 +816,21 @@ class BackgroundWorkflowWorker:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            self.engine.run_due_schedules(allow_network=self.allow_network)
+            try:
+                self.engine.run_due_schedules(allow_network=self.allow_network)
+            except Exception as exc:
+                try:
+                    self.engine.store.add_audit_event(
+                        AuditEvent(
+                            actor="workflow",
+                            action="workflow.scheduler.error",
+                            resource="workflow-scheduler",
+                            status="failed",
+                            metadata={"error": str(exc)},
+                        )
+                    )
+                except Exception:
+                    pass
             self._stop.wait(self.poll_seconds)
 
 

@@ -8,9 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260819-model-ops-01">
+  <link rel="manifest" href="/manifest.json?v=20260820-automation-02">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260819-model-ops-01">
+  <link rel="stylesheet" href="/styles.css?v=20260820-automation-02">
   <script>
     // Apply saved theme immediately to prevent flash
     (function() {
@@ -620,8 +620,53 @@
     <!-- ===== AUTOMATION ===== -->
     <section class="view" id="view-automation" data-view-panel="automation" aria-label="Automation">
       <div class="automation-shell">
-        <aside class="automation-list"><div><strong>Workflows</strong><button id="createWorkflow" class="icon-button" aria-label="New workflow">＋</button></div><div id="workflows" class="stack-list"></div></aside>
-        <article class="automation-builder"><div id="workflowCanvas" class="workflow-canvas" aria-label="Workflow canvas"><div class="workflow-authoring"><input id="workflowName" placeholder="Workflow name"><div class="workflow-node-editor"><label><span>When</span><select id="workflowTrigger"><option value="manual">Started manually</option><option value="scheduled">On a schedule</option><option value="event">When an event arrives</option></select></label><span class="workflow-connector">→</span><label><span>Do</span><select id="workflowAction"><option value="run_agent">Run an agent</option><option value="search_context">Search memory</option><option value="chat">Ask a model</option><option value="report_generate">Generate a report</option><option value="file_list">List local files</option><option value="monitor_check">Check a monitor</option><option value="alert">Create an alert</option></select></label></div><textarea id="workflowInstruction" rows="5" placeholder="Describe the goal, query, message, or report content…"></textarea><button id="saveWorkflow" class="btn btn-primary" type="button">Save workflow</button></div></div><div class="automation-runbar"><span id="workflowOutput" aria-live="polite"></span><button id="runDueWorkflows" class="btn btn-primary">Run due workflows</button></div><section class="card" aria-label="Runtime tools"><div class="card-header"><div><p class="eyebrow">Runtime tools</p><h3>Browser and export readiness</h3></div><button id="loadRuntimeTools" class="btn btn-soft">Refresh</button></div><p class="muted">HTML form simulation stays offline. Browser testing uses optional Playwright and needs approval for external URLs.</p><div class="protocol-grid"><label><span>Browser URL</span><input id="runtimeBrowserUrl" value="http://127.0.0.1:8765/"></label><label><span>External URL</span><input id="runtimeBrowserApproval" type="checkbox"> Approve this browser navigation</label></div><div class="toolbar"><button id="runRuntimeBrowserTest" class="btn btn-primary">Run browser test</button></div><pre id="runtimeToolsOutput" class="output">Runtime readiness has not been loaded.</pre></section></article>
+        <aside class="automation-list">
+          <div><strong>Workflows</strong><button id="createWorkflow" class="icon-button" type="button" aria-label="New workflow" title="New workflow">+</button></div>
+          <input id="automationSearch" class="automation-search" type="search" placeholder="Filter workflows" aria-label="Filter workflows">
+          <div class="automation-summary"><span><b id="automationActiveCount">0</b> active</span><span><b id="automationRunCount">0</b> runs</span></div>
+          <div id="workflows" class="automation-workflow-list"></div>
+          <button id="runDueWorkflows" class="btn btn-soft automation-due-button" type="button">Run due schedules</button>
+        </aside>
+
+        <main class="automation-builder">
+          <header class="automation-editor-head">
+            <div class="automation-title-fields">
+              <input id="workflowName" value="Untitled workflow" aria-label="Workflow name">
+              <input id="workflowDescription" placeholder="Optional description" aria-label="Workflow description">
+            </div>
+            <div class="automation-editor-actions">
+              <button id="toggleWorkflow" class="btn btn-soft" type="button" disabled>Disable</button>
+              <button id="deleteWorkflow" class="icon-button danger" type="button" aria-label="Delete workflow" title="Delete workflow" disabled>×</button>
+            </div>
+          </header>
+
+          <div class="automation-editor-scroll">
+            <section class="automation-trigger-panel" aria-label="Workflow trigger">
+              <span class="automation-node-index">01</span>
+              <div><small>Trigger</small><select id="workflowTrigger"><option value="manual">Manual run</option><option value="scheduled">Schedule</option><option value="event">Event</option></select></div>
+              <label id="workflowTriggerConfigWrap" hidden><span id="workflowTriggerConfigLabel">Interval</span><input id="workflowTriggerConfig" placeholder="3600"></label>
+            </section>
+
+            <div class="automation-flow-line" aria-hidden="true"></div>
+            <section id="workflowCanvas" class="automation-step-editor" aria-label="Workflow steps">
+              <header><div><strong>Actions</strong><span id="workflowStepCount">1 step</span></div><button id="addWorkflowStep" class="btn btn-soft" type="button">Add action</button></header>
+              <div id="workflowSteps" class="automation-steps"></div>
+            </section>
+          </div>
+
+          <footer class="automation-runbar">
+            <label><input id="workflowNetworkApproval" type="checkbox"> Allow network actions for this run</label>
+            <span id="workflowOutput" aria-live="polite">Draft not saved</span>
+            <button id="saveWorkflow" class="btn btn-soft" type="button">Save</button>
+            <button id="runSelectedWorkflow" class="btn btn-primary" type="button" disabled>Run workflow</button>
+          </footer>
+        </main>
+
+        <aside class="automation-inspector">
+          <header><div><strong>Run history</strong><span id="automationRunStatus">No runs yet</span></div><button id="refreshWorkflowRuns" class="icon-button" type="button" aria-label="Refresh run history" title="Refresh">↻</button></header>
+          <div id="workflowRuns" class="automation-run-list"></div>
+          <div id="workflowRunDetail" class="automation-run-detail"><p>Select a run to inspect each action and its output.</p></div>
+        </aside>
       </div>
     </section>
 
@@ -1461,11 +1506,11 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260819-model-ops-01" type="module"></script>
+<script src="/app.js?v=20260820-automation-02" type="module"></script>
 <script>
   // Register service worker for PWA offline support
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260819-model-ops-01').catch(function() {});
+    navigator.serviceWorker.register('/sw.js?v=20260820-automation-02').catch(function() {});
   }
 </script>
 

@@ -403,6 +403,18 @@ class ServerTests(unittest.TestCase):
                 workflow = json.loads(urlopen(workflow_request, timeout=5).read().decode("utf-8"))
                 self.assertEqual(workflow["workflow"]["name"], "API workflow")
 
+                workflow_update_request = Request(
+                    f"{base_url}/api/workflows/{workflow['workflow']['id']}",
+                    data=json.dumps({"name": "Updated API workflow", "enabled": True}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="PUT",
+                )
+                updated_workflow = json.loads(
+                    urlopen(workflow_update_request, timeout=5).read().decode("utf-8")
+                )
+                self.assertEqual(updated_workflow["workflow"]["name"], "Updated API workflow")
+                self.assertTrue(updated_workflow["workflow"]["enabled"])
+
                 builder = read_json(f"{base_url}/api/workflows/builder")
                 self.assertIn("file_write", builder["actions"])
 

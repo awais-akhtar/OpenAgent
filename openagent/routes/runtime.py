@@ -107,7 +107,7 @@ from ..voice import VoiceRuntime
 from ..vector_store import VectorStore
 from ..worker import WorkerRuntime
 from ..workspace import WorkspaceManager
-from ..workflows import WorkflowEngine, WorkflowSafetyError
+from ..workflows import BackgroundWorkflowWorker, WorkflowEngine, WorkflowSafetyError
 
 
 mimetypes.add_type("text/javascript", ".js")
@@ -283,6 +283,7 @@ def build_http_server(
     workspace = WorkspaceManager(store)
     assistant = AssistantManager(store)
     workflows = WorkflowEngine(store, gateway)
+    workflow_worker = BackgroundWorkflowWorker(workflows, poll_seconds=5.0, allow_network=False)
     knowledge = KnowledgeEngine(store, vector_store=vector_store)
     advanced_rag = AdvancedRAGEngine(
         store,
@@ -1242,7 +1243,15 @@ def build_http_server(
                 params = parse_qs(parsed.query)
                 project = first(params, "project")
                 limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"workflows": store.list_workflows(project=project, limit=limit)})
+                records = store.list_workflows(project=project, limit=limit)
+                self.send_json(
+                    {
+                        "workflows": [
+                            {**workflow, "trigger": workflows.get_trigger(workflow["id"])}
+                            for workflow in records
+                        ]
+                    }
+                )
                 return
             if parsed.path == "/api/workflows/builder":
                 self.send_json(workflows.builder_schema())
@@ -4994,6 +5003,27 @@ def build_http_server(
             parsed = urlparse(self.path)
             if not self._enforce_auth_gate(parsed.path, "PUT"):
                 return
+            if parsed.path.startswith("/api/workflows/"):
+                workflow_id = unquote(parsed.path.removeprefix("/api/workflows/")).strip()
+                payload = self.read_json()
+                try:
+                    result = workflows.update(
+                        workflow_id,
+                        name=str(payload["name"]) if "name" in payload else None,
+                        description=str(payload["description"]) if "description" in payload else None,
+                        steps=payload["steps"] if isinstance(payload.get("steps"), list) else None,
+                        trigger_type=str(payload["trigger_type"]) if "trigger_type" in payload else None,
+                        trigger=payload["trigger"] if isinstance(payload.get("trigger"), dict) else None,
+                        enabled=parse_bool(payload.get("enabled"), default=False) if "enabled" in payload else None,
+                    )
+                except KeyError:
+                    self.send_json({"error": "Workflow not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"workflow": result})
+                return
             if parsed.path.startswith("/api/document/"):
                 doc_id = unquote(parsed.path.removeprefix("/api/document/")).strip()
                 payload = self.read_json()
@@ -5090,6 +5120,15 @@ def build_http_server(
         def do_DELETE(self) -> None:
             parsed = urlparse(self.path)
             if not self._enforce_auth_gate(parsed.path, "DELETE"):
+                return
+            if parsed.path.startswith("/api/workflows/"):
+                workflow_id = unquote(parsed.path.removeprefix("/api/workflows/")).strip()
+                try:
+                    result = workflows.delete(workflow_id)
+                except KeyError:
+                    self.send_json({"error": "Workflow not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json(result)
                 return
             phd_route = handle_phd_delete(
                 parsed.path,
@@ -5499,6 +5538,7 @@ def build_http_server(
         allow_reuse_address = True
 
         def server_close(self) -> None:
+            workflow_worker.stop()
             super().server_close()
             for name, closer, timeout_seconds in (
                 ("model-runtime", ultra_model.close, 4.0),
@@ -5522,6 +5562,7 @@ def build_http_server(
                 completed.wait(timeout=timeout_seconds)
 
     server = OpenAgentHTTPServer((host, port), OpenAgentHandler)
+    workflow_worker.start()
     server.openvino_warm_event = openvino_warm_event  # type: ignore[attr-defined]
     server.openvino_warm_thread = openvino_warm_thread  # type: ignore[attr-defined]
     return server

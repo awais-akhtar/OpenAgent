@@ -4,11 +4,11 @@
  * so a stopped historical port cannot look like a running OpenAgent instance.
  */
 
-const CACHE_VERSION = "openagent-v39-model-ops-20260819";
+const CACHE_VERSION = "openagent-v40-automation-20260820";
 const SHELL_ASSETS = [
-  "/styles.css?v=20260819-model-ops-01",
-  "/app.js?v=20260819-model-ops-01",
-  "/manifest.json?v=20260819-model-ops-01",
+  "/styles.css?v=20260820-automation-02",
+  "/app.js?v=20260820-automation-02",
+  "/manifest.json?v=20260820-automation-02",
 ];
 
 self.addEventListener("install", (event) => {

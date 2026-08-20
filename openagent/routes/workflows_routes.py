@@ -8,6 +8,8 @@ ROUTE_GROUP = "workflows"
 ROUTES = (
     ("GET", "/api/workflows"),
     ("POST", "/api/workflows"),
+    ("PUT", "/api/workflows/{id}"),
+    ("DELETE", "/api/workflows/{id}"),
     ("GET", "/api/workflows/builder"),
     ("GET", "/api/workflows/visual"),
     ("POST", "/api/workflows/run"),

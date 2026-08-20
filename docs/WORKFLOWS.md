@@ -1,6 +1,19 @@
 # Workflow Engine
 
-OpenAgent includes a local workflow automation engine. It supports manual, scheduled, and event-driven workflows with auditable steps and rollback records.
+OpenAgent includes a local workflow automation engine for repeatable work inside a project. Workflows can be created, edited, enabled, disabled, run, and deleted from the Automation workspace. Each execution is stored with the status and output of every action.
+
+```mermaid
+flowchart LR
+    T[Manual, schedule, or event trigger] --> Q[Ordered action queue]
+    Q --> A[Local action runner]
+    A --> V{Action passed?}
+    V -->|Yes| N[Next action]
+    V -->|No| R[Run available rollbacks]
+    N --> H[Persist run history]
+    R --> H
+```
+
+The embedded scheduler checks due workflows every five seconds while the local server is running. It stops when the server closes. Scheduled network actions do not receive standing approval: they fail at the network boundary unless an explicitly authorized run is made.
 
 ## Current Step Actions
 
@@ -51,6 +64,25 @@ Create:
 POST /api/workflows
 ```
 
+Update a definition or change its enabled state:
+
+```bash
+PUT /api/workflows/{id}
+{
+  "name": "Daily local memory review",
+  "enabled": false,
+  "steps": [
+    { "action": "search_context", "query": "OpenAgent roadmap" }
+  ]
+}
+```
+
+Delete the workflow and its stored runs:
+
+```bash
+DELETE /api/workflows/{id}
+```
+
 Run:
 
 ```bash
@@ -87,12 +119,10 @@ GET /api/workflows/layout?workflow_id=...
 POST /api/workflows/layout
 ```
 
-The web workspace supports drag-and-drop workflow layout edits. Saving a layout stores local UI metadata and writes a `workflow.layout.save` audit event. It does not execute workflow steps or change the workflow definition.
+The Automation workspace has a multi-step editor, trigger configuration, workflow filtering, enable and disable controls, due-schedule execution, and a run inspector. The run inspector keeps successful and failed action output separate so a failed workflow can be diagnosed without reading a complete API response.
 
 ## Safety
 
 File, spreadsheet, and report actions are restricted to the workflow file root under the OpenAgent data directory. Database actions are read-only and only accept `SELECT` queries. Browser and API actions require explicit `allow_network=true`. File writes create rollback records, and failed workflows execute available rollback hooks.
 
-## Next Work
-
-- Connector actions
+The visual layout API remains available for clients that want to store node positions. Layout changes write a `workflow.layout.save` audit event and do not execute the workflow.

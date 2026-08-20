@@ -1,6 +1,6 @@
 # Semantic Memory, Media, Voice, and UI Runtime
 
-Stage 11 adds local-first runtime implementations for semantic memory, vector collections, reranking, graph analytics, media ingestion, voice sessions, connector sync workers, command shortcuts, and draggable workflow layouts.
+Stage 11 adds local-first runtime implementations for semantic memory, vector collections, reranking, graph analytics, media ingestion, voice sessions, connector sync workers, command shortcuts, and persisted workflow layouts.
 
 ## Privacy Boundary
 
@@ -8,7 +8,7 @@ Stage 11 adds local-first runtime implementations for semantic memory, vector co
 - Media ingestion reads local files or explicit base64 uploads. Files can be copied into the OpenAgent data directory. No cloud OCR, cloud vision, cloud STT, or cloud TTS provider is called.
 - Connector sync consumes an explicit provider payload posted by the user or client. Live external provider polling uses connector-specific adapters, credentials, and explicit external approval.
 - Voice sessions store text transcripts, personas, wake-word metadata, local voiceprint clone records, submitted-audio STT records, and local TTS WAV artifacts.
-- Workflow layout edits are local UI metadata. Saving a drag/drop layout writes an audit event and does not execute workflow steps.
+- Workflow layout edits are local UI metadata. Saving a layout writes an audit event and does not execute workflow steps.
 
 ## Semantic Memory APIs
 
@@ -173,6 +173,6 @@ The static web workspace now includes:
 - `Ctrl+Shift+A` run selected agent.
 - `Ctrl+Shift+S` save memory.
 - `Ctrl+Shift+F` focus memory search.
-- Draggable workflow canvas nodes.
+- Persisted workflow canvas node layouts for compatible clients.
 
-Workflow layout saves call `POST /api/workflows/layout`, persist local layout metadata, and write `workflow.layout.save` audit events.
+Workflow layout saves call `POST /api/workflows/layout`, persist local layout metadata, and write `workflow.layout.save` audit events. The current workspace edits action order with explicit move controls.

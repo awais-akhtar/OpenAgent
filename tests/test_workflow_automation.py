@@ -9,6 +9,46 @@ from openagent.workflows import WorkflowEngine, WorkflowSafetyError
 
 
 class WorkflowAutomationTests(unittest.TestCase):
+    def test_workflow_lifecycle_update_toggle_and_delete(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = WorkflowEngine(OpenAgentStore(tmp))
+            workflow = engine.create(
+                name="Draft automation",
+                project="core",
+                steps=[{"action": "audit", "audit_action": "workflow.draft"}],
+            )
+
+            updated = engine.update(
+                workflow["id"],
+                name="Daily review",
+                trigger_type="scheduled",
+                trigger={"interval_seconds": 120},
+                steps=[
+                    {"action": "search_context", "query": "daily review"},
+                    {"action": "audit", "audit_action": "workflow.reviewed"},
+                ],
+                enabled=False,
+            )
+
+            self.assertEqual(updated["name"], "Daily review")
+            self.assertEqual(len(updated["steps"]), 2)
+            self.assertFalse(updated["enabled"])
+            self.assertFalse(updated["trigger"]["enabled"])
+            self.assertEqual(updated["trigger"]["config"]["interval_seconds"], 120)
+            with self.assertRaises(ValueError):
+                engine.run(workflow["id"])
+
+            enabled = engine.update(workflow["id"], enabled=True)
+            self.assertTrue(enabled["enabled"])
+            self.assertEqual(engine.run(workflow["id"])["status"], "completed")
+            deleted = engine.delete(workflow["id"])
+            self.assertTrue(deleted["deleted"])
+            self.assertIsNone(engine.store.get_workflow(workflow["id"]))
+            self.assertFalse(engine.store.list_workflow_runs(project="core"))
+            actions = [item["action"] for item in engine.store.list_audit_events(project="core")]
+            self.assertIn("workflow.update", actions)
+            self.assertIn("workflow.delete", actions)
+
     def test_file_actions_conditions_rollback_and_visual_model(self) -> None:
         with TemporaryDirectory() as tmp:
             engine = WorkflowEngine(OpenAgentStore(tmp))
