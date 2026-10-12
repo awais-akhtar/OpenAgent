@@ -11,6 +11,7 @@ OpenAgent publishes a release only from a verified repository snapshot.
 5. Confirm local data, model weights, credentials, runtime files, and private working material are excluded.
 6. Build the source and wheel artifacts from a clean tree.
 7. Inspect the generated artifacts before publishing.
+8. Verify the checked-in frontend bundle matches `web/src` and run the browser journeys.
 
 ## Versioning
 
@@ -25,7 +26,11 @@ Packages are built from committed source. Credentials are supplied by the releas
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 .\.venv\Scripts\python.exe -m compileall -q openagent
-node --check web\app.js
+npm ci
+npm run check:web
+npm run build:web
+git diff --exit-code -- web/app.js
+npm run test:e2e
 .\.venv\Scripts\python.exe -m openagent.hard_audit
-python -m build
+.\.venv\Scripts\python.exe -m build
 ```

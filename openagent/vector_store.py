@@ -27,58 +27,7 @@ class VectorStore:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS vector_store_collections (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    adapter TEXT NOT NULL DEFAULT 'sqlite',
-                    dimensions INTEGER NOT NULL,
-                    distance TEXT NOT NULL DEFAULT 'cosine',
-                    revision INTEGER NOT NULL DEFAULT 0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_vector_store_collections_project_name
-                    ON vector_store_collections(project, name);
-
-                CREATE TABLE IF NOT EXISTS vector_store_chunks (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    collection_id TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    chunk_id TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    embedding_provider TEXT NOT NULL,
-                    embedding_model TEXT NOT NULL,
-                    dimensions INTEGER NOT NULL,
-                    vector_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(collection_id) REFERENCES vector_store_collections(id) ON DELETE CASCADE
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_vector_store_chunks_lineage
-                    ON vector_store_chunks(collection_id, source_id, chunk_id);
-
-                CREATE INDEX IF NOT EXISTS idx_vector_store_chunks_project_collection
-                    ON vector_store_chunks(project, collection_id, updated_at DESC);
-                """
-            )
-            columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(vector_store_collections)").fetchall()
-            }
-            if "revision" not in columns:
-                connection.execute(
-                    "ALTER TABLE vector_store_collections ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
-                )
+        self.store.initialize()
 
     def close(self) -> None:
         with self._cache_lock:

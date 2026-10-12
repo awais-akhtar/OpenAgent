@@ -11,9 +11,9 @@ import re
 import secrets
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from .egress import EgressClient
 from .models import AuditEvent, utc_now
 from .security_privacy import decrypt_text, encrypt_text
 from .storage import OpenAgentStore
@@ -24,6 +24,7 @@ class Scheduler:
 
     def __init__(self, store: OpenAgentStore) -> None:
         self.store = store
+        self.egress = EgressClient()
         self.initialize()
 
     def initialize(self) -> None:
@@ -461,12 +462,13 @@ class Scheduler:
                 elif row["destination_type"] == "webhook":
                     secret = decrypt_text(json.loads(row["secret_json"] or "{}"), self._installation_secret())
                     signature = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
-                    request = Request(
-                        str(config["target_url"]), data=payload, method="POST",
+                    response = self.egress.fetch(
+                        str(config["target_url"]), approved=bool(row["allow_external"]), allow_loopback=True,
+                        purpose=f"scheduled task output: {task_id}", body=payload, method="POST",
                         headers={"Content-Type": "application/json", "X-OpenAgent-Signature": f"sha256={signature}"},
+                        timeout_seconds=int(config.get("timeout_seconds", 10)), max_response_bytes=1024 * 1024,
                     )
-                    with urlopen(request, timeout=int(config.get("timeout_seconds", 10))) as response:
-                        detail = {"status_code": int(getattr(response, "status", 200)), "signature": f"sha256={signature}"}
+                    detail = {"status_code": response.status, "signature": f"sha256={signature}"}
                 elif row["destination_type"] == "notification":
                     notification = self.add_notification(
                         title=task["title"], body=str(result.get("message", "Task completed.")),

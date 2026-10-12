@@ -10,10 +10,10 @@ from pathlib import Path
 import re
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 from uuid import uuid4
 import zipfile
 
+from .egress import EgressClient
 from .models import AuditEvent, utc_now
 from .security_privacy import SecurityPrivacyManager
 from .storage import OpenAgentStore
@@ -22,6 +22,7 @@ from .storage import OpenAgentStore
 class SkillEcosystem:
     def __init__(self, store: OpenAgentStore) -> None:
         self.store = store
+        self.egress = EgressClient()
         self.package_root = store.data_dir / "skill_packages"
         self.package_root.mkdir(parents=True, exist_ok=True)
         with self.store.session() as connection:
@@ -125,11 +126,13 @@ class SkillEcosystem:
             raise ValueError("Skill imports require an HTTPS URL.")
         if not allow_network:
             raise ValueError("Skill URL import requires allow_network=true.")
-        request = Request(url, headers={"Accept": "text/markdown,text/plain", "User-Agent": "OpenAgent/skill-import"})
-        with urlopen(request, timeout=30) as response:
-            content = response.read(2_000_001)
-        if len(content) > 2_000_000:
-            raise ValueError("Skill import exceeds the 2 MB limit.")
+        response = self.egress.fetch(
+            url, approved=allow_network, purpose="skill package import",
+            headers={"Accept": "text/markdown,text/plain", "User-Agent": "OpenAgent/skill-import"},
+            timeout_seconds=30, max_response_bytes=2_000_000,
+            allowed_content_types={"text/markdown", "text/plain", "application/octet-stream"},
+        )
+        content = response.body
         markdown = content.decode("utf-8", errors="strict")
         name = Path(parsed.path).stem or "Imported skill"
         return self.save(name=name, markdown=markdown, project=project, source_url=url)

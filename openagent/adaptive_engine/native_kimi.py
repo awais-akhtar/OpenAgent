@@ -52,10 +52,8 @@ class NativeKimiKDA:
         self.l2_epsilon = float(l2_epsilon)
         self._resident = 4*(sum(a.size for a in taps)+vd+h*d*vd+(kernel-1)*h*(2*d+vd))
         self._check_budget(self._resident*2)
-        self._taps = tuple(a.copy() for a in taps)
-        self._norm = norm.copy()
-        for a in (*self._taps, self._norm):
-            a.flags.writeable = False
+        self._taps = tuple(np.frombuffer(a.tobytes(), dtype=np.float32).reshape(a.shape) for a in taps)
+        self._norm = np.frombuffer(norm.tobytes(), dtype=np.float32)
         self._lock = threading.RLock()
         self.library = C.CDLL(str(Path(library).resolve(strict=True)))
         version = self.library.oa_kimi_kda_version
@@ -221,6 +219,10 @@ class NativeKimiLinearDecoder(IndependentKimiLinearDecoder):
             f = getattr(self.library,symbol)
             f.argtypes,f.restype = args,C.c_int
             setattr(self,name,f)
+        if getattr(self.config, 'tensor_layout', None) == 'upstream-fused':
+            self._c_group_route = self.library.oa_kimi_group_route
+            self._c_group_route.argtypes = [C.c_uint64]*5+[C.c_double]+[ptr]*2+[C.POINTER(C.c_uint64),ptr]
+            self._c_group_route.restype = C.c_int
 
     @staticmethod
     def _ptr(a):
@@ -255,9 +257,14 @@ class NativeKimiLinearDecoder(IndependentKimiLinearDecoder):
         c = self.config
         ids = np.empty(c.num_experts_per_token,np.uint64)
         weights = np.empty(c.num_experts_per_token,np.float32)
-        self._status(self._c_route(c.num_experts,c.num_experts_per_token,int(c.moe_renormalize),
-            c.routed_scaling_factor,self._ptr(scores),self._ptr(bias),
-            ids.ctypes.data_as(C.POINTER(C.c_uint64)),self._ptr(weights)))
+        if getattr(c, 'tensor_layout', None) == 'upstream-fused':
+            self._status(self._c_group_route(c.num_experts,c.num_experts_per_token,c.num_expert_group,
+                c.topk_group,int(c.moe_renormalize),c.routed_scaling_factor,self._ptr(scores),self._ptr(bias),
+                ids.ctypes.data_as(C.POINTER(C.c_uint64)),self._ptr(weights)))
+        else:
+            self._status(self._c_route(c.num_experts,c.num_experts_per_token,int(c.moe_renormalize),
+                c.routed_scaling_factor,self._ptr(scores),self._ptr(bias),
+                ids.ctypes.data_as(C.POINTER(C.c_uint64)),self._ptr(weights)))
         return ids,weights
 
     def _kda(self,streams,taps,decay,beta,gate,norm,cache):

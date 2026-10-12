@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import os
+from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
 import time
@@ -19,6 +21,29 @@ from openagent.voice import synthesize_tone_wav
 
 
 class ServerTests(unittest.TestCase):
+    def test_static_files_cannot_escape_into_web_root_sibling(self) -> None:
+        with TemporaryDirectory() as tmp:
+            web_root = Path(tmp) / "site"
+            sibling = Path(tmp) / "site-private"
+            web_root.mkdir()
+            sibling.mkdir()
+            (web_root / "index.html").write_text("workbench", encoding="utf-8")
+            (sibling / "secret.txt").write_text("private", encoding="utf-8")
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp), web_root=web_root)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                connection.request("GET", "/../site-private/secret.txt")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 404)
+                self.assertNotIn(b"private", response.read())
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def setUp(self) -> None:
         self._env_patch = patch.dict(
             os.environ,
@@ -44,10 +69,10 @@ class ServerTests(unittest.TestCase):
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
             try:
-                icon = urlopen(f"{base_url}/icons/icon-192.png", timeout=5)
-                self.assertEqual(icon.status, 200)
-                self.assertEqual(icon.headers.get("Content-Type"), "image/png")
-                self.assertTrue(icon.read(8).startswith(b"\x89PNG"))
+                with urlopen(f"{base_url}/icons/icon-192.png", timeout=5) as icon:
+                    self.assertEqual(icon.status, 200)
+                    self.assertEqual(icon.headers.get("Content-Type"), "image/png")
+                    self.assertTrue(icon.read(8).startswith(b"\x89PNG"))
 
                 boundary = "----OpenAgentVoiceBoundary"
                 audio = synthesize_tone_wav("legacy upload transcript")
@@ -126,6 +151,7 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(mission_run["failed"], 0)
             finally:
                 server.shutdown()
+                server.server_close()
                 thread.join(timeout=2)
 
     def test_health_and_event_api(self) -> None:
@@ -158,6 +184,11 @@ class ServerTests(unittest.TestCase):
                 self.assertIn("modules", module_health)
                 self.assertIn("chat", {module["id"] for module in module_health["modules"]})
                 self.assertIn(module_health["status"], {"ok", "needs_attention"})
+                self.assertEqual(
+                    len(module_health["modules"]),
+                    sum(module_health["counts"][name] for name in ("responding", "timeout", "error")),
+                )
+                self.assertTrue(all("capability_status" in module for module in module_health["modules"]))
 
                 system_metrics = read_json(f"{base_url}/api/system/metrics")
                 self.assertEqual(system_metrics["status"], "ok")

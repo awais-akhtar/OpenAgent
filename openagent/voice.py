@@ -11,24 +11,21 @@ import os
 from pathlib import Path
 import shutil
 import struct
-import subprocess
 import tempfile
 from typing import Any
-from urllib.request import urlopen
 import wave
 import zipfile
 
 from .media import MediaManager
+from .egress import EgressClient
 from .models import AuditEvent, ContextEvent, utc_now
+from .process_policy import DEFAULT_ENV_KEYS, ProcessPolicy, parse_argv_template, run_process
 from .storage import OpenAgentStore
 
 
 VOSK_SMALL_EN_MODEL = "vosk-model-small-en-us-0.15"
 VOSK_SMALL_EN_URL = f"https://alphacephei.com/vosk/models/{VOSK_SMALL_EN_MODEL}.zip"
-VOSK_SMALL_EN_URLS = [
-    VOSK_SMALL_EN_URL,
-    f"http://alphacephei.com/vosk/models/{VOSK_SMALL_EN_MODEL}.zip",
-]
+VOSK_SMALL_EN_URLS = [VOSK_SMALL_EN_URL]
 
 
 class VoiceRuntime:
@@ -41,71 +38,7 @@ class VoiceRuntime:
         self.seed_personas()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS voice_personas (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    language TEXT NOT NULL DEFAULT 'en',
-                    style TEXT NOT NULL DEFAULT 'clear',
-                    voiceprint_asset_id TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_voice_personas_project
-                    ON voice_personas(project, name);
-
-                CREATE TABLE IF NOT EXISTS voice_sessions (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    persona_id TEXT NOT NULL DEFAULT '',
-                    language TEXT NOT NULL DEFAULT 'en',
-                    wake_word TEXT NOT NULL DEFAULT '',
-                    always_listening INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_voice_sessions_project
-                    ON voice_sessions(project, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS voice_turns (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    speaker TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    audio_asset_id TEXT NOT NULL DEFAULT '',
-                    is_final INTEGER NOT NULL DEFAULT 1,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(session_id) REFERENCES voice_sessions(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_voice_turns_session
-                    ON voice_turns(session_id, created_at ASC);
-
-                CREATE TABLE IF NOT EXISTS voice_translations (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    source_language TEXT NOT NULL,
-                    target_language TEXT NOT NULL,
-                    source_text TEXT NOT NULL,
-                    translated_text TEXT NOT NULL,
-                    provider TEXT NOT NULL DEFAULT 'local-rule',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
+        self.store.initialize()
 
     def seed_personas(self) -> None:
         self.upsert_persona(
@@ -687,7 +620,7 @@ class VoiceRuntime:
                 errors = []
                 for url in VOSK_SMALL_EN_URLS:
                     try:
-                        download_file(url, archive_path)
+                        download_file(url, archive_path, approved=allow_network)
                         with zipfile.ZipFile(archive_path) as archive:
                             safe_extract_zip(archive, root)
                         downloaded = True
@@ -766,31 +699,21 @@ def first_existing_vosk_archive(model_root: Path) -> Path | None:
     return None
 
 
-def download_file(url: str, target: Path) -> None:
-    curl = shutil.which("curl.exe") or shutil.which("curl")
-    if curl:
-        completed = subprocess.run(
-            [curl, "-L", "--fail", "--silent", "--show-error", "-o", str(target), url],
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-        if completed.returncode == 0 and target.read_bytes()[:4] == b"PK\x03\x04":
-            return
+def download_file(url: str, target: Path, *, approved: bool = False) -> None:
+    EgressClient().download(
+        url,
+        target,
+        approved=approved,
+        purpose="Vosk acoustic model setup",
+        timeout_seconds=600,
+        max_total_bytes=300 * 1024 * 1024,
+        resume=False,
+    )
+    with target.open("rb") as handle:
+        signature = handle.read(4)
+    if signature != b"PK\x03\x04":
         target.unlink(missing_ok=True)
-        curl_error = completed.stderr.strip() or f"curl exited {completed.returncode}"
-    else:
-        curl_error = ""
-    try:
-        with urlopen(url, timeout=600) as response, target.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-        if target.read_bytes()[:4] == b"PK\x03\x04":
-            return
-    except Exception as exc:
-        raise ValueError(curl_error or str(exc)) from exc
-    target.unlink(missing_ok=True)
-    raise ValueError(curl_error or "Downloaded payload was not a ZIP archive.")
+        raise ValueError("Downloaded payload was not a ZIP archive.")
 
 
 def local_translate(text: str, *, target_language: str) -> str:
@@ -1190,7 +1113,16 @@ def prepare_audio_for_stt(audio_path: Path, *, profile: dict[str, Any], workdir:
         str(prepared_path),
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=90)
+        completed = run_process(
+            command,
+            cwd=workdir,
+            policy=ProcessPolicy(
+                timeout_seconds=90,
+                max_output_bytes=32_000,
+                allowed_cwd_roots=(workdir,),
+                allowed_executables=(ffmpeg,),
+            ),
+        )
     except Exception as exc:
         return {
             "path": audio_path,
@@ -1377,15 +1309,30 @@ def _transcribe_custom_command(audio_path: Path, *, language: str) -> dict[str, 
     template = os.environ.get("OPENAGENT_STT_COMMAND", "").strip()
     if not template:
         return {"status": "not_configured", "engine": "custom-command"}
-    command = template.format(input=str(audio_path), language=language)
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=120, shell=True)
+        command = parse_argv_template(template, input=str(audio_path), language=language)
+        completed = run_process(
+            command,
+            cwd=audio_path.parent,
+            policy=ProcessPolicy(
+                timeout_seconds=120,
+                max_output_bytes=256_000,
+                allowed_cwd_roots=(audio_path.parent,),
+                allowed_executables=(command[0],),
+            ),
+        )
     except Exception as exc:
         return {"status": "error", "engine": "custom-command", "message": str(exc)}
     text = completed.stdout.strip()
     if completed.returncode != 0:
         return {"status": "error", "engine": "custom-command", "message": completed.stderr.strip() or f"exit {completed.returncode}"}
-    return {"status": "transcribed" if text else "no_speech", "engine": "custom-command", "transcript": text, "message": completed.stderr.strip()}
+    return {
+        "status": "transcribed" if text else "no_speech",
+        "engine": "custom-command",
+        "transcript": text,
+        "message": completed.stderr.strip(),
+        "output_truncated": completed.output_truncated,
+    }
 
 
 def _transcribe_faster_whisper(audio_path: Path, *, language: str) -> dict[str, Any]:
@@ -1433,7 +1380,16 @@ def _transcribe_whisper_cpp(audio_path: Path, *, language: str) -> dict[str, Any
     if language:
         command.extend(["-l", language])
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        completed = run_process(
+            command,
+            cwd=audio_path.parent,
+            policy=ProcessPolicy(
+                timeout_seconds=180,
+                max_output_bytes=100_000,
+                allowed_cwd_roots=(audio_path.parent,),
+                allowed_executables=(exe,),
+            ),
+        )
     except Exception as exc:
         return {"status": "error", "engine": "whisper-cpp", "message": str(exc)}
     output_file = output_base.with_suffix(".txt")
@@ -1463,11 +1419,16 @@ def _transcribe_windows_speech(audio_path: Path, *, language: str) -> dict[str, 
     )
     env = {**os.environ, "OPENAGENT_STT_INPUT": str(audio_path)}
     try:
-        completed = subprocess.run(
+        completed = run_process(
             [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=90,
+            cwd=audio_path.parent,
+            policy=ProcessPolicy(
+                timeout_seconds=90,
+                max_output_bytes=100_000,
+                allowed_cwd_roots=(audio_path.parent,),
+                allowed_executables=(powershell,),
+                env_keys=DEFAULT_ENV_KEYS | {"OPENAGENT_STT_INPUT"},
+            ),
             env=env,
         )
     except Exception as exc:

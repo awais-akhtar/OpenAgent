@@ -4,6 +4,11 @@ include SECURITY.md
 include CONTRIBUTING.md
 include Dockerfile
 include docker-compose.yml
+recursive-include openagent/adaptive_engine/native *.c
+recursive-include openagent/adaptive_engine/native *.h
+include openagent/adaptive_engine/native/CMakeLists.txt
+recursive-include openagent/adaptive_engine *.c *.h
+recursive-include openagent/adaptive_engine *.cu *.swift *.metal *.hip *.cpp
 recursive-include docs *.md
 recursive-include web *.html *.js *.css *.scss *.json
 recursive-include deploy *.yaml

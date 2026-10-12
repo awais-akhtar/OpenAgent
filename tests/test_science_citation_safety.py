@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 
+from openagent.egress import EgressClient, EgressResponse
 from openagent.science.citations import ScientificCitationResolver
 from openagent.science.safety import check_citations, detect_unsupported_claims
 
@@ -98,6 +100,89 @@ class ScientificCitationSafetyTests(unittest.TestCase):
         self.assertEqual(record["provenance"]["provider"], "direct HTTP metadata")
         self.assertIn("Range", seen_headers)
         self.assertFalse(result["network_policy"]["redirects_followed"])
+
+    def test_default_egress_follows_public_redirect_and_records_final_source(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def request_once(_client: EgressClient, decision: object, **kwargs: object) -> EgressResponse:
+            url = decision.url  # type: ignore[attr-defined]
+            calls.append((url, kwargs))
+            if len(calls) == 1:
+                return EgressResponse(url, 302, {"location": "https://example.net/paper"}, b"")
+            body = b"<html><title>Final paper</title></html>"
+            return EgressResponse(url, 200, {
+                "content-type": "text/html; charset=utf-8",
+                "content-length": str(len(body)),
+                "last-modified": "Tue, 01 Sep 2026 00:00:00 GMT",
+            }, body)
+
+        with patch.object(EgressClient, "_request_once", request_once):
+            result = ScientificCitationResolver(
+                timeout_seconds=2,
+                max_response_bytes=4096,
+                address_resolver=_public_dns,
+            )([{"id": "web:1", "url": "https://example.org/start"}])
+
+        record = result["citations"][0]
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["network_policy"]["redirects_followed"])
+        self.assertEqual([url for url, _ in calls], ["https://example.org/start", "https://example.net/paper"])
+        self.assertEqual(record["canonical_url"], "https://example.net/paper")
+        self.assertEqual(record["metadata"]["title"], "Final paper")
+        self.assertEqual(record["metadata"]["content_type"], "text/html")
+        self.assertEqual(record["metadata"]["last_modified"], "Tue, 01 Sep 2026 00:00:00 GMT")
+        self.assertEqual(record["provenance"]["request_url"], "https://example.org/start")
+        self.assertEqual(record["provenance"]["bytes_read"], len(b"<html><title>Final paper</title></html>"))
+        self.assertTrue(all(options["timeout"] == 2 for _, options in calls))
+        self.assertTrue(all(options["max_bytes"] == 4096 for _, options in calls))
+        self.assertEqual(calls[0][1]["headers"]["Range"], "bytes=0-4095")
+
+    def test_default_egress_blocks_private_redirect_before_connection(self) -> None:
+        calls: list[str] = []
+
+        def request_once(_client: EgressClient, decision: object, **_kwargs: object) -> EgressResponse:
+            url = decision.url  # type: ignore[attr-defined]
+            calls.append(url)
+            return EgressResponse(url, 302, {"location": "http://127.0.0.1/admin"}, b"")
+
+        with patch.object(EgressClient, "_request_once", request_once):
+            result = ScientificCitationResolver(address_resolver=_public_dns)([
+                {"id": "web:1", "url": "https://example.org/start"},
+            ])
+
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["citations"][0]["identity_status"], "unverified")
+        self.assertIn("blocked", result["citations"][0]["reason"].lower())
+        self.assertEqual(calls, ["https://example.org/start"])
+
+    def test_default_egress_requires_matching_crossref_doi(self) -> None:
+        requests: list[str] = []
+
+        def request_once(_client: EgressClient, decision: object, **_kwargs: object) -> EgressResponse:
+            url = decision.url  # type: ignore[attr-defined]
+            requests.append(url)
+            body = json.dumps({"message": {
+                "DOI": "10.5555/example.1",
+                "title": ["A measured result"],
+                "URL": "https://doi.org/10.5555/example.1",
+            }}).encode()
+            return EgressResponse(url, 200, {"content-type": "application/json"}, body)
+
+        with patch.object(EgressClient, "_request_once", request_once):
+            resolver = ScientificCitationResolver(address_resolver=_public_dns)
+            matched = resolver([{"id": "paper:1", "doi": "10.5555/example.1"}])
+            mismatched = resolver([{"id": "paper:2", "doi": "10.5555/other"}])
+
+        self.assertTrue(matched["verified"])
+        self.assertEqual(matched["citations"][0]["source_kind"], "doi")
+        self.assertEqual(matched["citations"][0]["metadata"]["title"], "A measured result")
+        self.assertEqual(matched["citations"][0]["canonical_url"], "https://doi.org/10.5555/example.1")
+        self.assertFalse(mismatched["verified"])
+        self.assertEqual(mismatched["citations"][0]["identity_status"], "unverified")
+        self.assertEqual(requests, [
+            "https://api.crossref.org/works/10.5555%2Fexample.1",
+            "https://api.crossref.org/works/10.5555%2Fother",
+        ])
 
     def test_private_and_local_targets_are_blocked_before_transport(self) -> None:
         calls: list[str] = []

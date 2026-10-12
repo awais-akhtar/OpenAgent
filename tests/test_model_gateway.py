@@ -12,6 +12,7 @@ from openagent.model_gateway import (
     model_timeout_seconds,
     normalize_model_name,
     runtime_settings_snapshot,
+    _olmoe_prompt,
 )
 
 
@@ -81,7 +82,7 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertSetEqual(
             provider_ids,
             {
-                "auto", "local", "openvino-direct", "ollama", "llamacpp", "openai-compatible",
+                "auto", "local", "openvino-direct", "olmoe-direct", "ollama", "llamacpp", "openai-compatible",
                 "deepseek", "mistral", "groq", "together", "openrouter", "xai", "fireworks", "perplexity", "qwen",
             },
         )
@@ -89,7 +90,7 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertIn("local-server-first", gateway.policies()["routes"])
         self.assertEqual(
             gateway.policies()["routes"]["local-first"],
-            ["openvino-direct", "ollama", "llamacpp", "local"],
+            ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
         )
         ollama = next(provider for provider in gateway.specs() if provider["id"] == "ollama")
         self.assertEqual(ollama["default_model"], CPU_MODEL_STACK["chat"])
@@ -97,6 +98,21 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertEqual(settings["chat_model"], CPU_MODEL_STACK["chat"])
         self.assertEqual(settings["code_model"], CPU_MODEL_STACK["code"])
         self.assertEqual(settings["research_model"], CPU_MODEL_STACK["research"])
+
+    def test_olmoe_prompt_preserves_turns_and_system_context(self) -> None:
+        prompt = _olmoe_prompt([
+            {"role": "system", "content": "Be precise."},
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Answer"},
+            {"role": "user", "content": "Second"},
+        ])
+        self.assertTrue(prompt.startswith("|||IP_ADDRESS|||<|system|>\nBe precise.\n<|user|>\nFirst"))
+        self.assertIn("<|assistant|>\nAnswer|||IP_ADDRESS|||\n<|user|>\nSecond", prompt)
+        self.assertTrue(prompt.endswith("<|assistant|>\n"))
+
+    def test_olmoe_prompt_rejects_incomplete_turn_order(self) -> None:
+        with self.assertRaisesRegex(ValueError, "final user"):
+            _olmoe_prompt([{"role": "assistant", "content": "orphan"}])
 
     def test_compatible_providers_are_external_and_require_explicit_egress_approval(self) -> None:
         gateway = ModelGateway()

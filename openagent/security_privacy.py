@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
-import hmac
 import json
 import secrets
 from typing import Any
 
+from .crypto import (
+    CURRENT_ENVELOPE_VERSION,
+    decrypt_legacy_security_envelope,
+    decrypt_text as decrypt_current_text,
+    encrypt_text as encrypt_current_text,
+    is_current_envelope,
+)
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
 
@@ -200,12 +205,21 @@ class SecurityPrivacyManager:
         if row is None:
             raise ValueError(f"Unknown secret '{secret_id}'.")
         try:
-            value = decrypt_text(json.loads(row["ciphertext_json"]), passphrase)
+            encrypted_payload = json.loads(row["ciphertext_json"])
+            value = decrypt_text(encrypted_payload, passphrase)
         except ValueError as exc:
             self._audit("security.secret.reveal", row["id"], metadata={"status": "denied"})
             raise SecurityPrivacyError(str(exc)) from exc
+        migrated = not is_current_envelope(encrypted_payload)
+        if migrated:
+            replacement = encrypt_text(value, passphrase)
+            with self.store.session() as connection:
+                connection.execute(
+                    "UPDATE security_secrets SET ciphertext_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(replacement, sort_keys=True), utc_now(), str(row["id"])),
+                )
         self._audit("security.secret.reveal", row["id"], metadata={"status": "allowed"})
-        return {**secret_row(row), "value": value}
+        return {**secret_row(row), "value": value, "envelope_migrated": migrated}
 
     def rotate_secret(self, *, secret_id: str, value: str, passphrase: str) -> dict[str, Any]:
         row = self._secret_row(secret_id)
@@ -647,61 +661,16 @@ class SecurityPrivacyManager:
         )
 
 
-def encrypt_text(value: str, passphrase: str) -> dict[str, str | int]:
-    salt = secrets.token_bytes(16)
-    nonce = secrets.token_bytes(16)
-    iterations = 200_000
-    key = derive_key(passphrase, salt, iterations)
-    raw = value.encode("utf-8")
-    ciphertext = xor_bytes(raw, key_stream(key, nonce, len(raw)))
-    tag = hmac.new(key, nonce + ciphertext, hashlib.sha256).hexdigest()
-    return {
-        "version": 1,
-        "kdf": "pbkdf2-hmac-sha256",
-        "iterations": iterations,
-        "salt": b64encode(salt),
-        "nonce": b64encode(nonce),
-        "ciphertext": b64encode(ciphertext),
-        "tag": tag,
-    }
+def encrypt_text(value: str, passphrase: str) -> dict[str, Any]:
+    """Encrypt a security secret with the shared current envelope."""
+
+    return encrypt_current_text(value, passphrase, purpose="openagent.security.secret")
 
 
 def decrypt_text(payload: dict[str, Any], passphrase: str) -> str:
-    salt = b64decode(str(payload["salt"]))
-    nonce = b64decode(str(payload["nonce"]))
-    ciphertext = b64decode(str(payload["ciphertext"]))
-    iterations = int(payload.get("iterations", 200_000))
-    key = derive_key(passphrase, salt, iterations)
-    expected = hmac.new(key, nonce + ciphertext, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, str(payload.get("tag", ""))):
-        raise ValueError("Secret integrity check failed.")
-    raw = xor_bytes(ciphertext, key_stream(key, nonce, len(ciphertext)))
-    return raw.decode("utf-8")
-
-
-def derive_key(passphrase: str, salt: bytes, iterations: int) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, iterations, dklen=32)
-
-
-def key_stream(key: bytes, nonce: bytes, length: int) -> bytes:
-    output = bytearray()
-    counter = 0
-    while len(output) < length:
-        output.extend(hmac.new(key, nonce + counter.to_bytes(8, "big"), hashlib.sha256).digest())
-        counter += 1
-    return bytes(output[:length])
-
-
-def xor_bytes(left: bytes, right: bytes) -> bytes:
-    return bytes(a ^ b for a, b in zip(left, right))
-
-
-def b64encode(value: bytes) -> str:
-    return base64.b64encode(value).decode("ascii")
-
-
-def b64decode(value: str) -> bytes:
-    return base64.b64decode(value.encode("ascii"))
+    if int(payload.get("version", 0)) == CURRENT_ENVELOPE_VERSION:
+        return decrypt_current_text(payload, passphrase, purpose="openagent.security.secret")
+    return decrypt_legacy_security_envelope(payload, passphrase)
 
 
 def stable_id(*parts: str) -> str:

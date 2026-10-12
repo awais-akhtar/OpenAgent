@@ -9,6 +9,19 @@ from openagent.storage import OpenAgentStore
 
 
 class SemanticMemoryManagerTests(unittest.TestCase):
+    def test_repeated_writes_get_distinct_record_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            semantic = SemanticMemoryManager(OpenAgentStore(tmp))
+            first = semantic.add_memory(title="Note", content="Same content", project="core")
+            second = semantic.add_memory(title="Note", content="Same content", project="core")
+            self.assertNotEqual(first["id"], second["id"])
+            first_run = semantic.rerank("same", [{"title": "Note", "content": "Same content"}], project="core")
+            second_run = semantic.rerank("same", [{"title": "Note", "content": "Same content"}], project="core")
+            self.assertNotEqual(first_run["id"], second_run["id"])
+            first_graph = semantic.graph_analytics(project="core")
+            second_graph = semantic.graph_analytics(project="core")
+            self.assertNotEqual(first_graph["id"], second_graph["id"])
+
     def test_memory_vector_rerank_consolidation_and_graph_analytics(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

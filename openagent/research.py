@@ -75,7 +75,7 @@ class ResearchEngine:
             for ev in context_hits
         ]
         if allow_external:
-            sources.extend(ExternalResearchCollector().search(query, limit=self._requested_source_limit(query)))
+            sources.extend(ExternalResearchCollector(approved=True).search(query, limit=self._requested_source_limit(query)))
 
         # Step 3: Iterative analysis — refine understanding
         # Step 3: Analyze evidence locally, then use one bounded model call for

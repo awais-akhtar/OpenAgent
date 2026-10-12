@@ -11,7 +11,9 @@ import socket
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
+
+from ..egress import EgressClient, EgressError, EgressPolicy
 
 
 _DOI_PATTERN = re.compile(r"10\.\d{4,9}/\S+", re.IGNORECASE)
@@ -20,11 +22,6 @@ _USER_AGENT = "OpenAgent/0.13 scientific-citation-resolver"
 
 class CitationResolutionError(ValueError):
     """Raised when a citation cannot safely cross the network boundary."""
-
-
-class _RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
-        return None
 
 
 class _TitleParser(HTMLParser):
@@ -72,8 +69,9 @@ class ScientificCitationResolver:
     ) -> None:
         self.timeout_seconds = min(10.0, max(0.25, float(timeout_seconds)))
         self.max_response_bytes = min(1_048_576, max(1024, int(max_response_bytes)))
-        self._transport = transport or self._open
+        self._transport = transport
         self._address_resolver = address_resolver or socket.getaddrinfo
+        self._egress = EgressClient(policy=EgressPolicy(resolver=self._address_resolver)) if transport is None else None
 
     def __call__(self, citations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         records = [self.resolve_one(item) for item in citations]
@@ -91,7 +89,7 @@ class ScientificCitationResolver:
             "network_policy": {
                 "timeout_seconds": self.timeout_seconds,
                 "max_response_bytes": self.max_response_bytes,
-                "redirects_followed": False,
+                "redirects_followed": self._egress is not None,
                 "public_addresses_only": True,
             },
         }
@@ -113,7 +111,7 @@ class ScientificCitationResolver:
             else:
                 url = str(citation.get("url") or citation.get("source") or "").strip()
                 record.update(self._resolve_url(url))
-        except (CitationResolutionError, HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
+        except (CitationResolutionError, EgressError, HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
             record["reason"] = str(exc)
         return record
 
@@ -149,10 +147,9 @@ class ScientificCitationResolver:
 
     def _resolve_url(self, url: str) -> dict[str, Any]:
         payload, response = self._fetch(url, accept="text/html,application/xhtml+xml;q=0.9,*/*;q=0.1")
-        final_url = str(response.geturl()) if hasattr(response, "geturl") else url
-        self._validate_public_url(final_url)
+        final_url = self._response_url(response, url)
         headers = response.headers if hasattr(response, "headers") else {}
-        content_type = str(headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
+        content_type = self._header(headers, "Content-Type").split(";", 1)[0].strip().lower()
         parser = _TitleParser()
         if content_type in {"text/html", "application/xhtml+xml"} or payload.lstrip().startswith(b"<"):
             parser.feed(payload.decode("utf-8", errors="replace"))
@@ -163,8 +160,8 @@ class ScientificCitationResolver:
             "metadata": {
                 "title": parser.title,
                 "content_type": content_type,
-                "content_length": str(headers.get("Content-Length", "")),
-                "last_modified": str(headers.get("Last-Modified", ""))[:128],
+                "content_length": self._header(headers, "Content-Length"),
+                "last_modified": self._header(headers, "Last-Modified")[:128],
             },
             "provenance": {
                 "provider": "direct HTTP metadata",
@@ -176,11 +173,26 @@ class ScientificCitationResolver:
         }
 
     def _fetch(self, url: str, *, accept: str) -> tuple[bytes, Any]:
-        self._validate_public_url(url)
         request = Request(url, headers={"Accept": accept, "User-Agent": _USER_AGENT, "Range": f"bytes=0-{self.max_response_bytes - 1}"})
+        if self._egress is not None:
+            response = self._egress.fetch(
+                url,
+                approved=True,
+                purpose="scientific citation identity",
+                headers=dict(request.header_items()),
+                timeout_seconds=self.timeout_seconds,
+                max_response_bytes=self.max_response_bytes,
+                allow_loopback=False,
+                max_redirects=4,
+            )
+            if response.status < 200 or response.status >= 300:
+                raise CitationResolutionError(f"Citation endpoint returned HTTP {response.status}.")
+            return response.body, response
+        self._validate_public_url(url)
+        assert self._transport is not None
         response = self._transport(request, self.timeout_seconds)
         try:
-            final_url = str(response.geturl()) if hasattr(response, "geturl") else url
+            final_url = self._response_url(response, url)
             self._validate_public_url(final_url)
             status = self._status(response)
             if status < 200 or status >= 300:
@@ -231,9 +243,12 @@ class ScientificCitationResolver:
         return int(getattr(response, "status", response.getcode() if hasattr(response, "getcode") else 0))
 
     @staticmethod
-    def _open(request: Request, timeout: float) -> Any:
-        opener = build_opener(_RejectRedirects())
-        return opener.open(request, timeout=timeout)
+    def _response_url(response: Any, requested_url: str) -> str:
+        return str(response.geturl()) if hasattr(response, "geturl") else str(getattr(response, "url", requested_url))
+
+    @staticmethod
+    def _header(headers: Mapping[str, Any], name: str) -> str:
+        return str(headers.get(name, headers.get(name.casefold(), "")))
 
 
 def resolve_scientific_citations(citations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

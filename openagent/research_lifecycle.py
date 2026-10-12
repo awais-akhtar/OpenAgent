@@ -22,61 +22,7 @@ class ResearchLifecycle:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS research_sessions (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    query TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    parent_id TEXT NOT NULL DEFAULT '',
-                    branch_label TEXT NOT NULL DEFAULT '',
-                    provider TEXT NOT NULL DEFAULT 'auto',
-                    model TEXT NOT NULL DEFAULT '',
-                    allow_external INTEGER NOT NULL DEFAULT 0,
-                    max_iterations INTEGER NOT NULL DEFAULT 3,
-                    attempt INTEGER NOT NULL DEFAULT 0,
-                    max_attempts INTEGER NOT NULL DEFAULT 3,
-                    cancel_requested INTEGER NOT NULL DEFAULT 0,
-                    archived INTEGER NOT NULL DEFAULT 0,
-                    job_id TEXT NOT NULL DEFAULT '',
-                    plan TEXT NOT NULL DEFAULT '',
-                    report TEXT NOT NULL DEFAULT '',
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    error TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL DEFAULT ''
-                );
-                CREATE INDEX IF NOT EXISTS idx_research_sessions_project
-                    ON research_sessions(project, archived, updated_at DESC);
-                CREATE TABLE IF NOT EXISTS research_checkpoints (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    stage TEXT NOT NULL,
-                    progress INTEGER NOT NULL,
-                    message TEXT NOT NULL,
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_research_checkpoints_session
-                    ON research_checkpoints(session_id, id);
-                CREATE TABLE IF NOT EXISTS research_sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    source_type TEXT NOT NULL,
-                    snippet TEXT NOT NULL,
-                    url TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_research_sources_session
-                    ON research_sources(session_id, id);
-                """
-            )
+        self.store.initialize()
 
     def create(
         self,

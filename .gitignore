@@ -7,8 +7,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.cache/
 .coverage
+coverage.xml
 htmlcov/
+.tox/
+.nox/
+.hypothesis/
 
 .venv/
 .accelerator-venv/
@@ -20,6 +25,7 @@ env/
 .local-data/
 .agents/
 .codex/
+.vscode/
 
 data/
 *.sqlite3
@@ -28,10 +34,15 @@ data/
 *.db-shm
 
 node_modules/
+web/core/
 playwright-report/
 test-results/
+playwright/.cache/
+*.trace.zip
+*.webm
 .tmp-playwright/
 .tmp*/
+.tmp*
 tmp/
 dist/
 build/
@@ -44,6 +55,7 @@ models/
 # Local archives, logs, and runtime state
 *.zip
 *.log
+*.pid
 workbench-state.json
 browser-*/
 
@@ -61,3 +73,24 @@ browser-*/
 .env.*
 !.env.example
 codex-thread*.jsonl
+
+# Private agent notes, planning records, and local review material
+.tmp-engine-handoff.md
+CODEX_MASTER_IMPLEMENTATION_PROMPT.md
+OPENAGENT_FILE_BY_FILE_REQUIREMENTS.md
+OPENAGENT_PRODUCTION_AUDIT.md
+PHASE_1_SOURCE_CHECKLIST.md
+PHASE1_CHECKLIST.md
+audt.txt
+bk.md
+done-things.md
+master check.md
+MASTER BLUEPRINT.md
+check BLUEPRINT .md
+
+# Generated local screenshots and diagnosis captures
+*-diagnosis.png
+*-screenshot.png
+
+# Separate upstream study checkout; not part of OpenAgent distributions.
+/reference/colibri/

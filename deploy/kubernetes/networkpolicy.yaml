@@ -1,17 +1,65 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openagent-same-namespace
+  name: openagent-default-deny
+  namespace: openagent
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openagent-runtime
   namespace: openagent
 spec:
   podSelector:
     matchLabels:
       app: openagent
-  policyTypes:
-    - Ingress
+  policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openagent
+      ports:
+        - protocol: TCP
+          port: 8765
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openagent-backup-trigger
+  namespace: openagent
+spec:
+  podSelector:
+    matchLabels:
+      app: openagent-backup
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: openagent
       ports:
         - protocol: TCP
           port: 8765

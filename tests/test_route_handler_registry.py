@@ -12,8 +12,18 @@ class RouteHandlerRegistryTests(unittest.TestCase):
         self.assertEqual(
             {
                 "chat",
+                "agents",
+                "workspace",
+                "assistant",
+                "twin",
+                "semantic",
+                "vault",
                 "voice",
                 "knowledge",
+                "finetune",
+                "scraper",
+                "drafts",
+                "media",
                 "calendar",
                 "communication",
                 "local_ai",

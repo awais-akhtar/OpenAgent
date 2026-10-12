@@ -23,10 +23,8 @@ Security
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import re
-import socket
 import time
 import urllib.error
 import urllib.parse
@@ -36,6 +34,7 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.robotparser import RobotFileParser
 
+from .egress import EgressClient, EgressError, EgressPolicy
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
 
@@ -48,17 +47,6 @@ _UA = "OpenAgent/1.0 (self-hosted; privacy-first; +https://github.com/openagent)
 _MAX_BYTES = 5 * 1024 * 1024   # 5 MB
 _TIMEOUT = 15                   # seconds
 _RATE_LIMIT_SECONDS = 2         # min gap between requests to same domain
-
-# Private/reserved IP ranges to block (SSRF protection)
-_PRIVATE_NETWORKS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-]
 
 _domain_last_request: dict[str, float] = {}
 
@@ -128,32 +116,10 @@ class _TextExtractor(HTMLParser):
 
 def _validate_url(url: str) -> str:
     """Raise ValueError if the URL is invalid or targets private networks."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"Only http/https URLs are allowed, got: {parsed.scheme!r}")
-    hostname = parsed.hostname or ""
-    if not hostname:
-        raise ValueError("URL has no hostname.")
-
-    # Resolve and check IP
     try:
-        info = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-        for _family, _type, _proto, _canon, sockaddr in info:
-            ip_str = sockaddr[0]
-            try:
-                ip_obj = ipaddress.ip_address(ip_str)
-                for net in _PRIVATE_NETWORKS:
-                    if ip_obj in net:
-                        raise ValueError(
-                            f"SSRF protection: URL {hostname!r} resolves to private IP {ip_str}."
-                        )
-            except ValueError as exc:
-                if "SSRF" in str(exc):
-                    raise
-    except OSError:
-        return url
-
-    return url
+        return EgressPolicy().authorize(url, approved=True).url
+    except EgressError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _rate_limit(domain: str) -> None:
@@ -174,6 +140,7 @@ class WebScraper:
 
     def __init__(self, store: OpenAgentStore) -> None:
         self.store = store
+        self.egress = EgressClient()
         self._robots_cache: dict[str, tuple[float, RobotFileParser]] = {}
         self.initialize()
 
@@ -182,43 +149,7 @@ class WebScraper:
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
-        with self.store.session() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS scrape_jobs (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    schedule_cron TEXT NOT NULL DEFAULT '',
-                    interval_hours REAL NOT NULL DEFAULT 24.0,
-                    last_run TEXT NOT NULL DEFAULT '',
-                    next_run TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_scrape_jobs_project
-                    ON scrape_jobs(project, next_run);
-
-                CREATE TABLE IF NOT EXISTS scrape_results (
-                    id TEXT PRIMARY KEY,
-                    job_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    status_code INTEGER NOT NULL DEFAULT 200,
-                    title TEXT NOT NULL DEFAULT '',
-                    content_hash TEXT NOT NULL DEFAULT '',
-                    word_count INTEGER NOT NULL DEFAULT 0,
-                    changed INTEGER NOT NULL DEFAULT 1,
-                    knowledge_doc_id TEXT NOT NULL DEFAULT '',
-                    error TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_scrape_results_job
-                    ON scrape_results(job_id, created_at DESC);
-            """)
+        self.store.initialize()
 
     # ------------------------------------------------------------------
     # Core scrape
@@ -232,6 +163,7 @@ class WebScraper:
         respect_robots: bool = True,
         ingest_to_knowledge: bool = True,
         include_text: bool = False,
+        allow_external: bool = False,
     ) -> dict[str, Any]:
         """Fetch a URL, extract text, and optionally ingest into knowledge engine."""
         url = _validate_url(url.strip())
@@ -239,7 +171,7 @@ class WebScraper:
         domain = parsed.netloc or parsed.hostname or url
 
         # Robots.txt check
-        if respect_robots and not self._is_allowed(url, domain):
+        if respect_robots and not self._is_allowed(url, domain, project=project, allow_external=allow_external):
             result = {
                 "url": url, "status": "blocked_by_robots",
                 "error": "robots.txt disallows this URL.",
@@ -250,27 +182,26 @@ class WebScraper:
         _rate_limit(domain)
 
         # Fetch
-        req = urllib.request.Request(url, headers={
-            "User-Agent": _UA,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-                status_code = resp.status
-                raw = resp.read(_MAX_BYTES)
-                content_type = resp.headers.get("Content-Type", "")
-        except urllib.error.HTTPError as exc:
-            result = {"url": url, "status": "error", "status_code": exc.code,
-                      "error": str(exc)}
-            self._record_scrape_audit(project, result)
-            return result
-        except urllib.error.URLError as exc:
-            result = {"url": url, "status": "error", "status_code": 0,
-                      "error": str(exc.reason)}
-            self._record_scrape_audit(project, result)
-            return result
-        except Exception as exc:
+            response = self.egress.fetch(
+                url,
+                approved=allow_external,
+                purpose="knowledge web scrape",
+                headers={
+                    "User-Agent": _UA,
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout_seconds=_TIMEOUT,
+                max_response_bytes=_MAX_BYTES,
+                allowed_content_types={"text/html", "application/xhtml+xml", "text/plain"},
+            )
+            status_code = response.status
+            raw = response.body
+            content_type = response.headers.get("content-type", "")
+            if status_code < 200 or status_code >= 300:
+                raise EgressError(f"Scrape destination returned HTTP {status_code}.")
+        except (EgressError, PermissionError) as exc:
             result = {"url": url, "status": "error", "status_code": 0, "error": str(exc)}
             self._record_scrape_audit(project, result)
             return result
@@ -350,17 +281,19 @@ class WebScraper:
         project: str = "default",
         interval_hours: float = 24.0,
         label: str = "",
+        allow_external: bool = False,
     ) -> dict[str, Any]:
         """Register a URL for periodic scraping."""
         url = _validate_url(url.strip())
         now = utc_now()
         job_id = hashlib.md5(f"scrape-{project}-{url}".encode()).hexdigest()
         next_run = (datetime.now(timezone.utc) + timedelta(hours=0.001)).isoformat()
+        status = "scheduled" if allow_external else "awaiting_approval"
         with self.store.session() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO scrape_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (job_id, project, url, "", interval_hours, "", next_run,
-                 "scheduled", json.dumps({"label": label}), now, now),
+                 status, json.dumps({"label": label, "external_approved": bool(allow_external)}), now, now),
             )
         self.store.add_audit_event(AuditEvent(
             actor="scraper",
@@ -369,7 +302,14 @@ class WebScraper:
             project=project,
             metadata={"url": url, "interval_hours": interval_hours},
         ))
-        return {"job_id": job_id, "url": url, "interval_hours": interval_hours, "next_run": next_run}
+        return {
+            "job_id": job_id,
+            "url": url,
+            "interval_hours": interval_hours,
+            "next_run": next_run,
+            "status": status,
+            "external_approved": bool(allow_external),
+        }
 
     def list_scheduled(self, *, project: str = "default") -> list[dict[str, Any]]:
         with self.store.session() as conn:
@@ -389,15 +329,20 @@ class WebScraper:
         now = utc_now()
         with self.store.session() as conn:
             rows = conn.execute(
-                "SELECT id, url, interval_hours FROM scrape_jobs "
+                "SELECT id, url, interval_hours, metadata_json FROM scrape_jobs "
                 "WHERE project=? AND next_run <= ? AND status='scheduled' LIMIT 10",
                 (project, now),
             ).fetchall()
         ran = 0
         errors = 0
         for row in rows:
-            job_id, url, interval_hours = row
-            result = self.scrape_url(url, project=project)
+            job_id, url, interval_hours, metadata_json = row
+            metadata = json.loads(metadata_json or "{}")
+            result = self.scrape_url(
+                url,
+                project=project,
+                allow_external=bool(metadata.get("external_approved")),
+            )
             status = result.get("status", "error")
             error = result.get("error", "")
             next_run = (datetime.now(timezone.utc) + timedelta(hours=interval_hours)).isoformat()
@@ -445,7 +390,7 @@ class WebScraper:
     # robots.txt
     # ------------------------------------------------------------------
 
-    def _is_allowed(self, url: str, domain: str) -> bool:
+    def _is_allowed(self, url: str, domain: str, *, project: str, allow_external: bool) -> bool:
         """Check robots.txt for the given URL. Caches results for 1 hour."""
         now = time.monotonic()
         cached = self._robots_cache.get(domain)
@@ -457,7 +402,17 @@ class WebScraper:
             robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
             try:
                 rp.set_url(robots_url)
-                rp.read()
+                response = self.egress.fetch(
+                    robots_url,
+                    approved=allow_external,
+                    purpose="robots.txt policy check",
+                    headers={"User-Agent": _UA, "Accept": "text/plain"},
+                    timeout_seconds=min(_TIMEOUT, 5),
+                    max_response_bytes=256 * 1024,
+                    allowed_content_types={"text/plain", "text/html", "application/octet-stream"},
+                )
+                if 200 <= response.status < 300:
+                    rp.parse(response.body.decode("utf-8", errors="replace").splitlines())
             except Exception:
                 rp = RobotFileParser()  # empty = allow all
             self._robots_cache[domain] = (now, rp)

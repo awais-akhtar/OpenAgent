@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../..
+namespace: openagent-dev
+namePrefix: dev-
+images:
+  - name: ghcr.io/awais-akhtar/openagent
+    newName: openagent
+    newTag: development
+patches:
+  - target:
+      kind: Deployment
+      name: openagent
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 256Mi

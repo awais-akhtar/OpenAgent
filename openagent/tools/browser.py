@@ -12,6 +12,8 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from ..egress import EgressError, EgressPolicy
+
 
 class BrowserRuntimeError(RuntimeError):
     """Raised when browser automation cannot run safely or locally."""
@@ -22,17 +24,20 @@ class BrowserPolicy:
 
     def __init__(self, allowed_domains: set[str] | None = None) -> None:
         self.allowed_domains = {domain.lower().strip() for domain in (allowed_domains or set()) if domain.strip()}
+        self.egress = EgressPolicy()
 
     def authorize(self, url: str, *, approved: bool = False) -> str:
-        parsed = urlparse(str(url).strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise BrowserRuntimeError("Browser navigation requires a complete HTTP or HTTPS URL.")
-        hostname = parsed.hostname.lower()
-        if hostname in {"localhost", "127.0.0.1", "::1"}:
-            return hostname
-        if hostname in self.allowed_domains or approved:
-            return hostname
-        raise PermissionError(f"Browser navigation to '{hostname}' requires explicit approval.")
+        try:
+            host = urlparse(url).hostname or ""
+            domain_approved = host.casefold() in self.allowed_domains
+            decision = self.egress.authorize(
+                url, approved=approved or domain_approved, allow_loopback=True
+            )
+        except EgressError as exc:
+            raise BrowserRuntimeError(str(exc)) from exc
+        if self.allowed_domains and not decision.local and decision.hostname not in self.allowed_domains and not approved:
+            raise PermissionError(f"Browser navigation to '{decision.hostname}' is outside the configured allowlist.")
+        return decision.hostname
 
 
 class BrowserRuntime:
@@ -69,6 +74,20 @@ class BrowserRuntime:
                     console_errors: list[str] = []
                     page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
                     page.on("pageerror", lambda error: console_errors.append(str(error)))
+                    def authorize_request(route: Any) -> None:
+                        request_url = str(route.request.url)
+                        scheme = urlparse(request_url).scheme.casefold()
+                        if scheme in {"data", "blob", "about"}:
+                            route.continue_()
+                            return
+                        try:
+                            self.policy.authorize(request_url, approved=approved)
+                        except (BrowserRuntimeError, PermissionError):
+                            route.abort("blockedbyclient")
+                            return
+                        route.continue_()
+
+                    page.route("**/*", authorize_request)
                     page.goto(url, wait_until="domcontentloaded", timeout=max(1, int(timeout_seconds)) * 1000)
                     evidence = [{"action": "navigate", "url": page.url, "title": page.title()}]
                     for action in list(actions or [])[:30]:

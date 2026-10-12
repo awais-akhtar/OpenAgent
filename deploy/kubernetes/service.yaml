@@ -10,5 +10,4 @@ spec:
   ports:
     - name: http
       port: 8765
-      targetPort: 8765
-
+      targetPort: http

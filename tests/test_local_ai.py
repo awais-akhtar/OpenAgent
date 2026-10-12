@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from openagent.local_ai import LocalAIInfrastructure, ModelDownloadError
+from openagent.process_policy import ProcessResult
 from openagent.storage import OpenAgentStore
 
 
@@ -90,9 +91,9 @@ class LocalAIInfrastructureTests(unittest.TestCase):
     def test_ollama_pull_registers_pullable_model_name(self) -> None:
         with TemporaryDirectory() as tmp:
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
-            completed = SimpleNamespace(returncode=0, stdout="pulled", stderr="")
+            completed = ProcessResult(("ollama", "pull", "phi4-mini"), 0, "pulled", "", False, False)
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.run",
+                "openagent.local_ai.run_process",
                 return_value=completed,
             ) as run:
                 result = infra.pull_ollama_model(
@@ -105,15 +106,19 @@ class LocalAIInfrastructureTests(unittest.TestCase):
         self.assertEqual(result["model"]["provider"], "ollama")
         self.assertEqual(result["model"]["status"], "available")
         run.assert_called_once()
-        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+        policy = run.call_args.kwargs["policy"]
+        self.assertEqual(policy.max_output_bytes, 512_000)
+        self.assertEqual(policy.allowed_executables, ("ollama",))
+        self.assertIn("OLLAMA_HOST", policy.env_keys)
+        self.assertNotIn("OPENAI_API_KEY", policy.env_keys)
+        self.assertEqual(run.call_args.kwargs["cwd"], infra.model_root)
 
     def test_ollama_pull_tolerates_missing_captured_output(self) -> None:
         with TemporaryDirectory() as tmp:
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
-            completed = SimpleNamespace(returncode=0, stdout=None, stderr=None)
+            completed = ProcessResult(("ollama", "pull", "qwen2.5vl:3b"), 0, "", "", False, False)
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.run", return_value=completed,
+                "openagent.local_ai.run_process", return_value=completed,
             ):
                 result = infra.pull_ollama_model("qwen2.5vl:3b", allow_network=True, project="test")
 
@@ -124,10 +129,10 @@ class LocalAIInfrastructureTests(unittest.TestCase):
     def test_setup_chat_model_uses_ollama_when_available(self) -> None:
         with TemporaryDirectory() as tmp:
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
-            completed = SimpleNamespace(returncode=0, stdout="pulled", stderr="")
+            completed = ProcessResult(("ollama", "pull", "phi4-mini"), 0, "pulled", "", False, False)
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.Popen", return_value=CompletedPullProcess()
-            ), patch("openagent.local_ai.subprocess.run", return_value=completed):
+                "openagent.local_ai.run_process", return_value=completed
+            ):
                 result = infra.setup_chat_model(
                     model_name="phi4-mini",
                     allow_network=True,
@@ -191,14 +196,31 @@ class LocalAIInfrastructureTests(unittest.TestCase):
                 source_url="ollama://phi4-mini",
                 local_path="ollama://phi4-mini",
             )
-            completed = SimpleNamespace(returncode=0, stdout="deleted", stderr="")
+            completed = ProcessResult(("ollama", "rm", "phi4-mini"), 0, "deleted", "", False, False)
             with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
-                "openagent.local_ai.subprocess.run", return_value=completed
+                "openagent.local_ai.run_process", return_value=completed
             ) as run:
                 result = infra.delete_model(model["id"], delete_file=True)
             self.assertTrue(result["deleted_runtime_artifact"])
             self.assertIsNone(infra.get_model(model["id"]))
             self.assertEqual(run.call_args.args[0], ["ollama", "rm", "phi4-mini"])
+
+    def test_non_streaming_ollama_pull_honours_cancellation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            infra = LocalAIInfrastructure(OpenAgentStore(tmp))
+            cancelled = ProcessResult(
+                ("ollama", "pull", "phi4-mini"), 130, "", "", False, False, cancelled=True
+            )
+            with patch("openagent.local_ai.shutil.which", return_value="ollama"), patch(
+                "openagent.local_ai.run_process", return_value=cancelled
+            ) as run:
+                with self.assertRaisesRegex(ModelDownloadError, "cancelled"):
+                    infra.pull_ollama_model(
+                        "phi4-mini",
+                        allow_network=True,
+                        cancel_requested=lambda: True,
+                    )
+            self.assertTrue(run.call_args.kwargs["cancel_event"].is_set())
 
     def test_delete_imported_model_preserves_external_file(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -214,22 +236,16 @@ class LocalAIInfrastructureTests(unittest.TestCase):
             self.assertIsNone(infra.get_model(model["id"]))
 
     def test_ollama_http_pull_works_when_cli_is_not_on_path(self) -> None:
-        class FakeResponse:
-            def __enter__(self) -> "FakeResponse":
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                return None
-
-            def read(self) -> bytes:
-                return b'{"status":"success"}'
-
         with TemporaryDirectory() as tmp:
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))
             with patch("openagent.local_ai.shutil.which", return_value=None), patch(
                 "openagent.local_ai.local_http_available",
                 return_value=True,
-            ), patch("openagent.local_ai.urlopen", return_value=FakeResponse()) as opened:
+            ), patch.object(
+                infra.egress,
+                "fetch",
+                return_value=SimpleNamespace(body=b'{"status":"success"}'),
+            ) as opened:
                 result = infra.pull_ollama_model("phi4-mini", allow_network=True)
 
         self.assertEqual(result["ollama_model"], "phi4-mini")

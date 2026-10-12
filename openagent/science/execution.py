@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import ast
-import subprocess
 import sys
 import time
 import hashlib
-import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import threading
 from pathlib import Path
 from typing import Callable
+
+from ..process_policy import ProcessPolicy, ProcessResult, run_process
 
 
 @dataclass(frozen=True)
@@ -58,13 +59,14 @@ class ScientificCodeRunner:
         memory_limit_mb: int = 512,
         retries: int = 0,
         repair: Callable[[str, str], str] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ExecutionRecord:
         if memory_limit_mb < 32 or memory_limit_mb > 16_384:
             raise ValueError("memory_limit_mb must be between 32 and 16384")
         current = code
         repairer = repair or repair_scientific_code
         started = time.perf_counter()
-        last: subprocess.CompletedProcess[str] | None = None
+        last: ProcessResult | None = None
         attempts = 0
         peak_memory = 0
         history: list[dict[str, object]] = []
@@ -74,7 +76,7 @@ class ScientificCodeRunner:
             violations = execution_policy_violations(current)
             if violations:
                 message = "Execution policy rejected the source: " + "; ".join(violations)
-                last = subprocess.CompletedProcess([sys.executable, "-I", "-c", "<blocked>"], 126, "", message)
+                last = ProcessResult((sys.executable, "-I", "-c", "<blocked>"), 126, "", message, False, False)
                 history.append({
                     "attempt": attempts,
                     "returncode": 126,
@@ -90,44 +92,36 @@ class ScientificCodeRunner:
             lifecycle.append({"stage": "execute", "status": "running", "attempt": attempts, "message": f"Running attempt {attempts}."})
             attempt_started = time.perf_counter()
             with tempfile.TemporaryDirectory(prefix="openagent-science-") as workspace:
-                process = subprocess.Popen(
+                last = run_process(
                     [sys.executable, "-I", "-c", current],
                     cwd=workspace,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                    policy=ProcessPolicy(
+                        timeout_seconds=max(0.1, timeout_seconds),
+                        max_output_bytes=20_000,
+                        max_memory_bytes=memory_limit_mb * 1024 * 1024,
+                        allowed_cwd_roots=(Path(workspace),),
+                        allowed_executables=(sys.executable,),
+                    ),
+                    cancel_event=cancel_event,
                 )
-                deadline = time.monotonic() + max(0.1, timeout_seconds)
-                memory_limit_bytes = memory_limit_mb * 1024 * 1024
-                while process.poll() is None:
-                    current_memory = _process_memory_bytes(process.pid)
-                    peak_memory = max(peak_memory, current_memory)
-                    if current_memory > memory_limit_bytes:
-                        process.kill()
-                        stdout, stderr = process.communicate()
-                        last = subprocess.CompletedProcess(
-                            process.args,
-                            125,
-                            stdout,
-                            f"{stderr}\nExecution exceeded the {memory_limit_mb} MB memory limit.".strip(),
-                        )
-                        lifecycle[-1] = {
-                            "stage": "resource_limit",
-                            "status": "terminated",
-                            "attempt": attempts,
-                            "message": f"Attempt {attempts} exceeded the {memory_limit_mb} MB memory limit.",
-                        }
-                        break
-                    if time.monotonic() >= deadline:
-                        process.kill()
-                        stdout, stderr = process.communicate()
-                        last = subprocess.CompletedProcess(process.args, 124, stdout, f"{stderr}\nExecution timed out.".strip())
-                        break
-                    time.sleep(0.01)
-                else:
-                    stdout, stderr = process.communicate()
-                    last = subprocess.CompletedProcess(process.args, int(process.returncode or 0), stdout, stderr)
+            peak_memory = max(peak_memory, last.peak_memory_bytes)
+            stderr = last.stderr
+            if last.resource_limited:
+                stderr = f"{stderr}\nExecution exceeded the {memory_limit_mb} MB memory limit.".strip()
+                last = replace(last, stderr=stderr)
+                lifecycle[-1] = {
+                    "stage": "resource_limit",
+                    "status": "terminated",
+                    "attempt": attempts,
+                    "message": f"Attempt {attempts} exceeded the {memory_limit_mb} MB memory limit.",
+                }
+            elif last.cancelled:
+                stderr = f"{stderr}\nExecution cancelled.".strip()
+                last = replace(last, stderr=stderr)
+                lifecycle[-1] = {"stage": "execute", "status": "cancelled", "attempt": attempts, "message": f"Attempt {attempts} was cancelled."}
+            elif last.timed_out:
+                stderr = f"{stderr}\nExecution timed out.".strip()
+                last = replace(last, stderr=stderr)
             entry: dict[str, object] = {
                 "attempt": attempts,
                 "returncode": last.returncode,
@@ -136,10 +130,14 @@ class ScientificCodeRunner:
                 "stderr_tail": last.stderr[-2000:],
                 "stdout_tail": last.stdout[-2000:],
                 "repair_applied": False,
+                "output_truncated": last.output_truncated,
             }
             if last.returncode == 0:
                 history.append(entry)
                 lifecycle[-1] = {"stage": "execute", "status": "complete", "attempt": attempts, "message": f"Attempt {attempts} completed successfully."}
+                break
+            if last.cancelled:
+                history.append(entry)
                 break
             if lifecycle[-1].get("stage") != "resource_limit":
                 lifecycle[-1] = {"stage": "execute", "status": "failed", "attempt": attempts, "message": f"Attempt {attempts} returned exit code {last.returncode}."}
@@ -159,7 +157,7 @@ class ScientificCodeRunner:
             current = repaired
         assert last is not None
         return ExecutionRecord(
-            "completed" if last.returncode == 0 else "failed",
+            "cancelled" if last.cancelled else "completed" if last.returncode == 0 else "failed",
             last.stdout[-20000:],
             last.stderr[-20000:],
             last.returncode,
@@ -171,38 +169,6 @@ class ScientificCodeRunner:
             repairs,
             tuple(lifecycle + [{"stage": "profile", "status": "complete", "message": f"Recorded {round((time.perf_counter() - started) * 1000, 3)} ms elapsed time and {peak_memory} peak bytes."}]),
         )
-
-
-def _process_memory_bytes(pid: int) -> int:
-    try:
-        if os.name == "nt":
-            import ctypes
-            from ctypes import wintypes
-
-            class ProcessMemoryCounters(ctypes.Structure):
-                _fields_ = [
-                    ("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
-                    ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                    ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
-                ]
-            access = 0x0400 | 0x0010
-            handle = ctypes.windll.kernel32.OpenProcess(access, False, pid)
-            if not handle:
-                return 0
-            counters = ProcessMemoryCounters()
-            counters.cb = ctypes.sizeof(counters)
-            ok = ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return int(counters.PeakWorkingSetSize) if ok else 0
-        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
-        for line in status.splitlines():
-            if line.startswith("VmHWM:"):
-                return int(line.split()[1]) * 1024
-    except (OSError, ValueError, AttributeError):
-        return 0
-    return 0
 
 
 def repair_scientific_code(code: str, traceback: str) -> str:

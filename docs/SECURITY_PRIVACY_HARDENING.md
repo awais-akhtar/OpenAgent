@@ -55,9 +55,9 @@ POST /api/security/sandbox/evaluate
 
 ## Secret Vault
 
-Secrets are encrypted before being stored in SQLite. The stored record includes ciphertext and integrity metadata; list APIs do not return plaintext. Plaintext is returned only by the reveal endpoint when the caller provides the passphrase.
+Secrets are encrypted before they are stored in SQLite. New records use the shared versioned AES-256-GCM envelope from `openagent.crypto`, with a random nonce and authenticated purpose and key metadata. List APIs do not return plaintext. The reveal endpoint returns plaintext only after the caller supplies the passphrase.
 
-The Stage 9 implementation intentionally uses only the Python standard library so OpenAgent remains dependency-light. Stage 12 adds audited local cryptography envelopes, encrypted sync bundles, hardware key metadata, and secure enclave metadata records. Production deployments can still wire this layer to certified cryptography providers, hardware-backed key storage, or an external secret manager that remains under user control.
+Older authenticated records remain readable so an existing installation can upgrade without losing secrets. A successful legacy read is followed by a verified rewrite in the current envelope format. Key versions are recorded for rotation, and the provider interface leaves room for an operating-system keyring, KMS, HSM, or external secret manager. These adapters are integration points, not certified deployments in this repository.
 
 ## Retention
 

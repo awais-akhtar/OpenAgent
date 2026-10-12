@@ -2,31 +2,42 @@ from __future__ import annotations
 
 from tempfile import TemporaryDirectory
 import json
+import sqlite3
 import unittest
 
 from openagent.communication import CommunicationApprovalRequired, CommunicationHub
+from openagent.migrations import MIGRATIONS, MigrationRunner
 from openagent.storage import OpenAgentStore
 
 
 class CommunicationHubTests(unittest.TestCase):
     def test_initialize_upgrades_legacy_ownerless_tables_before_indexes(self) -> None:
         with TemporaryDirectory() as tmp:
-            store = OpenAgentStore(tmp)
-            with store.session() as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE contacts (
-                        id TEXT PRIMARY KEY,
-                        project TEXT NOT NULL,
-                        name TEXT NOT NULL
-                    );
-                    CREATE TABLE inbox_messages (
-                        id TEXT PRIMARY KEY,
-                        project TEXT NOT NULL,
-                        created_at TEXT NOT NULL
-                    );
-                    """
-                )
+            path = f"{tmp}/openagent.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.row_factory = sqlite3.Row
+            MigrationRunner(connection, MIGRATIONS[:8]).run()
+            connection.executescript(
+                """
+                CREATE TABLE contacts (
+                    id TEXT PRIMARY KEY, project TEXT NOT NULL, name TEXT NOT NULL,
+                    handles_json TEXT NOT NULL DEFAULT '{}', notes TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO contacts (id, project, name, created_at, updated_at)
+                VALUES ('legacy-1', 'core', 'Ada', '2026-01-01', '2026-01-01');
+                CREATE TABLE inbox_messages (
+                    id TEXT PRIMARY KEY,
+                    project TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            store = OpenAgentStore(path)
 
             CommunicationHub(store)
 
@@ -43,6 +54,11 @@ class CommunicationHubTests(unittest.TestCase):
             self.assertIn("owner", inbox_columns)
             self.assertIn("idx_contacts_owner_project_name", indexes)
             self.assertIn("idx_inbox_owner_project_created", indexes)
+            with store.session() as connection:
+                self.assertEqual(
+                    connection.execute("SELECT owner FROM contacts WHERE id='legacy-1'").fetchone()["owner"],
+                    "local",
+                )
 
     def test_inbox_contacts_calendar_draft_approval_and_analytics(self) -> None:
         with TemporaryDirectory() as tmp:

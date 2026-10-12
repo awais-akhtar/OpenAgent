@@ -1,14 +1,56 @@
 services:
   openagent:
-    build: .
+    build:
+      context: .
+      target: runtime
+      args:
+        OPENAGENT_VERSION: "0.13.0"
+    image: openagent:0.13.0
+    user: "10001:10001"
+    init: true
     ports:
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     volumes:
       - openagent-data:/data
     environment:
       OPENAGENT_HOME: /data
-    restart: unless-stopped
+      OPENAGENT_DEPLOYMENT_MODE: team
+      OPENAGENT_AUTH_ENFORCED: "1"
+      OPENAGENT_BOOTSTRAP_TOKEN: ${OPENAGENT_BOOTSTRAP_TOKEN:?Set OPENAGENT_BOOTSTRAP_TOKEN before starting}
+      OPENAGENT_TRUSTED_ORIGINS: ${OPENAGENT_TRUSTED_ORIGINS:-}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    cpus: "2.0"
+    mem_limit: 4g
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    restart: "no"
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
 volumes:
   openagent-data:
-

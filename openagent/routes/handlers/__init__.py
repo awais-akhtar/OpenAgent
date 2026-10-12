@@ -8,8 +8,18 @@ from typing import Any
 
 HANDLER_MODULES: tuple[str, ...] = (
     "chat_handler",
+    "agents_handler",
+    "workspace_handler",
+    "assistant_handler",
+    "twin_handler",
+    "semantic_handler",
+    "vault_handler",
     "voice_handler",
     "knowledge_handler",
+    "finetune_handler",
+    "scraper_handler",
+    "draft_handler",
+    "media_handler",
     "calendar_handler",
     "communication_handler",
     "local_ai_handler",

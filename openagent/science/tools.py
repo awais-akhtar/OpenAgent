@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from ..process_policy import ProcessPolicy, run_process
 
 
 @dataclass(frozen=True)
@@ -80,14 +82,22 @@ class SimulationTool:
 class CommandSimulationTool(SimulationTool):
     """Run a configured executable without invoking a shell."""
 
-    def __init__(self, name: str, executable: str | Path | None = None, args: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        name: str,
+        executable: str | Path | None = None,
+        args: Sequence[str] = (),
+        *,
+        working_directory: str | Path | None = None,
+    ) -> None:
         self.name = name
         self.executable = str(executable) if executable else ""
         self.args = tuple(args)
+        self.working_directory = Path(working_directory).expanduser().resolve() if working_directory else None
 
     def capability(self) -> ToolCapability:
         path = Path(self.executable) if self.executable else None
-        resolved = str(path) if path and path.is_file() else (shutil.which(self.executable) if self.executable else "")
+        resolved = str(path.resolve()) if path and path.is_file() else (shutil.which(self.executable) if self.executable else "")
         return ToolCapability(
             self.name,
             "simulator",
@@ -96,24 +106,39 @@ class CommandSimulationTool(SimulationTool):
             privacy_boundary="Runs only the explicitly configured local executable; no network access is added.",
         )
 
-    def run(self, *, inputs: Mapping[str, Any], timeout_seconds: float = 30.0) -> dict[str, Any]:
+    def run(
+        self,
+        *,
+        inputs: Mapping[str, Any],
+        timeout_seconds: float = 30.0,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         capability = self.capability()
         if not capability.available:
             return {"status": "unavailable", "tool": self.name, "inputs": dict(inputs), "message": "Configure a local simulator executable to run this adapter."}
-        completed = subprocess.run(
+        payload = json.dumps(dict(inputs), ensure_ascii=False)
+        workspace = self.working_directory or Path.cwd().resolve()
+        completed = run_process(
             [str(capability.executable), *self.args],
-            input=json.dumps(dict(inputs)),
-            text=True,
-            capture_output=True,
-            timeout=max(0.1, timeout_seconds),
-            check=False,
+            cwd=workspace,
+            input_data=payload,
+            cancel_event=cancel_event,
+            policy=ProcessPolicy(
+                timeout_seconds=max(0.1, timeout_seconds),
+                max_output_bytes=20_000,
+                max_input_bytes=1_000_000,
+                allowed_cwd_roots=(workspace,),
+                allowed_executables=(str(capability.executable),),
+            ),
         )
+        status = "cancelled" if completed.cancelled else "timeout" if completed.timed_out else "completed" if completed.returncode == 0 else "failed"
         return {
-            "status": "completed" if completed.returncode == 0 else "failed",
+            "status": status,
             "tool": self.name,
             "returncode": completed.returncode,
-            "stdout": completed.stdout[-20000:],
-            "stderr": completed.stderr[-20000:],
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "output_truncated": completed.output_truncated,
         }
 
 

@@ -15,12 +15,13 @@ import threading
 import time
 from typing import Any, Callable
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from .core_runtime import CPU_MODEL_STACK, adaptive_quantization_plan, detect_total_memory_gb, model_profiles, smooth_runtime_profile
+from .egress import EgressClient
 from .model_gateway import ModelGateway, local_http_available
 from .models import AuditEvent, utc_now
+from .process_policy import DEFAULT_ENV_KEYS, CancellationSignal, ProcessPolicy, run_process
 from .storage import OpenAgentStore
 
 
@@ -44,6 +45,30 @@ MODEL_FAILURE_REASONS: tuple[str, ...] = (
     "unknown",
 )
 
+OLLAMA_ENV_KEYS = DEFAULT_ENV_KEYS | frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "OLLAMA_HOST",
+        "OLLAMA_KEEP_ALIVE",
+        "OLLAMA_MAX_LOADED_MODELS",
+        "OLLAMA_MODELS",
+        "OLLAMA_NOHISTORY",
+        "OLLAMA_NUM_PARALLEL",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+    }
+)
+
+
+class _CallbackCancellationSignal:
+    def __init__(self, callback: Callable[[], bool]) -> None:
+        self.callback = callback
+
+    def is_set(self) -> bool:
+        return bool(self.callback())
+
 _MODEL_LIFECYCLE_TRANSITIONS: dict[str, set[str]] = {
     "discovered": {"downloading", "ready", "failed"},
     "downloading": {"ready", "failed", "degraded"},
@@ -58,6 +83,7 @@ class LocalAIInfrastructure:
     def __init__(self, store: OpenAgentStore, gateway: ModelGateway | None = None):
         self.store = store
         self.gateway = gateway or ModelGateway()
+        self.egress = EgressClient()
         self.model_root = (self.store.data_dir / "models").resolve()
         self.model_root.mkdir(parents=True, exist_ok=True)
         self.initialize()
@@ -305,21 +331,11 @@ class LocalAIInfrastructure:
         elif parsed.scheme in {"http", "https"}:
             if not allow_network:
                 raise ModelDownloadError("Network model downloads require allow_network=true.")
-            downloaded = partial.stat().st_size if partial.exists() else 0
-            request = Request(source, headers={"Range": f"bytes={downloaded}-"} if downloaded else {})
             try:
-                with urlopen(request, timeout=120) as response:
-                    status = int(getattr(response, "status", 200) or 200)
-                    mode = "ab" if downloaded and status == 206 else "wb"
-                    if mode == "wb":
-                        downloaded = 0
-                    with partial.open(mode) as handle:
-                        while True:
-                            chunk = response.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            handle.write(chunk)
-                            downloaded += len(chunk)
+                self.egress.download(
+                    source, partial, approved=allow_network, purpose=f"model download: {model_id}",
+                    timeout_seconds=120, resume=True,
+                )
             except Exception as exc:
                 self._set_model_download_state(model_id, "downloading", partial.stat().st_size if partial.exists() else 0, str(exc))
                 raise ModelDownloadError(f"Model download paused after {partial.stat().st_size if partial.exists() else 0} bytes: {exc}") from exc
@@ -459,18 +475,28 @@ class LocalAIInfrastructure:
                 cancel_requested=cancel_requested,
             )
         elif executable:
-            completed = subprocess.run(
+            cancel_signal: CancellationSignal | None = (
+                _CallbackCancellationSignal(cancel_requested) if cancel_requested is not None else None
+            )
+            completed = run_process(
                 [executable, "pull", pull_name],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
-                check=False,
+                cwd=self.model_root,
+                cancel_event=cancel_signal,
+                policy=ProcessPolicy(
+                    timeout_seconds=max(1, int(timeout_seconds)),
+                    max_output_bytes=512_000,
+                    allowed_cwd_roots=(self.model_root,),
+                    allowed_executables=(executable,),
+                    env_keys=OLLAMA_ENV_KEYS,
+                ),
             )
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
             returncode = completed.returncode
+            if completed.cancelled:
+                raise ModelDownloadError("Model download cancelled.")
+            if completed.timed_out:
+                raise subprocess.TimeoutExpired([executable, "pull", pull_name], timeout_seconds, stdout, stderr)
             if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout or "ollama pull failed").strip()
                 raise ModelDownloadError(detail[-600:])
@@ -481,32 +507,25 @@ class LocalAIInfrastructure:
                     "Ollama was not found on PATH and the local Ollama server is not reachable at "
                     f"{base_url}. Install/start Ollama, then use Setup Chat Model again."
                 )
-            request = Request(
-                f"{base_url}/api/pull",
-                data=json.dumps({"name": pull_name, "stream": progress_callback is not None}).encode("utf-8"),
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-                method="POST",
-            )
+            body = json.dumps({"name": pull_name, "stream": progress_callback is not None}).encode("utf-8")
             try:
-                with urlopen(request, timeout=timeout_seconds) as response:
-                    if progress_callback is None:
-                        stdout = response.read().decode("utf-8", errors="replace")
-                    else:
-                        chunks: list[str] = []
-                        try:
-                            iterator = iter(response)
-                        except TypeError:
-                            iterator = iter(response.read().splitlines())
-                        for raw_line in iterator:
-                            if cancel_requested and cancel_requested():
-                                raise ModelDownloadError("Model download cancelled.")
-                            line = raw_line.decode("utf-8", errors="replace").strip()
-                            if not line:
-                                continue
-                            chunks.append(line)
-                            progress, message = ollama_progress(line)
-                            progress_callback(progress, message)
-                        stdout = "\n".join(chunks)
+                def report_progress(line: str) -> None:
+                    if cancel_requested and cancel_requested():
+                        raise ModelDownloadError("Model download cancelled.")
+                    if progress_callback is not None and line.strip():
+                        progress, message = ollama_progress(line)
+                        progress_callback(progress, message)
+
+                response = self.egress.fetch(
+                    f"{base_url}/api/pull", approved=True, allow_loopback=True,
+                    purpose=f"Ollama model pull: {pull_name}", body=body,
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    method="POST",
+                    timeout_seconds=timeout_seconds, max_response_bytes=20 * 1024 * 1024,
+                    allowed_content_types={"application/json", "application/x-ndjson"},
+                    on_line=report_progress if progress_callback is not None else None,
+                )
+                stdout = response.body.decode("utf-8", errors="replace")
             except Exception as exc:
                 if isinstance(exc, ModelDownloadError):
                     raise
@@ -1215,15 +1234,19 @@ class LocalAIInfrastructure:
             raise ValueError("The Ollama model name is missing.")
         executable = shutil.which("ollama")
         if executable:
-            completed = subprocess.run(
+            completed = run_process(
                 [executable, "rm", name],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
-                check=False,
+                cwd=self.model_root,
+                policy=ProcessPolicy(
+                    timeout_seconds=120,
+                    max_output_bytes=64_000,
+                    allowed_cwd_roots=(self.model_root,),
+                    allowed_executables=(executable,),
+                    env_keys=OLLAMA_ENV_KEYS,
+                ),
             )
+            if completed.timed_out:
+                raise subprocess.TimeoutExpired([executable, "rm", name], 120, completed.stdout, completed.stderr)
             if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout or "ollama rm failed").strip()
                 raise ValueError(detail[-600:])
@@ -1231,15 +1254,15 @@ class LocalAIInfrastructure:
         base_url = os.environ.get("OPENAGENT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
         if not local_http_available(f"{base_url}/api/tags"):
             raise ValueError("Ollama is not reachable, so its model files were not removed.")
-        request = Request(
-            f"{base_url}/api/delete",
-            data=json.dumps({"name": name}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="DELETE",
-        )
         try:
-            with urlopen(request, timeout=120):
-                return
+            self.egress.fetch(
+                f"{base_url}/api/delete", approved=True, allow_loopback=True,
+                purpose=f"Ollama model delete: {name}", method="DELETE",
+                body=json.dumps({"name": name}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, timeout_seconds=120,
+                max_response_bytes=1024 * 1024,
+            )
+            return
         except Exception as exc:
             raise ValueError(f"Ollama could not remove the model: {exc}") from exc
 

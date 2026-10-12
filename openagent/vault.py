@@ -1,12 +1,12 @@
-"""Encrypted Memory Vault — secure local storage for sensitive data.
+"""Encrypted Memory Vault for local secrets and credentials.
 
 Design goals
 ------------
 * Zero-knowledge: the plaintext key is never stored anywhere on disk.
-* All data encrypted with a deterministic key derived from a user passphrase
-  via PBKDF2-HMAC-SHA256 (stdlib only — no external crypto deps).
-* Cipher: XOR stream using PBKDF2-derived keystream (portable fallback;
-  production deployments should upgrade to AES-GCM via the `cryptography` pkg).
+* New records use an authenticated AES-256-GCM envelope with a scrypt-derived
+  key and a random nonce.
+* Existing legacy records are decrypted only for a verified, one-way migration
+  to the current envelope.
 * Vault entries are tagged, searchable by tag/category, and audit-logged.
 * Key rotation: export-decrypt-re-encrypt-import without plaintext touching disk.
 
@@ -16,73 +16,41 @@ Vault categories (built-in):
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
 import json
-import os
-import struct
-from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
+from .crypto import CryptoError, decrypt_legacy_vault_envelope, decrypt_text, encrypt_text, is_current_envelope
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
 
 
-# ---------------------------------------------------------------------------
-# Crypto helpers (stdlib only)
-# ---------------------------------------------------------------------------
-
-_PBKDF2_ITERATIONS = 200_000
-_SALT_BYTES = 32
-_KEY_BYTES = 32
-
-
-def _derive_key(passphrase: str, salt: bytes) -> bytes:
-    """Derive a 32-byte encryption key using PBKDF2-HMAC-SHA256."""
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        passphrase.encode("utf-8"),
-        salt,
-        _PBKDF2_ITERATIONS,
-        dklen=_KEY_BYTES,
+def _encrypt(plaintext: str, passphrase: str) -> str:
+    return json.dumps(
+        encrypt_text(plaintext, passphrase, purpose="openagent.vault.entry"),
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
-def _xor_stream(data: bytes, key: bytes) -> bytes:
-    """XOR-based stream cipher using an extended keystream (SHA-256 chained)."""
-    keystream = bytearray()
-    block = key
-    while len(keystream) < len(data):
-        block = hashlib.sha256(block).digest()
-        keystream.extend(block)
-    return bytes(a ^ b for a, b in zip(data, keystream[: len(data)]))
-
-
-def _encrypt(plaintext: str, passphrase: str) -> str:
-    """Encrypt plaintext → base64-encoded ciphertext (salt + hmac + data)."""
-    salt = os.urandom(_SALT_BYTES)
-    key = _derive_key(passphrase, salt)
-    raw = plaintext.encode("utf-8")
-    ciphertext = _xor_stream(raw, key)
-    mac = hmac.new(key, ciphertext, hashlib.sha256).digest()
-    payload = salt + mac + ciphertext
-    return base64.b64encode(payload).decode("ascii")
-
-
 def _decrypt(encoded: str, passphrase: str) -> str:
-    """Decrypt base64 ciphertext → plaintext. Raises ValueError on wrong key."""
-    payload = base64.b64decode(encoded.encode("ascii"))
-    if len(payload) < _SALT_BYTES + 32:
-        raise ValueError("Malformed vault entry.")
-    salt = payload[:_SALT_BYTES]
-    stored_mac = payload[_SALT_BYTES: _SALT_BYTES + 32]
-    ciphertext = payload[_SALT_BYTES + 32:]
-    key = _derive_key(passphrase, salt)
-    expected_mac = hmac.new(key, ciphertext, hashlib.sha256).digest()
-    if not hmac.compare_digest(stored_mac, expected_mac):
-        raise ValueError("Decryption failed — wrong passphrase or corrupted data.")
-    return _xor_stream(ciphertext, key).decode("utf-8")
+    """Decrypt current records and legacy records retained for migration."""
+
+    try:
+        payload = json.loads(encoded)
+    except (TypeError, json.JSONDecodeError):
+        return decrypt_legacy_vault_envelope(encoded, passphrase)
+    if not isinstance(payload, dict) or not is_current_envelope(payload):
+        raise CryptoError("Unsupported vault encryption envelope.")
+    return decrypt_text(payload, passphrase, purpose="openagent.vault.entry")
+
+
+def _is_legacy_ciphertext(encoded: str) -> bool:
+    try:
+        return not is_current_envelope(json.loads(encoded))
+    except (TypeError, json.JSONDecodeError):
+        return True
 
 
 def _fingerprint(passphrase: str) -> str:
@@ -111,44 +79,7 @@ class EncryptedVault:
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
-        with self.store.session() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS vault_entries (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    category TEXT NOT NULL,
-                    label TEXT NOT NULL,
-                    tags_json TEXT NOT NULL DEFAULT '[]',
-                    ciphertext TEXT NOT NULL,
-                    key_fingerprint TEXT NOT NULL,
-                    notes TEXT NOT NULL DEFAULT '',
-                    access_count INTEGER NOT NULL DEFAULT 0,
-                    last_accessed TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_vault_project_cat
-                    ON vault_entries(project, category);
-
-                CREATE TABLE IF NOT EXISTS vault_access_log (
-                    id TEXT PRIMARY KEY,
-                    entry_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    success INTEGER NOT NULL DEFAULT 1,
-                    ip_hint TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS vault_key_registry (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL,
-                    label TEXT NOT NULL DEFAULT 'default',
-                    created_at TEXT NOT NULL
-                );
-            """)
+        self.store.initialize()
 
     # ------------------------------------------------------------------
     # Store / retrieve
@@ -178,7 +109,7 @@ class EncryptedVault:
         ciphertext = _encrypt(secret, passphrase)
         fingerprint = _fingerprint(passphrase)
         now = utc_now()
-        entry_id = hashlib.md5(f"vault-{project}-{label}-{now}".encode()).hexdigest()
+        entry_id = uuid4().hex
 
         with self.store.session() as conn:
             conn.execute(
@@ -190,7 +121,7 @@ class EncryptedVault:
             # Register key fingerprint
             conn.execute(
                 "INSERT OR IGNORE INTO vault_key_registry VALUES(?,?,?,?,?)",
-                (hashlib.md5(f"key-{project}-{fingerprint}".encode()).hexdigest(),
+                (uuid4().hex,
                  project, fingerprint, "default", now),
             )
 
@@ -214,18 +145,24 @@ class EncryptedVault:
 
         try:
             plaintext = _decrypt(entry["ciphertext"], passphrase)
-            success = True
         except ValueError:
             self._log_access(entry_id, project, "retrieve", success=False)
             raise
 
-        # Update access counter
+        replacement = _encrypt(plaintext, passphrase) if _is_legacy_ciphertext(entry["ciphertext"]) else None
         now = utc_now()
         with self.store.session() as conn:
-            conn.execute(
-                "UPDATE vault_entries SET access_count=access_count+1, last_accessed=? WHERE id=?",
-                (now, entry_id),
-            )
+            if replacement:
+                conn.execute(
+                    "UPDATE vault_entries SET ciphertext=?, access_count=access_count+1, "
+                    "last_accessed=?, updated_at=? WHERE id=?",
+                    (replacement, now, now, entry_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE vault_entries SET access_count=access_count+1, last_accessed=? WHERE id=?",
+                    (now, entry_id),
+                )
 
         self._log_access(entry_id, project, "retrieve", success=True)
         self.store.add_audit_event(AuditEvent(
@@ -233,7 +170,7 @@ class EncryptedVault:
             action="vault.retrieve",
             resource=f"vault:retrieve:{entry_id}",
             project=project,
-            metadata={"entry_id": entry_id, "label": entry["label"]},
+            metadata={"entry_id": entry_id, "label": entry["label"], "envelope_migrated": bool(replacement)},
         ))
         return {
             "id": entry_id,
@@ -355,26 +292,26 @@ class EncryptedVault:
         if not new_passphrase:
             raise ValueError("New passphrase cannot be empty.")
         old_fp = _fingerprint(old_passphrase)
+        now = utc_now()
+        new_fp = _fingerprint(new_passphrase)
         with self.store.session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 "SELECT id, ciphertext FROM vault_entries WHERE project=? AND key_fingerprint=?",
                 (project, old_fp),
             ).fetchall()
-        rotated = 0
-        now = utc_now()
-        new_fp = _fingerprint(new_passphrase)
-        for row in rows:
-            try:
-                plaintext = _decrypt(row[1], old_passphrase)
-                new_cipher = _encrypt(plaintext, new_passphrase)
-                with self.store.session() as conn:
-                    conn.execute(
-                        "UPDATE vault_entries SET ciphertext=?, key_fingerprint=?, updated_at=? WHERE id=?",
-                        (new_cipher, new_fp, now, row[0]),
-                    )
-                rotated += 1
-            except ValueError:
-                pass
+            replacements = []
+            for row in rows:
+                try:
+                    replacements.append((row[0], _encrypt(_decrypt(row[1], old_passphrase), new_passphrase)))
+                except ValueError as exc:
+                    raise ValueError("Vault key rotation could not verify every entry; no keys were changed.") from exc
+            for entry_id, ciphertext in replacements:
+                conn.execute(
+                    "UPDATE vault_entries SET ciphertext=?, key_fingerprint=?, updated_at=? WHERE id=?",
+                    (ciphertext, new_fp, now, entry_id),
+                )
+        rotated = len(replacements)
         self.store.add_audit_event(AuditEvent(
             actor="vault",
             action="vault.key_rotation",
@@ -405,7 +342,7 @@ class EncryptedVault:
         bundle_json = json.dumps(bundle)
         encrypted_bundle = _encrypt(bundle_json, passphrase)
         return {
-            "format": "openagent-vault-v1",
+            "format": "openagent-vault-v2",
             "project": project,
             "entry_count": len(bundle),
             "encrypted_bundle": encrypted_bundle,
@@ -438,7 +375,7 @@ class EncryptedVault:
 
     def _log_access(self, entry_id: str, project: str, action: str, *, success: bool) -> None:
         now = utc_now()
-        log_id = hashlib.md5(f"vault-log-{entry_id}-{action}-{now}".encode()).hexdigest()
+        log_id = uuid4().hex
         with self.store.session() as conn:
             conn.execute(
                 "INSERT INTO vault_access_log VALUES(?,?,?,?,?,?,?)",
@@ -466,10 +403,11 @@ class EncryptedVault:
             "registered_keys": n_keys,
             "entries_by_category": dict(cat_counts),
             "project": project,
-            "encryption": "PBKDF2-HMAC-SHA256 + XOR-stream",
+            "encryption": "AES-256-GCM + scrypt",
+            "envelope_version": 2,
             "features": [
                 "zero-knowledge", "passphrase-encryption", "key-rotation",
                 "audit-logging", "category-tags", "encrypted-export",
-                "access-counting", "hmac-integrity",
+                "access-counting", "authenticated-encryption", "legacy-migration",
             ],
         }

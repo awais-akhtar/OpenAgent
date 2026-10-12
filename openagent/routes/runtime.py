@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import base64
 import binascii
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import mimetypes
 import os
 from pathlib import Path
@@ -36,17 +37,19 @@ from ..codebase import CodebaseService
 from ..communication import CommunicationApprovalRequired, CommunicationHub
 from ..compute_router import ComputeRouter
 from ..conversation_organization import ConversationOrganization
-from ..config import auth_enforcement_enabled, web_root as default_web_root
+from ..config import auth_enforcement_enabled, startup_settings, web_root as default_web_root
 from ..contacts import ContactsManager
 from ..context import ContextEngine
-from ..developer import DeveloperPlatform, DeveloperPlatformError
+from ..developer import DeveloperPlatform
 from ..document_processing import DocumentProcessing
 from ..digital_twin import DigitalTwin
-from ..documents import DocumentError, DocumentManager
+from ..documents import DocumentManager
+from .document_routes import DocumentRouteDependencies, handle_get as handle_document_get, handle_post as handle_document_post, handle_put as handle_document_put, handle_patch as handle_document_patch, handle_delete as handle_document_delete
 from ..enterprise import EnterpriseManager
 from ..enterprise_identity import EnterpriseIdentity
 from ..fine_tuning import FineTuningManager
 from ..hard_audit import run_hard_audit
+from ..http_security import SlidingWindowRateLimiter, request_rate_class
 from ..image_studio import ImageStudio
 from ..integration_hub import IntegrationHub, IntegrationHubError
 from ..knowledge import KnowledgeEngine
@@ -57,7 +60,7 @@ from ..mission_control import MissionControl
 from ..model_cookbook import ModelCookbook
 from ..model_gateway import ModelGateway, ProviderConfigurationError, runtime_settings_snapshot
 from ..models import AuditEvent, utc_now
-from ..multi_agent import ApprovalRequired, MultiAgentRuntime, PermissionDenied
+from ..multi_agent import MultiAgentRuntime
 from ..personal_os import PersonalOS, PersonalOSError
 from ..phd_workspace import PhDWorkspace
 from ..production_runtime import ProductionRuntime, ProductionRuntimeError
@@ -69,33 +72,51 @@ from ..safe_terminal import SafeTerminal
 from ..scheduler import Scheduler
 from ..skill_ecosystem import SkillEcosystem
 from ..tools.runtime import ToolRuntime, register_safe_terminal
+from . import StreamRouteResult
 from .agent_bridge_routes import AgentBridgeRouteDependencies, handle_get as handle_agent_bridge_get, handle_post as handle_agent_bridge_post
+from .agents_routes import AgentRouteDependencies, handle_get as handle_agents_get, handle_post as handle_agents_post
+from .assistant_routes import AssistantRouteDependencies, handle_get as handle_assistant_get, handle_post as handle_assistant_post
 from .advanced_rag_routes import AdvancedRAGRouteDependencies, handle_get as handle_advanced_rag_get, handle_post as handle_advanced_rag_post
 from .adaptive_engine_routes import AdaptiveEngineRouteDependencies, handle_get as handle_adaptive_engine_get, handle_post as handle_adaptive_engine_post
+from .auth_routes import AuthRouteDependencies, handle_delete as handle_auth_delete, handle_get as handle_auth_get, handle_post as handle_auth_post
 from .backup_routes import BackupRouteDependencies, handle_get as handle_backup_get, handle_post as handle_backup_post
 from .calendar_routes import CalendarRouteDependencies, handle_get as handle_calendar_get, handle_post as handle_calendar_post
+from .chat_routes import ChatRouteDependencies, handle_get as handle_chat_get, handle_post as handle_chat_post
 from .codebase_routes import CodebaseRouteDependencies, handle_get as handle_codebase_get, handle_post as handle_codebase_post
 from .communication_routes import CommunicationRouteDependencies, handle_get as handle_communication_get, handle_post as handle_communication_post
 from .conversation_routes import ConversationRouteDependencies, handle_delete as handle_conversation_delete, handle_get as handle_conversation_get, handle_patch as handle_conversation_patch, handle_post as handle_conversation_post
 from .contacts_routes import ContactsRouteDependencies, handle_delete as handle_contacts_delete, handle_get as handle_contacts_get, handle_patch as handle_contacts_patch, handle_post as handle_contacts_post
 from .compute_routes import ComputeRouteDependencies, handle_get as handle_compute_get, handle_post as handle_compute_post
+from .core_routes import CoreRouteDependencies, handle_get as handle_core_get, handle_post as handle_core_post
 from .document_processing_routes import DocumentProcessingRouteDependencies, handle_post as handle_document_processing_post
+from .developer_routes import DeveloperRouteDependencies, handle_get as handle_developer_get, handle_post as handle_developer_post
+from .draft_routes import DraftRouteDependencies, handle_delete as handle_draft_delete, handle_get as handle_draft_get, handle_post as handle_draft_post, handle_put as handle_draft_put
+from .finetune_routes import FineTuneRouteDependencies, handle_get as handle_finetune_get, handle_post as handle_finetune_post
 from .handlers import handler_specs
 from .health_routes import HealthRouteDependencies, handle_get as handle_health_get
 from .image_studio_routes import ImageStudioRouteDependencies, handle_get as handle_image_studio_get, handle_post as handle_image_studio_post
 from .identity_routes import IdentityRouteDependencies, handle_delete as handle_identity_delete, handle_get as handle_identity_get, handle_post as handle_identity_post
 from .inference_routes import InferenceRouteDependencies, handle_get as handle_inference_get, handle_post as handle_inference_post
+from .knowledge_routes import KnowledgeRouteDependencies, handle_get as handle_knowledge_get, handle_post as handle_knowledge_post
 from .mcp_runtime_routes import MCPRuntimeRouteDependencies, handle_get as handle_mcp_runtime_get, handle_patch as handle_mcp_runtime_patch, handle_post as handle_mcp_runtime_post
+from .media_routes import MediaRouteDependencies, ResponseAlreadySent, handle_get as handle_media_get, handle_post as handle_media_post
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
 from .phd_routes import PhDRouteDependencies, handle_delete as handle_phd_delete, handle_get as handle_phd_get, handle_patch as handle_phd_patch, handle_post as handle_phd_post
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
+from .scraper_routes import ScraperRouteDependencies, handle_get as handle_scraper_get, handle_post as handle_scraper_post
+from .security_routes import SecurityRouteDependencies, handle_get as handle_security_get, handle_post as handle_security_post
+from .semantic_routes import SemanticRouteDependencies, handle_get as handle_semantic_get, handle_post as handle_semantic_post
 from .skill_routes import SkillRouteDependencies, handle_get as handle_skill_get, handle_post as handle_skill_post
 from .terminal_routes import TerminalRouteDependencies, handle_get as handle_terminal_get, handle_post as handle_terminal_post
 from .tool_runtime_routes import ToolRuntimeRouteDependencies, handle_get as handle_tool_runtime_get, handle_post as handle_tool_runtime_post
+from .twin_routes import TwinRouteDependencies, handle_get as handle_twin_get, handle_post as handle_twin_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
+from .vault_routes import VaultRouteDependencies, handle_get as handle_vault_get, handle_post as handle_vault_post
 from .vector_routes import VectorRouteDependencies, handle_get as handle_vector_get, handle_post as handle_vector_post
 from .worker_routes import WorkerRouteDependencies, handle_get as handle_worker_get, handle_post as handle_worker_post
+from .workspace_routes import WorkspaceRouteDependencies, handle_get as handle_workspace_get, handle_post as handle_workspace_post
+from .workflows_routes import WorkflowRouteDependencies, handle_delete as handle_workflows_delete, handle_get as handle_workflows_get, handle_post as handle_workflows_post, handle_put as handle_workflows_put
 from ..scraper import WebScraper
 from ..security_privacy import SecurityPrivacyError, SecurityPrivacyManager
 from ..semantic_memory import SemanticMemoryManager
@@ -107,13 +128,22 @@ from ..voice import VoiceRuntime
 from ..vector_store import VectorStore
 from ..worker import WorkerRuntime
 from ..workspace import WorkspaceManager
-from ..workflows import BackgroundWorkflowWorker, WorkflowEngine, WorkflowSafetyError
+from ..workflows import BackgroundWorkflowWorker, WorkflowEngine
 
 
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("text/html; charset=utf-8", ".html")
+HTTP_LOG = logging.getLogger("openagent.http")
+
+
+class RequestRejected(ValueError):
+    """A request cannot be parsed safely and should receive a JSON error."""
+
+    def __init__(self, message: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _parse_multipart_parts(body: bytes, boundary: bytes) -> list[dict[str, object]]:
@@ -242,6 +272,7 @@ def build_http_server(
     *,
     warm_openvino: bool = False,
 ) -> ThreadingHTTPServer:
+    settings = startup_settings(host, port)
     context = ContextEngine(store)
     adaptive_engine = AdaptiveExecutionEngine(store)
     gateway = ModelGateway(direct_hardware=adaptive_engine.direct)
@@ -371,6 +402,9 @@ def build_http_server(
     mcp_runtime = MCPRuntime(store)
     agent_bridge = AgentBridge(store)
     root = (web_root or default_web_root()).resolve()
+    module_health_cache: dict[str, tuple[float, dict[str, object]]] = {}
+    module_health_cache_lock = threading.Lock()
+    request_limiter = SlidingWindowRateLimiter()
 
     def ui_build_info() -> dict[str, object]:
         assets: dict[str, object] = {}
@@ -395,6 +429,11 @@ def build_http_server(
         }
 
     def module_health(project: str = "default") -> dict[str, object]:
+        now = time.monotonic()
+        with module_health_cache_lock:
+            cached = module_health_cache.get(project)
+            if cached and now - cached[0] < 5.0:
+                return cached[1]
         modules: list[dict[str, object]] = []
 
         def check_module(
@@ -413,6 +452,10 @@ def build_http_server(
                     "id": module_id,
                     "label": label,
                     "status": status,
+                    "probe_status": "responding",
+                    "capability_status": (
+                        "available" if evidence.get("local_model_ready") else "setup_needed"
+                    ) if module_id == "chat" and isinstance(evidence, dict) else "not_evaluated",
                     "reason": reason,
                     "evidence": evidence,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
@@ -422,13 +465,15 @@ def build_http_server(
                     "id": module_id,
                     "label": label,
                     "status": "error",
+                    "probe_status": "error",
+                    "capability_status": "not_evaluated",
                     "reason": str(exc),
                     "evidence": {},
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
 
-        futures = []
-        executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="openagent-health")
+        futures: list[tuple[str, str, object]] = []
+        executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="openagent-health")
 
         def add_module(
             module_id: str,
@@ -438,8 +483,7 @@ def build_http_server(
             degraded: bool = False,
             reason: str = "",
         ) -> None:
-            futures.append(
-                executor.submit(
+            future = executor.submit(
                     check_module,
                     module_id,
                     label,
@@ -447,25 +491,25 @@ def build_http_server(
                     degraded=degraded,
                     reason=reason,
                 )
-            )
+            futures.append((module_id, label, future))
 
-        model_tools = local_ai.model_tool_status()
-        provider_specs = gateway.specs()
-        chat_ready = any(
-            bool(provider.get("available"))
-            for provider in provider_specs
-            if provider.get("id") in {"openvino-direct", "ollama", "llamacpp"}
-        )
+        def chat_health() -> dict[str, object]:
+            provider_specs = gateway.specs()
+            return {
+                "providers": provider_specs,
+                "tool_status": local_ai.model_tool_status(),
+                "recent_jobs": local_ai.model_jobs(project=project, limit=3),
+                "local_model_ready": any(
+                    bool(provider.get("available"))
+                    for provider in provider_specs
+                    if provider.get("id") in {"openvino-direct", "ollama", "llamacpp"}
+                ),
+            }
+
         add_module(
             "chat",
             "Chat and model gateway",
-            lambda: {
-                "providers": provider_specs,
-                "tool_status": model_tools,
-                "recent_jobs": local_ai.model_jobs(project=project, limit=3),
-            },
-            degraded=not chat_ready,
-            reason="" if chat_ready else "Offline fallback is available, but no real local chat model is ready.",
+            chat_health,
         )
         add_module("dashboard", "Dashboard telemetry", lambda: {"health": store.health(), "metrics": system_metrics(store.data_dir)})
         add_module("voice", "Voice runtime", lambda: voice.status(project=project))
@@ -499,20 +543,42 @@ def build_http_server(
         add_module("tool_runtime", "Unified tool runtime", lambda: tool_runtime.describe())
         add_module("compute_router", "Compute capability router", lambda: compute_router.readiness(project=project))
         add_module("agent_bridge", "Agent bridge", lambda: agent_bridge.capabilities())
-        modules.extend(future.result() for future in futures)
-        executor.shutdown(wait=True)
+        done, _ = wait([future for _, _, future in futures], timeout=3.0)
+        for module_id, label, future in futures:
+            if future in done:
+                modules.append(future.result())
+            else:
+                future.cancel()
+                modules.append(
+                    {
+                        "id": module_id,
+                        "label": label,
+                        "status": "degraded",
+                        "probe_status": "timeout",
+                        "capability_status": "not_evaluated",
+                        "reason": "Health probe exceeded the 3 second status deadline.",
+                        "evidence": {},
+                        "duration_ms": 3000.0,
+                    }
+                )
+        executor.shutdown(wait=False, cancel_futures=True)
         counts = {
             "ready": sum(1 for item in modules if item["status"] == "ready"),
             "degraded": sum(1 for item in modules if item["status"] == "degraded"),
             "error": sum(1 for item in modules if item["status"] == "error"),
+            "responding": sum(1 for item in modules if item["probe_status"] == "responding"),
+            "timeout": sum(1 for item in modules if item["probe_status"] == "timeout"),
         }
-        return {
+        payload = {
             "project": project,
             "status": "ok" if counts["error"] == 0 else "needs_attention",
             "counts": counts,
             "modules": modules,
             "privacy_boundary": "Module health calls local status/read-only APIs only. It does not download models, sync connectors, or call external providers.",
         }
+        with module_health_cache_lock:
+            module_health_cache[project] = (time.monotonic(), payload)
+        return payload
 
     integrations = IntegrationHub(
         store,
@@ -533,6 +599,162 @@ def build_http_server(
         module_health=module_health,
         handler_specs=handler_specs,
     )
+
+    def diagnose_chat(project: str) -> dict[str, object]:
+        started = time.perf_counter()
+        direct_status = adaptive_engine.direct.status()
+        resident = next(
+            (item for item in direct_status.get("models", []) if item.get("kind") == "llm"),
+            None,
+        ) if direct_status.get("running") else None
+        if resident:
+            result = gateway.complete(
+                [{"role": "user", "content": "Reply briefly: OpenAgent model online."}],
+                provider_id="openvino-direct",
+                model=str(resident.get("model_id", "")) or None,
+                allow_external=False,
+            )
+        else:
+            result = gateway.complete(
+                [{"role": "user", "content": "Reply briefly: OpenAgent model online."}],
+                provider_id="local",
+                allow_external=False,
+            )
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        fallback = bool(result.metadata.get("deterministic_fallback") or result.metadata.get("fallback_from"))
+        store.add_audit_event(
+            AuditEvent(
+                actor="chat",
+                action="chat.model_diagnose",
+                resource=f"model:{result.provider}:{result.model}",
+                project=project,
+                metadata={
+                    "provider": result.provider,
+                    "model": result.model,
+                    "fallback": fallback,
+                    "duration_ms": duration_ms,
+                },
+            )
+        )
+        return {
+            "status": "fallback" if fallback else "online",
+            "provider": result.provider,
+            "model": result.model,
+            "duration_ms": duration_ms,
+            "content": result.content,
+            "metadata": result.metadata,
+            "privacy_boundary": "Diagnosis uses Auto routing with local providers only and does not allow external provider calls.",
+        }
+
+    def core_route_dependencies(read_json) -> CoreRouteDependencies:
+        return CoreRouteDependencies(
+            capabilities=vision_coverage,
+            runtime_plan=local_ai.smooth_runtime_plan,
+            mission_features=lambda project: mission_control.feature_matrix(project=project),
+            context_snapshot=lambda project: context.snapshot(project=project),
+            search_events=lambda query, project, limit: context.search(query, project=project, limit=limit),
+            diagnose_chat=diagnose_chat,
+            ingest_event=context.ingest,
+            hard_audit=lambda project: run_hard_audit(store, project=project),
+            mission_run_check=lambda project: mission_control.run_full_check(project=project),
+            read_json=read_json,
+        )
+
+    def agent_route_dependencies(read_json) -> AgentRouteDependencies:
+        return AgentRouteDependencies(
+            agents=agents,
+            multi_agent=multi_agent,
+            first=first,
+            parse_bool=parse_bool,
+            read_json=read_json,
+        )
+
+    def workspace_route_dependencies(read_json) -> WorkspaceRouteDependencies:
+        return WorkspaceRouteDependencies(
+            workspace=workspace,
+            first=first,
+            parse_int=parse_int,
+            read_json=read_json,
+        )
+
+    def assistant_route_dependencies(read_json) -> AssistantRouteDependencies:
+        return AssistantRouteDependencies(
+            assistant=assistant,
+            first=first,
+            parse_int=parse_int,
+            read_json=read_json,
+        )
+
+    def twin_route_dependencies(read_json) -> TwinRouteDependencies:
+        return TwinRouteDependencies(twin=digital_twin, first=first, read_json=read_json)
+
+    def semantic_route_dependencies(read_json) -> SemanticRouteDependencies:
+        return SemanticRouteDependencies(semantic_memory=semantic_memory, read_json=read_json)
+
+    def vault_route_dependencies(read_json) -> VaultRouteDependencies:
+        return VaultRouteDependencies(vault=vault, first=first, parse_int=parse_int, read_json=read_json)
+
+    def knowledge_route_dependencies(handler) -> KnowledgeRouteDependencies:
+        return KnowledgeRouteDependencies(
+            knowledge=knowledge,
+            gateway=gateway,
+            media=media,
+            read_json=handler.read_json,
+            headers=handler.headers,
+            read_body=handler.rfile.read,
+            upload_limit_bytes=settings.upload_limit_bytes,
+        )
+
+    def finetune_route_dependencies(read_json) -> FineTuneRouteDependencies:
+        return FineTuneRouteDependencies(fine_tuning=fine_tuning, read_json=read_json)
+
+    def scraper_route_dependencies(read_json) -> ScraperRouteDependencies:
+        return ScraperRouteDependencies(scraper=scraper, first=first, parse_bool=parse_bool, read_json=read_json)
+
+    def draft_route_dependencies(handler) -> DraftRouteDependencies:
+        return DraftRouteDependencies(
+            documents=documents,
+            read_json=handler.read_json,
+            auth_scope_owner=handler._auth_scope_owner,
+            document_write_owner=handler._document_write_owner,
+        )
+
+    def document_route_dependencies(handler) -> DocumentRouteDependencies:
+        return DocumentRouteDependencies(
+            documents=documents, read_json=handler.read_json,
+            auth_scope_owner=handler._auth_scope_owner,
+            document_write_owner=handler._document_write_owner,
+            first=first, parse_int=parse_int, parse_bool=parse_bool,
+        )
+
+    def media_route_dependencies(handler) -> MediaRouteDependencies:
+        return MediaRouteDependencies(
+            media=media,
+            voice=voice,
+            read_json=handler.read_json,
+            handle_voice_upload=handler._handle_voice_upload,
+        )
+
+    def workflow_route_dependencies(handler) -> WorkflowRouteDependencies:
+        return WorkflowRouteDependencies(
+            store=store,
+            workflows=workflows,
+            read_json=handler.read_json,
+            first=first,
+            parse_int=parse_int,
+            parse_bool=parse_bool,
+        )
+
+    def auth_route_dependencies(handler) -> AuthRouteDependencies:
+        return AuthRouteDependencies(
+            auth=auth,
+            read_json=handler.read_json,
+            bearer_token=handler._bearer_token,
+            bootstrap_token=lambda: handler.headers.get("X-OpenAgent-Bootstrap-Token", ""),
+            request_ip=lambda: str(handler.client_address[0]) if handler.client_address else "",
+            user_agent=lambda: handler.headers.get("User-Agent", ""),
+        )
+
     def worker_route_dependencies(read_json) -> WorkerRouteDependencies:
         return WorkerRouteDependencies(
             status=lambda project: store.worker_status(project=project),
@@ -636,6 +858,17 @@ def build_http_server(
             read_json=read_json,
         )
 
+    def chat_route_dependencies(read_json) -> ChatRouteDependencies:
+        return ChatRouteDependencies(
+            store=store,
+            chat=chat,
+            artifacts=chat_artifacts,
+            first=first,
+            parse_bool=parse_bool,
+            parse_int=parse_int,
+            read_json=read_json,
+        )
+
     def conversation_route_dependencies(read_json, query_owner, payload_owner) -> ConversationRouteDependencies:
         return ConversationRouteDependencies(
             organization=conversation_organization,
@@ -701,12 +934,163 @@ def build_http_server(
             read_json=read_json,
         )
 
+    def developer_route_dependencies(read_json) -> DeveloperRouteDependencies:
+        return DeveloperRouteDependencies(
+            developer=developer,
+            parse_bool=parse_bool,
+            read_json=read_json,
+        )
+
+    def security_route_dependencies(read_json) -> SecurityRouteDependencies:
+        return SecurityRouteDependencies(
+            security=security_privacy,
+            security_error=SecurityPrivacyError,
+            store=store,
+            first=first,
+            parse_bool=parse_bool,
+            parse_int=parse_int,
+            read_json=read_json,
+        )
+
     class OpenAgentHandler(BaseHTTPRequestHandler):
         server_version = "OpenAgent/0.1"
 
+        def handle_one_request(self) -> None:
+            self.request_id = uuid4().hex
+            started = time.monotonic()
+            try:
+                super().handle_one_request()
+            except RequestRejected as exc:
+                self.send_json({"error": str(exc)}, status=exc.status)
+            finally:
+                path = getattr(self, "path", "")
+                if path:
+                    HTTP_LOG.info(
+                        json.dumps(
+                            {
+                                "event": "http.request",
+                                "request_id": self.request_id,
+                                "method": getattr(self, "command", ""),
+                                "path": urlparse(path).path,
+                                "duration_ms": round((time.monotonic() - started) * 1000, 3),
+                                "client": str(self.client_address[0]) if self.client_address else "",
+                            },
+                            sort_keys=True,
+                        )
+                    )
+
+        def end_headers(self) -> None:
+            self.send_header("X-Request-ID", getattr(self, "request_id", uuid4().hex))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=(self)")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+                "connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+            )
+            origin = self.headers.get("Origin", "").strip()
+            if origin and origin in settings.trusted_origins:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            retry_after = getattr(self, "_retry_after", 0)
+            if retry_after:
+                self.send_header("Retry-After", str(retry_after))
+            super().end_headers()
+
+        def do_OPTIONS(self) -> None:
+            origin = self.headers.get("Origin", "").strip()
+            if not origin or origin not in settings.trusted_origins:
+                self.send_json({"error": "origin is not trusted"}, status=HTTPStatus.FORBIDDEN)
+                return
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Response-Envelope")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.end_headers()
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_rate_limit(parsed.path):
+                return
             if not self._enforce_auth_gate(parsed.path, "GET"):
+                return
+            core_route = handle_core_get(parsed.path, parsed.query, core_route_dependencies(self.read_json))
+            if core_route is not None:
+                self.send_json(core_route.payload, status=core_route.status)
+                return
+            agent_route = handle_agents_get(parsed.path, parsed.query, agent_route_dependencies(self.read_json))
+            if agent_route is not None:
+                self.send_json(agent_route.payload, status=agent_route.status)
+                return
+            workspace_route = handle_workspace_get(parsed.path, parsed.query, workspace_route_dependencies(self.read_json))
+            if workspace_route is not None:
+                self.send_json(workspace_route.payload, status=workspace_route.status)
+                return
+            assistant_route = handle_assistant_get(parsed.path, parsed.query, assistant_route_dependencies(self.read_json))
+            if assistant_route is not None:
+                self.send_json(assistant_route.payload, status=assistant_route.status)
+                return
+            twin_route = handle_twin_get(parsed.path, parsed.query, twin_route_dependencies(self.read_json))
+            if twin_route is not None:
+                self.send_json(twin_route.payload, status=twin_route.status)
+                return
+            semantic_route = handle_semantic_get(parsed.path, parsed.query, semantic_route_dependencies(self.read_json))
+            if semantic_route is not None:
+                self.send_json(semantic_route.payload, status=semantic_route.status)
+                return
+            vault_route = handle_vault_get(parsed.path, parsed.query, vault_route_dependencies(self.read_json))
+            if vault_route is not None:
+                self.send_json(vault_route.payload, status=vault_route.status)
+                return
+            knowledge_route = handle_knowledge_get(parsed.path, parsed.query, knowledge_route_dependencies(self))
+            if knowledge_route is not None:
+                self.send_json(knowledge_route.payload, status=knowledge_route.status)
+                return
+            finetune_route = handle_finetune_get(parsed.path, parsed.query, finetune_route_dependencies(self.read_json))
+            if finetune_route is not None:
+                self.send_json(finetune_route.payload, status=finetune_route.status)
+                return
+            scraper_route = handle_scraper_get(parsed.path, parsed.query, scraper_route_dependencies(self.read_json))
+            if scraper_route is not None:
+                self.send_json(scraper_route.payload, status=scraper_route.status)
+                return
+            draft_route = handle_draft_get(parsed.path, parsed.query, draft_route_dependencies(self))
+            if draft_route is not None:
+                self.send_json(draft_route.payload, status=draft_route.status)
+                return
+            media_route = handle_media_get(parsed.path, parsed.query, media_route_dependencies(self))
+            if media_route is not None:
+                self.send_json(media_route.payload, status=media_route.status)
+                return
+            workflow_route = handle_workflows_get(parsed.path, parsed.query, workflow_route_dependencies(self))
+            if workflow_route is not None:
+                self.send_json(workflow_route.payload, status=workflow_route.status)
+                return
+            auth_route = handle_auth_get(parsed.path, parsed.query, auth_route_dependencies(self))
+            if auth_route is not None:
+                self.send_json(auth_route.payload, status=auth_route.status)
+                return
+            developer_route = handle_developer_get(
+                parsed.path,
+                parsed.query,
+                developer_route_dependencies(self.read_json),
+            )
+            if developer_route is not None:
+                self.send_json(developer_route.payload, status=developer_route.status)
+                return
+            security_route = handle_security_get(
+                parsed.path,
+                parsed.query,
+                security_route_dependencies(self.read_json),
+            )
+            if security_route is not None:
+                self.send_json(security_route.payload, status=security_route.status)
+                return
+            chat_route = handle_chat_get(parsed.path, parsed.query, chat_route_dependencies(self.read_json))
+            if chat_route is not None:
+                self.send_json(chat_route.payload, status=chat_route.status)
                 return
             if parsed.path.startswith("/api/codebase/runs/") and parsed.path.endswith("/events/stream"):
                 params = parse_qs(parsed.query)
@@ -1109,9 +1493,6 @@ def build_http_server(
                 events = context.search(query, project=project, limit=limit)
                 self.send_json({"events": events})
                 return
-            if parsed.path == "/api/agents":
-                self.send_json({"agents": agents.specs()})
-                return
             if parsed.path == "/api/models":
                 self.send_json({"providers": gateway.specs()})
                 return
@@ -1209,105 +1590,6 @@ def build_http_server(
                 limit = parse_int(first(params, "limit"), default=20)
                 self.send_json({"runs": store.list_agent_runs(limit=limit, project=project)})
                 return
-            if parsed.path == "/api/audit":
-                params = parse_qs(parsed.query)
-                project = first(params, "project")
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"events": store.list_audit_events(project=project, limit=limit)})
-                return
-            if parsed.path == "/api/workspace/items":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                query = first(params, "q") or ""
-                kind = first(params, "kind") or ""
-                parent_id = first(params, "parent_id")
-                limit = parse_int(first(params, "limit"), default=100)
-                items = (
-                    workspace.search(query, project=project, limit=limit)
-                    if query
-                    else workspace.list_items(project=project, kind=kind, parent_id=parent_id, limit=limit)
-                )
-                self.send_json({"items": items})
-                return
-            if parsed.path == "/api/workspace/dashboard":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(workspace.dashboard(project=project))
-                return
-            if parsed.path == "/api/workspace/canvas":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(workspace.canvas_model(project=project))
-                return
-            if parsed.path == "/api/workflows":
-                params = parse_qs(parsed.query)
-                project = first(params, "project")
-                limit = parse_int(first(params, "limit"), default=100)
-                records = store.list_workflows(project=project, limit=limit)
-                self.send_json(
-                    {
-                        "workflows": [
-                            {**workflow, "trigger": workflows.get_trigger(workflow["id"])}
-                            for workflow in records
-                        ]
-                    }
-                )
-                return
-            if parsed.path == "/api/workflows/builder":
-                self.send_json(workflows.builder_schema())
-                return
-            if parsed.path == "/api/workflows/visual":
-                params = parse_qs(parsed.query)
-                workflow_id = first(params, "workflow_id") or ""
-                wf_list = store.list_workflows(limit=200)
-                wf = next((w for w in wf_list if w.get("id") == workflow_id), None)
-                if not wf:
-                    self.send_json({"nodes": [], "edges": []})
-                    return
-                steps = wf.get("steps") or []
-                # Always include a trigger node first, then each step
-                nodes = [{"id": "trigger", "label": wf.get("trigger_type", "Manual trigger"), "x": 0, "y": 20}]
-                nodes += [{"id": f"s{i}", "label": str(s.get("action", s.get("type", "step"))), "x": (i + 1) * 130, "y": 20} for i, s in enumerate(steps)]
-                edges = [{"source": nodes[i]["id"], "target": nodes[i + 1]["id"]} for i in range(len(nodes) - 1)]
-                self.send_json({"nodes": nodes, "edges": edges, "workflow": wf})
-                return
-            if parsed.path == "/api/workflows/visual":
-                params = parse_qs(parsed.query)
-                workflow_id = first(params, "workflow_id")
-                if not workflow_id:
-                    self.send_json({"error": "workflow_id is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    self.send_json(workflows.visual_model(workflow_id))
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                return
-            if parsed.path == "/api/workflows/layout":
-                params = parse_qs(parsed.query)
-                workflow_id = first(params, "workflow_id")
-                if not workflow_id:
-                    self.send_json({"error": "workflow_id is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                layout = workflows.get_layout(workflow_id)
-                self.send_json({"layout": layout})
-                return
-            if parsed.path == "/api/workflow-runs":
-                params = parse_qs(parsed.query)
-                project = first(params, "project")
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"runs": store.list_workflow_runs(project=project, limit=limit)})
-                return
-            if parsed.path == "/api/knowledge/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(knowledge.status(project=project))
-                return
-            if parsed.path == "/api/knowledge/documents":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"documents": knowledge.list_documents(project=project, limit=limit)})
-                return
             if parsed.path == "/api/research/status":
                 params = parse_qs(parsed.query)
                 project = first(params, "project") or "default"
@@ -1380,124 +1662,6 @@ def build_http_server(
                 else:
                     self.send_json({"session": session})
                 return
-            if parsed.path == "/api/knowledge/search":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                query = first(params, "q") or ""
-                mode = first(params, "mode") or "fts"
-                if mode == "semantic":
-                    results = knowledge.semantic_search(query, project=project)
-                else:
-                    results = knowledge.search(query, project=project)
-                self.send_json({"results": results})
-                return
-            if parsed.path == "/api/knowledge/graph":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(knowledge.graph(project=project))
-                return
-            if parsed.path == "/api/knowledge/tags":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"tags": knowledge.tags(project=project, limit=limit)})
-                return
-            if parsed.path == "/api/knowledge/timeline":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"timeline": knowledge.timeline(project=project, limit=limit)})
-                return
-            if parsed.path == "/api/semantic/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(semantic_memory.status(project=project))
-                return
-            if parsed.path == "/api/semantic/memories":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                query = first(params, "q") or ""
-                memory_type = first(params, "memory_type") or ""
-                limit = parse_int(first(params, "limit"), default=50)
-                memories = (
-                    semantic_memory.search_memories(query, project=project, limit=limit)
-                    if query
-                    else semantic_memory.list_memories(project=project, memory_type=memory_type, limit=limit)
-                )
-                self.send_json({"memories": memories})
-                return
-            if parsed.path == "/api/semantic/collections":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"collections": semantic_memory.collections(project=project)})
-                return
-            if parsed.path == "/api/semantic/graph-analytics":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(semantic_memory.graph_analytics(project=project))
-                return
-            if parsed.path == "/api/media/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(media.status(project=project))
-                return
-            if parsed.path == "/api/media/assets":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                media_type = first(params, "media_type") or ""
-                limit = parse_int(first(params, "limit"), default=50)
-                self.send_json({"assets": media.assets(project=project, media_type=media_type, limit=limit)})
-                return
-            if parsed.path == "/api/media/analyses":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                asset_id = first(params, "asset_id") or ""
-                limit = parse_int(first(params, "limit"), default=50)
-                self.send_json({"analyses": media.analyses(project=project, asset_id=asset_id, limit=limit)})
-                return
-            if parsed.path == "/api/agents/marketplace":
-                self.send_json({"agents": multi_agent.marketplace()})
-                return
-            if parsed.path == "/api/agents/permissions":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"permissions": multi_agent.list_permissions(project=project)})
-                return
-            if parsed.path == "/api/agents/approvals":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                status = first(params, "status")
-                self.send_json({"approvals": multi_agent.list_approvals(project=project, status=status)})
-                return
-            if parsed.path == "/api/assistant/tasks":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                status = first(params, "status") or ""
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"tasks": assistant.tasks(project=project, status=status, limit=limit)})
-                return
-            if parsed.path == "/api/assistant/goals":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                status = first(params, "status") or ""
-                self.send_json({"goals": assistant.goals(project=project, status=status)})
-                return
-            if parsed.path == "/api/assistant/daily-brief":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(assistant.daily_brief(project=project))
-                return
-            if parsed.path == "/api/assistant/coach":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(assistant.productivity_coaching(project=project))
-                return
-            if parsed.path == "/api/assistant/crm":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                record_type = first(params, "record_type") or ""
-                self.send_json({"records": assistant.crm_records(project=project, record_type=record_type)})
-                return
             if parsed.path == "/api/communication/connectors":
                 self.send_json({"connectors": communication.connectors()})
                 return
@@ -1531,31 +1695,6 @@ def build_http_server(
                 platform = first(params, "platform") or ""
                 limit = parse_int(first(params, "limit"), default=50)
                 self.send_json({"runs": communication.sync_runs(project=project, platform=platform, owner=self._query_owner(params), limit=limit)})
-                return
-            if parsed.path == "/api/voice/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(voice.status(project=project))
-                return
-            if parsed.path == "/api/voice/personas":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"personas": voice.personas(project=project)})
-                return
-            if parsed.path == "/api/voice/sessions":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                status = first(params, "status") or ""
-                limit = parse_int(first(params, "limit"), default=50)
-                self.send_json({"sessions": voice.sessions(project=project, status=status, limit=limit)})
-                return
-            if parsed.path == "/api/voice/turns":
-                params = parse_qs(parsed.query)
-                session_id = first(params, "session_id") or ""
-                if not session_id:
-                    self.send_json({"error": "session_id is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"turns": voice.turns(session_id)})
                 return
             if parsed.path == "/api/production/status":
                 params = parse_qs(parsed.query)
@@ -1672,68 +1811,6 @@ def build_http_server(
                     return
                 self.send_json({"memory": enterprise.org_memory(workspace_id)})
                 return
-            if parsed.path == "/api/developer/status":
-                self.send_json(developer.status())
-                return
-            if parsed.path == "/api/developer/schema":
-                self.send_json(developer.graphql_schema())
-                return
-            if parsed.path == "/api/developer/webhooks":
-                self.send_json({"webhooks": developer.webhooks()})
-                return
-            if parsed.path == "/api/developer/webhook-deliveries":
-                self.send_json({"deliveries": developer.webhook_deliveries()})
-                return
-            if parsed.path == "/api/developer/plugins":
-                self.send_json({"plugins": developer.plugins()})
-                return
-            if parsed.path == "/api/developer/tools":
-                self.send_json({"tools": developer.tools()})
-                return
-            if parsed.path == "/api/developer/mcp":
-                self.send_json(developer.mcp_manifest())
-                return
-            if parsed.path == "/api/developer/mcp/servers":
-                self.send_json({"servers": developer.mcp_servers()})
-                return
-            if parsed.path == "/api/developer/extensions":
-                self.send_json({"packages": developer.extension_packages()})
-                return
-            if parsed.path == "/api/developer/sdk":
-                self.send_json({"artifacts": developer.sdk_artifacts()})
-                return
-            if parsed.path == "/api/developer/api-keys":
-                self.send_json({"api_keys": developer.api_keys()})
-                return
-            if parsed.path == "/api/security/status":
-                self.send_json(security_privacy.status())
-                return
-            if parsed.path == "/api/security/secrets":
-                self.send_json({"secrets": security_privacy.secrets()})
-                return
-            if parsed.path == "/api/security/retention":
-                self.send_json({"policies": security_privacy.retention_policies()})
-                return
-            if parsed.path == "/api/security/shares":
-                self.send_json({"grants": security_privacy.share_grants()})
-                return
-            if parsed.path == "/api/security/egress":
-                self.send_json({"requests": security_privacy.egress_requests()})
-                return
-            if parsed.path == "/api/security/audit-chain":
-                self.send_json({"chain": security_privacy.audit_chain()})
-                return
-            if parsed.path == "/api/security/audit-chain/verify":
-                self.send_json(security_privacy.verify_audit_chain())
-                return
-            if parsed.path in {"/api/security/privacy-reports", "/api/security/privacy-report"}:
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"reports": security_privacy.privacy_reports(), "project": project})
-                return
-            if parsed.path == "/api/security/sandbox-profiles":
-                self.send_json({"profiles": security_privacy.sandbox_profiles()})
-                return
             # ---- Calendar System GET routes ----
             if parsed.path == "/api/calendar/status":
                 params = parse_qs(parsed.query)
@@ -1780,85 +1857,7 @@ def build_http_server(
                 project = first(params, "project") or "default"
                 self.send_json(calendar_system.optimize_schedule(project=project))
                 return
-            # ---- Digital Twin GET routes ----
-            if parsed.path == "/api/twin/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(digital_twin.status(project=project))
-                return
-            if parsed.path == "/api/twin/profile":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(digital_twin.get_profile(project=project))
-                return
-            if parsed.path == "/api/twin/patterns":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(digital_twin.analyse_patterns(project=project))
-                return
-            if parsed.path == "/api/twin/suggestions":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"suggestions": digital_twin.generate_proactive_suggestions(project=project)})
-                return
-            if parsed.path == "/api/twin/goals":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"goals": digital_twin.list_goals(project=project)})
-                return
-            # ---- Vault GET routes ----
-            if parsed.path == "/api/vault/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(vault.status(project=project))
-                return
-            if parsed.path == "/api/vault/entries":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                category = first(params, "category") or ""
-                tag = first(params, "tag") or ""
-                limit = parse_int(first(params, "limit"), default=100)
-                self.send_json({"entries": vault.list_entries(
-                    project=project, category=category, tag=tag, limit=limit,
-                )})
-                return
             # ---- Scraper GET routes ----
-            if parsed.path == "/api/scraper/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(scraper.status(project=project))
-                return
-            if parsed.path == "/api/scraper/jobs":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"jobs": scraper.list_scheduled(project=project)})
-                return
-            # ---- Fine-tuning GET routes ----
-            if parsed.path == "/api/finetune/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(fine_tuning.status(project=project))
-                return
-            if parsed.path == "/api/finetune/datasets":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"datasets": fine_tuning.list_datasets(project=project)})
-                return
-            if parsed.path == "/api/finetune/jobs":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json({"jobs": fine_tuning.list_jobs(project=project)})
-                return
-            if parsed.path == "/api/finetune/adapters":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                base_model = first(params, "base_model") or ""
-                self.send_json({"adapters": fine_tuning.list_adapters(project=project, base_model=base_model)})
-                return
-            if parsed.path == "/api/finetune/templates":
-                self.send_json({"templates": fine_tuning.list_templates()})
-                return
-
             # ---- Auth GET routes ----
             if parsed.path == "/api/auth/scopes":
                 self.send_json({"scopes": auth.list_scopes()})
@@ -1908,61 +1907,12 @@ def build_http_server(
                 return
 
             # ---- Editor document + draft GET routes ----
-            if parsed.path == "/api/documents/library":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                query = first(params, "q") or ""
-                tag = first(params, "tag") or ""
-                folder = first(params, "folder") or ""
-                status = first(params, "status") or ""
-                limit = parse_int(first(params, "limit"), default=50)
-                owner = self._auth_scope_owner()
-                self.send_json(documents.list_library(
-                    project=project, query=query, tag=tag, folder=folder, status=status, owner=owner, limit=limit,
-                ))
+            document_route = handle_document_get(parsed.path, parsed.query, document_route_dependencies(self))
+            if document_route is not None:
+                self.send_json(document_route.payload, status=document_route.status)
                 return
-            if parsed.path.startswith("/api/document/") and parsed.path.endswith("/versions"):
-                doc_id = unquote(parsed.path.removeprefix("/api/document/").removesuffix("/versions")).strip()
-                try:
-                    self.send_json({"versions": documents.list_versions(doc_id, owner=self._auth_scope_owner())})
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                return
-            if parsed.path.startswith("/api/document/") and "/version/" in parsed.path:
-                remainder = parsed.path.removeprefix("/api/document/")
-                doc_id, _, version_text = remainder.partition("/version/")
-                doc_id = unquote(doc_id).strip()
-                try:
-                    version_number = int(version_text)
-                except ValueError:
-                    self.send_json({"error": "invalid version number"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    self.send_json({"version": documents.get_version(doc_id, version_number, owner=self._auth_scope_owner())})
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                return
-            if parsed.path.startswith("/api/document/"):
-                doc_id = unquote(parsed.path.removeprefix("/api/document/")).strip()
-                if doc_id:
-                    try:
-                        self.send_json({"document": documents.get_document(doc_id, owner=self._auth_scope_owner())})
-                    except KeyError as exc:
-                        self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-            if parsed.path == "/api/editor-drafts":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                doc_id = first(params, "doc_id") or ""
-                self.send_json({"drafts": documents.list_drafts(project=project, doc_id=doc_id, owner=self._auth_scope_owner())})
-                return
-            if parsed.path.startswith("/api/editor-drafts/"):
-                draft_id = unquote(parsed.path.removeprefix("/api/editor-drafts/")).strip()
-                try:
-                    self.send_json({"draft": documents.get_draft(draft_id, owner=self._auth_scope_owner())})
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                return
+
+
 
             # ---- Calendar external-sync GET routes ----
             if parsed.path == "/api/calendar/providers":
@@ -2018,7 +1968,88 @@ def build_http_server(
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_rate_limit(parsed.path):
+                return
             if not self._enforce_auth_gate(parsed.path, "POST"):
+                return
+            core_route = handle_core_post(parsed.path, core_route_dependencies(self.read_json))
+            if core_route is not None:
+                self.send_json(core_route.payload, status=core_route.status)
+                return
+            agent_route = handle_agents_post(parsed.path, agent_route_dependencies(self.read_json))
+            if agent_route is not None:
+                self.send_json(agent_route.payload, status=agent_route.status)
+                return
+            workspace_route = handle_workspace_post(parsed.path, workspace_route_dependencies(self.read_json))
+            if workspace_route is not None:
+                self.send_json(workspace_route.payload, status=workspace_route.status)
+                return
+            assistant_route = handle_assistant_post(parsed.path, assistant_route_dependencies(self.read_json))
+            if assistant_route is not None:
+                self.send_json(assistant_route.payload, status=assistant_route.status)
+                return
+            twin_route = handle_twin_post(parsed.path, twin_route_dependencies(self.read_json))
+            if twin_route is not None:
+                self.send_json(twin_route.payload, status=twin_route.status)
+                return
+            semantic_route = handle_semantic_post(parsed.path, semantic_route_dependencies(self.read_json))
+            if semantic_route is not None:
+                self.send_json(semantic_route.payload, status=semantic_route.status)
+                return
+            vault_route = handle_vault_post(parsed.path, vault_route_dependencies(self.read_json))
+            if vault_route is not None:
+                self.send_json(vault_route.payload, status=vault_route.status)
+                return
+            knowledge_route = handle_knowledge_post(parsed.path, knowledge_route_dependencies(self))
+            if knowledge_route is not None:
+                self.send_json(knowledge_route.payload, status=knowledge_route.status)
+                return
+            finetune_route = handle_finetune_post(parsed.path, finetune_route_dependencies(self.read_json))
+            if finetune_route is not None:
+                self.send_json(finetune_route.payload, status=finetune_route.status)
+                return
+            scraper_route = handle_scraper_post(parsed.path, scraper_route_dependencies(self.read_json))
+            if scraper_route is not None:
+                self.send_json(scraper_route.payload, status=scraper_route.status)
+                return
+            draft_route = handle_draft_post(parsed.path, draft_route_dependencies(self))
+            if draft_route is not None:
+                self.send_json(draft_route.payload, status=draft_route.status)
+                return
+            media_route = handle_media_post(parsed.path, media_route_dependencies(self))
+            if isinstance(media_route, ResponseAlreadySent):
+                return
+            if media_route is not None:
+                self.send_json(media_route.payload, status=media_route.status)
+                return
+            workflow_route = handle_workflows_post(parsed.path, workflow_route_dependencies(self))
+            if workflow_route is not None:
+                self.send_json(workflow_route.payload, status=workflow_route.status)
+                return
+            auth_route = handle_auth_post(parsed.path, auth_route_dependencies(self))
+            if auth_route is not None:
+                self.send_json(auth_route.payload, status=auth_route.status)
+                return
+            developer_route = handle_developer_post(
+                parsed.path,
+                developer_route_dependencies(self.read_json),
+            )
+            if developer_route is not None:
+                self.send_json(developer_route.payload, status=developer_route.status)
+                return
+            security_route = handle_security_post(
+                parsed.path,
+                security_route_dependencies(self.read_json),
+            )
+            if security_route is not None:
+                self.send_json(security_route.payload, status=security_route.status)
+                return
+            chat_route = handle_chat_post(parsed.path, chat_route_dependencies(self.read_json))
+            if isinstance(chat_route, StreamRouteResult):
+                self.send_event_stream(chat_route.events)
+                return
+            if chat_route is not None:
+                self.send_json(chat_route.payload, status=chat_route.status)
                 return
             identity_route = handle_identity_post(parsed.path, identity_route_dependencies(self))
             if identity_route is not None:
@@ -2197,34 +2228,26 @@ def build_http_server(
             if communication_route is not None:
                 self.send_json(communication_route.payload, status=communication_route.status)
                 return
-            calendar_route = handle_calendar_post(
-                parsed.path,
-                CalendarRouteDependencies(
-                    calendar_system=calendar_system,
-                    calendar_sync=calendar_sync,
-                    first=first,
-                    parse_bool=parse_bool,
-                    parse_int=parse_int,
-                    query_owner=self._query_owner,
-                    payload_owner=self._payload_owner,
-                    auth_scope_owner=self._auth_scope_owner,
-                    read_json=self.read_json,
-                ),
-            )
+            # CalDAV sync carries per-run egress controls in the runtime handler below.
+            # Other calendar endpoints continue through the extracted route adapter.
+            calendar_route = None
+            if parsed.path != "/api/calendar/sync":
+                calendar_route = handle_calendar_post(
+                    parsed.path,
+                    CalendarRouteDependencies(
+                        calendar_system=calendar_system,
+                        calendar_sync=calendar_sync,
+                        first=first,
+                        parse_bool=parse_bool,
+                        parse_int=parse_int,
+                        query_owner=self._query_owner,
+                        payload_owner=self._payload_owner,
+                        auth_scope_owner=self._auth_scope_owner,
+                        read_json=self.read_json,
+                    ),
+                )
             if calendar_route is not None:
                 self.send_json(calendar_route.payload, status=calendar_route.status)
-                return
-            if parsed.path in {"/api/graphql", "/api/developer/graphql"}:
-                payload = self.read_json()
-                try:
-                    result = developer.execute_graphql(
-                        str(payload.get("query", "")).strip(),
-                        variables=payload.get("variables") if isinstance(payload.get("variables"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result)
                 return
             if parsed.path == "/api/events":
                 payload = self.read_json()
@@ -2245,21 +2268,6 @@ def build_http_server(
                     metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
                 )
                 self.send_json({"event": event}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/run":
-                payload = self.read_json()
-                agent_id = str(payload.get("agent", "executive")).strip() or "executive"
-                goal = str(payload.get("goal", "")).strip()
-                project = str(payload.get("project", "default")).strip() or "default"
-                if not goal:
-                    self.send_json({"error": "A goal is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    run = agents.run(agent_id, goal, project=project)
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"run": run}, status=HTTPStatus.CREATED)
                 return
             if parsed.path == "/api/chat":
                 payload = self.read_json()
@@ -2588,187 +2596,6 @@ def build_http_server(
                 )
                 self.send_json({"settings": settings})
                 return
-            if parsed.path == "/api/embeddings":
-                payload = self.read_json()
-                raw_texts = payload.get("texts", [])
-                if isinstance(raw_texts, str):
-                    texts = [raw_texts]
-                elif isinstance(raw_texts, list):
-                    texts = [str(text) for text in raw_texts]
-                else:
-                    texts = []
-                provider = str(payload.get("provider", "local")).strip() or "local"
-                model = str(payload.get("model", "")).strip() or None
-                allow_external = parse_bool(payload.get("allow_external"), default=False)
-                try:
-                    result = gateway.embed(
-                        texts,
-                        provider_id=provider,
-                        model=model,
-                        allow_external=allow_external,
-                    )
-                except (ProviderConfigurationError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(
-                    {
-                        "provider": result.provider,
-                        "model": result.model,
-                        "dimensions": result.dimensions,
-                        "embeddings": result.embeddings,
-                        "metadata": result.metadata,
-                    },
-                    status=HTTPStatus.CREATED,
-                )
-                return
-            if parsed.path == "/api/workspace/items":
-                payload = self.read_json()
-                try:
-                    item = workspace.create_item(
-                        kind=str(payload.get("kind", "note")).strip() or "note",
-                        title=str(payload.get("title", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        parent_id=str(payload.get("parent_id", "")).strip(),
-                        content=str(payload.get("content", "")),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"item": item}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/workspace/items/update":
-                payload = self.read_json()
-                try:
-                    item = workspace.update_item(
-                        str(payload.get("item_id", "")).strip(),
-                        title=str(payload.get("title", "")).strip() if "title" in payload else None,
-                        content=str(payload.get("content", "")) if "content" in payload else None,
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"item": item})
-                return
-            if parsed.path == "/api/workspace/templates/instantiate":
-                payload = self.read_json()
-                try:
-                    item = workspace.instantiate_template(
-                        str(payload.get("template_id", "")).strip(),
-                        title=str(payload.get("title", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        variables=payload.get("variables") if isinstance(payload.get("variables"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"item": item}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/workflows":
-                payload = self.read_json()
-                name = str(payload.get("name", "")).strip()
-                steps = payload.get("steps", [])
-                if not name:
-                    self.send_json({"error": "A workflow name is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                if not isinstance(steps, list):
-                    self.send_json({"error": "Workflow steps must be a list."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    workflow = workflows.create(
-                        name=name,
-                        steps=[step for step in steps if isinstance(step, dict)],
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        description=str(payload.get("description", "")),
-                        trigger_type=str(payload.get("trigger_type", "manual")),
-                        trigger=payload.get("trigger") if isinstance(payload.get("trigger"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"workflow": workflow}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/workflows/run" or parsed.path.startswith("/api/workflows/") and parsed.path.endswith("/run"):
-                payload = self.read_json()
-                # Support both /api/workflows/run (body.workflow_id) and /api/workflows/{id}/run
-                workflow_id = str(payload.get("workflow_id", "")).strip()
-                if not workflow_id and parsed.path.endswith("/run"):
-                    # Extract id from path /api/workflows/{id}/run
-                    parts = parsed.path.strip("/").split("/")
-                    if len(parts) == 4 and parts[:2] == ["api", "workflows"]:
-                        workflow_id = parts[2]
-                if not workflow_id:
-                    self.send_json({"error": "workflow_id is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    run = workflows.run(
-                        workflow_id,
-                        allow_network=parse_bool(payload.get("allow_network"), default=False),
-                        dry_run=parse_bool(payload.get("dry_run"), default=False),
-                    )
-                except (ValueError, WorkflowSafetyError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"run": run}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/workflows/run-due":
-                payload = self.read_json()
-                runs = workflows.run_due_schedules(
-                    allow_network=parse_bool(payload.get("allow_network"), default=False)
-                )
-                self.send_json({"runs": runs}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/workflows/event":
-                payload = self.read_json()
-                event_name = str(payload.get("event_name", "")).strip()
-                if not event_name:
-                    self.send_json({"error": "event_name is required."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    result = workflows.trigger_event(
-                        event_name,
-                        payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        allow_network=parse_bool(payload.get("allow_network"), default=False),
-                    )
-                except (ValueError, WorkflowSafetyError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/workflows/layout":
-                payload = self.read_json()
-                try:
-                    layout = workflows.save_layout(
-                        str(payload.get("workflow_id", "")).strip(),
-                        payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"layout": layout}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/knowledge/ingest":
-                payload = self.read_json()
-                try:
-                    document = knowledge.ingest_text(
-                        str(payload.get("title", "")).strip(),
-                        str(payload.get("content", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        source=str(payload.get("source", "manual")).strip() or "manual",
-                        source_path=str(payload.get("source_path", "")).strip(),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                        embedding_provider=str(payload.get("embedding_provider", "")).strip(),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"document": document}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/knowledge/upload":
-                self._handle_file_upload()
-                return
             if parsed.path == "/api/research/run":
                 payload = self.read_json()
                 query = str(payload.get("query", "")).strip()
@@ -2861,361 +2688,6 @@ def build_http_server(
             if parsed.path == "/api/models/discover":
                 discovered = gateway.discover_models()
                 self.send_json({"discovered": discovered})
-                return
-            if parsed.path == "/api/knowledge/semantic-search":
-                payload = self.read_json()
-                results = knowledge.semantic_search(
-                    str(payload.get("query", "")).strip(),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    limit=parse_int(str(payload.get("limit", "10")), default=10),
-                    embedding_provider=str(payload.get("embedding_provider", "")).strip(),
-                )
-                self.send_json({"results": results})
-                return
-            if parsed.path == "/api/knowledge/hybrid-search":
-                payload = self.read_json()
-                results = knowledge.hybrid_search(
-                    str(payload.get("query", "")).strip(),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    limit=parse_int(str(payload.get("limit", "10")), default=10),
-                    embedding_provider=str(payload.get("embedding_provider", "")).strip(),
-                )
-                self.send_json({"results": results})
-                return
-            if parsed.path == "/api/knowledge/synthesize":
-                payload = self.read_json()
-                result = knowledge.synthesize(
-                    str(payload.get("query", "")).strip(),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    limit=parse_int(str(payload.get("limit", "8")), default=8),
-                    embedding_provider=str(payload.get("embedding_provider", "")).strip(),
-                )
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/knowledge/compress":
-                payload = self.read_json()
-                result = knowledge.compress_memory(
-                    project=str(payload.get("project", "default")).strip() or "default"
-                )
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/knowledge/replay":
-                payload = self.read_json()
-                replay = knowledge.create_replay(
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    label=str(payload.get("label", "Replay")).strip() or "Replay",
-                    query=str(payload.get("query", "")).strip(),
-                )
-                self.send_json({"replay": replay}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/semantic/memories":
-                payload = self.read_json()
-                try:
-                    memory = semantic_memory.add_memory(
-                        title=str(payload.get("title", "")).strip(),
-                        content=str(payload.get("content", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        memory_type=str(payload.get("memory_type", "semantic")).strip() or "semantic",
-                        profile_id=str(payload.get("profile_id", "")).strip(),
-                        tags=[str(item) for item in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else [],
-                        source=str(payload.get("source", "manual")).strip() or "manual",
-                        confidence=float(payload.get("confidence", 1.0) or 1.0),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except (TypeError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"memory": memory}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/semantic/consolidate":
-                payload = self.read_json()
-                result = semantic_memory.consolidate(
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    limit=parse_int(str(payload.get("limit", "100")), default=100),
-                )
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/semantic/collections":
-                payload = self.read_json()
-                collection = semantic_memory.create_collection(
-                    str(payload.get("name", "default")).strip() or "default",
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    dimensions=parse_int(str(payload.get("dimensions", "64")), default=64),
-                    metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                )
-                self.send_json({"collection": collection}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/semantic/vectors":
-                payload = self.read_json()
-                vector = payload.get("vector")
-                try:
-                    record = semantic_memory.upsert_vector_record(
-                        str(payload.get("collection_id", "")).strip(),
-                        content=str(payload.get("content", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        external_id=str(payload.get("external_id", "")).strip(),
-                        vector=[float(item) for item in vector] if isinstance(vector, list) else None,
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except (TypeError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"record": record}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/semantic/vector-search":
-                payload = self.read_json()
-                try:
-                    results = semantic_memory.vector_search(
-                        str(payload.get("collection_id", "")).strip(),
-                        str(payload.get("query", "")).strip(),
-                        limit=parse_int(str(payload.get("limit", "10")), default=10),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"results": results})
-                return
-            if parsed.path == "/api/semantic/rerank":
-                payload = self.read_json()
-                candidates = payload.get("candidates", [])
-                if not isinstance(candidates, list):
-                    self.send_json({"error": "candidates must be a list."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                result = semantic_memory.rerank(
-                    str(payload.get("query", "")).strip(),
-                    [item for item in candidates if isinstance(item, dict)],
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    limit=parse_int(str(payload.get("limit", "10")), default=10),
-                )
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/media/ingest":
-                payload = self.read_json()
-                try:
-                    if payload.get("path"):
-                        asset = media.ingest_file(
-                            str(payload.get("path", "")).strip(),
-                            project=str(payload.get("project", "default")).strip() or "default",
-                            title=str(payload.get("title", "")).strip(),
-                            source=str(payload.get("source", "file")).strip() or "file",
-                            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                            copy_to_store=parse_bool(payload.get("copy_to_store"), default=True),
-                        )
-                    else:
-                        raw = str(payload.get("data_base64", "")).strip()
-                        if not raw:
-                            self.send_json({"error": "path or data_base64 is required."}, status=HTTPStatus.BAD_REQUEST)
-                            return
-                        asset = media.ingest_bytes(
-                            base64.b64decode(raw.encode("utf-8")),
-                            filename=str(payload.get("filename", "upload.bin")).strip() or "upload.bin",
-                            project=str(payload.get("project", "default")).strip() or "default",
-                            title=str(payload.get("title", "")).strip(),
-                            source=str(payload.get("source", "upload")).strip() or "upload",
-                            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                            copy_to_store=parse_bool(payload.get("copy_to_store"), default=True),
-                        )
-                except (ValueError, OSError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"asset": asset}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/media/analyze":
-                payload = self.read_json()
-                try:
-                    analysis = media.analyze_asset(str(payload.get("asset_id", "")).strip())
-                except (ValueError, OSError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"analysis": analysis}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/run-checked":
-                payload = self.read_json()
-                try:
-                    result = multi_agent.run_agent(
-                        str(payload.get("agent", "executive")).strip() or "executive",
-                        str(payload.get("goal", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        require_approval=parse_bool(payload.get("require_approval"), default=False),
-                        approval_id=str(payload.get("approval_id", "")).strip() or None,
-                        verify=parse_bool(payload.get("verify"), default=True),
-                    )
-                except (ApprovalRequired, PermissionDenied, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/delegate":
-                payload = self.read_json()
-                try:
-                    result = multi_agent.delegate(
-                        str(payload.get("from_agent", "executive")).strip() or "executive",
-                        str(payload.get("to_agent", "planning")).strip() or "planning",
-                        str(payload.get("goal", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                    )
-                except (PermissionDenied, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/parallel":
-                payload = self.read_json()
-                tasks = payload.get("tasks", [])
-                if not isinstance(tasks, list):
-                    self.send_json({"error": "tasks must be a list."}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    result = multi_agent.run_parallel(
-                        [task for task in tasks if isinstance(task, dict)],
-                        project=str(payload.get("project", "default")).strip() or "default",
-                    )
-                except (PermissionDenied, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/permissions/grant":
-                payload = self.read_json()
-                permission = multi_agent.grant(
-                    str(payload.get("agent", "")).strip(),
-                    str(payload.get("scope", "")).strip(),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    granted_by=str(payload.get("granted_by", "user")).strip() or "user",
-                )
-                self.send_json({"permission": permission}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/approvals/request":
-                payload = self.read_json()
-                approval = multi_agent.request_approval(
-                    requested_by=str(payload.get("requested_by", "user")).strip() or "user",
-                    action=str(payload.get("action", "")).strip(),
-                    reason=str(payload.get("reason", "")).strip(),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
-                )
-                self.send_json({"approval": approval}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/agents/approvals/resolve":
-                payload = self.read_json()
-                try:
-                    approval = multi_agent.resolve_approval(
-                        str(payload.get("approval_id", "")).strip(),
-                        approved=parse_bool(payload.get("approved"), default=False),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"approval": approval})
-                return
-            if parsed.path == "/api/assistant/profile":
-                payload = self.read_json()
-                profile = assistant.upsert_profile(
-                    user_id=str(payload.get("user_id", "local-user")).strip() or "local-user",
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    preferences=payload.get("preferences") if isinstance(payload.get("preferences"), dict) else {},
-                    facts=payload.get("facts") if isinstance(payload.get("facts"), dict) else {},
-                )
-                self.send_json({"profile": profile}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/assistant/goals":
-                payload = self.read_json()
-                try:
-                    goal = assistant.create_goal(
-                        title=str(payload.get("title", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        description=str(payload.get("description", "")),
-                        horizon=str(payload.get("horizon", "short")).strip() or "short",
-                        status=str(payload.get("status", "active")).strip() or "active",
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"goal": goal}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/assistant/tasks":
-                payload = self.read_json()
-                try:
-                    task = assistant.create_task(
-                        title=str(payload.get("title", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        priority=str(payload.get("priority", "normal")).strip() or "normal",
-                        due_at=str(payload.get("due_at", "")).strip(),
-                        goal_id=str(payload.get("goal_id", "")).strip(),
-                        contact_id=str(payload.get("contact_id", "")).strip(),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"task": task}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/assistant/tasks/complete":
-                payload = self.read_json()
-                try:
-                    task = assistant.complete_task(str(payload.get("task_id", "")).strip())
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"task": task})
-                return
-            if parsed.path == "/api/assistant/meeting/brief":
-                payload = self.read_json()
-                try:
-                    brief = assistant.create_meeting_brief(
-                        title=str(payload.get("title", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        starts_at=str(payload.get("starts_at", "")).strip(),
-                        attendees=[str(item) for item in payload.get("attendees", [])] if isinstance(payload.get("attendees"), list) else [],
-                        notes=str(payload.get("notes", "")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"brief": brief}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/assistant/meeting/summary":
-                payload = self.read_json()
-                result = assistant.summarize_meeting(
-                    transcript=str(payload.get("transcript", "")),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    title=str(payload.get("title", "Meeting summary")).strip() or "Meeting summary",
-                )
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/assistant/travel/plan":
-                payload = self.read_json()
-                try:
-                    plan = assistant.create_travel_plan(
-                        destination=str(payload.get("destination", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        starts_at=str(payload.get("starts_at", "")).strip(),
-                        ends_at=str(payload.get("ends_at", "")).strip(),
-                        preferences=payload.get("preferences") if isinstance(payload.get("preferences"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"plan": plan}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/assistant/crm":
-                payload = self.read_json()
-                try:
-                    record = assistant.upsert_crm_record(
-                        record_type=str(payload.get("record_type", "relationship")).strip() or "relationship",
-                        name=str(payload.get("name", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        status=str(payload.get("status", "active")).strip() or "active",
-                        value=float(payload.get("value", 0) or 0),
-                        contact=str(payload.get("contact", "")),
-                        notes=str(payload.get("notes", "")),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except (TypeError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"record": record}, status=HTTPStatus.CREATED)
                 return
             if parsed.path == "/api/communication/connectors/configure":
                 payload = self.read_json()
@@ -3352,144 +2824,6 @@ def build_http_server(
                     self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                     return
                 self.send_json({"run": run}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/personas":
-                payload = self.read_json()
-                persona = voice.upsert_persona(
-                    name=str(payload.get("name", "")).strip(),
-                    project=str(payload.get("project", "default")).strip() or "default",
-                    language=str(payload.get("language", "en")).strip() or "en",
-                    style=str(payload.get("style", "clear")).strip() or "clear",
-                    voiceprint_asset_id=str(payload.get("voiceprint_asset_id", "")).strip(),
-                    metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                )
-                self.send_json({"persona": persona}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/sessions":
-                payload = self.read_json()
-                try:
-                    session = voice.create_session(
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        mode=str(payload.get("mode", "push_to_talk")).strip() or "push_to_talk",
-                        persona_id=str(payload.get("persona_id", "")).strip(),
-                        language=str(payload.get("language", "en")).strip() or "en",
-                        wake_word=str(payload.get("wake_word", "")).strip(),
-                        always_listening=parse_bool(payload.get("always_listening"), default=False),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"session": session}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/vosk/setup":
-                payload = self.read_json()
-                try:
-                    result = voice.setup_vosk_model(
-                        allow_network=parse_bool(payload.get("allow_network"), default=False),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc), "status": voice.status(project=str(payload.get("project", "default")).strip() or "default")}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/clone":
-                payload = self.read_json()
-                try:
-                    audio_data = base64.b64decode(str(payload.get("audio_base64", "")).encode("ascii"), validate=True)
-                    clone = voice.clone_voice_from_audio(
-                        name=str(payload.get("name", "")).strip(),
-                        audio_data=audio_data,
-                        filename=str(payload.get("filename", "voiceprint.wav")).strip() or "voiceprint.wav",
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        language=str(payload.get("language", "en")).strip() or "en",
-                        style=str(payload.get("style", "cloned-local")).strip() or "cloned-local",
-                        consent=str(payload.get("consent", "")).strip(),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except (ValueError, binascii.Error) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"clone": clone}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/sessions/close":
-                payload = self.read_json()
-                try:
-                    session = voice.close_session(str(payload.get("session_id", "")).strip())
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"session": session})
-                return
-            if parsed.path == "/api/voice/transcript":
-                payload = self.read_json()
-                try:
-                    turn = voice.add_transcript(
-                        str(payload.get("session_id", "")).strip(),
-                        text=str(payload.get("text", "")).strip(),
-                        speaker=str(payload.get("speaker", "user")).strip() or "user",
-                        role=str(payload.get("role", "user")).strip() or "user",
-                        audio_asset_id=str(payload.get("audio_asset_id", "")).strip(),
-                        is_final=parse_bool(payload.get("is_final"), default=True),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"turn": turn}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path in {"/api/voice/transcribe-upload", "/api/voice/upload"}:
-                self._handle_voice_upload()
-                return
-            if parsed.path == "/api/voice/stt":
-                payload = self.read_json()
-                try:
-                    audio_data = base64.b64decode(str(payload.get("audio_base64", "")).encode("ascii"), validate=True)
-                    transcription = voice.transcribe_audio(
-                        str(payload.get("session_id", "")).strip(),
-                        audio_data=audio_data,
-                        filename=str(payload.get("filename", "speech.wav")).strip() or "speech.wav",
-                        speaker=str(payload.get("speaker", "user")).strip() or "user",
-                        transcript_hint=str(payload.get("transcript_hint", "")).strip(),
-                        language=str(payload.get("language", "en")).strip() or "en",
-                        stt_engine=str(payload.get("stt_engine", "")).strip(),
-                        allow_fallback_stt=parse_bool(payload.get("allow_fallback_stt"), default=False),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except (ValueError, binascii.Error) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"transcription": transcription}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/tts":
-                payload = self.read_json()
-                try:
-                    script = voice.synthesize_text(
-                        text=str(payload.get("text", "")).strip(),
-                        session_id=str(payload.get("session_id", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        persona_id=str(payload.get("persona_id", "")).strip(),
-                        voice=str(payload.get("voice", "local-script")).strip() or "local-script",
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"script": script}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/voice/translate":
-                payload = self.read_json()
-                try:
-                    translation = voice.translate_text(
-                        text=str(payload.get("text", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        source_language=str(payload.get("source_language", "auto")).strip() or "auto",
-                        target_language=str(payload.get("target_language", "en")).strip() or "en",
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"translation": translation}, status=HTTPStatus.CREATED)
                 return
             if parsed.path == "/api/production/policies":
                 payload = self.read_json()
@@ -4134,300 +3468,6 @@ def build_http_server(
                 )
                 self.send_json({"plan": plan}, status=HTTPStatus.CREATED)
                 return
-            if parsed.path == "/api/developer/api-keys":
-                payload = self.read_json()
-                try:
-                    key = developer.create_api_key(
-                        label=str(payload.get("label", "")).strip(),
-                        scopes=[str(item) for item in payload.get("scopes", [])] if isinstance(payload.get("scopes"), list) else None,
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"api_key": key}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/api-keys/verify":
-                payload = self.read_json()
-                result = developer.verify_api_key(
-                    str(payload.get("key", "")),
-                    scope=str(payload.get("scope", "")).strip() or None,
-                )
-                self.send_json(result)
-                return
-            if parsed.path == "/api/developer/webhooks":
-                payload = self.read_json()
-                try:
-                    webhook = developer.register_webhook(
-                        event=str(payload.get("event", "*")).strip() or "*",
-                        target_url=str(payload.get("target_url", "")).strip(),
-                        enabled=parse_bool(payload.get("enabled"), default=True),
-                        secret_hint=str(payload.get("secret_hint", "")),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"webhook": webhook}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/webhooks/dispatch":
-                payload = self.read_json()
-                try:
-                    result = developer.dispatch_webhook(
-                        event=str(payload.get("event", "")).strip(),
-                        payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
-                        allow_network=parse_bool(payload.get("allow_network"), default=False),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/plugins":
-                payload = self.read_json()
-                try:
-                    plugin = developer.register_plugin(payload.get("manifest") if isinstance(payload.get("manifest"), dict) else payload)
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"plugin": plugin}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/tools":
-                payload = self.read_json()
-                try:
-                    tool = developer.register_tool(
-                        tool_id=str(payload.get("tool_id", "")).strip(),
-                        name=str(payload.get("name", "")).strip(),
-                        description=str(payload.get("description", "")),
-                        schema=payload.get("schema") if isinstance(payload.get("schema"), dict) else {},
-                        handler=str(payload.get("handler", "registered")).strip() or "registered",
-                        permissions=[str(item) for item in payload.get("permissions", [])] if isinstance(payload.get("permissions"), list) else [],
-                        enabled=parse_bool(payload.get("enabled"), default=True),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"tool": tool}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/tools/invoke":
-                payload = self.read_json()
-                try:
-                    invocation = developer.invoke_tool(
-                        str(payload.get("tool_id", "")).strip(),
-                        input_data=payload.get("input") if isinstance(payload.get("input"), dict) else {},
-                        approved=parse_bool(payload.get("approved"), default=False),
-                    )
-                except (DeveloperPlatformError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"invocation": invocation}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/mcp/servers":
-                payload = self.read_json()
-                try:
-                    server = developer.register_mcp_server(
-                        name=str(payload.get("name", "")).strip(),
-                        command=str(payload.get("command", "")).strip(),
-                        args=[str(item) for item in payload.get("args", [])] if isinstance(payload.get("args"), list) else [],
-                        env={str(key): str(value) for key, value in payload.get("env", {}).items()} if isinstance(payload.get("env"), dict) else {},
-                        enabled=parse_bool(payload.get("enabled"), default=True),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"server": server}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/extensions":
-                payload = self.read_json()
-                try:
-                    package = developer.publish_extension_package(
-                        package_type=str(payload.get("package_type", "")).strip(),
-                        name=str(payload.get("name", "")).strip(),
-                        version=str(payload.get("version", "")).strip(),
-                        source=str(payload.get("source", "local")).strip() or "local",
-                        status=str(payload.get("status", "available")).strip() or "available",
-                        manifest=payload.get("manifest") if isinstance(payload.get("manifest"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"package": package}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/developer/sdk":
-                payload = self.read_json()
-                try:
-                    artifact = developer.generate_sdk(
-                        language=str(payload.get("language", "python")).strip() or "python",
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"artifact": artifact}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/secrets":
-                payload = self.read_json()
-                try:
-                    secret = security_privacy.store_secret(
-                        name=str(payload.get("name", "")).strip(),
-                        value=str(payload.get("value", "")),
-                        passphrase=str(payload.get("passphrase", "")),
-                        description=str(payload.get("description", "")),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"secret": secret}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/secrets/reveal":
-                payload = self.read_json()
-                try:
-                    secret = security_privacy.reveal_secret(
-                        secret_id=str(payload.get("secret_id", "")).strip(),
-                        passphrase=str(payload.get("passphrase", "")),
-                    )
-                except (SecurityPrivacyError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"secret": secret})
-                return
-            if parsed.path == "/api/security/secrets/rotate":
-                payload = self.read_json()
-                try:
-                    secret = security_privacy.rotate_secret(
-                        secret_id=str(payload.get("secret_id", "")).strip(),
-                        value=str(payload.get("value", "")),
-                        passphrase=str(payload.get("passphrase", "")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"secret": secret})
-                return
-            if parsed.path == "/api/security/retention":
-                payload = self.read_json()
-                try:
-                    policy = security_privacy.create_retention_policy(
-                        resource_type=str(payload.get("resource_type", "")).strip(),
-                        retention_days=parse_int(str(payload.get("retention_days", "365")), default=365),
-                        action=str(payload.get("action", "delete")).strip() or "delete",
-                        status=str(payload.get("status", "active")).strip() or "active",
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"policy": policy}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/retention/apply":
-                payload = self.read_json()
-                try:
-                    result = security_privacy.apply_retention(
-                        policy_id=str(payload.get("policy_id", "")).strip(),
-                        dry_run=parse_bool(payload.get("dry_run"), default=True),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result)
-                return
-            if parsed.path == "/api/security/shares":
-                payload = self.read_json()
-                try:
-                    grant = security_privacy.create_share_grant(
-                        resource_type=str(payload.get("resource_type", "")).strip(),
-                        resource_id=str(payload.get("resource_id", "")).strip(),
-                        grantee=str(payload.get("grantee", "")).strip(),
-                        scope=str(payload.get("scope", "read")).strip() or "read",
-                        expires_at=str(payload.get("expires_at", "")).strip(),
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"grant": grant}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/shares/resolve":
-                payload = self.read_json()
-                try:
-                    grant = security_privacy.resolve_share_grant(
-                        grant_id=str(payload.get("grant_id", "")).strip(),
-                        status=str(payload.get("status", "revoked")).strip() or "revoked",
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"grant": grant})
-                return
-            if parsed.path == "/api/security/egress/request":
-                payload = self.read_json()
-                try:
-                    request = security_privacy.request_egress(
-                        requester=str(payload.get("requester", "user")).strip() or "user",
-                        purpose=str(payload.get("purpose", "")).strip(),
-                        destination=str(payload.get("destination", "")).strip(),
-                        resource_type=str(payload.get("resource_type", "unknown")).strip() or "unknown",
-                        resource_id=str(payload.get("resource_id", "")).strip(),
-                        risk_level=str(payload.get("risk_level", "medium")).strip() or "medium",
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"request": request}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/egress/resolve":
-                payload = self.read_json()
-                try:
-                    request = security_privacy.resolve_egress_request(
-                        request_id=str(payload.get("request_id", "")).strip(),
-                        approved=parse_bool(payload.get("approved"), default=False),
-                        approved_by=str(payload.get("approved_by", "user")).strip() or "user",
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"request": request})
-                return
-            if parsed.path == "/api/security/audit-chain/seal":
-                self.send_json(security_privacy.seal_audit_events(), status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/audit-chain/verify":
-                self.send_json(security_privacy.verify_audit_chain())
-                return
-            if parsed.path == "/api/security/privacy-report":
-                self.send_json({"report": security_privacy.create_privacy_report()}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/sandbox-profiles":
-                payload = self.read_json()
-                try:
-                    profile = security_privacy.create_sandbox_profile(
-                        name=str(payload.get("name", "")).strip(),
-                        permissions=[str(item) for item in payload.get("permissions", [])] if isinstance(payload.get("permissions"), list) else [],
-                        network_allowed=parse_bool(payload.get("network_allowed"), default=False),
-                        filesystem=payload.get("filesystem") if isinstance(payload.get("filesystem"), dict) else {},
-                        env={str(key): str(value) for key, value in payload.get("env", {}).items()} if isinstance(payload.get("env"), dict) else {},
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"profile": profile}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/security/sandbox/evaluate":
-                payload = self.read_json()
-                try:
-                    result = security_privacy.evaluate_sandbox_request(
-                        profile_id=str(payload.get("profile_id", "")).strip(),
-                        permissions=[str(item) for item in payload.get("permissions", [])] if isinstance(payload.get("permissions"), list) else [],
-                        network=parse_bool(payload.get("network"), default=False),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result)
-                return
-
             # ---- Calendar POST routes ----
             if parsed.path == "/api/calendar/calendars":
                 payload = self.read_json()
@@ -4485,251 +3525,21 @@ def build_http_server(
                 self.send_json({"ical": ical_str})
                 return
 
-            # ---- Digital Twin POST routes ----
-            if parsed.path == "/api/twin/profile":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                updates = {k: v for k, v in payload.items() if k != "project"}
-                self.send_json(digital_twin.update_profile(updates, project=project))
-                return
-            if parsed.path == "/api/twin/interaction":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                result = digital_twin.record_interaction(
-                    str(payload.get("kind", "chat")),
-                    str(payload.get("content", "")),
-                    project=project,
-                    context=payload.get("context") if isinstance(payload.get("context"), dict) else None,
-                )
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/twin/predict":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                context_text = str(payload.get("context", "")).strip()
-                self.send_json(digital_twin.predict_intent(context_text, project=project))
-                return
-            if parsed.path == "/api/twin/goals":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                try:
-                    goal = digital_twin.create_goal(
-                        str(payload.get("title", "")).strip(),
-                        project=project,
-                        description=str(payload.get("description", "")),
-                        target_date=str(payload.get("target_date", "")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"goal": goal}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/twin/consolidate":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                self.send_json(digital_twin.consolidate_memory(project=project))
-                return
 
-            # ---- Vault POST routes ----
-            if parsed.path == "/api/vault/store":
-                payload = self.read_json()
-                passphrase = str(payload.get("passphrase", "")).strip()
-                secret = str(payload.get("secret", "")).strip()
-                label = str(payload.get("label", "")).strip()
-                project = str(payload.get("project", "default")).strip() or "default"
-                if not passphrase or not secret or not label:
-                    self.send_json({"error": "label, secret, and passphrase are required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    entry = vault.store_secret(
-                        label, secret, passphrase,
-                        project=project,
-                        category=str(payload.get("category", "secret")),
-                        tags=[str(t) for t in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else None,
-                        notes=str(payload.get("notes", "")),
-                    )
-                except (ValueError, PermissionError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"entry": entry}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/vault/retrieve":
-                payload = self.read_json()
-                entry_id = str(payload.get("entry_id", "")).strip()
-                passphrase = str(payload.get("passphrase", "")).strip()
-                project = str(payload.get("project", "default")).strip() or "default"
-                if not entry_id or not passphrase:
-                    self.send_json({"error": "entry_id and passphrase are required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    secret_data = vault.retrieve_secret(entry_id, passphrase, project=project)
-                except (KeyError, ValueError, PermissionError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"secret": secret_data})
-                return
-            if parsed.path == "/api/vault/rotate-key":
-                payload = self.read_json()
-                old_pp = str(payload.get("old_passphrase", "")).strip()
-                new_pp = str(payload.get("new_passphrase", "")).strip()
-                project = str(payload.get("project", "default")).strip() or "default"
-                if not old_pp or not new_pp:
-                    self.send_json({"error": "old_passphrase and new_passphrase are required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    result = vault.rotate_key(old_pp, new_pp, project=project)
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result)
-                return
-            if parsed.path == "/api/vault/export":
-                payload = self.read_json()
-                passphrase = str(payload.get("passphrase", "")).strip()
-                project = str(payload.get("project", "default")).strip() or "default"
-                if not passphrase:
-                    self.send_json({"error": "passphrase required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(vault.export_vault(passphrase, project=project))
-                return
-
-            # ---- Scraper POST routes ----
-            if parsed.path == "/api/scraper/scrape":
-                payload = self.read_json()
-                url = str(payload.get("url", "")).strip()
-                if not url:
-                    self.send_json({"error": "url is required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                project = str(payload.get("project", "default")).strip() or "default"
-                try:
-                    result = scraper.scrape_url(
-                        url, project=project,
-                        respect_robots=parse_bool(payload.get("respect_robots"), default=True),
-                        ingest_to_knowledge=parse_bool(payload.get("ingest"), default=True),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result)
-                return
-            if parsed.path == "/api/scraper/schedule":
-                payload = self.read_json()
-                url = str(payload.get("url", "")).strip()
-                if not url:
-                    self.send_json({"error": "url is required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                project = str(payload.get("project", "default")).strip() or "default"
-                try:
-                    job = scraper.schedule_scrape(
-                        url, project=project,
-                        interval_hours=float(payload.get("interval_hours", 24.0)),
-                        label=str(payload.get("label", "")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"job": job}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/scraper/run-due":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                self.send_json(scraper.run_due_jobs(project=project))
-                return
-
-            # ---- Fine-tuning POST routes ----
-            if parsed.path == "/api/finetune/datasets":
-                payload = self.read_json()
-                try:
-                    ds = fine_tuning.create_dataset(
-                        str(payload.get("name", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        description=str(payload.get("description", "")),
-                        format=str(payload.get("format", "jsonl")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"dataset": ds}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/finetune/examples":
-                payload = self.read_json()
-                dataset_id = str(payload.get("dataset_id", "")).strip()
-                if not dataset_id:
-                    self.send_json({"error": "dataset_id is required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    ex = fine_tuning.add_example(
-                        dataset_id,
-                        str(payload.get("user_input", "")).strip(),
-                        str(payload.get("assistant_output", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        system_prompt=str(payload.get("system_prompt", "")),
-                        quality_score=float(payload.get("quality_score", 1.0)),
-                    )
-                except (ValueError, KeyError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"example": ex}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/finetune/jobs":
-                payload = self.read_json()
-                try:
-                    job = fine_tuning.create_job(
-                        str(payload.get("dataset_id", "")).strip(),
-                        str(payload.get("base_model", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        method=str(payload.get("method", "lora")),
-                        config=payload.get("config") if isinstance(payload.get("config"), dict) else None,
-                        template_id=str(payload.get("template_id", "")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"job": job}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/finetune/adapters":
-                payload = self.read_json()
-                try:
-                    adapter = fine_tuning.register_adapter(
-                        str(payload.get("name", "")).strip(),
-                        str(payload.get("base_model", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        description=str(payload.get("description", "")),
-                        rank=int(payload.get("rank", 16)),
-                        alpha=float(payload.get("alpha", 16.0)),
-                        target_modules=[str(m) for m in payload.get("target_modules", [])] if isinstance(payload.get("target_modules"), list) else None,
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"adapter": adapter}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/finetune/adapters/activate":
-                payload = self.read_json()
-                adapter_id = str(payload.get("adapter_id", "")).strip()
-                if not adapter_id:
-                    self.send_json({"error": "adapter_id is required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    adapter = fine_tuning.activate_adapter(
-                        adapter_id,
-                        project=str(payload.get("project", "default")).strip() or "default",
-                    )
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json({"adapter": adapter})
-                return
 
             # ---- Auth POST routes ----
             if parsed.path == "/api/auth/register":
                 payload = self.read_json()
+                registering_user = auth.resolve_bearer(self._bearer_token())
                 try:
                     result = auth.register(
                         str(payload.get("username", "")),
                         str(payload.get("email", "")),
                         str(payload.get("password", "")),
                         display_name=str(payload.get("display_name", "")),
+                        bootstrap_token=self.headers.get("X-OpenAgent-Bootstrap-Token", "")
+                            or str(payload.get("bootstrap_token", "")),
+                        authorized=bool(registering_user and registering_user.get("role") == "owner"),
                     )
                 except (ValueError, AuthError) as exc:
                     self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -4850,67 +3660,11 @@ def build_http_server(
                 return
 
             # ---- Editor document + draft POST routes ----
-            if parsed.path == "/api/document":
-                payload = self.read_json()
-                try:
-                    result = documents.create_document(
-                        str(payload.get("title", "")),
-                        str(payload.get("content", "")),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._document_write_owner(payload),
-                        doc_format=str(payload.get("format", "markdown")).strip() or "markdown",
-                        tags=[str(t) for t in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else None,
-                        folder=str(payload.get("folder", "")),
-                    )
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"document": result}, status=HTTPStatus.CREATED)
+            document_route = handle_document_post(parsed.path, document_route_dependencies(self))
+            if document_route is not None:
+                self.send_json(document_route.payload, status=document_route.status)
                 return
-            if parsed.path.startswith("/api/document/") and parsed.path.endswith("/archive"):
-                doc_id = unquote(parsed.path.removeprefix("/api/document/").removesuffix("/archive")).strip()
-                payload = self.read_json()
-                archived = parse_bool(payload.get("archived"), default=True)
-                try:
-                    result = documents.archive_document(doc_id, archived, owner=self._auth_scope_owner())
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json(result)
-                return
-            if parsed.path.startswith("/api/document/") and "/restore/" in parsed.path:
-                remainder = parsed.path.removeprefix("/api/document/")
-                doc_id, _, version_text = remainder.partition("/restore/")
-                doc_id = unquote(doc_id).strip()
-                try:
-                    version_number = int(version_text)
-                except ValueError:
-                    self.send_json({"error": "invalid version number"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    result = documents.restore_version(doc_id, version_number, owner=self._auth_scope_owner())
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json(result)
-                return
-            if parsed.path == "/api/editor-drafts":
-                payload = self.read_json()
-                doc_id = str(payload.get("doc_id", "")).strip()
-                try:
-                    result = documents.create_draft(
-                        doc_id,
-                        str(payload.get("content", "")),
-                        base_version=int(payload.get("base_version", 0) or 0),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._document_write_owner(payload),
-                        scope_owner=self._auth_scope_owner(),
-                    )
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
+
 
             # ---- Calendar external-sync POST routes ----
             if parsed.path == "/api/calendar/providers/register":
@@ -4938,6 +3692,8 @@ def build_http_server(
                         direction=str(payload.get("direction", "pull")),
                         conflict_policy=str(payload.get("conflict_policy", "latest_update")),
                         owner=self._auth_scope_owner(),
+                        allow_external=parse_bool(payload.get("allow_external"), default=False),
+                        allow_local_transport=parse_bool(payload.get("allow_local_transport"), default=False),
                     )
                 except KeyError as exc:
                     self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
@@ -5001,67 +3757,28 @@ def build_http_server(
 
         def do_PUT(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_rate_limit(parsed.path):
+                return
             if not self._enforce_auth_gate(parsed.path, "PUT"):
                 return
-            if parsed.path.startswith("/api/workflows/"):
-                workflow_id = unquote(parsed.path.removeprefix("/api/workflows/")).strip()
-                payload = self.read_json()
-                try:
-                    result = workflows.update(
-                        workflow_id,
-                        name=str(payload["name"]) if "name" in payload else None,
-                        description=str(payload["description"]) if "description" in payload else None,
-                        steps=payload["steps"] if isinstance(payload.get("steps"), list) else None,
-                        trigger_type=str(payload["trigger_type"]) if "trigger_type" in payload else None,
-                        trigger=payload["trigger"] if isinstance(payload.get("trigger"), dict) else None,
-                        enabled=parse_bool(payload.get("enabled"), default=False) if "enabled" in payload else None,
-                    )
-                except KeyError:
-                    self.send_json({"error": "Workflow not found."}, status=HTTPStatus.NOT_FOUND)
-                    return
-                except ValueError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"workflow": result})
+            draft_route = handle_draft_put(parsed.path, draft_route_dependencies(self))
+            if draft_route is not None:
+                self.send_json(draft_route.payload, status=draft_route.status)
                 return
-            if parsed.path.startswith("/api/document/"):
-                doc_id = unquote(parsed.path.removeprefix("/api/document/")).strip()
-                payload = self.read_json()
-                try:
-                    result = documents.update_document(
-                        doc_id,
-                        title=payload["title"] if "title" in payload else None,
-                        content=payload["content"] if "content" in payload else None,
-                        if_version=int(payload["if_version"]) if "if_version" in payload else None,
-                        owner=self._auth_scope_owner(),
-                    )
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                except DocumentError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
-                    return
-                self.send_json({"document": result})
+            workflow_route = handle_workflows_put(parsed.path, workflow_route_dependencies(self))
+            if workflow_route is not None:
+                self.send_json(workflow_route.payload, status=workflow_route.status)
                 return
-            if parsed.path.startswith("/api/editor-drafts/"):
-                draft_id = unquote(parsed.path.removeprefix("/api/editor-drafts/")).strip()
-                payload = self.read_json()
-                try:
-                    result = documents.update_draft(
-                        draft_id,
-                        str(payload.get("content", "")),
-                        base_version=int(payload["base_version"]) if "base_version" in payload else None,
-                        owner=self._auth_scope_owner(),
-                    )
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json({"draft": result})
+            document_route = handle_document_put(parsed.path, document_route_dependencies(self))
+            if document_route is not None:
+                self.send_json(document_route.payload, status=document_route.status)
                 return
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
         def do_PATCH(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_rate_limit(parsed.path):
+                return
             if not self._enforce_auth_gate(parsed.path, "PATCH"):
                 return
             phd_route = handle_phd_patch(
@@ -5099,36 +3816,29 @@ def build_http_server(
             if mcp_runtime_route is not None:
                 self.send_json(mcp_runtime_route.payload, status=mcp_runtime_route.status)
                 return
-            if parsed.path.startswith("/api/document/"):
-                doc_id = unquote(parsed.path.removeprefix("/api/document/")).strip()
-                payload = self.read_json()
-                try:
-                    result = documents.patch_document(
-                        doc_id,
-                        tags=[str(t) for t in payload["tags"]] if isinstance(payload.get("tags"), list) else None,
-                        folder=payload["folder"] if "folder" in payload else None,
-                        title=payload["title"] if "title" in payload else None,
-                        owner=self._auth_scope_owner(),
-                    )
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json({"document": result})
+            document_route = handle_document_patch(parsed.path, document_route_dependencies(self))
+            if document_route is not None:
+                self.send_json(document_route.payload, status=document_route.status)
                 return
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
         def do_DELETE(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_rate_limit(parsed.path):
+                return
             if not self._enforce_auth_gate(parsed.path, "DELETE"):
                 return
-            if parsed.path.startswith("/api/workflows/"):
-                workflow_id = unquote(parsed.path.removeprefix("/api/workflows/")).strip()
-                try:
-                    result = workflows.delete(workflow_id)
-                except KeyError:
-                    self.send_json({"error": "Workflow not found."}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json(result)
+            draft_route = handle_draft_delete(parsed.path, draft_route_dependencies(self))
+            if draft_route is not None:
+                self.send_json(draft_route.payload, status=draft_route.status)
+                return
+            workflow_route = handle_workflows_delete(parsed.path, workflow_route_dependencies(self))
+            if workflow_route is not None:
+                self.send_json(workflow_route.payload, status=workflow_route.status)
+                return
+            auth_route = handle_auth_delete(parsed.path, auth_route_dependencies(self))
+            if auth_route is not None:
+                self.send_json(auth_route.payload, status=auth_route.status)
                 return
             phd_route = handle_phd_delete(
                 parsed.path,
@@ -5155,23 +3865,9 @@ def build_http_server(
             if conversation_route is not None:
                 self.send_json(conversation_route.payload, status=conversation_route.status)
                 return
-            if parsed.path.startswith("/api/document/"):
-                doc_id = unquote(parsed.path.removeprefix("/api/document/")).strip()
-                try:
-                    result = documents.delete_document(doc_id, owner=self._auth_scope_owner())
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json(result)
-                return
-            if parsed.path.startswith("/api/editor-drafts/"):
-                draft_id = unquote(parsed.path.removeprefix("/api/editor-drafts/")).strip()
-                try:
-                    result = documents.delete_draft(draft_id, owner=self._auth_scope_owner())
-                except KeyError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
-                    return
-                self.send_json(result)
+            document_route = handle_document_delete(parsed.path, document_route_dependencies(self))
+            if document_route is not None:
+                self.send_json(document_route.payload, status=document_route.status)
                 return
             if parsed.path.startswith("/api/auth/api-tokens/"):
                 user = self._require_auth()
@@ -5202,7 +3898,7 @@ def build_http_server(
                 return
             relative = "index.html" if request_path in {"", "/"} else unquote(request_path).lstrip("/")
             candidate = (root / relative).resolve()
-            if not str(candidate).startswith(str(root)) or not candidate.is_file():
+            if not candidate.is_relative_to(root) or not candidate.is_file():
                 self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
                 return
             content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
@@ -5221,12 +3917,16 @@ def build_http_server(
             length = parse_int(self.headers.get("Content-Length"), default=0)
             if length <= 0:
                 return {}
+            if length > settings.json_body_limit_bytes:
+                raise RequestRejected("JSON request body exceeds the configured limit.", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             raw = self.rfile.read(length)
             try:
                 payload = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError:
-                return {}
-            return payload if isinstance(payload, dict) else {}
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RequestRejected("Request body is not valid JSON.") from exc
+            if not isinstance(payload, dict):
+                raise RequestRejected("JSON request body must be an object.")
+            return payload
 
         def _bearer_token(self) -> str:
             header = self.headers.get("Authorization", "")
@@ -5301,97 +4001,28 @@ def build_http_server(
             self._auth_user = user
             return True
 
-        def _handle_file_upload(self) -> None:
-            """Analyze an uploaded document or image and add readable evidence to RAG."""
-            content_type = self.headers.get("Content-Type", "")
-            content_length = parse_int(self.headers.get("Content-Length"), default=0)
-            if "multipart/form-data" not in content_type:
-                self.send_json({"error": "multipart/form-data required"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            if content_length <= 0 or content_length > 50 * 1024 * 1024:
-                self.send_json({"error": "Content-Length missing or too large (max 50 MB)"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            raw = self.rfile.read(content_length)
-            # Extract boundary from content-type header
-            boundary = b""
-            for part in content_type.split(";"):
-                part = part.strip()
-                if part.startswith("boundary="):
-                    boundary = part[9:].strip('"').encode("utf-8")
-                    break
-            if not boundary:
-                self.send_json({"error": "No boundary in multipart form"}, status=HTTPStatus.BAD_REQUEST)
-                return
-            parts = _parse_multipart_parts(raw, boundary)
-            file_part = next(
-                (part for part in parts if str(part.get("filename", "")).strip() and isinstance(part.get("content"), bytes)),
-                None,
-            )
-            if file_part is None:
-                self.send_json({"error": "No file was included in the upload."}, status=HTTPStatus.BAD_REQUEST)
-                return
-            project_part = next((part for part in parts if part.get("name") == "project"), None)
-            embedding_part = next((part for part in parts if part.get("name") == "embedding_provider"), None)
-            project = (
-                bytes(project_part.get("content", b"")).decode("utf-8", errors="replace").strip()
-                if project_part else "default"
-            ) or "default"
-            embedding_provider = (
-                bytes(embedding_part.get("content", b"")).decode("utf-8", errors="replace").strip()
-                if embedding_part else ""
-            )
-            filename = str(file_part.get("filename", "")).strip() or "attachment.bin"
-            content = bytes(file_part.get("content", b""))
-            content_type_hint = str(file_part.get("content_type", "")).strip()
-            asset = media.ingest_bytes(
-                content,
-                filename=filename,
-                project=project,
-                source="chat-attachment",
-                source_path=filename,
-                metadata={"mime_type": content_type_hint} if content_type_hint else {},
-            )
-            analysis = asset.get("analysis") if isinstance(asset.get("analysis"), dict) else {}
-            text_content = str(analysis.get("extracted_text", "")).strip()
-            if not text_content and Path(filename).suffix.lower() in {".docx", ".odt", ".rtf", ".html", ".htm", ".csv", ".md"}:
-                from ..document_processing import extract_office_text
-
-                text_content = extract_office_text(filename, content).strip()
-            document = None
-            if text_content:
-                document = knowledge.ingest_text(
-                    title=filename,
-                    content=text_content,
-                    project=project,
-                    source="chat-attachment",
-                    source_path=filename,
-                    metadata={"asset_id": asset.get("id", ""), "mime_type": asset.get("mime_type", "")},
-                    embedding_provider=embedding_provider,
-                )
-            attachment = {
-                "id": asset.get("id", ""),
-                "name": filename,
-                "filename": filename,
-                "media_type": asset.get("media_type", "document"),
-                "mime_type": asset.get("mime_type", content_type_hint),
-                "size_bytes": asset.get("size_bytes", len(content)),
-                "summary": analysis.get("summary", ""),
-                "extracted_text": text_content[:50_000],
-                "findings": analysis.get("findings", {}),
-                "document_id": (document or {}).get("id", "") if isinstance(document, dict) else "",
-            }
+        def _enforce_rate_limit(self, path: str) -> bool:
+            if not path.startswith("/api/"):
+                return True
+            client = str(self.client_address[0]) if self.client_address else "unknown"
+            category = request_rate_class(path, self.command)
+            allowed, retry_after = request_limiter.consume(client, category)
+            if allowed:
+                return True
+            self._retry_after = retry_after
             self.send_json(
-                {"attachment": attachment, "asset": asset, "document": document, "filename": filename, "chars_extracted": len(text_content)},
-                status=HTTPStatus.CREATED,
+                {"error": f"{category.replace('_', ' ')} request rate limit exceeded"},
+                status=HTTPStatus.TOO_MANY_REQUESTS,
             )
+            return False
 
         def _handle_voice_upload(self) -> None:
             """Handle browser audio uploads from current and older workbench builds."""
 
             content_type = self.headers.get("Content-Type", "")
             content_length = parse_int(self.headers.get("Content-Length"), default=0)
-            if content_length <= 0 or content_length > 50 * 1024 * 1024:
-                self.send_json({"error": "Content-Length missing or too large (max 50 MB)"}, status=HTTPStatus.BAD_REQUEST)
+            if content_length <= 0 or content_length > settings.upload_limit_bytes:
+                self.send_json({"error": "Content-Length missing or exceeds the configured upload limit"}, status=HTTPStatus.BAD_REQUEST)
                 return
 
             fields: dict[str, str] = {}
@@ -5496,7 +4127,7 @@ def build_http_server(
             return (first(query, "envelope") or "").strip().lower() in {"legacy", "raw", "off", "0", "false"}
 
         def _envelope(self, payload: object, status: HTTPStatus) -> dict[str, object]:
-            meta = {"request_id": uuid4().hex[:16], "ts": utc_now()}
+            meta = {"request_id": getattr(self, "request_id", uuid4().hex), "ts": utc_now()}
             if int(status) >= 400:
                 message = payload.get("error", "Error") if isinstance(payload, dict) else str(payload)
                 code = status.name.lower() if hasattr(status, "name") else str(int(status))
@@ -5562,6 +4193,19 @@ def build_http_server(
                 completed.wait(timeout=timeout_seconds)
 
     server = OpenAgentHTTPServer((host, port), OpenAgentHandler)
+    if not settings.loopback_only and settings.unsafe_network_override:
+        warning = "UNSAFE DEVELOPMENT OVERRIDE: unauthenticated non-loopback network binding is enabled"
+        print(warning)
+        store.add_audit_event(
+            AuditEvent(
+                actor="startup",
+                action="server.unsafe_network_override",
+                resource=f"http://{host}:{port}",
+                project="system",
+                status="warning",
+                metadata={"warning": warning, "deployment_mode": settings.deployment_mode},
+            )
+        )
     workflow_worker.start()
     server.openvino_warm_event = openvino_warm_event  # type: ignore[attr-defined]
     server.openvino_warm_thread = openvino_warm_thread  # type: ignore[attr-defined]

@@ -13,11 +13,15 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import struct
 import time
 from typing import Any
 from uuid import uuid4
+
+from argon2 import PasswordHasher, Type
+from argon2.exceptions import InvalidHashError, VerifyMismatchError, VerificationError
 
 from .config import auth_enforcement_enabled, deployment_mode
 from .models import utc_now
@@ -29,6 +33,8 @@ class AuthError(RuntimeError):
 
 
 PBKDF2_ITERATIONS = 210_000
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 14  # 14 days
 TOTP_STEP_SECONDS = 30
 TOTP_DIGITS = 6
@@ -93,17 +99,26 @@ SCOPE_CATALOG: tuple[dict[str, str], ...] = (
 DEFAULT_SCOPES: tuple[str, ...] = tuple(entry["scope"] for entry in SCOPE_CATALOG)
 
 
+_PASSWORD_HASHER = PasswordHasher(
+    time_cost=3,
+    memory_cost=64 * 1024,
+    parallelism=2,
+    hash_len=32,
+    salt_len=16,
+    type=Type.ID,
+)
+
+
 def _hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
-    return "pbkdf2$sha256${}${}${}".format(
-        PBKDF2_ITERATIONS,
-        base64.b64encode(salt).decode("ascii"),
-        base64.b64encode(derived).decode("ascii"),
-    )
+    return _PASSWORD_HASHER.hash(password)
 
 
 def _verify_password(password: str, encoded: str) -> bool:
+    if encoded.startswith("$argon2id$"):
+        try:
+            return bool(_PASSWORD_HASHER.verify(encoded, password))
+        except (InvalidHashError, VerifyMismatchError, VerificationError):
+            return False
     try:
         scheme, algo, iterations_text, salt_b64, hash_b64 = encoded.split("$")
     except ValueError:
@@ -114,6 +129,15 @@ def _verify_password(password: str, encoded: str) -> bool:
     expected = base64.b64decode(hash_b64)
     derived = hashlib.pbkdf2_hmac(algo, password.encode("utf-8"), salt, int(iterations_text))
     return hmac.compare_digest(derived, expected)
+
+
+def _password_needs_rehash(encoded: str) -> bool:
+    if not encoded.startswith("$argon2id$"):
+        return True
+    try:
+        return _PASSWORD_HASHER.check_needs_rehash(encoded)
+    except InvalidHashError:
+        return True
 
 
 def _random_token(prefix: str) -> str:
@@ -268,6 +292,19 @@ class AuthManager:
                 (uuid4().hex, identifier or "unknown", reason, utc_now()),
             )
 
+    def _recent_failed_login_count(self, identifier: str) -> int:
+        cutoff = (
+            datetime.now(timezone.utc).replace(microsecond=0)
+            - timedelta(seconds=LOGIN_FAILURE_WINDOW_SECONDS)
+        ).isoformat()
+        with self.store.session() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM auth_failed_logins WHERE identifier = ? AND created_at >= ?",
+                    (identifier or "unknown", cutoff),
+                ).fetchone()[0]
+            )
+
     def _row_to_user(self, row: Any) -> dict[str, Any]:
         return {
             "user_id": row["id"],
@@ -298,7 +335,20 @@ class AuthManager:
     # Account lifecycle
     # ------------------------------------------------------------------
 
-    def register(self, username: str, email: str, password: str, display_name: str = "") -> dict[str, Any]:
+    def user_count(self) -> int:
+        with self.store.session() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM auth_users").fetchone()[0])
+
+    def register(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        display_name: str = "",
+        *,
+        bootstrap_token: str = "",
+        authorized: bool = False,
+    ) -> dict[str, Any]:
         username = (username or "").strip()
         email = (email or "").strip().lower()
         if not username or not email:
@@ -307,6 +357,13 @@ class AuthManager:
             raise ValueError("password must be at least 8 characters")
         with self.store.session() as connection:
             existing_count = connection.execute("SELECT COUNT(*) AS n FROM auth_users").fetchone()["n"]
+            if deployment_mode() in {"team", "enterprise"}:
+                if existing_count == 0:
+                    expected = os.environ.get("OPENAGENT_BOOTSTRAP_TOKEN", "")
+                    if not expected or not hmac.compare_digest(bootstrap_token, expected):
+                        raise AuthError("a valid bootstrap token is required for the first administrator")
+                elif not authorized:
+                    raise AuthError("an owner session is required to register another account")
             if self._find_user_row(connection, username) or self._find_user_row(connection, email):
                 raise AuthError("username or email already registered")
             user_id = uuid4().hex
@@ -339,6 +396,9 @@ class AuthManager:
         user_agent: str = "",
     ) -> dict[str, Any]:
         identifier = (username_or_email or "").strip()
+        if self._recent_failed_login_count(identifier) >= LOGIN_FAILURE_LIMIT:
+            self._log_failed_login(identifier, "rate_limited")
+            raise AuthError("too many failed login attempts; try again later")
         with self.store.session() as connection:
             row = self._find_user_row(connection, identifier)
         if row is None or not _verify_password(password, row["password_hash"]):
@@ -353,6 +413,13 @@ class AuthManager:
             if not second_factor_valid:
                 self._log_failed_login(identifier, "bad_otp")
                 raise AuthError("missing or invalid two-factor or recovery code")
+        if _password_needs_rehash(str(row["password_hash"])):
+            with self.store.session() as connection:
+                connection.execute(
+                    "UPDATE auth_users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                    (_hash_password(password), utc_now(), str(row["id"])),
+                )
+                self._record_event(connection, str(row["id"]), "password_rehashed", "argon2id")
         return self.issue_session(str(row["id"]), ip=ip, user_agent=user_agent, event_type="login")
 
     def issue_session(

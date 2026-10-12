@@ -2,9 +2,14 @@
   "name": "openagent-browser-proof",
   "private": true,
   "scripts": {
+    "build:web": "tsc -p web/tsconfig.json && esbuild web/src/app.ts --bundle --format=esm --target=es2022 --outfile=web/app.js",
+    "check:web": "tsc -p web/tsconfig.json --noEmit",
+    "test:web": "node --test tests/frontend/*.test.js",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.55.0"
+    "@playwright/test": "^1.55.0",
+    "esbuild": "^0.25.9",
+    "typescript": "^5.9.2"
   }
 }

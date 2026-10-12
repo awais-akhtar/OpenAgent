@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from openagent.egress import EgressPolicy
 from openagent.tools.browser import BrowserPolicy, BrowserRuntime, BrowserRuntimeError
 
 
@@ -13,6 +14,11 @@ class BrowserRuntimeTests(unittest.TestCase):
 
     def test_external_navigation_requires_approval_or_allowlist(self) -> None:
         policy = BrowserPolicy({"example.com"})
+        policy.egress = EgressPolicy(
+            resolver=lambda host, port, **kwargs: [
+                (None, None, None, None, ("93.184.215.14", port))
+            ]
+        )
         self.assertEqual(policy.authorize("https://example.com/path"), "example.com")
         with self.assertRaises(PermissionError):
             policy.authorize("https://unapproved.example/path")

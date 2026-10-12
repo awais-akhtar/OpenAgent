@@ -5,22 +5,54 @@ metadata:
   namespace: openagent
 spec:
   schedule: "0 * * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
       template:
+        metadata:
+          labels:
+            app: openagent-backup
         spec:
-          restartPolicy: OnFailure
+          serviceAccountName: openagent-backup
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: trigger-backup
               image: curlimages/curl:8.8.0
               imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backup-authorization
+                  mountPath: /var/run/secrets/openagent
+                  readOnly: true
               args:
                 - -fsS
+                - --retry
+                - "2"
+                - --retry-connrefused
+                - --max-time
+                - "240"
+                - -H
+                - "@/var/run/secrets/openagent/authorization"
                 - -X
                 - POST
-                - http://openagent.openagent.svc.cluster.local:8765/api/enterprise/backups
+                - http://openagent:8765/api/enterprise/backups
               resources:
                 requests:
                   cpu: 25m
@@ -28,3 +60,11 @@ spec:
                 limits:
                   cpu: 100m
                   memory: 128Mi
+          volumes:
+            - name: backup-authorization
+              secret:
+                secretName: openagent-secrets
+                defaultMode: 288
+                items:
+                  - key: backup-authorization
+                    path: authorization

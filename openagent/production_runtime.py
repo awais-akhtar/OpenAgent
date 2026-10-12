@@ -864,7 +864,7 @@ class ProductionRuntime:
                     label,
                     json.dumps(recipients, sort_keys=True),
                     json.dumps(payload, sort_keys=True),
-                    "pbkdf2-hmac-sha256+hmac-stream",
+                    "aes-256-gcm+scrypt",
                     created_at,
                 ),
             )
@@ -876,8 +876,22 @@ class ProductionRuntime:
         if envelope is None:
             raise ValueError(f"Unknown crypto envelope '{envelope_id}'.")
         plaintext = decrypt_text(envelope["envelope"], passphrase)
-        self._audit("production.crypto.decrypt", envelope_id, project=envelope["project"], metadata={"status": "allowed"})
-        return {**envelope, "plaintext": plaintext}
+        migrated = envelope.get("provider") != "aes-256-gcm+scrypt"
+        if migrated:
+            replacement = encrypt_text(plaintext, passphrase)
+            with self.store.session() as connection:
+                connection.execute(
+                    "UPDATE production_crypto_envelopes SET envelope_json = ?, provider = ? WHERE id = ?",
+                    (json.dumps(replacement, sort_keys=True), "aes-256-gcm+scrypt", envelope_id),
+                )
+            envelope = self.crypto_envelope(envelope_id) or envelope
+        self._audit(
+            "production.crypto.decrypt",
+            envelope_id,
+            project=envelope["project"],
+            metadata={"status": "allowed", "envelope_migrated": migrated},
+        )
+        return {**envelope, "plaintext": plaintext, "envelope_migrated": migrated}
 
     def crypto_envelope(self, envelope_id: str) -> dict[str, Any] | None:
         with self.store.session() as connection:

@@ -6,12 +6,12 @@ from collections.abc import Callable
 import hashlib
 import json
 import secrets
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from .models import AuditEvent, ContextEvent, utc_now
+from .process_policy import ProcessPolicy, run_process
 from .storage import OpenAgentStore
 
 
@@ -77,64 +77,7 @@ class IntegrationHub:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS integration_pairing_codes (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    label TEXT NOT NULL,
-                    code_hash TEXT NOT NULL UNIQUE,
-                    scopes_json TEXT NOT NULL DEFAULT '[]',
-                    status TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    redeemed_at TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_integration_pairing_project_created
-                    ON integration_pairing_codes(project, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS integration_preferences (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    value_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(project, scope, key)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_integration_preferences_project_scope
-                    ON integration_preferences(project, scope);
-
-                CREATE TABLE IF NOT EXISTS integration_diagnostics (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    report_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_integration_diagnostics_project_created
-                    ON integration_diagnostics(project, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS integration_safe_command_runs (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    command_key TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    output TEXT NOT NULL DEFAULT '',
-                    error TEXT NOT NULL DEFAULT '',
-                    return_code INTEGER NOT NULL DEFAULT 0,
-                    duration_ms REAL NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_integration_safe_runs_project_created
-                    ON integration_safe_command_runs(project, created_at DESC);
-                """
-            )
+        self.store.initialize()
 
     def status(self, *, project: str = "default") -> dict[str, Any]:
         return {
@@ -438,26 +381,27 @@ class IntegrationHub:
         error = ""
         return_code = 0
         try:
-            proc = subprocess.run(
-                list(spec["command"]),
-                cwd=str(Path.cwd()),
-                capture_output=True,
-                text=True,
-                shell=False,
-                timeout=timeout_seconds,
-                check=False,
+            command = [str(part) for part in spec["command"]]
+            cwd = Path.cwd().resolve()
+            proc = run_process(
+                command,
+                cwd=cwd,
+                policy=ProcessPolicy(
+                    timeout_seconds=timeout_seconds,
+                    max_output_bytes=4_000,
+                    allowed_cwd_roots=(cwd,),
+                    allowed_executables=(command[0],),
+                ),
             )
-            output = (proc.stdout or "").strip()[:4000]
-            error = (proc.stderr or "").strip()[:4000]
+            output = proc.stdout.strip()
+            error = proc.stderr.strip()
             return_code = int(proc.returncode)
-            if proc.returncode != 0:
+            if proc.timed_out:
+                status = "timeout"
+                error = "Command timed out."
+            elif proc.returncode != 0:
                 status = "failed"
-        except subprocess.TimeoutExpired as exc:
-            status = "timeout"
-            output = (exc.stdout or "").strip()[:4000] if isinstance(exc.stdout, str) else ""
-            error = "Command timed out."
-            return_code = 124
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             status = "failed"
             error = str(exc)
             return_code = 1
@@ -492,7 +436,7 @@ class IntegrationHub:
                 "duration_ms": duration_ms,
                 "created_at": utc_now(),
             },
-            "privacy_boundary": "Safe command ran locally with shell=False and a fixed allowlist.",
+            "privacy_boundary": "Safe command ran locally with a fixed allowlist, filtered environment, and bounded output.",
         }
 
     def feature_matrix(self, *, project: str = "default") -> dict[str, Any]:

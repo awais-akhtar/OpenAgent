@@ -195,14 +195,10 @@ class ResilientSyncTests(unittest.TestCase):
             self.assertIn("access_type=offline", auth_url["authorization_url"])
 
             class FakeTokenResponse:
-                def __enter__(self):
-                    return self
+                status = 200
 
-                def __exit__(self, exc_type, exc, tb):
-                    return False
-
-                def read(self):
-                    return json.dumps({
+                def __init__(self) -> None:
+                    self.body = json.dumps({
                         "access_token": "access-token",
                         "refresh_token": "refresh-token",
                         "expires_in": 3600,
@@ -211,11 +207,11 @@ class ResilientSyncTests(unittest.TestCase):
 
             captured_token_requests: list[bytes] = []
 
-            def fake_urlopen(request, timeout=30):
-                captured_token_requests.append(request.data)
+            def fake_fetch(url, **kwargs):
+                captured_token_requests.append(kwargs["body"])
                 return FakeTokenResponse()
 
-            with patch("openagent.communication.urlopen", fake_urlopen):
+            with patch.object(hub.egress, "fetch", fake_fetch):
                 refreshed = hub.refresh_oauth_token(
                     account["id"],
                     owner="alice",

@@ -33,33 +33,7 @@ class DocumentProcessing:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS document_artifacts (
-                    id TEXT PRIMARY KEY,
-                    doc_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    local_path TEXT NOT NULL,
-                    sha256 TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_document_artifacts_doc ON document_artifacts(doc_id, created_at DESC);
-                CREATE TABLE IF NOT EXISTS document_annotations (
-                    id TEXT PRIMARY KEY,
-                    doc_id TEXT NOT NULL,
-                    page INTEGER NOT NULL,
-                    kind TEXT NOT NULL,
-                    geometry_json TEXT NOT NULL DEFAULT '{}',
-                    text TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_document_annotations_doc ON document_annotations(doc_id, page, created_at);
-                """
-            )
+        self.store.initialize()
 
     def import_pdf(
         self,

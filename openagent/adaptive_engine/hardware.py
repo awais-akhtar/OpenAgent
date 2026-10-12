@@ -12,7 +12,6 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
 import time
 from typing import Any
 

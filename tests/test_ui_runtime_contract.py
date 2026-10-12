@@ -24,6 +24,8 @@ class _ButtonParser(HTMLParser):
 
 
 def _button_is_wired(attrs: dict[str, str]) -> bool:
+    if "data-palette-close" in attrs:
+        return "data-palette-close" in APP
     element_id = attrs.get("id", "")
     if element_id:
         selector = re.escape(f"#{element_id}")
@@ -52,7 +54,7 @@ def _button_is_wired(attrs: dict[str, str]) -> bool:
             "data-view-link", "data-view-jump", "data-command", "data-theme-select", "data-nav-group",
             "data-dashboard-window", "data-provider-filter", "data-incident-filter",
             "data-codebase-file", "data-codebase-approval", "data-codebase-detail", "data-codebase-output",
-            "data-developer-section",
+            "data-developer-section", "data-science-section", "data-ui-action",
         )
     )
 

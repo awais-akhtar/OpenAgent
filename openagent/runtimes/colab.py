@@ -6,10 +6,10 @@ from dataclasses import dataclass
 import importlib.util
 import os
 from pathlib import Path
-import subprocess
 import threading
 from typing import Any
 
+from ..process_policy import ProcessPolicy, run_process
 from ..routes.runtime import build_http_server
 from ..storage import OpenAgentStore
 
@@ -47,16 +47,17 @@ def detect_hardware() -> dict[str, Any]:
 
     result: dict[str, Any] = {"gpu": False, "name": "", "vram_mb": 0}
     try:
-        probe = subprocess.run(
+        probe = run_process(
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
+            policy=ProcessPolicy(
+                timeout_seconds=3,
+                max_output_bytes=4_000,
+                allowed_executables=("nvidia-smi",),
+            ),
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
         return result
-    if probe.returncode != 0 or not probe.stdout.strip():
+    if probe.timed_out or probe.output_truncated or probe.returncode != 0 or not probe.stdout.strip():
         return result
     name, _, memory = probe.stdout.splitlines()[0].partition(",")
     try:

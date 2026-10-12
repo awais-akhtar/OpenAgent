@@ -1,0 +1,416 @@
+"""Explicit distributed projection shards with caller-owned process groups.
+
+Every rank must invoke registration and projection in the same order. This
+module neither starts workers nor initializes/destroys a process group. Row
+shards gather output channels; column shards sum partial products in FP32.
+Neither arithmetic policy is a claim of publisher numerical equivalence.
+"""
+from dataclasses import dataclass
+from contextlib import closing, contextmanager
+import hashlib
+import threading
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class ProjectionShard:
+    name: str
+    shape: tuple
+    axis: int
+    start: int
+    stop: int
+    weights: object
+
+
+def shard_bounds(extent, rank, world_size, *, allow_empty=False):
+    if (type(extent) is not int or type(rank) is not int or
+            type(world_size) is not int or world_size <= 0 or
+            type(allow_empty) is not bool or extent<=0 or
+            (not allow_empty and extent < world_size) or not 0 <= rank < world_size):
+        raise ValueError('positive extent and valid admitted rank partition required')
+    return extent*rank//world_size, extent*(rank+1)//world_size
+
+
+def load_projection_shard(checkpoint, target, *, rank, world_size,
+                          max_weight_bytes, max_chunk_bytes=1024**2, axis=0,
+                          cancelled=None):
+    """Stream only into a rank-local output-row bank, without a full bank copy.
+
+    Conversion currently reads the tensor sequentially on every rank. Storage
+    traffic is therefore replicated even though retained weights are sharded.
+    The checkpoint service retains its file/layout/conversion admission rules.
+    """
+    if (type(max_weight_bytes) is not int or max_weight_bytes <= 0 or
+            type(max_chunk_bytes) is not int or max_chunk_bytes <= 0):
+        raise ValueError('positive shard and conversion budgets required')
+    rules = [r for r in checkpoint.report.contracts if r.target == target]
+    if len(rules) != 1 or len(rules[0].shape) != 2:
+        raise ValueError('one exact checkpoint matrix target required')
+    if type(axis) is not int or axis not in (0, 1):
+        raise ValueError('projection partition axis must be zero or one')
+    if cancelled is not None and not callable(cancelled):
+        raise TypeError('callable shard cancellation required')
+    rows, cols = rules[0].shape
+    start, stop = shard_bounds((rows, cols)[axis], rank, world_size)
+    count = (stop-start)*(cols if axis == 0 else rows)
+    if count*4+max_chunk_bytes*8 > max_weight_bytes:
+        raise MemoryError('rank-local weight and conversion buffers exceed admission')
+    local = np.empty(count, np.float32)
+    first, last, cursor = start*cols, stop*cols, 0
+    with closing(checkpoint.stream(targets=(target,), output_encoding='float32',
+                                   max_chunk_bytes=max_chunk_bytes)) as blocks:
+        for block in blocks:
+            if cancelled is not None and cancelled():
+                raise InterruptedError('checkpoint shard loading cancelled')
+            values = np.asarray(block.payload)
+            if (block.target != target or block.shape != (rows, cols) or
+                    block.encoding != 'float32' or block.offset != cursor or
+                    values.dtype != np.float32 or values.ndim != 1 or
+                    not values.size or not np.isfinite(values).all()):
+                raise ValueError('noncontiguous or invalid checkpoint projection stream')
+            end = cursor+values.size
+            if end > rows*cols:
+                raise ValueError('projection stream exceeds declared extent')
+            if axis == 0:
+                left, right = max(first, cursor), min(last, end)
+                if right > left:
+                    local[left-first:right-first] = values[left-cursor:right-cursor]
+            else:
+                # A conversion block may split rows at arbitrary columns.
+                # Copy only this rank's intersections, never a full matrix.
+                width = stop-start
+                row = cursor//cols
+                while row*cols < end:
+                    left = max(cursor, row*cols+start)
+                    right = min(end, row*cols+stop)
+                    if right > left:
+                        offset = row*width+left-row*cols-start
+                        local[offset:offset+right-left] = values[left-cursor:right-cursor]
+                    row += 1
+            cursor = end
+    if cursor != rows*cols:
+        raise ValueError('incomplete checkpoint projection stream')
+    if cancelled is not None and cancelled():
+        raise InterruptedError('checkpoint shard loading cancelled')
+    shape = (stop-start, cols) if axis == 0 else (rows, stop-start)
+    local = np.frombuffer(local.tobytes(), dtype=np.float32).reshape(shape)
+    return ProjectionShard(rules[0].sources[0], (rows, cols), axis, start, stop, local)
+
+
+class TensorParallelProjections:
+    """A registered bank of local shards, returning replicated host outputs."""
+    boundary_observation_supported=True
+
+    def __init__(self, *, group, device, torch_version, max_bytes,
+                 dtype='float32'):
+        import torch
+        import torch.distributed as distributed
+        if str(torch.__version__) != torch_version:
+            raise ValueError('explicit Torch version pin differs from installed runtime')
+        if not distributed.is_available() or not distributed.is_initialized():
+            raise ValueError('caller must initialize the distributed process group')
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ValueError('positive rank-local buffer budget required')
+        if dtype not in ('float32', 'bfloat16'):
+            raise ValueError('explicit float32 or bfloat16 projection policy required')
+        self.torch, self.distributed, self.group = torch, distributed, group
+        self.device = torch.device(device)
+        backend = str(distributed.get_backend(group)).lower()
+        self.backend, self.torch_version = backend, torch_version
+        if self.device.type not in ('cpu', 'cuda'):
+            raise ValueError('distributed projections require CPU or CUDA/HIP devices')
+        if 'nccl' in backend and self.device.type != 'cuda':
+            raise ValueError('NCCL requires a CUDA/HIP device')
+        if self.device.type == 'cuda':
+            if not torch.cuda.is_available():
+                raise ValueError('selected accelerator is unavailable')
+            self.device = torch.device('cuda', torch.cuda.current_device()
+                                       if self.device.index is None else self.device.index)
+            torch.cuda.set_device(self.device)
+        self.rank = distributed.get_rank(group)
+        self.world_size = distributed.get_world_size(group)
+        self.dtype_name, self.max_bytes = dtype, max_bytes
+        self.dtype = getattr(torch, dtype)
+        self._shards, self._pins = {}, {}
+        self._lock = threading.RLock()
+        self._closed = False
+        self._resident_bytes = 0
+        self._cancellation = threading.local()
+        self._observations=threading.local()
+
+    @contextmanager
+    def boundary_observation_scope(self,observer):
+        """Capture actual converted operands before disjoint shard selection."""
+        with self._lock:
+            if self._closed or getattr(self._observations,'observer',None) is not None:
+                raise RuntimeError('idle open projection observation owner required')
+            if (not callable(getattr(observer,'projection',None)) or
+                    not hasattr(observer,'projection_names') or not hasattr(observer,'maximum')):
+                raise ValueError('bounded executed projection observer required')
+            self._observations.observer=observer
+            try:yield
+            finally:self._observations.observer=None
+
+    def _observation_policy(self):
+        observer=getattr(self._observations,'observer',None)
+        if observer is None:return None
+        return hashlib.sha256(repr((tuple(sorted(observer.projection_names)),observer.maximum)).encode()).hexdigest()
+
+    def _observe_input(self,name,inputs):
+        observer=getattr(self._observations,'observer',None)
+        if observer is not None and name in observer.projection_names:
+            observer.projection(name,'input',inputs)
+
+    def _admit_product_policy(self):
+        from .device_execution_policy import admit_fp32
+        admit_fp32(self.torch,self.device)
+        if (self.dtype_name=='bfloat16' and self.device.type=='cuda' and
+                self.torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction):
+            raise ValueError('distributed BF16 products require reduced-precision reductions disabled')
+
+    @contextmanager
+    def cancellation_scope(self, event):
+        """Bind local cancellation; stage agreement propagates it to peers.
+
+        A rank must never leave a scheduled collective independently. Checks
+        therefore happen inside local_stage's gathered error boundary.
+        """
+        if event is not None and not callable(getattr(event, 'is_set', None)):
+            raise TypeError('event-like tensor parallel cancellation required')
+        old = getattr(self._cancellation, 'event', None)
+        self._cancellation.event = event
+        try:
+            yield self
+        finally:
+            self._cancellation.event = old
+
+    def _check_stage_cancelled(self):
+        event = getattr(self._cancellation, 'event', None)
+        if event is not None and event.is_set():
+            raise InterruptedError('tensor parallel projection cancelled')
+
+    @property
+    def identity(self):
+        payload = (self.world_size, self.dtype_name, self.backend, self.torch_version,
+                   self.device.type, 'fp32-partial-sum-row-gather-precision-v2',
+                   tuple((name, self._pins[name]) for name in sorted(self._pins)))
+        return hashlib.sha256(repr(payload).encode('utf-8')).hexdigest()
+
+    def _agree(self, descriptor, error=None):
+        records = [None]*self.world_size
+        self.distributed.all_gather_object(records, (descriptor, error), group=self.group)
+        errors = [f'rank {rank}: {value[1]}' for rank, value in enumerate(records)
+                  if value[1] is not None]
+        if errors:
+            raise ValueError('distributed admission failed: '+'; '.join(errors))
+        if any(value[0] != descriptor for value in records):
+            raise ValueError('rank projection schedules or policies differ')
+
+    @contextmanager
+    def local_stage(self, descriptor):
+        """Synchronize local staging failures before a tensor collective.
+
+        Allocation, provider reads and host exports can fail independently on
+        any rank. Every peer reaches this control boundary before proceeding.
+        Process loss or transport failure still requires group restart.
+        """
+        error = None
+        try:
+            self._check_stage_cancelled()
+            yield
+            self._check_stage_cancelled()
+        except Exception as failure:
+            error = str(failure) or type(failure).__name__
+        self._agree(descriptor,error)
+
+    def register(self, shard):
+        with self._lock:
+            error, weights = None, None
+            descriptor = None
+            try:
+                if self._closed or type(shard) is not ProjectionShard:
+                    raise ValueError('open projection bank and explicit shard required')
+                if (type(shard.name) is not str or not shard.name or
+                        shard.name in self._shards or type(shard.shape) is not tuple or
+                        len(shard.shape) != 2 or
+                        any(type(v) is not int or v <= 0 for v in shard.shape) or
+                        type(shard.axis) is not int or shard.axis not in (0, 1)):
+                    raise ValueError('unique named matrix and partition axis required')
+                expected = shard_bounds(shard.shape[shard.axis], self.rank, self.world_size)
+                if (shard.start, shard.stop) != expected:
+                    raise ValueError('shard does not match the rank partition')
+                shape = list(shard.shape)
+                shape[shard.axis] = shard.stop-shard.start
+                observed = np.asarray(shard.weights)
+                if (observed.dtype != np.float32 or observed.shape != tuple(shape) or
+                        not np.isfinite(observed).all()):
+                    raise ValueError('finite exact-shape FP32 local weights required')
+                if self._resident_bytes+observed.nbytes*3 > self.max_bytes:
+                    raise MemoryError('rank-local projection weights exceed admission')
+                weights = np.array(observed, dtype=np.float32, order='C', copy=True)
+                weights.flags.writeable = False
+                descriptor = (shard.name, shard.shape, shard.axis, self.dtype_name,
+                              self.backend, self.torch_version, self.device.type)
+            except Exception as failure:
+                error = str(failure)
+            self._agree(descriptor, error)
+            pins = [None]*self.world_size
+            self.distributed.all_gather_object(pins,
+                hashlib.sha256(weights.tobytes()).hexdigest(), group=self.group)
+            self._shards[shard.name] = ProjectionShard(shard.name, shard.shape,
+                shard.axis, shard.start, shard.stop, weights)
+            self._pins[shard.name] = (descriptor, tuple(pins))
+            self._resident_bytes += weights.nbytes
+
+    def handles(self, name):
+        return not self._closed and name in self._shards
+
+    def shape(self, name):
+        return self._shards[name].shape
+
+    def linear(self, name, value):
+        with self._lock:
+            error, observed, shard, vector = None, None, None, None
+            try:
+                if self._closed:
+                    raise RuntimeError('distributed projection bank is closed')
+                shard = self._shards[name]
+                observed = np.asarray(value)
+                rows, cols = shard.shape
+                if (observed.dtype.kind != 'f' or observed.ndim not in (1, 2) or
+                        observed.shape[-1] != cols or not observed.size or
+                        not np.isfinite(observed).all()):
+                    raise ValueError('finite replicated vector or batch required')
+                batch = 1 if observed.ndim == 1 else observed.shape[0]
+                maximum = (rows+self.world_size-1)//self.world_size
+                # Account for retained host weights, conversion/device copies,
+                # padded gather banks, host output and input staging.
+                scratch = (shard.weights.nbytes*3+observed.size*16+
+                           batch*rows*16+batch*maximum*self.world_size*8)
+                if scratch > self.max_bytes-self._resident_bytes:
+                    raise MemoryError('distributed projection buffers exceed rank admission')
+                vector = np.array(observed, dtype=np.float32, order='C', copy=True)
+            except Exception as failure:
+                error = str(failure)
+            descriptor = (name, None if observed is None else observed.shape,
+                          self.identity,self._observation_policy())
+            self._agree(descriptor, error)
+            # Replicated input identity matters: unlike a shape check, this
+            # catches different session histories before combining outputs.
+            self._agree((descriptor, hashlib.sha256(vector.tobytes()).hexdigest()))
+            torch = self.torch
+            with torch.inference_mode():
+                with self.local_stage((descriptor,'local-product')):
+                    self._admit_product_policy()
+                    matrix = torch.tensor(shard.weights, device=self.device, dtype=self.dtype)
+                    inputs = torch.tensor(vector, device=self.device, dtype=self.dtype)
+                    self._observe_input(name,inputs)
+                    if shard.axis == 1:
+                        inputs = inputs[..., shard.start:shard.stop]
+                    output = torch.nn.functional.linear(inputs, matrix).float()
+                    if shard.axis == 0:
+                        maximum = (shard.shape[0]+self.world_size-1)//self.world_size
+                        padded = torch.zeros((*output.shape[:-1], maximum),
+                                             device=self.device, dtype=torch.float32)
+                        padded[..., :shard.stop-shard.start] = output
+                        gathered = [torch.empty_like(padded) for _ in range(self.world_size)]
+                if shard.axis == 1:
+                    self.distributed.all_reduce(output, group=self.group)
+                else:
+                    self.distributed.all_gather(gathered, padded, group=self.group)
+                    with self.local_stage((descriptor,'row-assembly')):
+                        output = torch.cat([part[..., :shard_bounds(shard.shape[0], rank,
+                            self.world_size)[1]-shard_bounds(shard.shape[0], rank,
+                            self.world_size)[0]] for rank, part in enumerate(gathered)], dim=-1)
+                with self.local_stage((descriptor,'finite-boundary')):
+                    finite = torch.isfinite(output).all().to(torch.int32)
+                self.distributed.all_reduce(finite, op=self.distributed.ReduceOp.MIN,
+                                            group=self.group)
+                if not bool(finite.item()):
+                    raise ValueError('nonfinite distributed projection result')
+                with self.local_stage((descriptor,'host-export')):
+                    result = output.cpu().numpy().copy()
+                return result
+
+    def grouped_linear(self, name, value, *, groups):
+        """Contract each row group against its own input, preserving row order.
+
+        Each local weight row selects the input of its logical output group.
+        Row shards gather channels; column shards sum partial group products.
+        """
+        with self._lock:
+            error, observed, shard, vector = None, None, None, None
+            try:
+                if self._closed:
+                    raise RuntimeError('distributed projection bank is closed')
+                shard = self._shards[name]
+                rows, cols = shard.shape
+                if type(groups) is not int or groups <= 0 or rows % groups:
+                    raise ValueError('projection rows must divide into positive equal groups')
+                observed = np.asarray(value)
+                if (observed.dtype.kind != 'f' or observed.ndim not in (2, 3) or
+                        observed.shape[-2:] != (groups, cols) or not observed.size or
+                        not np.isfinite(observed).all()):
+                    raise ValueError('finite group-local projection inputs required')
+                batch = 1 if observed.ndim == 2 else observed.shape[0]
+                maximum = (rows+self.world_size-1)//self.world_size
+                local_rows = shard.weights.shape[0]
+                local_cols = shard.weights.shape[1]
+                scratch = (shard.weights.nbytes*3+observed.size*16+
+                           batch*local_rows*local_cols*8+local_rows*16+
+                           batch*rows*16+batch*maximum*self.world_size*8)
+                if scratch > self.max_bytes-self._resident_bytes:
+                    raise MemoryError('grouped projection buffers exceed rank admission')
+                vector = np.array(observed, dtype=np.float32, order='C', copy=True)
+            except Exception as failure:
+                error = str(failure)
+            descriptor = (name, groups, None if observed is None else observed.shape,
+                          self.identity, 'grouped-linear-v1',self._observation_policy())
+            self._agree(descriptor, error)
+            self._agree((descriptor, hashlib.sha256(vector.tobytes()).hexdigest()))
+            torch = self.torch
+            with torch.inference_mode():
+                with self.local_stage((descriptor,'grouped-local-product')):
+                    self._admit_product_policy()
+                    matrix = torch.tensor(shard.weights, device=self.device, dtype=self.dtype)
+                    inputs = torch.tensor(vector.reshape(batch, groups, cols),
+                                          device=self.device, dtype=self.dtype)
+                    self._observe_input(name,inputs)
+                    first = shard.start if shard.axis == 0 else 0
+                    last = shard.stop if shard.axis == 0 else rows
+                    owners = torch.arange(first, last, device=self.device)//(rows//groups)
+                    if shard.axis == 1:
+                        inputs = inputs[..., shard.start:shard.stop]
+                    selected = inputs.index_select(1, owners)
+                    output = torch.einsum('brc,rc->br', selected, matrix).float()
+                    if shard.axis == 0:
+                        padded = torch.zeros((batch, maximum), device=self.device,
+                                             dtype=torch.float32)
+                        padded[:, :last-first] = output
+                        gathered = [torch.empty_like(padded) for _ in range(self.world_size)]
+                if shard.axis == 1:
+                    self.distributed.all_reduce(output, group=self.group)
+                else:
+                    self.distributed.all_gather(gathered, padded, group=self.group)
+                    with self.local_stage((descriptor,'grouped-row-assembly')):
+                        output = torch.cat([part[:, :shard_bounds(rows, rank,
+                            self.world_size)[1]-shard_bounds(rows, rank,
+                            self.world_size)[0]] for rank, part in enumerate(gathered)], dim=-1)
+                with self.local_stage((descriptor,'grouped-finite-boundary')):
+                    finite = torch.isfinite(output).all().to(torch.int32)
+                self.distributed.all_reduce(finite, op=self.distributed.ReduceOp.MIN,
+                                            group=self.group)
+                if not bool(finite.item()):
+                    raise ValueError('nonfinite distributed grouped projection result')
+                shape = (*vector.shape[:-2], groups, rows//groups)
+                with self.local_stage((descriptor,'grouped-host-export')):
+                    result = output.reshape(shape).cpu().numpy().copy()
+                return result
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._shards.clear()
+            self._pins.clear()
+            self._resident_bytes = 0

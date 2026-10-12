@@ -7,12 +7,15 @@ import json
 import mimetypes
 from pathlib import Path
 import re
+import shutil
 import struct
+import tempfile
 from typing import Any
 from uuid import uuid4
 
 from .document_processing import extract_pdf_text as extract_document_pdf_text
 from .models import AuditEvent, ContextEvent, utc_now
+from .process_policy import ProcessPolicy, run_process
 from .storage import OpenAgentStore
 
 
@@ -32,43 +35,7 @@ class MediaManager:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS media_assets (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    media_type TEXT NOT NULL,
-                    mime_type TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    source_path TEXT NOT NULL DEFAULT '',
-                    stored_path TEXT NOT NULL DEFAULT '',
-                    size_bytes INTEGER NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_media_assets_project_created
-                    ON media_assets(project, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS media_analyses (
-                    id TEXT PRIMARY KEY,
-                    asset_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    analyzer TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    extracted_text TEXT NOT NULL DEFAULT '',
-                    findings_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(asset_id) REFERENCES media_assets(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_media_analyses_asset
-                    ON media_analyses(asset_id, created_at DESC);
-                """
-            )
+        self.store.initialize()
 
     def ingest_file(
         self,
@@ -400,38 +367,38 @@ def image_findings(data: bytes, *, suffix: str) -> dict[str, Any]:
 
 def _try_ocr(data: bytes, suffix: str) -> tuple[str, bool]:
     """Attempt OCR using tesseract CLI or pytesseract (stdlib-safe fallback)."""
-    import subprocess, tempfile, os
 
     # Try tesseract CLI (most common installation)
-    try:
-        with tempfile.NamedTemporaryFile(suffix=suffix or ".png", delete=False) as f:
-            f.write(data)
-            tmp_path = f.name
-        result = subprocess.run(
-            ["tesseract", tmp_path, "stdout", "--psm", "3"],
-            capture_output=True, text=True, timeout=30,
-        )
-        os.unlink(tmp_path)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip(), True
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
-    except Exception:
-        pass
+    tesseract = shutil.which("tesseract")
+    if not tesseract:
+        try:
+            import pytesseract  # type: ignore
 
-    # Try pytesseract Python binding
-    try:
-        import pytesseract  # type: ignore
-        from PIL import Image  # type: ignore
-        import io
-        img = Image.open(io.BytesIO(data))
-        text = pytesseract.image_to_string(img)
-        if text.strip():
-            return text.strip(), True
-    except ImportError:
-        pass
-    except Exception:
-        pass
+            configured = str(pytesseract.pytesseract.tesseract_cmd or "").strip()
+            candidate = Path(configured).expanduser() if configured else None
+            tesseract = str(candidate.resolve()) if candidate and candidate.is_file() else shutil.which(configured)
+        except (ImportError, AttributeError, OSError):
+            tesseract = None
+    if tesseract:
+        try:
+            with tempfile.TemporaryDirectory(prefix="openagent-ocr-") as workspace_value:
+                workspace = Path(workspace_value).resolve()
+                input_path = workspace / f"input{suffix or '.png'}"
+                input_path.write_bytes(data)
+                result = run_process(
+                    [tesseract, str(input_path), "stdout", "--psm", "3"],
+                    cwd=workspace,
+                    policy=ProcessPolicy(
+                        timeout_seconds=30,
+                        max_output_bytes=64_000,
+                        allowed_cwd_roots=(workspace,),
+                        allowed_executables=(tesseract,),
+                    ),
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip(), True
+        except (FileNotFoundError, OSError, PermissionError, ValueError):
+            pass
 
     # Fallback: extract text-like sequences from raw bytes (ASCII art / embedded text)
     try:

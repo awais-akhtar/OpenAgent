@@ -31,28 +31,7 @@ class WorkspaceManager:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS workspace_items (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    parent_id TEXT NOT NULL DEFAULT '',
-                    content TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_workspace_items_project_kind
-                    ON workspace_items(project, kind, updated_at DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_workspace_items_parent
-                    ON workspace_items(project, parent_id);
-                """
-            )
+        self.store.initialize()
 
     def create_item(
         self,

@@ -9,12 +9,14 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from openagent.media import MediaManager
+from openagent.media import MediaManager, _try_ocr
+from openagent.process_policy import ProcessResult
 from openagent.storage import OpenAgentStore
 from openagent.voice import (
     VOSK_SMALL_EN_MODEL,
     VoiceRuntime,
     analyze_wav_audio,
+    download_file,
     local_stt_engines,
     prepare_audio_for_stt,
     synthesize_tone_wav,
@@ -23,6 +25,20 @@ from openagent.voice import (
 
 
 class MediaAndVoiceTests(unittest.TestCase):
+    def test_tesseract_ocr_uses_bounded_process_policy(self) -> None:
+        completed = ProcessResult(("tesseract",), 0, "bounded local text", "", False, False)
+        with patch("openagent.media.shutil.which", return_value="tesseract"), patch(
+            "openagent.media.run_process", return_value=completed
+        ) as run:
+            text, available = _try_ocr(b"image bytes", ".png")
+        self.assertTrue(available)
+        self.assertEqual(text, "bounded local text")
+        policy = run.call_args.kwargs["policy"]
+        self.assertEqual(policy.timeout_seconds, 30)
+        self.assertEqual(policy.max_output_bytes, 64_000)
+        self.assertEqual(policy.allowed_executables, ("tesseract",))
+        self.assertEqual(policy.allowed_cwd_roots, (run.call_args.kwargs["cwd"],))
+
     def test_media_ingestion_understanding_and_audit(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)
@@ -171,6 +187,20 @@ class MediaAndVoiceTests(unittest.TestCase):
             voice = VoiceRuntime(OpenAgentStore(tmp))
             with patch("openagent.voice.first_existing_vosk_archive", return_value=None), self.assertRaises(ValueError):
                 voice.setup_vosk_model(allow_network=False, project="core")
+
+    def test_vosk_download_uses_approved_bounded_egress(self) -> None:
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "vosk.zip"
+
+            def write_archive(url: str, path: Path, **kwargs: object) -> None:
+                self.assertTrue(kwargs["approved"])
+                self.assertEqual(kwargs["max_total_bytes"], 300 * 1024 * 1024)
+                path.write_bytes(b"PK\x03\x04test")
+
+            with patch("openagent.voice.EgressClient.download", side_effect=write_archive) as outbound:
+                download_file("https://example.com/vosk.zip", target, approved=True)
+            outbound.assert_called_once()
+            self.assertTrue(target.exists())
 
     def test_vosk_setup_uses_local_archive_without_network(self) -> None:
         with TemporaryDirectory() as tmp:

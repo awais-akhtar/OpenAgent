@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import shutil
+import signal
 import subprocess
 import threading
 import time
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from .models import AuditEvent, utc_now
+from .egress import EgressClient
+from .process_policy import DEFAULT_ENV_KEYS
 from .storage import OpenAgentStore
 
 
@@ -26,72 +30,11 @@ class MCPRuntime:
 
     def __init__(self, store: OpenAgentStore) -> None:
         self.store = store
+        self.egress = EgressClient()
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS mcp_servers (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    owner TEXT NOT NULL DEFAULT 'local',
-                    name TEXT NOT NULL,
-                    transport TEXT NOT NULL DEFAULT 'stdio',
-                    command_json TEXT NOT NULL DEFAULT '[]',
-                    endpoint TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'configured',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_mcp_servers_project_owner
-                    ON mcp_servers(project, owner, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS mcp_tools (
-                    id TEXT PRIMARY KEY,
-                    server_id TEXT NOT NULL,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    owner TEXT NOT NULL DEFAULT 'local',
-                    name TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    approval_required INTEGER NOT NULL DEFAULT 1,
-                    schema_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_mcp_tools_server
-                    ON mcp_tools(server_id, name);
-
-                CREATE TABLE IF NOT EXISTS mcp_tool_permissions (
-                    id TEXT PRIMARY KEY,
-                    tool_id TEXT NOT NULL,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    owner TEXT NOT NULL DEFAULT 'local',
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    approval_required INTEGER NOT NULL DEFAULT 1,
-                    reason TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(tool_id) REFERENCES mcp_tools(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_mcp_tool_permissions_tool
-                    ON mcp_tool_permissions(tool_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS mcp_connection_events (
-                    id TEXT PRIMARY KEY,
-                    server_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    detail_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE
-                );
-                """
-            )
+        self.store.initialize()
 
     def register_server(
         self,
@@ -309,6 +252,7 @@ class MCPRuntime:
         schema = json.loads(row["schema_json"] or "{}")
         self._validate_arguments(schema, arguments or {})
         timeout = max(0.2, min(float(timeout_seconds), 300.0))
+        max_output_bytes = max(1_000, min(int(max_output_bytes), 1_000_000))
         transport = str(row["transport"] or "stdio").lower()
         try:
             if transport == "stdio":
@@ -322,7 +266,10 @@ class MCPRuntime:
             elif transport in {"http", "sse", "streamable-http"}:
                 if not approval_id:
                     raise PermissionError("HTTP-based MCP transport requires an approval id")
-                response = self._invoke_http(str(row["endpoint"]), str(row["name"]), arguments or {}, timeout, max_output_bytes)
+                response = self._invoke_http(
+                    str(row["endpoint"]), str(row["name"]), arguments or {}, timeout,
+                    max_output_bytes, approved=bool(approval_id),
+                )
             else:
                 raise ValueError(f"unsupported MCP transport: {transport}")
         except Exception as exc:
@@ -380,89 +327,188 @@ class MCPRuntime:
         if not command:
             raise ValueError("MCP stdio server has no command")
         executable = [str(part) for part in command]
+        program = executable[0].strip()
+        resolved = shutil.which(program)
+        if resolved is None and Path(program).is_file():
+            resolved = str(Path(program).resolve())
+        if not resolved or not Path(resolved).is_file() or (os.name != "nt" and not os.access(resolved, os.X_OK)):
+            raise FileNotFoundError(f"MCP stdio executable not found: {program}")
+        if os.name == "nt" and Path(resolved).suffix.lower() in {".bat", ".cmd"}:
+            raise ValueError("MCP stdio server must be a direct executable")
+        executable[0] = resolved
+        child_env = {key: value for key, value in os.environ.items() if key.upper() in DEFAULT_ENV_KEYS}
         process = subprocess.Popen(
             executable,
+            env=child_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             shell=False,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
         )
+        limit = max(1_000, int(max_output_bytes))
+        events: queue.Queue[bytes | BaseException | None] = queue.Queue()
+        overflow = threading.Event()
+        deadline = time.monotonic() + timeout
+
+        def drain_stdout() -> None:
+            pending = bytearray()
+            total = 0
+            try:
+                while True:
+                    chunk = os.read(process.stdout.fileno(), 4096)  # type: ignore[union-attr]
+                    if not chunk:
+                        events.put(None)
+                        return
+                    total += len(chunk)
+                    if total > limit:
+                        overflow.set()
+                        return
+                    pending.extend(chunk)
+                    while b"\n" in pending:
+                        line, _, rest = pending.partition(b"\n")
+                        events.put(bytes(line))
+                        pending = bytearray(rest)
+            except OSError as exc:
+                events.put(exc)
+
+        def drain_stderr() -> None:
+            total = 0
+            try:
+                while True:
+                    chunk = os.read(process.stderr.fileno(), 4096)  # type: ignore[union-attr]
+                    if not chunk:
+                        return
+                    total += len(chunk)
+                    if total > limit:
+                        overflow.set()
+                        return
+            except OSError:
+                pass
+
+        readers = [threading.Thread(target=drain_stdout, daemon=True), threading.Thread(target=drain_stderr, daemon=True)]
+        for reader in readers:
+            reader.start()
         try:
-            self._write_rpc(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "OpenAgent", "version": "1"}}})
-            initialize = self._read_rpc(process, timeout, expected_id=1)
+            self._write_rpc(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "OpenAgent", "version": "1"}}}, deadline, overflow)
+            initialize = self._read_rpc(events, deadline, overflow, expected_id=1)
             if isinstance(initialize, dict) and initialize.get("error"):
                 raise ValueError(str(initialize["error"]))
-            self._write_rpc(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-            self._write_rpc(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}})
-            response = self._read_rpc(process, timeout, expected_id=2)
+            self._write_rpc(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, deadline, overflow)
+            self._write_rpc(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}}, deadline, overflow)
+            response = self._read_rpc(events, deadline, overflow, expected_id=2)
+            if overflow.is_set():
+                raise RuntimeError("MCP server output exceeded the configured limit")
             if isinstance(response, dict) and response.get("error"):
                 raise ValueError(str(response["error"]))
             return self._bounded_json(response.get("result", response), max_output_bytes) if isinstance(response, dict) else response
         finally:
+            self._terminate_stdio_tree(process)
             for stream in (process.stdin, process.stdout, process.stderr):
                 try:
                     if stream is not None:
                         stream.close()
                 except Exception:
                     pass
-            try:
-                process.terminate()
-                process.wait(timeout=1)
-            except Exception:
-                process.kill()
+            for reader in readers:
+                reader.join(timeout=0.5)
 
     @staticmethod
-    def _write_rpc(process: subprocess.Popen[str], payload: dict[str, Any]) -> None:
+    def _terminate_stdio_tree(process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is not None:
+            process.wait(timeout=0.5)
+            return
+        if os.name == "nt":
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            if os.name != "nt":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            process.kill()
+            process.wait(timeout=1)
+
+    @staticmethod
+    def _write_rpc(process: subprocess.Popen[bytes], payload: dict[str, Any], deadline: float, overflow: threading.Event) -> None:
         if process.stdin is None:
             raise RuntimeError("MCP server stdin is unavailable")
-        process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        process.stdin.flush()
+        result: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+        def write() -> None:
+            try:
+                process.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                process.stdin.flush()
+                result.put(None)
+            except (OSError, ValueError) as exc:
+                result.put(exc)
+
+        threading.Thread(target=write, daemon=True).start()
+        while True:
+            if overflow.is_set():
+                raise RuntimeError("MCP server output exceeded the configured limit")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MCP server did not return a response in time")
+            try:
+                error = result.get(timeout=min(remaining, 0.02))
+            except queue.Empty:
+                continue
+            if error is not None:
+                raise RuntimeError("MCP server closed stdin") from error
+            return
 
     @staticmethod
-    def _read_rpc(process: subprocess.Popen[str], timeout: float, *, expected_id: int | None = None) -> dict[str, Any]:
-        if process.stdout is None:
-            raise RuntimeError("MCP server stdout is unavailable")
-        values: queue.Queue[str] = queue.Queue(maxsize=1)
-
-        def read_line() -> None:
-            try:
-                values.put(process.stdout.readline())
-            except Exception as exc:
-                values.put(json.dumps({"error": str(exc)}))
-
-        threading.Thread(target=read_line, daemon=True).start()
-        deadline = time.monotonic() + timeout
+    def _read_rpc(events: queue.Queue[bytes | BaseException | None], deadline: float,
+                  overflow: threading.Event, *, expected_id: int | None = None) -> dict[str, Any]:
         while True:
-            remaining = max(0.01, deadline - time.monotonic())
+            if overflow.is_set():
+                raise RuntimeError("MCP server output exceeded the configured limit")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MCP server did not return a response in time")
             try:
-                line = values.get(timeout=remaining)
-            except queue.Empty as exc:
-                raise TimeoutError("MCP server did not return a response in time") from exc
-            if not line:
+                line = events.get(timeout=min(remaining, 0.02))
+            except queue.Empty:
+                continue
+            if line is None:
                 raise RuntimeError("MCP server closed stdout before returning a response")
-            payload = json.loads(line)
+            if isinstance(line, BaseException):
+                raise RuntimeError("MCP server stdout failed") from line
+            payload = json.loads(line.decode("utf-8"))
             if expected_id is None or payload.get("id") == expected_id or payload.get("error"):
                 return payload
-            threading.Thread(target=read_line, daemon=True).start()
 
-    def _invoke_http(self, endpoint: str, tool_name: str, arguments: dict[str, Any], timeout: float, max_output_bytes: int) -> Any:
+    def _invoke_http(
+        self, endpoint: str, tool_name: str, arguments: dict[str, Any], timeout: float,
+        max_output_bytes: int, *, approved: bool,
+    ) -> Any:
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError("MCP HTTP endpoint must use http:// or https://")
-        request = Request(
-            endpoint,
-            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}}).encode("utf-8"),
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}}).encode("utf-8")
+        response = self.egress.fetch(
+            endpoint, approved=approved, allow_loopback=True, purpose="MCP tool invocation",
+            body=body,
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
+            timeout_seconds=timeout, max_response_bytes=max(1_000, int(max_output_bytes)),
+            allowed_content_types={"application/json"},
         )
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                body = response.read(max(1_000, int(max_output_bytes)) + 1)
-        except (HTTPError, URLError) as exc:
-            raise RuntimeError(f"MCP HTTP request failed: {exc}") from exc
-        if len(body) > max_output_bytes:
-            return {"truncated": True, "preview": body[: max_output_bytes // 2].decode("utf-8", errors="replace"), "limit_bytes": max_output_bytes}
-        payload = json.loads(body.decode("utf-8", errors="replace"))
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"MCP HTTP request returned HTTP {response.status}")
+        payload = json.loads(response.body.decode("utf-8", errors="replace"))
         if isinstance(payload, dict) and payload.get("error"):
             raise ValueError(str(payload["error"]))
         return self._bounded_json(payload.get("result", payload) if isinstance(payload, dict) else payload, max_output_bytes)

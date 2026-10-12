@@ -21,6 +21,13 @@ class JsonRouteResult:
     status: HTTPStatus = HTTPStatus.OK
 
 
+@dataclass(frozen=True)
+class StreamRouteResult:
+    """An event iterator returned by a streaming domain route."""
+
+    events: Any
+
+
 DOMAIN_ROUTE_MODULES: tuple[str, ...] = (
     "health_routes",
     "core_routes",

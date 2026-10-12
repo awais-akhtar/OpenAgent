@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections import deque
 import json
 import os
-from pathlib import Path
 from queue import Empty, Queue
 import subprocess
 import threading
@@ -168,6 +167,52 @@ class DirectHardwareClient:
         return self.request(
             "infer", model_id=model_id, inputs=inputs, output_mode=output_mode, timeout=timeout,
         )
+
+    def load_expert(
+        self,
+        *,
+        expert_id: str,
+        path: str,
+        offset: int,
+        size: int,
+        sha256: str,
+        hidden_size: int,
+        intermediate_size: int,
+        dtype: str,
+        device: str,
+        batch_size: int = 1,
+        timeout: float = 600.0,
+    ) -> dict[str, Any]:
+        return self.request(
+            "load_expert",
+            expert_id=expert_id,
+            path=path,
+            offset=offset,
+            size=size,
+            sha256=sha256,
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
+            dtype=dtype,
+            device=device,
+            batch_size=batch_size,
+            timeout=timeout,
+        )
+
+    def run_expert(
+        self,
+        expert_id: str,
+        inputs: list[float],
+        *,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        return self.request(
+            "run_expert", expert_id=expert_id, inputs=inputs, timeout=timeout,
+        )
+
+    def run_expert_batch(self, expert_id: str, inputs: list[list[float]], *,
+                         timeout: float = 120.0) -> dict[str, Any]:
+        return self.request('run_expert_batch', expert_id=expert_id,
+                            inputs=inputs, timeout=timeout)
 
     def generate(
         self,

@@ -6,9 +6,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from openagent.adaptive_engine.device_runtime import DirectHardwareClient
+from openagent.adaptive_engine.device_runtime import DirectHardwareClient, DirectHardwareError
 from openagent.adaptive_engine.hardware import HardwareProfiler, accelerator_environment
 from openagent.adaptive_engine.worker import _device_config, _process_alive
+from openagent.adaptive_engine.worker import _decode_expert_payload, _expert_payload_size
 
 
 class DirectHardwareClientTests(unittest.TestCase):
@@ -68,6 +69,20 @@ class DirectHardwareClientTests(unittest.TestCase):
         self.assertEqual([item["type"] for item in events], ["token", "token", "done"])
         self.assertEqual(events[-1]["text"], "one two")
 
+    def test_expert_payload_decoder_reconstructs_row_quantized_matrices(self) -> None:
+        import numpy as np
+
+        hidden, intermediate = 2, 3
+        width = hidden * intermediate
+        values = np.arange(-width, 2 * width, dtype=np.int8)
+        scales = np.linspace(0.1, 0.6, 2 * intermediate + hidden, dtype="<f4")
+        payload = values.tobytes() + scales.tobytes()
+        self.assertEqual(len(payload), _expert_payload_size(hidden, intermediate, "int8-row"))
+        gate, up, down = _decode_expert_payload(payload, hidden, intermediate, "int8-row")
+        np.testing.assert_allclose(gate, values[:width].reshape(intermediate, hidden) * scales[:intermediate, None])
+        np.testing.assert_allclose(up, values[width:2 * width].reshape(intermediate, hidden) * scales[intermediate:2 * intermediate, None])
+        np.testing.assert_allclose(down, values[2 * width:].reshape(hidden, intermediate) * scales[2 * intermediate:, None])
+
 
 @unittest.skipUnless(
     os.environ.get("OPENAGENT_RUN_HARDWARE_TESTS") == "1"
@@ -96,6 +111,56 @@ class DirectHardwareIntegrationTests(unittest.TestCase):
                 self.assertTrue(any(item["model_id"] == "integration-model" for item in resident))
                 inference = client.infer("integration-model", inputs="auto")
                 self.assertEqual(inference["status"], "completed")
+            finally:
+                client.close()
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENAGENT_RUN_HARDWARE_TESTS") == "1",
+    "set OPENAGENT_RUN_HARDWARE_TESTS=1 for native expert validation",
+)
+class DirectExpertHardwareIntegrationTests(unittest.TestCase):
+    def test_tiny_expert_matches_numpy_on_available_accelerators(self) -> None:
+        import hashlib
+        import numpy as np
+
+        hidden, intermediate = 4, 7
+        rng = np.random.default_rng(73)
+        weights = rng.normal(0, 0.2, 3 * hidden * intermediate).astype("<f4")
+        vector = rng.normal(0, 0.2, hidden).astype(np.float32)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "expert.bin"
+            path.write_bytes(weights.tobytes())
+            client = DirectHardwareClient(HardwareProfiler(temp))
+            try:
+                width = hidden * intermediate
+                gate = weights[:width].reshape(intermediate, hidden).astype(np.float32) @ vector
+                up = weights[width:2 * width].reshape(intermediate, hidden).astype(np.float32) @ vector
+                expected = weights[2 * width:].reshape(hidden, intermediate).astype(np.float32) @ (
+                    gate / (1 + np.exp(-gate)) * up
+                )
+                available = [str(item) for item in client.status(start=True).get("devices", [])]
+                devices = [name for name in ("GPU", "NPU") if any(item.startswith(name) for item in available)]
+                if not devices:
+                    devices = ["CPU"]
+                successful = []
+                rejected = []
+                for device in devices:
+                    expert_id = f"integration-expert-{device.lower()}"
+                    try:
+                        client.load_expert(
+                            expert_id=expert_id, path=str(path), offset=0,
+                            size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                            hidden_size=hidden, intermediate_size=intermediate,
+                            dtype="float32", device=device,
+                        )
+                        actual = np.asarray(client.run_expert(expert_id, vector.tolist())["output"])
+                        with self.subTest(device=device):
+                            np.testing.assert_allclose(actual, expected, rtol=0.03, atol=0.003)
+                        successful.append(device)
+                    except DirectHardwareError as exc:
+                        rejected.append({"device": device, "error": str(exc)})
+                self.assertTrue(successful, f"no OpenVINO device executed the expert; rejected={rejected}")
             finally:
                 client.close()
 

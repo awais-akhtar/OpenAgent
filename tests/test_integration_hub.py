@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from tempfile import TemporaryDirectory
+import sys
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -14,6 +17,40 @@ from openagent.storage import OpenAgentStore
 
 
 class IntegrationHubTests(unittest.TestCase):
+    def test_safe_command_enforces_process_policy(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            enterprise = EnterpriseManager(store)
+            hub = IntegrationHub(
+                store,
+                health_provider=store.health,
+                module_health_provider=lambda project: {"status": "ok"},
+                metrics_provider=lambda: {"status": "ok"},
+                model_provider=lambda: {"status": "ok"},
+                voice_provider=lambda project: {"status": "ok"},
+                developer_provider=lambda: {"status": "ok"},
+                tool_provider=lambda: [],
+                backup_provider=enterprise.create_backup,
+                backups_provider=enterprise.backups,
+            )
+            script = "import os; print(os.getenv('OPENAGENT_PROCESS_SECRET')); print('x' * 10000)"
+            with patch.object(IntegrationHub, "SAFE_COMMANDS", {
+                "bounded": {"label": "Bounded", "description": "Test command", "command": [sys.executable, "-c", script]},
+            }), patch.dict(os.environ, {"OPENAGENT_PROCESS_SECRET": "private"}):
+                result = hub.run_safe_command(command_key="bounded", project="core")["run"]
+            self.assertEqual(result["status"], "completed")
+            self.assertTrue(result["output"].startswith("None"))
+            self.assertNotIn("private", result["output"])
+            self.assertLessEqual(len(result["output"].encode("utf-8")), 4000)
+
+            with patch.object(IntegrationHub, "SAFE_COMMANDS", {
+                "slow": {"label": "Slow", "description": "Test timeout", "command": [sys.executable, "-c", "import time; time.sleep(5)"]},
+            }):
+                timed_out = hub.run_safe_command(command_key="slow", project="core", timeout_seconds=1)["run"]
+            self.assertEqual(timed_out["status"], "timeout")
+            self.assertEqual(timed_out["return_code"], 124)
+            self.assertEqual(len(hub.safe_commands(project="core")["runs"]), 2)
+
     def test_pairing_preferences_diagnostics_and_safe_commands_are_local(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

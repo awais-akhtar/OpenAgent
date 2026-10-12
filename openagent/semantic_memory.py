@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 from typing import Any
+from uuid import uuid4
 
 from .context import STOPWORDS, TOKEN_RE
 from .model_gateway import local_hash_embedding
@@ -22,88 +23,7 @@ class SemanticMemoryManager:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS semantic_memories (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    memory_type TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    profile_id TEXT NOT NULL DEFAULT '',
-                    tags_json TEXT NOT NULL DEFAULT '[]',
-                    source TEXT NOT NULL DEFAULT 'manual',
-                    confidence REAL NOT NULL DEFAULT 1.0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    embedding_json TEXT NOT NULL,
-                    version INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_semantic_memories_project_type
-                    ON semantic_memories(project, memory_type, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS semantic_memory_versions (
-                    id TEXT PRIMARY KEY,
-                    memory_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    snapshot_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(memory_id) REFERENCES semantic_memories(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS vector_collections (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    dimensions INTEGER NOT NULL,
-                    distance TEXT NOT NULL DEFAULT 'cosine',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_vector_collections_project
-                    ON vector_collections(project, name);
-
-                CREATE TABLE IF NOT EXISTS vector_records (
-                    id TEXT PRIMARY KEY,
-                    collection_id TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    external_id TEXT NOT NULL DEFAULT '',
-                    content TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    vector_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(collection_id) REFERENCES vector_collections(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_vector_records_collection
-                    ON vector_records(collection_id, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS semantic_rerank_runs (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    query TEXT NOT NULL,
-                    input_count INTEGER NOT NULL,
-                    result_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS graph_analytics_snapshots (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    summary_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
+        self.store.initialize()
 
     def add_memory(
         self,
@@ -125,7 +45,7 @@ class SemanticMemoryManager:
         project = project.strip() or "default"
         normalized_tags = sorted({tag.strip().lower() for tag in tags or [] if tag.strip()})
         now = utc_now()
-        memory_id = stable_id("semantic-memory", project, memory_type, title, content, profile_id, now)
+        memory_id = uuid4().hex
         vector = local_hash_embedding(f"{title}\n{content}", dimensions=64)
         record = {
             "id": memory_id,
@@ -441,7 +361,7 @@ class SemanticMemoryManager:
             )
         ranked.sort(key=lambda item: item["score"], reverse=True)
         result = ranked[: max(1, min(limit, 50))]
-        run_id = stable_id("rerank", project, query, utc_now())
+        run_id = uuid4().hex
         created_at = utc_now()
         with self.store.session() as connection:
             connection.execute(
@@ -502,7 +422,7 @@ class SemanticMemoryManager:
             "top_tags": [{"tag": tag, "count": count} for tag, count in tag_counts.most_common(20)],
             "analytics": ["degree_centrality", "tag_frequency", "entity_frequency"],
         }
-        snapshot_id = stable_id("graph-analytics", project, utc_now())
+        snapshot_id = uuid4().hex
         created_at = utc_now()
         with self.store.session() as connection:
             connection.execute(

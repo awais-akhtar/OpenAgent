@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum, StrEnum
-import heapq
 import threading
 import time
 from typing import Any

@@ -24,26 +24,7 @@ class AgentBridge:
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS agent_bridge_tasks (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    owner TEXT NOT NULL DEFAULT 'local',
-                    agent TEXT NOT NULL DEFAULT 'assistant',
-                    goal TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'queued',
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_agent_bridge_tasks_project_owner
-                    ON agent_bridge_tasks(project, owner, updated_at DESC);
-                """
-            )
+        self.store.initialize()
 
     def capabilities(self) -> dict[str, Any]:
         return {

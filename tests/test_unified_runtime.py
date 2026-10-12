@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from tempfile import TemporaryDirectory
 import threading
 import unittest
@@ -48,6 +49,23 @@ class UnifiedToolRuntimeTests(unittest.TestCase):
             ToolRequest("terminal.run", network="internet")
         with self.assertRaisesRegex(ValueError, "timeout"):
             ToolRequest("terminal.run", timeout_seconds=0)
+
+    def test_timeout_signals_a_cooperative_tool_to_stop(self) -> None:
+        runtime = ToolRuntime()
+        stopped = threading.Event()
+
+        def wait_until_cancelled(_arguments, context):
+            try:
+                while True:
+                    context.check()
+                    time.sleep(0.005)
+            finally:
+                stopped.set()
+
+        runtime.registry.register(ToolSpec("test.wait", "Wait for cancellation"), wait_until_cancelled)
+        result = runtime.execute_named("test.wait", timeout_seconds=0.05)
+        self.assertEqual(result.status, "timeout")
+        self.assertTrue(stopped.wait(1))
 
     def test_compute_router_respects_local_only_policy(self) -> None:
         router = ComputeRouter(ModelGateway())

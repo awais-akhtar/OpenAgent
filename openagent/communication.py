@@ -17,10 +17,10 @@ import secrets
 import smtplib
 from typing import Any
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from .models import AuditEvent, ContextEvent, utc_now
+from .egress import EgressClient
 from .storage import OpenAgentStore
 
 FOLLOW_UP_RE = re.compile(r"\b(follow up|remind|deadline|due|please|can you|could you|waiting)\b|\?", re.I)
@@ -54,6 +54,7 @@ class CommunicationApprovalRequired(RuntimeError):
 class CommunicationHub:
     def __init__(self, store: OpenAgentStore):
         self.store = store
+        self.egress = EgressClient()
         self.initialize()
         self.seed_connectors()
 
@@ -71,21 +72,6 @@ class CommunicationHub:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-
-                CREATE TABLE IF NOT EXISTS contacts (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    owner TEXT NOT NULL DEFAULT 'local',
-                    name TEXT NOT NULL,
-                    handles_json TEXT NOT NULL DEFAULT '{}',
-                    notes TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_contacts_project_name
-                    ON contacts(project, name);
 
                 CREATE TABLE IF NOT EXISTS inbox_messages (
                     id TEXT PRIMARY KEY,
@@ -265,7 +251,7 @@ class CommunicationHub:
                 """
             )
             for table in (
-                "contacts", "inbox_messages", "communication_drafts",
+                "inbox_messages", "communication_drafts",
                 "communication_send_approvals", "sent_messages", "calendar_events",
                 "communication_sync_runs", "communication_dead_letters",
                 "communication_oauth_accounts", "communication_oauth_callbacks",
@@ -281,8 +267,6 @@ class CommunicationHub:
                 self._ensure_column(connection, "inbox_messages", column, definition)
             connection.executescript(
                 """
-                CREATE INDEX IF NOT EXISTS idx_contacts_owner_project_name
-                    ON contacts(owner, project, name);
                 CREATE INDEX IF NOT EXISTS idx_inbox_owner_project_created
                     ON inbox_messages(owner, project, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_communication_oauth_owner_project
@@ -664,15 +648,18 @@ class CommunicationHub:
             form.update({"grant_type": "refresh_token", "refresh_token": row["refresh_token"]})
         else:
             raise ValueError("OAuth account has no refresh_token; exchange an authorization_code first.")
-        request = Request(
-            row["token_endpoint"],
-            data=urlencode(form).encode("utf-8"),
+        response = self.egress.fetch(
+            row["token_endpoint"], approved=allow_external, purpose="OAuth token exchange or refresh",
+            body=urlencode(form).encode("utf-8"),
             headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "OpenAgent-Communication-OAuth"},
             method="POST",
+            timeout_seconds=30, max_response_bytes=2 * 1024 * 1024,
+            allowed_content_types={"application/json"},
         )
+        if not 200 <= response.status < 300:
+            raise ValueError(f"OAuth token refresh returned HTTP {response.status}.")
         try:
-            with urlopen(request, timeout=30) as response:  # noqa: S310 - explicit user-approved provider URL
-                data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(response.body.decode("utf-8"))
         except Exception as exc:  # noqa: BLE001 - converted to operator-visible failure
             raise ValueError(f"OAuth token refresh failed: {exc}") from exc
         access_token = str(data.get("access_token", ""))

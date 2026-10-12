@@ -2,6 +2,8 @@
 
 OpenAgent is built in layers. This is a source-backed inventory of local functionality, not a claim that every optional integration is installed or configured on every machine.
 
+For the current security, deployment, and migration boundaries, see [modernization status](MODERNIZATION_STATUS.md). An item listed below identifies an implemented surface; it does not certify an external provider or production deployment.
+
 The 2026-07-12 operational closure adds durable research SSE, batch image
 tagging, task output delivery records, a signed local skill marketplace with
 declarative sandbox runs, signed model endpoint certification, and an enforced

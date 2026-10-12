@@ -14,7 +14,7 @@ import math
 from typing import Any, Iterable
 
 from .hardware import DeviceProfile, HardwareProfile
-from .ir import IRLevel, IRNode, ModelIR, OpCode
+from .ir import IRNode, ModelIR, OpCode
 from .codegen import KernelLowerer
 
 
@@ -420,8 +420,11 @@ def select_precision_plan(
         else:
             chosen = max(supported, key=lambda value: PRECISION_BITS[value])
             conversion = PRECISION_BITS[chosen] < source_bits - 0.5
-        bytes_at_precision = _node_storage_bytes(node, chosen, source_bits)
+        bytes_at_precision = node.parameter_bytes if model.source_format == "gguf" else _node_storage_bytes(node, chosen, source_bits)
         selected[node.id] = PrecisionAssignment(node.id, chosen, bytes_at_precision, 0.0, conversion)
+        if model.source_format == "gguf":
+            # Packed GGUF bytes are fixed until a separate conversion produces a new file.
+            continue
         ordered = sorted((value for value in supported if PRECISION_BITS[value] < PRECISION_BITS[chosen]), key=lambda value: PRECISION_BITS[value], reverse=True)
         current = chosen
         current_bytes = bytes_at_precision
@@ -569,7 +572,8 @@ def build_memory_plan(
     kv_bytes = context_tokens * hidden * layers * 2 * 1
     preferred = next((item for item in devices if item.id == preferred_device), devices[0])
     device_capacity = int(max(0.0, preferred.memory_gb) * 1024**3 * 0.80)
-    hot_weights = min(planned_weight_bytes, device_capacity, budget_bytes)
+    weight_budget = max(0, budget_bytes - kv_bytes)
+    hot_weights = min(planned_weight_bytes, device_capacity, weight_budget)
     warm_weights = min(max(0, planned_weight_bytes - hot_weights), max(0, budget_bytes - hot_weights - kv_bytes))
     cold_weights = max(0, planned_weight_bytes - hot_weights - warm_weights)
     dense_repeated_io = cold_weights > 0 and model.expert_count == 0
@@ -591,7 +595,9 @@ def build_memory_plan(
         "active_parameter_count": model.active_parameter_count,
         "moe_expert_tiering": model.expert_count > 0,
         "dense_storage_warning": dense_repeated_io,
-        "executable_without_repeated_storage_io": not dense_repeated_io,
+        "executable_without_repeated_storage_io": cold_weights == 0,
+        "storage_execution": "backend-adapter-required" if cold_weights else "not-required",
+        "kv_budget_exceeded": kv_bytes > budget_bytes,
     }
 
 

@@ -20,10 +20,9 @@ import subprocess
 import threading
 import time
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from .egress import EgressClient, EgressError
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
 from .system_metrics import system_metrics
@@ -702,17 +701,23 @@ class UltraModelEngine:
                 "cache_prompt": True,
             }
         ).encode("utf-8")
-        request = Request(
-            f"http://{session['host']}:{session['port']}/v1/chat/completions",
-            data=payload,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
         started = time.perf_counter()
         try:
-            with urlopen(request, timeout=max(1.0, min(float(timeout), 300.0))) as response:
-                response.read(4096)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            response = EgressClient().fetch(
+                f"http://{session['host']}:{session['port']}/v1/chat/completions",
+                approved=False,
+                allow_loopback=True,
+                purpose="ultra-model local warmup",
+                method="POST",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+                timeout_seconds=max(1.0, min(float(timeout), 120.0)),
+                max_response_bytes=4096,
+                max_redirects=0,
+            )
+            if response.status != 200:
+                raise UltraModelError(f"Local model warmup returned HTTP {response.status}.")
+        except (EgressError, PermissionError, TimeoutError, OSError) as exc:
             raise UltraModelError(f"Local model warmup failed: {exc}") from exc
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
         with self.store.session() as connection:
@@ -946,15 +951,23 @@ class UltraModelEngine:
             if session is None or session["status"] in {"failed", "stopped", "exited"}:
                 return
             try:
-                with urlopen(f"http://{session['host']}:{session['port']}/health", timeout=2) as response:
-                    if response.status == 200:
-                        with self.store.session() as connection:
-                            connection.execute(
-                                "UPDATE ultra_model_sessions SET status = 'ready', last_error = '' WHERE id = ?",
-                                (session_id,),
-                            )
-                        return
-            except (HTTPError, URLError, TimeoutError, OSError):
+                response = EgressClient().fetch(
+                    f"http://{session['host']}:{session['port']}/health",
+                    approved=False,
+                    allow_loopback=True,
+                    purpose="ultra-model local health",
+                    timeout_seconds=2,
+                    max_response_bytes=4096,
+                    max_redirects=0,
+                )
+                if response.status == 200:
+                    with self.store.session() as connection:
+                        connection.execute(
+                            "UPDATE ultra_model_sessions SET status = 'ready', last_error = '' WHERE id = ?",
+                            (session_id,),
+                        )
+                    return
+            except (EgressError, PermissionError, TimeoutError, OSError):
                 time.sleep(1.0)
         with self.store.session() as connection:
             connection.execute(

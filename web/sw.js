@@ -4,11 +4,11 @@
  * so a stopped historical port cannot look like a running OpenAgent instance.
  */
 
-const CACHE_VERSION = "openagent-v40-automation-20260820";
+const CACHE_VERSION = "openagent-v42-frontend-20260917";
 const SHELL_ASSETS = [
-  "/styles.css?v=20260820-automation-02",
-  "/app.js?v=20260820-automation-02",
-  "/manifest.json?v=20260820-automation-02",
+  "/styles.css?v=20260917-frontend-01",
+  "/app.js?v=20260917-frontend-01",
+  "/manifest.json?v=20260917-frontend-01",
 ];
 
 self.addEventListener("install", (event) => {
@@ -55,8 +55,9 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Network-first for versioned static assets. Only these files may fall back
-  // to cache; an HTML navigation never does.
+  if (url.origin !== self.location.origin || !SHELL_ASSETS.includes(url.pathname + url.search)) return;
+
+  // Only versioned shell files may fall back to cache.
   event.respondWith(
     fetch(event.request).then((response) => {
       if (response && response.status === 200 && response.type === "basic") {
@@ -64,6 +65,6 @@ self.addEventListener("fetch", (event) => {
         caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
       }
       return response;
-    }).catch(() => caches.match(event.request))
+    }).catch(async () => (await caches.match(event.request)) || Response.error())
   );
 });

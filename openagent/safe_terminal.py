@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-import subprocess
 from typing import Any
 from uuid import uuid4
 
 from .models import AuditEvent, utc_now
+from .process_policy import ProcessPolicy, run_process
 from .storage import OpenAgentStore
 
 
@@ -86,28 +86,28 @@ class SafeTerminal:
                 (run_id, project, owner, str(resolved_cwd), json.dumps(command), started),
             )
         try:
-            proc = subprocess.run(
+            proc = run_process(
                 command,
-                cwd=str(resolved_cwd),
-                capture_output=True,
-                text=True,
-                timeout=max(1, min(int(timeout_seconds), 300)),
-                shell=False,
-                check=False,
+                cwd=resolved_cwd,
+                policy=ProcessPolicy(
+                    timeout_seconds=max(1, min(int(timeout_seconds), 300)),
+                    max_output_bytes=100_000,
+                    allowed_cwd_roots=(self.workspace_root, self.store.data_dir.resolve()),
+                    allowed_executables=(command[0],),
+                ),
             )
             stdout = redact(proc.stdout)
             stderr = redact(proc.stderr)
-            status = "completed" if proc.returncode == 0 else "failed"
+            status = "timeout" if proc.timed_out else "completed" if proc.returncode == 0 else "failed"
             self._append_log(run_id, "stdout", stdout)
             self._append_log(run_id, "stderr", stderr)
             self._complete_run(run_id, status=status, exit_code=int(proc.returncode))
-        except subprocess.TimeoutExpired as exc:
-            stdout = redact(exc.stdout or "")
-            stderr = redact(exc.stderr or "command timed out")
-            status = "timeout"
-            self._append_log(run_id, "stdout", stdout)
+        except Exception as exc:
+            stdout = ""
+            stderr = redact(str(exc))
+            status = "failed"
             self._append_log(run_id, "stderr", stderr)
-            self._complete_run(run_id, status=status, exit_code=124)
+            self._complete_run(run_id, status=status, exit_code=127)
         self.store.add_audit_event(
             AuditEvent(
                 actor="terminal",

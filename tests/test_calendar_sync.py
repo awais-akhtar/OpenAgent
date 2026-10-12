@@ -155,7 +155,12 @@ class CalendarSyncManagerTests(unittest.TestCase):
                     config={"username": "alice", "password": "secret"},
                 )
 
-                run = sync.run_sync(provider["provider_id"], direction="push")
+                run = sync.run_sync(
+                    provider["provider_id"],
+                    direction="push",
+                    allow_external=True,
+                    allow_local_transport=True,
+                )
                 self.assertEqual(run["state"], "completed")
                 self.assertEqual(run["pushed"], 1)
                 self.assertEqual(len(captured), 1)
@@ -190,7 +195,12 @@ class CalendarSyncManagerTests(unittest.TestCase):
                     base_url=f"http://127.0.0.1:{failing.server_address[1]}/calendar",
                 )
 
-                run = sync.run_sync(provider["provider_id"], direction="push")
+                run = sync.run_sync(
+                    provider["provider_id"],
+                    direction="push",
+                    allow_external=True,
+                    allow_local_transport=True,
+                )
                 self.assertEqual(run["state"], "failed")
                 self.assertEqual(run["pushed"], 0)
                 self.assertIn("CalDAV PUT failed", run["error"])
@@ -274,7 +284,12 @@ class CalendarSyncManagerTests(unittest.TestCase):
                     config={"use_report": True},
                 )
 
-                pull = sync.run_sync(provider["provider_id"], direction="pull")
+                pull = sync.run_sync(
+                    provider["provider_id"],
+                    direction="pull",
+                    allow_external=True,
+                    allow_local_transport=True,
+                )
                 self.assertEqual(pull["state"], "completed")
                 self.assertEqual(pull["pulled"], 1)
                 event = calendar_system.list_events(project="default")[0]
@@ -283,14 +298,24 @@ class CalendarSyncManagerTests(unittest.TestCase):
                 self.assertEqual(provider_after_pull["sync_token"], "token-1")
 
                 calendar_system.update_event(event["id"], updates={"title": "Report Event Local Edit"})
-                push = sync.run_sync(provider["provider_id"], direction="push")
+                push = sync.run_sync(
+                    provider["provider_id"],
+                    direction="push",
+                    allow_external=True,
+                    allow_local_transport=True,
+                )
                 self.assertEqual(push["state"], "completed")
                 self.assertEqual(push["pushed"], 1)
                 self.assertEqual(state["put_if_match"], '"etag-1"')
                 self.assertIn("Report Event Local Edit", state["put_body"])
 
                 state["mode"] = "deleted"
-                delete_pull = sync.run_sync(provider["provider_id"], direction="pull")
+                delete_pull = sync.run_sync(
+                    provider["provider_id"],
+                    direction="pull",
+                    allow_external=True,
+                    allow_local_transport=True,
+                )
                 self.assertEqual(delete_pull["state"], "completed")
                 self.assertEqual(delete_pull["pulled"], 1)
                 self.assertEqual(calendar_system.list_events(project="default"), [])

@@ -20,6 +20,8 @@ from .device_runtime import DirectHardwareClient, DirectHardwareError
 from .frontends import ModelFormatError, ModelFrontend, enrich_onnx_from_probe
 from .hardware import DeviceProfile, HardwareProfiler
 from .memory import VirtualKVCache
+from .expert_store import DiskExpertStore, ExpertRegion, routed_swiglu
+from .expert_runtime import SparseExpertManifest, SparseExpertRuntime
 from .scheduler import DeadlineBatchScheduler, InferenceRequest, RequestPhase, RequestPriority
 
 
@@ -184,6 +186,55 @@ class AdaptiveExecutionEngine:
     def bind_gateway(self, gateway: Any) -> None:
         self.gateway = gateway
 
+    def open_expert_store(self, root: str | Path, regions: dict[str, ExpertRegion], *, capacity_bytes: int,
+                          io_mode: str = "buffered", storage_roots: dict[str, str | Path] | None = None,
+                          prefetch_workers: int = 1, prefetch_depth: int = 2) -> DiskExpertStore:
+        """Open a caller-owned CPU weight cache; close it after the workload."""
+        return DiskExpertStore(
+            root, regions, capacity_bytes=capacity_bytes, io_mode=io_mode,
+            storage_roots=storage_roots, prefetch_workers=prefetch_workers,
+            prefetch_depth=prefetch_depth,
+        )
+
+    def execute_routed_experts(self, expert_store: DiskExpertStore, inputs, routes, *,
+                               hidden_size: int, intermediate_size: int, dtype: str = "float32"):
+        """Run an explicitly routed SwiGLU layer without changing router output."""
+        return routed_swiglu(expert_store, inputs, routes, hidden_size=hidden_size,
+                             intermediate_size=intermediate_size, dtype=dtype)
+
+    def open_sparse_expert_runtime(
+        self,
+        root: str | Path,
+        manifest: SparseExpertManifest | str | Path,
+        *,
+        capacity_bytes: int,
+        io_mode: str = "buffered",
+        storage_roots: dict[str, str | Path] | None = None,
+        prefetch_workers: int = 1,
+        prefetch_depth: int = 2,
+    ) -> SparseExpertRuntime:
+        """Open a validated multi-layer sparse FFN runtime.
+
+        A model adapter still owns tokenization, attention, normalization,
+        routing and sampling. This runtime executes only the manifest's exact
+        expert payload contract.
+        """
+        parsed = SparseExpertManifest.read(manifest) if isinstance(manifest, (str, Path)) else manifest
+        return SparseExpertRuntime(
+            root, parsed, capacity_bytes=capacity_bytes, io_mode=io_mode,
+            storage_roots=storage_roots, prefetch_workers=prefetch_workers,
+            prefetch_depth=prefetch_depth,
+        )
+
+    def open_hf_moe_model(self, model_directory: str | Path, *, resident_device: str = "cpu",
+                          expert_placement=None, offload_directory: str | Path | None = None):
+        """Load a supported local library model with explicit expert placement."""
+        from .hf_moe import HFMoeAdapter
+
+        return HFMoeAdapter.load(model_directory, resident_device=resident_device,
+                                 expert_placement=expert_placement,
+                                 offload_directory=offload_directory)
+
     def status(self, *, project: str = "default", refresh_hardware: bool = False) -> dict[str, Any]:
         profile = self.profiler.profile(force=refresh_hardware)
         with self.store.session() as connection:
@@ -211,6 +262,17 @@ class AdaptiveExecutionEngine:
             "scheduler": self.scheduler.status(),
             "kv_cache": self.kv_cache.status(),
             "direct_runtime": self.direct.status(),
+            "sparse_expert_runtime": {
+                "manifest_format": "openagent.sparse-experts.v1",
+                "payload_dtypes": ["float16", "float32", "int8-row"],
+                "activation": "swiglu",
+                "cache": "bounded-lru-with-leases-pins-and-advisory-read-ahead",
+                "io_modes": ["buffered", "mmap"],
+                "batching": "expert-centric",
+                "route_profiles": "local-persistent-and-fingerprint-bound",
+                "model_adapters": ["olmoe"],
+                "generic_model_adapter_required": True,
+            },
             "execution_ownership": {
                 "gateway_bound": self.gateway is not None,
                 "entrypoint": "ModelGateway -> AdaptiveCPUInferenceEngine -> selected local provider",

@@ -17,6 +17,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from ..process_policy import ProcessPolicy, run_process
 from .repository import IGNORED_NAMES, RepositoryBoundaryError, RepositoryIntelligence
 
 
@@ -387,13 +388,21 @@ class SandboxManager:
     def _run_local(command: list[str], cwd: Path, *, timeout: int, environment: dict[str, str] | None = None) -> CommandResult:
         started = time.perf_counter()
         try:
-            proc = subprocess.run(
-                [str(item) for item in command], cwd=str(cwd), env=environment, capture_output=True,
-                text=True, errors="replace", timeout=timeout, shell=False, check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            process = run_process(
+                [str(item) for item in command], cwd=cwd, env=environment,
+                policy=ProcessPolicy(
+                    timeout_seconds=max(1, int(timeout)),
+                    max_output_bytes=200_000,
+                    allowed_cwd_roots=(cwd.resolve(),),
+                    env_keys=frozenset((environment or {}).keys()) | frozenset(ALLOWED_ENV) | frozenset({"OPENAGENT_SANDBOX"}),
+                ),
             )
-            return CommandResult(command, str(cwd), int(proc.returncode), proc.stdout[-200_000:], proc.stderr[-200_000:], (time.perf_counter() - started) * 1000)
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-            return CommandResult(command, str(cwd), 124, stdout[-200_000:], (stderr or "command timed out")[-200_000:], (time.perf_counter() - started) * 1000, True)
+            stderr = process.stderr
+            if process.output_truncated:
+                stderr = (stderr + "\nCommand output was truncated at the workspace policy limit.").strip()
+            return CommandResult(
+                command, str(cwd), process.returncode, process.stdout, stderr,
+                (time.perf_counter() - started) * 1000, process.timed_out,
+            )
+        except (PermissionError, ValueError) as exc:
+            return CommandResult(command, str(cwd), 127, "", str(exc), (time.perf_counter() - started) * 1000)

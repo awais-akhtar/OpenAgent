@@ -8,21 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="/manifest.json?v=20260820-automation-02">
+  <link rel="manifest" href="/manifest.json?v=20260917-frontend-01">
   <title>OpenAgent</title>
-  <link rel="stylesheet" href="/styles.css?v=20260820-automation-02">
-  <script>
-    // Apply saved theme immediately to prevent flash
-    (function() {
-      try {
-        var preference = localStorage.getItem("oa-theme") || "system";
-        var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-        var theme = preference === "system" ? (dark ? "dark" : "light") : preference;
-        document.documentElement.setAttribute("data-theme", theme);
-        document.documentElement.setAttribute("data-theme-preference", preference);
-      } catch(e) {}
-    })();
-  </script>
+  <link rel="stylesheet" href="/styles.css?v=20260917-frontend-01">
 </head>
 <body>
 
@@ -45,46 +33,44 @@
     </label>
 
     <nav class="app-nav" aria-label="Module navigation">
-      <button class="nav-group-label nav-group-toggle" data-nav-group="core" aria-expanded="true">Core</button>
-      <button class="nav-link active" data-view-link="dashboard"><span class="nav-icon">🏠</span><span>Dashboard</span></button>
-      <button class="nav-link" data-view-link="chat"><span class="nav-icon">💬</span><span>Chat</span></button>
-      <button class="nav-link" data-view-link="codebase"><span class="nav-icon">⌘</span><span>CodeQ</span></button>
-      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="intelligence" aria-expanded="false">Intelligence</button>
-      <button class="nav-link nav-group-hidden" data-view-link="agents"><span class="nav-icon">🤖</span><span>Agents</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="knowledge"><span class="nav-icon">✦</span><span>Knowledge</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="workspace"><span class="nav-icon">🗂</span><span>Documents</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="automation"><span class="nav-icon">⚡</span><span>Automation</span></button>
-      <button class="nav-group-label nav-group-toggle nav-science-toggle collapsed" data-nav-group="science" aria-expanded="false"><span class="nav-icon">🔬</span>Scientific AI</button>
-      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="agents"><span class="nav-icon">🧪</span><span>Scientific Agents</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="computing"><span class="nav-icon">∑</span><span>Scientific Computing</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="engineering"><span class="nav-icon">📐</span><span>Engineering Optimisation</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="multimodal"><span class="nav-icon">🖼</span><span>Multimodal Science</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="verification"><span class="nav-icon">✓</span><span>Scientific Verification</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="science" data-science-section="materials"><span class="nav-icon">⚗</span><span>Materials Discovery</span></button>
-      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="platform" aria-expanded="false">Platform</button>
-      <button class="nav-link nav-group-hidden" data-view-link="assistant"><span class="nav-icon">📋</span><span>Assistant</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="communications"><span class="nav-icon">📡</span><span>Comms</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="models"><span class="nav-icon">🧠</span><span>Models</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="security"><span class="nav-icon">🔒</span><span>Security</span></button>
-      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="advanced" aria-expanded="false">Advanced</button>
-      <button class="nav-link nav-group-hidden" data-view-link="engine"><span class="nav-icon">⚙</span><span>Engine</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="calendar"><span class="nav-icon">📅</span><span>Calendar</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="twin"><span class="nav-icon">🪞</span><span>Digital Twin</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="vault"><span class="nav-icon">🔐</span><span>Vault</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="scraper"><span class="nav-icon">🌐</span><span>Scraper</span></button>
-      <button class="nav-link nav-group-hidden" data-view-link="finetune"><span class="nav-icon">🎯</span><span>Fine-Tune</span></button>
+      <button class="nav-group-label nav-group-toggle" data-nav-group="home" aria-expanded="true">Home</button>
+      <a class="nav-link active" href="/?view=dashboard" data-view-link="dashboard"><svg class="nav-icon"><use href="/icons.svg#home"></use></svg><span>Dashboard</span></a>
+      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="work" aria-expanded="false">Work</button>
+      <a class="nav-link nav-group-hidden" href="/?view=chat" data-view-link="chat"><svg class="nav-icon"><use href="/icons.svg#chat"></use></svg><span>Chat</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=research" data-view-link="research"><svg class="nav-icon"><use href="/icons.svg#search"></use></svg><span>Research</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=workspace" data-view-link="workspace"><svg class="nav-icon"><use href="/icons.svg#document"></use></svg><span>Documents</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=knowledge" data-view-link="knowledge"><svg class="nav-icon"><use href="/icons.svg#knowledge"></use></svg><span>Knowledge</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=codebase" data-view-link="codebase"><svg class="nav-icon"><use href="/icons.svg#code"></use></svg><span>CodeQ</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=voice" data-view-link="voice"><svg class="nav-icon"><use href="/icons.svg#voice"></use></svg><span>Voice</span></a>
+      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="automate" aria-expanded="false">Automate</button>
+      <a class="nav-link nav-group-hidden" href="/?view=agents" data-view-link="agents"><svg class="nav-icon"><use href="/icons.svg#agent"></use></svg><span>Agents</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=automation" data-view-link="automation"><svg class="nav-icon"><use href="/icons.svg#workflow"></use></svg><span>Workflows</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=assistant" data-view-link="assistant"><svg class="nav-icon"><use href="/icons.svg#assistant"></use></svg><span>Assistant</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=communications" data-view-link="communications"><svg class="nav-icon"><use href="/icons.svg#communication"></use></svg><span>Communications</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=calendar" data-view-link="calendar"><svg class="nav-icon"><use href="/icons.svg#calendar"></use></svg><span>Calendar</span></a>
+      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="compute" aria-expanded="false">Models &amp; Compute</button>
+      <a class="nav-link nav-group-hidden" href="/?view=models" data-view-link="models"><svg class="nav-icon"><use href="/icons.svg#model"></use></svg><span>Models</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=engine" data-view-link="engine"><svg class="nav-icon"><use href="/icons.svg#engine"></use></svg><span>Adaptive Engine</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=finetune" data-view-link="finetune"><svg class="nav-icon"><use href="/icons.svg#tune"></use></svg><span>Fine-Tuning</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=science" data-view-link="science"><svg class="nav-icon"><use href="/icons.svg#science"></use></svg><span>Scientific AI</span></a>
+      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="data" aria-expanded="false">Data &amp; Security</button>
+      <a class="nav-link nav-group-hidden" href="/?view=vault" data-view-link="vault"><svg class="nav-icon"><use href="/icons.svg#vault"></use></svg><span>Vault</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=security" data-view-link="security"><svg class="nav-icon"><use href="/icons.svg#security"></use></svg><span>Security</span></a>
+      <a class="nav-link nav-group-hidden" href="/?view=twin" data-view-link="twin"><svg class="nav-icon"><use href="/icons.svg#context"></use></svg><span>Personal Context</span></a>
+      <button class="nav-group-label nav-group-toggle collapsed" data-nav-group="studios" aria-expanded="false">Studios</button>
+      <a class="nav-link nav-group-hidden" href="/?view=phd" data-view-link="phd"><svg class="nav-icon"><use href="/icons.svg#studio"></use></svg><span>Application Studio</span></a>
     </nav>
 
     <div class="sidebar-bottom-nav" aria-label="System navigation">
       <div class="bottom-nav-row">
         <div>
-          <button class="nav-link" data-view-link="developer"><span class="nav-icon">⚙️</span><span>Developer</span></button>
-          <button class="nav-link" data-view-link="settings"><span class="nav-icon">🔧</span><span>Settings</span></button>
+          <a class="nav-link" href="/?view=developer" data-view-link="developer"><svg class="nav-icon"><use href="/icons.svg#developer"></use></svg><span>Developer</span></a>
+          <a class="nav-link" href="/?view=settings" data-view-link="settings"><svg class="nav-icon"><use href="/icons.svg#settings"></use></svg><span>Settings</span></a>
         </div>
         <div class="theme-toggle sidebar-theme-toggle" role="group" aria-label="Color theme">
-          <button class="theme-btn" data-theme-select="dark" type="button" aria-label="Use dark theme" aria-pressed="false" title="Dark theme">🌑</button>
-          <button class="theme-btn" data-theme-select="system" type="button" aria-label="Use system theme" aria-pressed="false" title="System theme">💻</button>
-          <button class="theme-btn" data-theme-select="light" type="button" aria-label="Use light theme" aria-pressed="false" title="Light theme">☀️</button>
+          <button class="theme-btn" data-theme-select="dark" type="button" aria-label="Use dark theme" aria-pressed="false" title="Dark theme"><svg aria-hidden="true"><use href="/icons.svg#theme-dark"></use></svg></button>
+          <button class="theme-btn" data-theme-select="system" type="button" aria-label="Use system theme" aria-pressed="false" title="System theme"><svg aria-hidden="true"><use href="/icons.svg#theme-system"></use></svg></button>
+          <button class="theme-btn" data-theme-select="light" type="button" aria-label="Use light theme" aria-pressed="false" title="Light theme"><svg aria-hidden="true"><use href="/icons.svg#theme-light"></use></svg></button>
         </div>
       </div>
     </div>
@@ -151,13 +137,6 @@
             </span>
           </div>
         </article>
-        <div class="compat-controls" hidden>
-          <select id="providerSelect" aria-label="Model provider"></select><button id="streamToggle" type="button">Stream</button>
-          <div id="providerWarning"></div><div id="chatModelReadiness"></div><input id="allowExternal" type="checkbox">
-          <button id="testChatModel" type="button">Test</button><button id="compactConversation" type="button">Compact</button><button id="showConversationBranches" type="button">Branches</button>
-          <select id="conversationSort"><option value="pinned">Pinned</option><option value="recent">Recent</option><option value="oldest">Oldest</option><option value="semantic">Semantic</option></select>
-          <select id="conversationBulkAction"><option value="archive">Archive</option><option value="delete">Delete</option></select><button id="runConversationBulk" type="button">Apply</button>
-        </div>
       </div>
       <div id="conversationActionMenu" class="conversation-action-popover" hidden></div>
 
@@ -261,6 +240,7 @@
       <div class="voice-shell">
         <div class="voice-command-strip">
           <select id="voiceEngineSelect" aria-label="Speech-to-text engine"><option value="">Automatic local engine</option></select>
+          <button id="loadVoiceStatus" class="icon-button" type="button" title="Refresh speech runtime" aria-label="Refresh speech runtime">↻</button>
           <button id="createVoiceSession" class="icon-button" type="button" title="New voice session" aria-label="New voice session">＋</button>
         </div>
         <div class="voice-capture-stage">
@@ -278,10 +258,7 @@
             <div><button id="clearTranscript" class="btn btn-soft">Clear</button><button id="sendTranscript" class="btn btn-primary">Continue in chat</button></div>
           </div>
         </div>
-        <div class="compat-controls" hidden>
-          <input id="allowFallbackStt" type="checkbox"><div id="sttEngineStatus"></div>
-          <button id="loadVoiceStatus" type="button">Status</button><button id="setupVoskFromVoice" type="button">Setup</button><div id="voiceOutput"></div>
-        </div>
+        <div id="voiceOutput" class="voice-session-panel" aria-live="polite"></div>
       </div>
     </section>
 
@@ -289,7 +266,7 @@
     <section class="view" id="view-research" data-view-panel="research" aria-label="Research">
       <div class="research-shell">
         <span id="researchStatusBadge" class="sr-only">Idle</span>
-        <ol id="researchProgress" class="research-stepper" aria-label="Research progress" style="display:none">
+        <ol id="researchProgress" class="research-stepper" aria-label="Research progress" hidden>
           <li class="research-step" id="rStep1"><span>1</span><div><strong>Plan</strong><small>Define questions and search strategy</small></div></li>
           <li class="research-step" id="rStep2"><span>2</span><div><strong>Collect</strong><small>Search papers, web, code, and datasets</small></div></li>
           <li class="research-step" id="rStep3"><span>3</span><div><strong>Verify</strong><small>Compare sources and resolve conflicts</small></div></li>
@@ -399,7 +376,7 @@
             </div>
             <div id="phdGenerationProgress" class="phd-generation-progress" hidden aria-live="polite">
               <div class="phd-progress-head"><strong id="phdProgressMessage">Preparing local pipeline</strong><span id="phdProgressPercent">0%</span></div>
-              <div class="progress-bar"><div id="phdProgressFill" class="progress-bar-fill" style="width:0%"></div></div>
+              <div class="progress-bar"><div id="phdProgressFill" class="progress-bar-fill"></div></div>
               <div id="phdProgressTimeline" class="phd-progress-timeline"></div>
             </div>
             <p class="phd-action-note">When this position has an official URL, Research &amp; Generate reads that public page for this run, indexes it locally, then runs private RAG, drafting, independent evidence review, revision, and final proofreading. Private source documents are never sent to the website.</p>
@@ -675,7 +652,7 @@
       <div class="workbench-grid">
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Assistant</p><h3>Tasks, goals, meetings, CRM</h3></div></div>
-          <input id="assistantTitle" placeholder="Task, goal, or meeting title" style="margin-bottom:8px">
+          <input id="assistantTitle" class="u-mb-8" placeholder="Task, goal, or meeting title">
           <textarea id="assistantBody" rows="5" placeholder="Details, transcript, or CRM notes…"></textarea>
           <div class="toolbar">
             <button id="createTask" class="btn btn-primary">Create Task</button>
@@ -686,7 +663,7 @@
         </article>
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Output</p><h3>Briefing</h3></div></div>
-          <pre id="assistantOutput" class="output tall">Assistant output will appear here.</pre>
+          <div id="assistantOutput" class="output tall result-view" aria-live="polite"><p class="empty-state">Choose an assistant action to see its result.</p></div>
         </article>
       </div>
     </section>
@@ -696,7 +673,7 @@
       <div class="workbench-grid">
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Communication hub</p><h3>Import and send messages</h3></div></div>
-          <select id="commPlatform" aria-label="Platform" style="margin-bottom:8px">
+          <select id="commPlatform" class="u-mb-8" aria-label="Platform">
             <option value="email">Email</option>
             <option value="telegram">Telegram</option>
             <option value="slack">Slack</option>
@@ -705,15 +682,15 @@
             <option value="sms">SMS</option>
             <option value="teams">Microsoft Teams</option>
           </select>
-          <input id="commSender" placeholder="Sender" style="margin-bottom:8px">
-          <input id="commSubject" placeholder="Subject" style="margin-bottom:8px">
+          <input id="commSender" class="u-mb-8" placeholder="Sender">
+          <input id="commSubject" class="u-mb-8" placeholder="Subject">
           <textarea id="commBody" rows="4" placeholder="Message body…"></textarea>
           <div class="toolbar">
             <button id="importMessage" class="btn btn-primary">Import Message</button>
             <button id="loadInbox" class="btn btn-soft">Load Inbox</button>
             <button id="loadCalendar" class="btn btn-outline">Calendar</button>
           </div>
-          <div id="communicationFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="communicationFeed" class="stack-list u-mt-12"></div>
         </article>
 
         <article class="card">
@@ -749,7 +726,7 @@
             <button id="buildOauthUrl" class="btn btn-outline">Build Auth URL</button>
             <button id="refreshOauthToken" class="btn btn-soft">Exchange / Refresh Token</button>
           </div>
-          <div id="communicationOAuthFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="communicationOAuthFeed" class="stack-list u-mt-12"></div>
         </article>
 
         <article class="card">
@@ -774,13 +751,13 @@
             <button id="syncCommunicationProvider" class="btn btn-primary">Run Resilient Sync</button>
             <button id="refreshCommunicationSync" class="btn btn-soft">Refresh Runs</button>
           </div>
-          <div id="communicationSyncFeed" class="stack-list" style="margin-top:12px"></div>
-          <div id="communicationDeadLetterFeed" class="stack-list" style="margin-top:8px"></div>
+          <div id="communicationSyncFeed" class="stack-list u-mt-12"></div>
+          <div id="communicationDeadLetterFeed" class="stack-list u-mt-8"></div>
         </article>
 
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Output</p><h3>Communication log</h3></div></div>
-          <pre id="commOutput" class="output tall">Communication output will appear here.</pre>
+          <div id="commOutput" class="output tall result-view" aria-live="polite"><p class="empty-state">Choose a communication action to see its result.</p></div>
         </article>
       </div>
     </section>
@@ -795,7 +772,7 @@
         </div>
       </div>
       <div id="providerCards" class="model-grid" aria-label="Available model providers"></div>
-      <article class="card" style="margin-top:20px">
+      <article class="card u-mt-20">
         <div class="card-header">
           <div><p class="eyebrow">Smooth local runtime</p><h3>Auto lightweight mode</h3></div>
           <span class="badge badge-success" id="smoothRuntimeBadge">Auto</span>
@@ -810,9 +787,9 @@
         <div id="smoothRuntimeSummary" class="summary-grid"></div>
         <div id="smoothModelProfiles" class="feature-matrix"></div>
       </article>
-      <article class="card" style="margin-top:20px">
+      <article class="card u-mt-20">
         <div class="card-header"><div><p class="eyebrow">Model gateway</p><h3>Policy and routing</h3></div></div>
-        <pre id="modelPolicyOutput" class="output">Model policy output will appear here.</pre>
+        <div id="modelPolicyOutput" class="output result-view" aria-live="polite"><p class="empty-state">Model routing details will appear here.</p></div>
       </article>
     </section>
 
@@ -825,7 +802,7 @@
             <button id="loadPrivacyReport" class="btn btn-primary">Privacy Report</button>
             <button id="loadAuditChain" class="btn btn-soft">Audit Chain</button>
           </div>
-          <pre id="privacyOutput" class="output tall">Security output will appear here.</pre>
+          <div id="privacyOutput" class="output tall result-view" aria-live="polite"><p class="empty-state">Choose a security action to see its result.</p></div>
         </article>
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Audit events</p><h3>Local action log</h3></div></div>
@@ -886,9 +863,8 @@
             <span class="upload-icon">＋</span><p>Add source files</p><small>PDF, DOCX, text, Markdown, CSV, JSON</small>
             <input type="file" id="fileInput" hidden accept=".pdf,.txt,.md,.csv,.json,.docx" multiple>
           </div>
-          <div id="uploadStatus" class="notice" style="display:none"></div>
+          <div id="uploadStatus" class="notice" hidden></div>
           <details class="developer-knowledge-text"><summary>Add pasted knowledge</summary><input id="knowledgeTitle" placeholder="Source title"><textarea id="knowledgeContent" rows="5" placeholder="Paste notes or source text…"></textarea><div class="toolbar"><button id="ingestKnowledge" class="btn btn-primary">Add source</button><button id="addSemanticMemory" class="btn btn-soft">Remember</button></div></details>
-          <div class="compat-controls" hidden><input id="knowledgeQuery"><button id="searchKnowledge" aria-label="Search knowledge"></button><button id="synthesizeKnowledge" aria-label="Synthesize knowledge"></button><button id="showKnowledgeGraph" aria-label="Show knowledge graph"></button><button id="runAdvancedRag" aria-label="Run advanced retrieval"></button><input id="ragGenerate" type="checkbox"><div id="ragBackendStatus"></div><div id="knowledgeOutput"></div></div>
         </article>
         <article class="card">
           <div class="card-header"><div><p class="eyebrow">Developer tools</p><h3>API, SDK, webhooks</h3></div></div>
@@ -896,7 +872,7 @@
             <button id="loadDevSchema" class="btn btn-primary">GraphQL Schema</button>
             <button id="createApiKey" class="btn btn-soft">Create API Key</button>
           </div>
-          <div id="developerFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="developerFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -911,7 +887,7 @@
             <button id="createIntegrationBackup" class="btn btn-outline">Backup Now</button>
             <button id="runSafePythonCheck" class="btn btn-outline">Runtime Check</button>
           </div>
-          <div id="integrationFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="integrationFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card model-operations-card">
           <div class="card-header">
@@ -966,7 +942,7 @@
             <label><span>Model ID</span><input id="modelCertificationModel" placeholder="Auto-discover"></label>
           </div>
           <div class="toolbar"><button id="certifyModelEndpoint" class="btn btn-outline">Certify Endpoint</button></div>
-          <div id="modelCookbookFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="modelCookbookFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -980,7 +956,7 @@
             <button id="benchmarkRagEngine" class="btn btn-outline">Benchmark RAG</button>
             <button id="clearInferenceCache" class="btn btn-soft">Clear Cache</button>
           </div>
-          <div id="inferenceEngineFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="inferenceEngineFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card ultra-engine-card">
           <div class="card-header">
@@ -1013,7 +989,7 @@
             <button id="launchUltraModel" class="btn btn-primary">Start Local Server</button>
             <button id="stopUltraModel" class="btn btn-danger">Stop Server</button>
           </div>
-          <div id="ultraModelEngineFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="ultraModelEngineFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -1024,7 +1000,7 @@
             <button id="refreshMcpRuntime" class="btn btn-soft">Refresh MCP</button>
             <button id="registerMcpServer" class="btn btn-primary">Register Local Server</button>
           </div>
-          <div id="mcpRuntimeFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="mcpRuntimeFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card runtime-fabric-card">
           <div class="card-header">
@@ -1040,7 +1016,7 @@
             <button id="refreshRuntimeFabric" class="btn btn-soft">Refresh Runtime</button>
             <button id="planRuntimeFabric" class="btn btn-primary">Plan Execution</button>
           </div>
-          <div id="runtimeFabricFeed" class="runtime-fabric-feed" style="margin-top:12px"></div>
+          <div id="runtimeFabricFeed" class="runtime-fabric-feed u-mt-12"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -1051,7 +1027,7 @@
             <button id="refreshTerminalRuns" class="btn btn-soft">Refresh Runs</button>
             <button id="runTerminalVersion" class="btn btn-primary">Run Python Version</button>
           </div>
-          <div id="terminalFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="terminalFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card">
           <div class="card-header">
@@ -1062,7 +1038,7 @@
             <button id="refreshScheduler" class="btn btn-soft">Refresh Tasks</button>
             <button id="runDueSchedulerTasks" class="btn btn-outline">Run Due</button>
           </div>
-          <div id="schedulerFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="schedulerFeed" class="stack-list u-mt-12"></div>
         </article>
         <article class="card skill-editor-card">
           <div class="card-header"><div><p class="eyebrow">Skill ecosystem</p><h3>Editor, tests, permissions, signed packages</h3></div><span id="skillEditorBadge" class="badge">Draft</span></div>
@@ -1106,11 +1082,20 @@
         <section class="settings-pane">
           <h3>Model routing</h3>
           <div class="settings-form-grid">
+            <label><span>Provider</span><select id="settingChatProvider"><option value="auto">Automatic local routing</option></select></label>
             <label><span>Chat</span><input id="settingChatModel" type="text" placeholder="phi4-mini"></label>
             <label><span>Code</span><input id="settingCodeModel" type="text" placeholder="qwen2.5-coder:3b"></label>
             <label><span>Research</span><input id="settingResearchModel" type="text" placeholder="phi4-mini"></label>
             <label><span>Speech</span><input id="settingVoiceModel" type="text" placeholder="faster-whisper:base.en"></label>
           </div>
+          <label class="settings-switch"><span>Stream chat responses</span><span class="toggle"><input type="checkbox" id="settingChatStreaming" checked><span class="toggle-slider"></span></span></label>
+          <label class="settings-switch"><span>Allow external provider when explicitly selected</span><span class="toggle"><input type="checkbox" id="settingAllowExternal"><span class="toggle-slider"></span></span></label>
+        </section>
+        <section class="settings-pane">
+          <h3>Speech</h3>
+          <label class="settings-switch"><span>Allow Windows Speech fallback</span><span class="toggle"><input type="checkbox" id="allowFallbackStt"><span class="toggle-slider"></span></span></label>
+          <div id="sttEngineStatus" class="mini-status" aria-live="polite"></div>
+          <button id="setupVoskFromVoice" class="btn btn-soft" type="button">Set up local Vosk</button>
         </section>
         <section class="settings-pane">
           <h3>Performance</h3>
@@ -1171,7 +1156,7 @@
             <button id="unloadAdaptiveResident" class="btn btn-soft">Unload</button>
             <button id="stopAdaptiveRuntime" class="btn btn-soft">Stop Runtime</button>
           </div>
-          <div id="adaptiveEngineFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="adaptiveEngineFeed" class="stack-list u-mt-12"></div>
         </article>
 
         <article class="card engine-role-card">
@@ -1218,7 +1203,7 @@
             <button id="runEngineCollaboration" class="btn btn-primary">Run Model Team</button>
             <button id="refreshEngineRuns" class="btn btn-soft">Refresh Runs</button>
           </div>
-          <div id="engineRunFeed" class="stack-list" style="margin-top:12px"></div>
+          <div id="engineRunFeed" class="stack-list u-mt-12"></div>
           <div id="engineRunOutput" class="engine-run-output" aria-live="polite"></div>
         </article>
       </div>
@@ -1227,6 +1212,14 @@
     <!-- ===== SCIENTIFIC AI ===== -->
     <section class="view" id="view-science" data-view-panel="science" aria-label="Scientific AI">
       <div class="science-console">
+        <nav class="science-section-tabs" aria-label="Scientific AI workspaces">
+          <button class="active" data-science-section="agents" type="button">Agents</button>
+          <button data-science-section="computing" type="button">Computing</button>
+          <button data-science-section="engineering" type="button">Engineering</button>
+          <button data-science-section="multimodal" type="button">Multimodal</button>
+          <button data-science-section="verification" type="button">Verification</button>
+          <button data-science-section="materials" type="button">Materials</button>
+        </nav>
         <article class="science-workbench">
           <header><h2 id="scienceActiveTitle">Scientific Agents</h2><span id="scienceBadge" class="badge badge-soft">Checking</span></header>
           <div id="scienceSectionWorkspace" class="science-section-workspace"></div>
@@ -1242,7 +1235,6 @@
           <canvas id="scienceResultChart" class="science-result-chart" width="720" height="260" aria-label="Scientific result chart"></canvas>
           <div id="scienceResult" class="science-result-output" aria-live="polite"></div>
         </article>
-        <div class="compat-controls" hidden><div id="scienceWorkflowGrid"></div><div id="scienceCapabilityGrid"></div><div id="scienceSectionDetail"></div><button id="refreshScienceStatus">Refresh</button><p id="sciencePrivacyBoundary"></p></div>
       </div>
     </section>
 
@@ -1268,17 +1260,17 @@
               <input id="calEventStart" type="datetime-local" class="input-full">
               <input id="calEventEnd" type="datetime-local" class="input-full">
               <input id="calEventLocation" type="text" placeholder="Location (optional)" class="input-full">
-              <textarea id="calEventDesc" placeholder="Description" rows="2" style="resize:vertical"></textarea>
+              <textarea id="calEventDesc" class="u-resize-v" placeholder="Description" rows="2"></textarea>
               <input id="calEventRrule" type="text" placeholder="Recurrence (e.g. FREQ=WEEKLY;COUNT=4)" class="input-full">
             </div>
-            <div class="toolbar" style="margin-top:8px">
+            <div class="toolbar u-mt-8">
               <button id="createCalendarEventBtn" class="btn btn-primary">Create Event</button>
               <button id="findFreeSlotsBtn" class="btn btn-soft">Find Free Slots</button>
             </div>
-            <div id="calFreeSlots" style="margin-top:8px"></div>
-            <pre id="calendarOutput" class="output" style="margin-top:12px">Calendar output here.</pre>
+            <div id="calFreeSlots" class="u-mt-8"></div>
+            <div id="calendarOutput" class="output result-view u-mt-12" aria-live="polite"><p class="empty-state">Calendar activity will appear here.</p></div>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header">
               <div><div class="eyebrow">External sync</div><h3>CalDAV provider hardening</h3></div>
               <span class="badge badge-success">Conflict-safe</span>
@@ -1313,8 +1305,8 @@
               <button id="runCalendarPush" class="btn btn-outline">Push</button>
               <button id="runCalendarBoth" class="btn btn-soft">Bidirectional</button>
             </div>
-            <div id="calendarSyncFeed" class="stack-list" style="margin-top:12px"></div>
-            <div id="calendarConflictFeed" class="stack-list" style="margin-top:8px"></div>
+            <div id="calendarSyncFeed" class="stack-list u-mt-12"></div>
+            <div id="calendarConflictFeed" class="stack-list u-mt-8"></div>
           </article>
         </div>
       </div>
@@ -1327,16 +1319,16 @@
           <article class="card">
             <div class="card-header"><div><div class="eyebrow">Digital Twin</div><h3>Your Personal AI</h3></div>
               <div class="toolbar slim">
-                <button class="btn btn-soft" onclick="loadTwinProfile()">Profile</button>
-                <button class="btn btn-soft" onclick="loadTwinPatterns()">Patterns</button>
-                <button class="btn btn-soft" onclick="loadTwinSuggestions()">Suggestions</button>
+                <button class="btn btn-soft" data-ui-action="loadTwinProfile">Profile</button>
+                <button class="btn btn-soft" data-ui-action="loadTwinPatterns">Patterns</button>
+                <button class="btn btn-soft" data-ui-action="loadTwinSuggestions">Suggestions</button>
               </div>
             </div>
             <div id="twinFeed" class="feed-list"></div>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header"><h3>Goals</h3>
-              <button class="btn btn-soft" onclick="loadTwinGoals()">Refresh</button>
+              <button class="btn btn-soft" data-ui-action="loadTwinGoals">Refresh</button>
             </div>
             <div id="twinGoals" class="feed-list"></div>
           </article>
@@ -1344,18 +1336,18 @@
         <div>
           <article class="card">
             <div class="card-header"><h3>Intent Prediction</h3></div>
-            <textarea id="twinContext" placeholder="Describe what you're working on…" rows="4" style="resize:vertical;width:100%"></textarea>
-            <div class="toolbar" style="margin-top:8px">
-              <button class="btn btn-primary" onclick="predictIntent()">Predict Intent</button>
-              <button class="btn btn-soft" onclick="consolidateMemory()">Consolidate Memory</button>
+            <textarea id="twinContext" class="u-resize-v u-w-full" placeholder="Describe what you're working on…" rows="4"></textarea>
+            <div class="toolbar u-mt-8">
+              <button class="btn btn-primary" data-ui-action="predictIntent">Predict Intent</button>
+              <button class="btn btn-soft" data-ui-action="consolidateMemory">Consolidate Memory</button>
             </div>
-            <pre id="twinOutput" class="output" style="margin-top:12px">Twin output here.</pre>
+            <div id="twinOutput" class="output result-view u-mt-12" aria-live="polite"><p class="empty-state">Personal context results will appear here.</p></div>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header"><h3>Add Goal</h3></div>
             <input id="twinGoalTitle" type="text" placeholder="Goal title" class="input-full">
-            <textarea id="twinGoalDesc" placeholder="Description (optional)" rows="2" style="resize:vertical;margin-top:6px"></textarea>
-            <button class="btn btn-primary" style="margin-top:8px" onclick="createTwinGoal()">Create Goal</button>
+            <textarea id="twinGoalDesc" class="u-resize-v u-mt-6" placeholder="Description (optional)" rows="2"></textarea>
+            <button class="btn btn-primary u-mt-8" data-ui-action="createTwinGoal">Create Goal</button>
           </article>
         </div>
       </div>
@@ -1367,7 +1359,7 @@
         <div>
           <article class="card">
             <div class="card-header"><div><div class="eyebrow">Encrypted Vault</div><h3>Secrets &amp; Credentials</h3></div>
-              <button class="btn btn-soft" onclick="loadVaultEntries()">Refresh</button>
+              <button class="btn btn-soft" data-ui-action="loadVaultEntries">Refresh</button>
             </div>
             <div id="vaultFeed" class="feed-list"></div>
           </article>
@@ -1377,24 +1369,24 @@
             <div class="card-header"><h3>Store Secret</h3></div>
             <div class="form-stack">
               <input id="vaultLabel" type="text" placeholder="Label (e.g. GitHub API key)" class="input-full">
-              <select id="vaultCategory" style="width:100%">
+              <select id="vaultCategory" class="u-w-full">
                 <option>password</option><option>api_key</option><option>token</option>
                 <option>certificate</option><option>private_note</option><option>secret</option>
               </select>
-              <textarea id="vaultSecret" placeholder="Secret value" rows="3" style="resize:vertical"></textarea>
+              <textarea id="vaultSecret" class="u-resize-v" placeholder="Secret value" rows="3"></textarea>
               <input id="vaultPassphrase" type="password" placeholder="Vault passphrase" class="input-full" autocomplete="new-password">
               <input id="vaultNotes" type="text" placeholder="Notes (optional)" class="input-full">
             </div>
-            <div class="toolbar" style="margin-top:8px">
-              <button class="btn btn-primary" onclick="storeVaultSecret()">Store Secret</button>
+            <div class="toolbar u-mt-8">
+              <button class="btn btn-primary" data-ui-action="storeVaultSecret">Store Secret</button>
             </div>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header"><h3>Retrieve Secret</h3></div>
             <input id="vaultRetrieveId" type="text" placeholder="Entry ID" class="input-full">
-            <input id="vaultRetrievePass" type="password" placeholder="Passphrase" class="input-full" style="margin-top:6px" autocomplete="current-password">
-            <button class="btn btn-primary" style="margin-top:8px" onclick="retrieveVaultSecret()">Retrieve</button>
-            <pre id="vaultOutput" class="output" style="margin-top:12px">Vault output here. (never cached)</pre>
+            <input id="vaultRetrievePass" type="password" placeholder="Passphrase" class="input-full u-mt-6" autocomplete="current-password">
+            <button class="btn btn-primary u-mt-8" data-ui-action="retrieveVaultSecret">Retrieve</button>
+            <pre id="vaultOutput" class="output u-mt-12">Retrieved secrets are shown here briefly and are never cached by the browser.</pre>
           </article>
         </div>
       </div>
@@ -1406,7 +1398,7 @@
         <div>
           <article class="card">
             <div class="card-header"><div><div class="eyebrow">Web Scraper</div><h3>Scheduled Jobs</h3></div>
-              <button class="btn btn-soft" onclick="loadScraperJobs()">Refresh</button>
+              <button class="btn btn-soft" data-ui-action="loadScraperJobs">Refresh</button>
             </div>
             <div id="scraperJobs" class="feed-list"></div>
           </article>
@@ -1415,19 +1407,23 @@
           <article class="card">
             <div class="card-header"><h3>Scrape URL</h3></div>
             <input id="scraperUrl" type="url" placeholder="https://example.com/article" class="input-full">
-            <div class="setting-row" style="margin-top:8px">
+            <div class="setting-row u-mt-8">
               <label class="setting-label">Ingest to Knowledge</label>
               <label class="toggle"><input type="checkbox" id="scraperIngest" checked><span class="toggle-slider"></span></label>
             </div>
-            <div class="toolbar" style="margin-top:8px">
-              <button class="btn btn-primary" onclick="scrapeUrl()">Scrape Now</button>
-              <button class="btn btn-soft" onclick="scheduleUrl()">Schedule</button>
+            <label class="setting-row setting-row-toggle">
+              <span><strong>Approve external access</strong><small>Applies to this scrape or saved schedule only.</small></span>
+              <input id="scraperAllowExternal" type="checkbox" role="switch">
+            </label>
+            <div class="toolbar u-mt-8">
+              <button class="btn btn-primary" data-ui-action="scrapeUrl">Scrape Now</button>
+              <button class="btn btn-soft" data-ui-action="scheduleUrl">Schedule</button>
             </div>
-            <div class="setting-row" style="margin-top:8px">
+            <div class="setting-row u-mt-8">
               <label class="setting-label">Interval (hours)</label>
-              <input id="scraperInterval" type="number" value="24" min="1" style="width:80px">
+              <input id="scraperInterval" class="u-w-80" type="number" value="24" min="1">
             </div>
-            <pre id="scraperOutput" class="output" style="margin-top:12px">Scraper output here.</pre>
+            <div id="scraperOutput" class="output result-view u-mt-12" aria-live="polite"><p class="empty-state">Job results will appear here.</p></div>
           </article>
         </div>
       </div>
@@ -1439,13 +1435,13 @@
         <div>
           <article class="card">
             <div class="card-header"><div><div class="eyebrow">Fine-Tuning</div><h3>Datasets &amp; Jobs</h3></div>
-              <button class="btn btn-soft" onclick="loadFinetuneStatus()">Status</button>
+              <button class="btn btn-soft" data-ui-action="loadFinetuneStatus">Status</button>
             </div>
             <div id="fineTuneFeed" class="feed-list"></div>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header"><h3>LoRA Adapters</h3>
-              <button class="btn btn-soft" onclick="loadAdapters()">Refresh</button>
+              <button class="btn btn-soft" data-ui-action="loadAdapters">Refresh</button>
             </div>
             <div id="adapterFeed" class="feed-list"></div>
           </article>
@@ -1455,29 +1451,29 @@
             <div class="card-header"><h3>Create Dataset</h3></div>
             <div class="form-stack">
               <input id="ftDatasetName" type="text" placeholder="Dataset name" class="input-full">
-              <textarea id="ftDatasetDesc" placeholder="Description" rows="2" style="resize:vertical"></textarea>
+              <textarea id="ftDatasetDesc" class="u-resize-v" placeholder="Description" rows="2"></textarea>
             </div>
-            <button class="btn btn-primary" style="margin-top:8px" onclick="createFtDataset()">Create Dataset</button>
+            <button class="btn btn-primary u-mt-8" data-ui-action="createFtDataset">Create Dataset</button>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header"><h3>Add Training Example</h3></div>
-            <select id="ftExDataset" style="width:100%;margin-bottom:6px"><option value="">Select dataset…</option></select>
-            <textarea id="ftExUser" placeholder="User input" rows="2" style="resize:vertical"></textarea>
-            <textarea id="ftExAssistant" placeholder="Assistant output" rows="3" style="resize:vertical;margin-top:6px"></textarea>
-            <button class="btn btn-primary" style="margin-top:8px" onclick="addFtExample()">Add Example</button>
+            <select id="ftExDataset" class="u-w-full u-mb-6"><option value="">Select dataset…</option></select>
+            <textarea id="ftExUser" class="u-resize-v" placeholder="User input" rows="2"></textarea>
+            <textarea id="ftExAssistant" class="u-resize-v u-mt-6" placeholder="Assistant output" rows="3"></textarea>
+            <button class="btn btn-primary u-mt-8" data-ui-action="addFtExample">Add Example</button>
           </article>
-          <article class="card" style="margin-top:16px">
+          <article class="card u-mt-16">
             <div class="card-header"><h3>Start Fine-Tuning Job</h3></div>
-            <select id="ftJobDataset" style="width:100%;margin-bottom:6px"><option value="">Select dataset…</option></select>
+            <select id="ftJobDataset" class="u-w-full u-mb-6"><option value="">Select dataset…</option></select>
             <input id="ftJobModel" type="text" placeholder="Base model (e.g. qwen2.5-coder:3b)" class="input-full">
-            <select id="ftJobTemplate" style="width:100%;margin-top:6px">
+            <select id="ftJobTemplate" class="u-w-full u-mt-6">
               <option value="">Select template…</option>
               <option value="lora-fast">LoRA Fast</option>
               <option value="lora-quality">LoRA Quality</option>
               <option value="qlora-4bit">QLoRA 4-bit</option>
             </select>
-            <button class="btn btn-primary" style="margin-top:8px" onclick="startFtJob()">Start Job</button>
-            <pre id="finetuneOutput" class="output" style="margin-top:12px">Fine-tuning output here.</pre>
+            <button class="btn btn-primary u-mt-8" data-ui-action="startFtJob">Start Job</button>
+            <div id="finetuneOutput" class="output result-view u-mt-12" aria-live="polite"><p class="empty-state">Training activity will appear here.</p></div>
           </article>
         </div>
       </div>
@@ -1491,7 +1487,8 @@
   <div class="palette-box">
     <div class="palette-input-row">
       <span aria-hidden="true">⌘</span>
-      <input id="paletteInput" placeholder="Search commands, views, or ask OpenAgent…" autocomplete="off" aria-label="Command palette input">
+      <input id="paletteInput" placeholder="Find a view or command" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="paletteResults" aria-expanded="false" aria-label="Search views and commands">
+      <button class="palette-close" type="button" data-palette-close aria-label="Close command palette" title="Close">Esc</button>
     </div>
     <div class="palette-results" id="paletteResults" role="listbox"></div>
     <div class="palette-footer">
@@ -1506,13 +1503,7 @@
 <div id="toastStack" aria-live="assertive" aria-atomic="false"></div>
 
 <!-- Main application script -->
-<script src="/app.js?v=20260820-automation-02" type="module"></script>
-<script>
-  // Register service worker for PWA offline support
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=20260820-automation-02').catch(function() {});
-  }
-</script>
+<script src="/app.js?v=20260917-frontend-01" type="module"></script>
 
 </body>
 </html>

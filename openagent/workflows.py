@@ -13,11 +13,11 @@ import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 from .agents import AgentRegistry
 from .chat import ChatService
 from .context import ContextEngine
+from .egress import EgressClient
 from .model_gateway import ModelGateway
 from .models import AuditEvent, ContextEvent, utc_now
 from .storage import OpenAgentStore
@@ -695,7 +695,7 @@ class WorkflowEngine:
         if action == "browser_fetch":
             self.require_network(allow_network, action)
             url = str(step.get("url", "")).strip()
-            html = http_request(url, method="GET")
+            html = http_request(url, method="GET", approved=allow_network)
             return StepResult(
                 "completed",
                 action,
@@ -707,7 +707,7 @@ class WorkflowEngine:
             url = str(step.get("url", "")).strip()
             method = str(step.get("method", "GET")).upper()
             body = step.get("body")
-            response = http_request(url, method=method, body=body)
+            response = http_request(url, method=method, body=body, approved=allow_network)
             return StepResult("completed", action, {"url": url, "method": method, "response": response[:2000]})
 
         if action == "audit":
@@ -932,7 +932,7 @@ def apply_layout(nodes: list[dict[str, Any]], layout_nodes: list[dict[str, Any]]
     return sorted(updated, key=lambda item: int(item.get("order", 0)))
 
 
-def http_request(url: str, *, method: str = "GET", body: Any = None) -> str:
+def http_request(url: str, *, method: str = "GET", body: Any = None, approved: bool = False) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise WorkflowSafetyError("Only http and https URLs are supported.")
@@ -941,9 +941,12 @@ def http_request(url: str, *, method: str = "GET", body: Any = None) -> str:
     if body is not None:
         data = json.dumps(body).encode("utf-8") if not isinstance(body, str) else body.encode("utf-8")
         headers["Content-Type"] = "application/json"
-    request = Request(url, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8", errors="replace")
+    response = EgressClient().fetch(
+        url, approved=approved, allow_loopback=True, purpose="workflow HTTP action",
+        method=method, body=data, headers=headers, timeout_seconds=30,
+        max_response_bytes=5 * 1024 * 1024,
+    )
+    return response.body.decode("utf-8", errors="replace")
 
 
 def extract_title(html: str) -> str:

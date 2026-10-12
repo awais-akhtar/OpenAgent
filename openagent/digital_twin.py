@@ -24,6 +24,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Any
+from uuid import uuid4
 
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
@@ -88,84 +89,7 @@ class DigitalTwin:
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
-        with self.store.session() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS twin_profiles (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    profile_json TEXT NOT NULL DEFAULT '{}',
-                    version INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_twin_profile_project
-                    ON twin_profiles(project);
-
-                CREATE TABLE IF NOT EXISTS twin_interactions (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    content TEXT NOT NULL DEFAULT '',
-                    topics_json TEXT NOT NULL DEFAULT '[]',
-                    hour_of_day INTEGER NOT NULL DEFAULT 12,
-                    day_of_week TEXT NOT NULL DEFAULT '',
-                    context_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_twin_interactions_project
-                    ON twin_interactions(project, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS twin_preferences (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    weight REAL NOT NULL DEFAULT 1.0,
-                    source TEXT NOT NULL DEFAULT 'inferred',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_twin_pref_key
-                    ON twin_preferences(project, category, key);
-
-                CREATE TABLE IF NOT EXISTS twin_patterns (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    pattern_type TEXT NOT NULL,
-                    data_json TEXT NOT NULL DEFAULT '{}',
-                    confidence REAL NOT NULL DEFAULT 0.5,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS twin_predictions (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    prediction_type TEXT NOT NULL,
-                    prediction TEXT NOT NULL,
-                    confidence REAL NOT NULL DEFAULT 0.5,
-                    context_json TEXT NOT NULL DEFAULT '{}',
-                    acted_on INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS twin_goals (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
-                    target_date TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    progress REAL NOT NULL DEFAULT 0.0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-            """)
+        self.store.initialize()
 
     # ------------------------------------------------------------------
     # Profile management
@@ -242,7 +166,7 @@ class DigitalTwin:
     ) -> dict[str, Any]:
         """Record a user interaction and update learned preferences."""
         now = utc_now()
-        interaction_id = hashlib.md5(f"{project}-{kind}-{content[:64]}-{now}".encode()).hexdigest()
+        interaction_id = uuid4().hex
         topics = _extract_topics(content)
         hour = _hour_bin(now)
         dow = _day_of_week(now)
@@ -449,7 +373,7 @@ class DigitalTwin:
 
         # Store prediction
         now = utc_now()
-        pred_id = hashlib.md5(f"pred-{project}-{context_text[:32]}-{now}".encode()).hexdigest()
+        pred_id = uuid4().hex
         with self.store.session() as conn:
             conn.execute(
                 "INSERT INTO twin_predictions VALUES(?,?,?,?,?,?,?,?)",
@@ -536,7 +460,7 @@ class DigitalTwin:
         target_date: str = "",
     ) -> dict[str, Any]:
         now = utc_now()
-        goal_id = hashlib.md5(f"goal-{project}-{title}-{now}".encode()).hexdigest()
+        goal_id = uuid4().hex
         with self.store.session() as conn:
             conn.execute(
                 "INSERT INTO twin_goals VALUES(?,?,?,?,?,?,?,?,?,?)",

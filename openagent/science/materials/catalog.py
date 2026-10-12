@@ -6,7 +6,8 @@ from dataclasses import asdict, dataclass
 import hashlib
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+
+from ...egress import EgressClient
 
 from .dataset import analyse_dataset_upload, parse_dataset_upload
 
@@ -104,7 +105,11 @@ def import_public_materials_dataset(
     parsed = urlparse(entry.download_url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValueError("catalog downloads must use HTTPS")
-    content = (fetcher or _fetch_https)(entry.download_url, max_download_bytes)
+    content = (
+        fetcher(entry.download_url, max_download_bytes)
+        if fetcher is not None
+        else _fetch_https(entry.download_url, max_download_bytes, approved=allow_external)
+    )
     if len(content) > max_download_bytes:
         raise ValueError("materials dataset download exceeds the configured size limit")
     digest = hashlib.sha256(content).hexdigest()
@@ -172,13 +177,11 @@ def _find_entry(dataset_id: str, catalog: Iterable[PublicMaterialsDataset]) -> P
     raise KeyError(f"unknown public materials dataset: {dataset_id}")
 
 
-def _fetch_https(url: str, max_bytes: int) -> bytes:
-    request = Request(url, headers={"User-Agent": "OpenAgent materials catalog/1"})
-    with urlopen(request, timeout=60) as response:  # noqa: S310 - catalog URL and approval are both enforced
-        declared = response.headers.get("Content-Length")
-        if declared and int(declared) > max_bytes:
-            raise ValueError("materials dataset download exceeds the configured size limit")
-        content = response.read(max_bytes + 1)
-    if len(content) > max_bytes:
-        raise ValueError("materials dataset download exceeds the configured size limit")
-    return content
+def _fetch_https(url: str, max_bytes: int, *, approved: bool) -> bytes:
+    response = EgressClient().fetch(
+        url, approved=approved, purpose="public materials dataset import",
+        headers={"User-Agent": "OpenAgent materials catalog/1"}, timeout_seconds=60,
+        max_response_bytes=max_bytes,
+        allowed_content_types={"application/json", "application/gzip", "application/x-gzip", "application/octet-stream"},
+    )
+    return response.body

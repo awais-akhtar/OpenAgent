@@ -1,61 +1,539 @@
-﻿/**
- * OpenAgent UI — Main Application Script
- * Privacy-first self-hosted AI operating system
- * Original implementation, no third-party dependencies.
- */
+// web/src/api.ts
+var ApiError = class extends Error {
+  status;
+  code;
+  requestId;
+  details;
+  constructor(message, response, body = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = response.status;
+    this.code = body.code ?? "request_failed";
+    this.requestId = response.headers.get("x-request-id") ?? "";
+    this.details = body.details;
+  }
+};
+var ApiClient = class {
+  getToken;
+  fetchImpl;
+  defaultTimeoutMs;
+  constructor(options = {}) {
+    this.getToken = options.getToken ?? (() => "");
+    this.fetchImpl = options.fetchImpl ?? window.fetch.bind(window);
+    this.defaultTimeoutMs = options.defaultTimeoutMs ?? 45e3;
+  }
+  async request(path, options = {}) {
+    if (!path.startsWith("/api/")) throw new Error("API requests must use a same-origin /api/ path.");
+    const controller = new AbortController();
+    const { timeoutMs = this.defaultTimeoutMs, signal, ...requestOptions } = options;
+    const onAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+    const timeout = window.setTimeout(() => controller.abort("request_timeout"), timeoutMs);
+    const token = this.getToken();
+    const headers = new Headers(requestOptions.headers);
+    if (requestOptions.body && !(requestOptions.body instanceof FormData) && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const method = (requestOptions.method ?? "GET").toUpperCase();
+    const retries = method === "GET" || method === "HEAD" ? 1 : 0;
+    try {
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        if (controller.signal.aborted) throw new DOMException("Request cancelled", "AbortError");
+        try {
+          const response = await this.fetchImpl(path, { ...requestOptions, headers, signal: controller.signal });
+          if (attempt < retries && [429, 502, 503, 504].includes(response.status)) {
+            await response.body?.cancel();
+            continue;
+          }
+          const raw = await response.text();
+          let body = {};
+          if (raw) {
+            try {
+              body = JSON.parse(raw);
+            } catch {
+              body = { message: raw };
+            }
+          }
+          if (!response.ok) {
+            const record2 = typeof body === "object" && body !== null ? body : {};
+            const nested = typeof record2.error === "object" && record2.error !== null ? record2.error : {};
+            const direct = typeof record2.error === "string" ? record2.error : void 0;
+            throw new ApiError(direct ?? nested.message ?? `Request failed: ${response.status}`, response, nested);
+          }
+          return body;
+        } catch (error) {
+          if (attempt < retries && error instanceof TypeError && !controller.signal.aborted) continue;
+          throw error;
+        }
+      }
+      throw new Error("Request attempts exhausted.");
+    } catch (error) {
+      if (controller.signal.aborted && controller.signal.reason === "request_timeout") {
+        throw new Error("The request timed out.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+};
 
-// =============================================
-// Constants & State
-// =============================================
+// web/src/capabilities.ts
+function discoverCapabilities(root = document) {
+  return Array.from(root.querySelectorAll("[data-view-panel]")).map((panel) => {
+    const id = panel.dataset.viewPanel ?? "";
+    const link = root.querySelector(`[data-view-link="${CSS.escape(id)}"]`);
+    return {
+      id,
+      label: link?.textContent?.trim() || panel.getAttribute("aria-label") || id,
+      path: link?.getAttribute("href") || `/?view=${encodeURIComponent(id)}`,
+      available: !panel.hasAttribute("data-capability-disabled")
+    };
+  });
+}
+function capabilityMap(capabilities) {
+  return new Map(capabilities.map((capability) => [capability.id, capability]));
+}
 
-const MODULES = [
-  { id: "chat",        label: "AI Workspace",       text: "Streaming chat, provider controls, conversation memory." },
-  { id: "codebase",    label: "CodeQ",               text: "Repository-aware coding with protected tools, repair loops, and validation evidence." },
-  { id: "agents",      label: "Multi-Agent System",  text: "Specialists, parallel execution, delegation, verification." },
-  { id: "automation",  label: "Automation",          text: "Visual workflow builder, triggers, safe actions." },
-  { id: "calendar",    label: "Calendar System",     text: "CalDAV-compatible calendar, scheduling intelligence, iCal." },
-  { id: "twin",        label: "Digital Twin",        text: "Personal AI memory, intent prediction, goal tracking." },
-  { id: "vault",       label: "Encrypted Vault",     text: "Zero-knowledge local vault for secrets and credentials." },
-  { id: "scraper",     label: "Web Scraper",         text: "Privacy-first URL scraping and scheduled ingestion." },
-  { id: "finetune",    label: "Fine-Tuning",         text: "Dataset curation, LoRA adapters, training job management." },
-  { id: "science",     label: "Scientific AI",       text: "Local scientific computing, engineering optimisation, verification, and materials discovery." },
-];
+// web/src/dom.ts
+function query(selector, root = document) {
+  return root.querySelector(selector);
+}
+function queryAll(selector, root = document) {
+  return Array.from(root.querySelectorAll(selector));
+}
+function escapeHtml(value) {
+  const node = document.createElement("span");
+  node.textContent = String(value ?? "");
+  return node.innerHTML;
+}
+function moveFocus(target) {
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
 
-const PALETTE_COMMANDS = [
-  { label: "Dashboard",              icon: "🏠", group: "Navigate", action: () => setView("dashboard") },
-  { label: "Chat",                   icon: "💬", group: "Navigate", action: () => setView("chat") },
-  { label: "CodeQ",                  icon: "⌘", group: "Navigate", action: () => setView("codebase") },
-  { label: "Agents",                 icon: "🤖", group: "Navigate", action: () => setView("agents") },
-  { label: "Knowledge",              icon: "✦", group: "Navigate", action: () => setView("knowledge") },
-  { label: "Documents",              icon: "🗂", group: "Navigate", action: () => setView("workspace") },
-  { label: "Automation",             icon: "⚡", group: "Navigate", action: () => setView("automation") },
-  { label: "Assistant",              icon: "📋", group: "Navigate", action: () => setView("assistant") },
-  { label: "Communications",         icon: "📡", group: "Navigate", action: () => setView("communications") },
-  { label: "Models",                 icon: "🧠", group: "Navigate", action: () => setView("models") },
-  { label: "Security",               icon: "🔒", group: "Navigate", action: () => setView("security") },
-  { label: "Adaptive Engine",        icon: "⚙", group: "Navigate", action: () => setView("engine") },
-  { label: "Scientific AI",          icon: "🔬", group: "Navigate", action: () => setView("science") },
-  { label: "Developer",              icon: "⚙️", group: "Navigate", action: () => setView("developer") },
-  { label: "Settings",               icon: "🔧", group: "Navigate", action: () => setView("settings") },
-  { label: "Calendar",               icon: "📅", group: "Navigate", action: () => setView("calendar") },
-  { label: "Digital Twin",           icon: "🪞", group: "Navigate", action: () => setView("twin") },
-  { label: "Encrypted Vault",        icon: "🔐", group: "Navigate", action: () => setView("vault") },
-  { label: "Web Scraper",            icon: "🌐", group: "Navigate", action: () => setView("scraper") },
-  { label: "Fine-Tuning",            icon: "🎯", group: "Navigate", action: () => setView("finetune") },
-  { label: "New chat",               icon: "➕", group: "Actions",  action: () => { setView("chat"); newConversation(); } },
-  { label: "Run agent",              icon: "▶️", group: "Actions",  action: () => { setView("agents"); runAgent(); } },
-  { label: "Daily brief",            icon: "📰", group: "Actions",  action: () => { setView("assistant"); getDailyBrief(); } },
-  { label: "Privacy report",         icon: "🔏", group: "Actions",  action: () => { setView("security"); loadPrivacyReport(); } },
-  { label: "Smooth runtime plan",    icon: "🧠", group: "System",   action: () => { setView("models"); loadSmoothRuntime("chat"); } },
-  { label: "Auto-quantize model",    icon: "⚙️", group: "System",   action: () => { setView("models"); autoQuantizeRegisteredModel(); } },
-  { label: "Run hard check",         icon: "✅", group: "System",   action: () => runHardCheck() },
-  { label: "Refresh everything",     icon: "🔄", group: "System",   action: () => refreshAll() },
-  { label: "Dark theme",             icon: "🌑", group: "System",   action: () => applyTheme("dark") },
-  { label: "Light theme",            icon: "☀️", group: "System",   action: () => applyTheme("light") },
-  { label: "System theme",           icon: "💻", group: "System",   action: () => applyTheme("system") },
-];
+// web/src/notifications.ts
+var NotificationCenter = class {
+  constructor(selector = "#toastStack") {
+    this.selector = selector;
+  }
+  show(title, body = "", tone = "info", durationMs = 4200) {
+    const host = query(this.selector);
+    if (!host) return;
+    const node = document.createElement("div");
+    node.className = `toast toast-${tone}`;
+    node.setAttribute("role", tone === "error" ? "alert" : "status");
+    node.innerHTML = `<strong>${escapeHtml(title)}</strong>${body ? `<p>${escapeHtml(body)}</p>` : ""}`;
+    host.appendChild(node);
+    window.setTimeout(() => node.remove(), durationMs);
+  }
+};
 
-const DEFAULT_MODEL_SETTINGS = {
+// web/src/router.ts
+var ViewRouter = class {
+  constructor(options) {
+    this.options = options;
+    this.onChange = options.onChange;
+  }
+  activeView = "";
+  onChange;
+  current() {
+    return this.activeView;
+  }
+  navigate(view, options = {}) {
+    const capability = this.options.capabilities.get(view);
+    const panel = query(`[data-view-panel="${CSS.escape(view)}"]`);
+    if (!capability?.available || !panel) return false;
+    const previousView = this.activeView;
+    this.activeView = view;
+    queryAll("[data-view-panel]").forEach((candidate) => {
+      const active = candidate.dataset.viewPanel === view;
+      candidate.classList.toggle("active", active);
+      candidate.setAttribute("aria-hidden", String(!active));
+    });
+    queryAll("[data-view-link]").forEach((link) => {
+      const active = link.dataset.viewLink === view;
+      link.classList.toggle("active", active);
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+    this.revealActiveNavigation(view);
+    if (!options.fromHistory) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", view);
+      window.history[options.replace ? "replaceState" : "pushState"]({ view }, "", url);
+    }
+    if (options.focus) moveFocus(panel);
+    this.onChange?.(view, previousView);
+    return true;
+  }
+  readLocation(fallback = "dashboard") {
+    const requested = new URL(window.location.href).searchParams.get("view") ?? fallback;
+    return this.options.capabilities.get(requested)?.available ? requested : fallback;
+  }
+  revealActiveNavigation(view) {
+    const activeLink = query(`[data-view-link="${CSS.escape(view)}"]`);
+    if (!activeLink || !activeLink.classList.contains("nav-group-hidden")) return;
+    let group = activeLink.previousElementSibling;
+    while (group && !group.classList.contains("nav-group-toggle")) group = group.previousElementSibling;
+    if (!(group instanceof HTMLElement)) return;
+    group.classList.remove("collapsed");
+    group.setAttribute("aria-expanded", "true");
+    let sibling = group.nextElementSibling;
+    while (sibling && !sibling.classList.contains("nav-group-toggle")) {
+      if (sibling.classList.contains("nav-link")) sibling.classList.remove("nav-group-hidden");
+      sibling = sibling.nextElementSibling;
+    }
+  }
+};
+
+// web/src/state.ts
+function createStateStore(initial) {
+  let current = { ...initial };
+  const listeners = /* @__PURE__ */ new Set();
+  return {
+    get: () => current,
+    patch(update) {
+      const changedKeys = /* @__PURE__ */ new Set();
+      for (const key of Object.keys(update)) {
+        if (!Object.is(current[key], update[key])) changedKeys.add(key);
+      }
+      if (!changedKeys.size) return current;
+      current = { ...current, ...update };
+      listeners.forEach((listener) => listener(current, changedKeys));
+      return current;
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }
+  };
+}
+
+// web/src/palette.ts
+var CommandPalette = class {
+  constructor(overlay, input, results, navigate, actions = []) {
+    this.overlay = overlay;
+    this.input = input;
+    this.results = results;
+    this.navigate = navigate;
+    this.actions = actions;
+    input.addEventListener("input", () => this.render());
+    input.addEventListener("keydown", (event) => this.onKeyDown(event));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay || event.target.closest("[data-palette-close]")) this.close();
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const closeButton = overlay.querySelector("[data-palette-close]");
+      if (!closeButton) return;
+      event.preventDefault();
+      (document.activeElement === this.input ? closeButton : this.input).focus();
+    });
+  }
+  entries = [];
+  visible = [];
+  selected = 0;
+  returnFocus = null;
+  get isOpen() {
+    return this.overlay.classList.contains("open");
+  }
+  open() {
+    this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const views = Array.from(document.querySelectorAll(".app-nav [data-view-link], .sidebar-bottom-nav [data-view-link]"));
+    this.entries = views.map((link) => ({
+      label: link.textContent?.trim() || link.dataset.viewLink || "",
+      icon: link.querySelector("use")?.getAttribute("href") || "",
+      group: "Navigate",
+      run: () => this.navigate(link.dataset.viewLink || "dashboard")
+    }));
+    this.entries.push(...this.actions.map((action) => ({ ...action, group: "Actions", icon: "" })));
+    this.input.value = "";
+    this.overlay.classList.add("open");
+    this.input.setAttribute("aria-expanded", "true");
+    this.selected = 0;
+    this.render();
+    this.input.focus();
+  }
+  close() {
+    if (!this.isOpen) return;
+    this.overlay.classList.remove("open");
+    this.input.setAttribute("aria-expanded", "false");
+    this.returnFocus?.focus();
+    this.returnFocus = null;
+  }
+  render() {
+    const query2 = this.input.value.trim().toLocaleLowerCase();
+    this.visible = this.entries.filter((entry) => !query2 || entry.label.toLocaleLowerCase().includes(query2));
+    this.selected = Math.min(this.selected, Math.max(0, this.visible.length - 1));
+    this.results.replaceChildren();
+    if (!this.visible.length) {
+      const empty = document.createElement("p");
+      empty.className = "palette-empty";
+      empty.textContent = "No matching commands";
+      this.results.append(empty);
+      this.input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    this.visible.forEach((entry, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "palette-item";
+      button.id = `palette-option-${index}`;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(index === this.selected));
+      if (index === this.selected) button.classList.add("focused");
+      const icon = document.createElement("span");
+      icon.className = "pi-icon";
+      icon.setAttribute("aria-hidden", "true");
+      if (entry.icon) {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+        use.setAttribute("href", entry.icon);
+        svg.append(use);
+        icon.append(svg);
+      }
+      const label2 = document.createElement("span");
+      label2.className = "pi-label";
+      label2.textContent = entry.label;
+      const group = document.createElement("span");
+      group.className = "pi-group";
+      group.textContent = entry.group;
+      button.append(icon, label2, group);
+      button.addEventListener("click", () => this.run(index));
+      this.results.append(button);
+    });
+    this.input.setAttribute("aria-activedescendant", `palette-option-${this.selected}`);
+    this.results.querySelector(".focused")?.scrollIntoView({ block: "nearest" });
+  }
+  run(index) {
+    const entry = this.visible[index];
+    if (!entry) return;
+    this.close();
+    entry.run();
+  }
+  onKeyDown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.close();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      this.selected = Math.max(0, Math.min(this.visible.length - 1, this.selected + (event.key === "ArrowDown" ? 1 : -1)));
+      this.render();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      this.run(this.selected);
+    }
+  }
+};
+
+// web/src/results.ts
+var MAX_ITEMS = 40;
+var MAX_DEPTH = 4;
+function label(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isPresent(value) {
+  return value !== null && value !== void 0 && value !== "";
+}
+function valueNode(value, depth) {
+  if (depth >= MAX_DEPTH) {
+    const text3 = document.createElement("span");
+    text3.textContent = Array.isArray(value) ? `${value.length} items` : isRecord(value) ? `${Object.keys(value).length} fields` : String(value);
+    return text3;
+  }
+  if (Array.isArray(value)) {
+    const list = document.createElement("ol");
+    list.className = "result-list";
+    value.slice(0, MAX_ITEMS).forEach((item) => {
+      const row = document.createElement("li");
+      row.append(valueNode(item, depth + 1));
+      list.append(row);
+    });
+    if (value.length > MAX_ITEMS) {
+      const more = document.createElement("li");
+      more.textContent = `${value.length - MAX_ITEMS} more in raw data`;
+      list.append(more);
+    }
+    return list;
+  }
+  if (isRecord(value)) {
+    const fields = document.createElement("dl");
+    fields.className = "result-fields";
+    Object.entries(value).filter(([, entry]) => isPresent(entry)).slice(0, MAX_ITEMS).forEach(([key, entry]) => {
+      const name = document.createElement("dt");
+      name.textContent = label(key);
+      const detail = document.createElement("dd");
+      detail.append(valueNode(entry, depth + 1));
+      fields.append(name, detail);
+    });
+    return fields;
+  }
+  const text2 = document.createElement("span");
+  text2.textContent = typeof value === "boolean" ? value ? "Yes" : "No" : String(value ?? "Not available");
+  return text2;
+}
+function renderResult(container, value) {
+  container.replaceChildren();
+  let content = value;
+  if (isRecord(value) && "success" in value) {
+    if (value.success === false) {
+      container.setAttribute("role", "alert");
+      container.classList.add("result-error");
+      content = value.error ?? { message: "The action could not be completed." };
+    } else {
+      container.removeAttribute("role");
+      container.classList.remove("result-error");
+      content = value.data ?? value;
+    }
+  } else {
+    container.removeAttribute("role");
+    container.classList.remove("result-error");
+  }
+  container.append(valueNode(content, 0));
+  if (typeof value === "object" && value !== null) {
+    const details = document.createElement("details");
+    details.className = "result-raw";
+    const summary = document.createElement("summary");
+    summary.textContent = "Raw data";
+    const raw = document.createElement("pre");
+    raw.textContent = JSON.stringify(value, null, 2);
+    details.append(summary, raw);
+    container.append(details);
+  }
+}
+
+// web/src/theme.ts
+var preferences = /* @__PURE__ */ new Set(["dark", "light", "system"]);
+var ThemeController = class {
+  storageKey;
+  onChange;
+  media = null;
+  mediaListener = null;
+  preference = "system";
+  constructor(options = {}) {
+    this.storageKey = options.storageKey ?? "oa-theme";
+    this.onChange = options.onChange;
+  }
+  initialize() {
+    let saved = null;
+    try {
+      saved = localStorage.getItem(this.storageKey);
+    } catch {
+    }
+    this.apply(saved ?? "system", false);
+    if (!window.matchMedia) return;
+    this.media = window.matchMedia("(prefers-color-scheme: dark)");
+    this.mediaListener = () => {
+      if (this.preference === "system") this.apply("system", false);
+    };
+    if (typeof this.media.addEventListener === "function") this.media.addEventListener("change", this.mediaListener);
+    else this.media.addListener(this.mediaListener);
+  }
+  apply(value, persist = true) {
+    const preference = preferences.has(value) ? value : "system";
+    const resolved = preference === "system" ? window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light" : preference;
+    this.preference = preference;
+    document.documentElement.dataset.theme = resolved;
+    document.documentElement.dataset.themePreference = preference;
+    if (persist) {
+      try {
+        localStorage.setItem(this.storageKey, preference);
+      } catch {
+      }
+    }
+    document.querySelectorAll("[data-theme-select]").forEach((button) => {
+      const selected = button.dataset.themeSelect === preference;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    const select = document.querySelector("#settingsTheme");
+    if (select) select.value = preference;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "dark" ? "#0b0f16" : "#f5f7fb");
+    this.onChange?.(preference, resolved);
+  }
+  destroy() {
+    if (!this.media || !this.mediaListener) return;
+    if (typeof this.media.removeEventListener === "function") this.media.removeEventListener("change", this.mediaListener);
+    else this.media.removeListener(this.mediaListener);
+  }
+};
+
+// web/src/runtime-capabilities.ts
+function record(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+}
+function text(value) {
+  return typeof value === "string" ? value : "";
+}
+function inferState(module) {
+  const evidence = record(module.evidence);
+  const evidenceStatus = text(evidence.status).toLowerCase();
+  if (["mock-completed", "simulated_local", "local_fixture", "demo", "demonstration"].includes(evidenceStatus)) return "sandbox";
+  if (text(module.certification) || text(evidence.certification)) return "certified";
+  const capability = text(module.capability_status).toLowerCase();
+  if (["available", "ready"].includes(capability)) return "ready";
+  if (["setup_needed", "requires_setup"].includes(capability)) return "setup-needed";
+  if (capability === "experimental") return "experimental";
+  if (capability === "unavailable") return "unavailable";
+  const probe = text(module.probe_status || module.status).toLowerCase();
+  if (["timeout", "degraded", "error", "failed"].includes(probe)) return "degraded";
+  return "unknown";
+}
+function normalizeRuntimeCapabilities(payload) {
+  const root = record(payload);
+  const modules = Array.isArray(root.modules) ? root.modules : [];
+  return modules.map((value) => {
+    const module = record(value);
+    const evidence = record(module.evidence);
+    return {
+      id: text(module.id),
+      label: text(module.label) || text(module.id),
+      state: inferState(module),
+      reason: text(module.reason) || text(evidence.reason),
+      requiredDependency: text(module.required_dependency) || text(evidence.required_dependency),
+      configurationAction: text(module.configuration_action) || text(evidence.configuration_action),
+      privacyBoundary: text(module.privacy_boundary) || text(evidence.privacy_boundary),
+      lastCheck: text(module.last_check) || text(root.checked_at),
+      certification: text(module.certification) || text(evidence.certification)
+    };
+  }).filter((capability) => capability.id);
+}
+var viewAliases = {
+  adaptive_engine: "engine",
+  conversation_organization: "chat",
+  enterprise_identity: "security",
+  mcp_runtime: "developer",
+  memory: "knowledge",
+  scheduler: "automation",
+  ultra_models: "models"
+};
+function applyRuntimeCapabilities(capabilities, root = document) {
+  for (const capability of capabilities) {
+    const view = viewAliases[capability.id] ?? capability.id;
+    for (const element of root.querySelectorAll(`[data-view-link="${CSS.escape(view)}"], [data-view-panel="${CSS.escape(view)}"]`)) {
+      element.dataset.capabilityState = capability.state;
+      if (capability.reason) element.dataset.capabilityReason = capability.reason;
+      if (element.matches("[data-view-link]") && capability.state !== "ready" && capability.state !== "unknown") {
+        const description = [capability.state.replace("-", " "), capability.reason].filter(Boolean).join(": ");
+        element.setAttribute("aria-description", description);
+        element.title = description;
+      }
+    }
+  }
+}
+
+// web/src/app.ts
+var DEFAULT_MODEL_SETTINGS = {
+  chatProvider: "auto",
+  streamingEnabled: true,
   chatModel: "phi4-mini",
   codeModel: "qwen2.5-coder:3b",
   researchModel: "phi4-mini",
@@ -63,10 +541,9 @@ const DEFAULT_MODEL_SETTINGS = {
   quantizationMode: "auto",
   targetRamGb: "",
   modelTimeoutSeconds: "35",
-  parameterCountB: "",
+  parameterCountB: ""
 };
-
-const state = {
+var state = {
   activeView: "dashboard",
   selectedProject: "default",
   health: {},
@@ -79,13 +556,13 @@ const state = {
   dashboardHistory: {
     cpu: [],
     memory: [],
-    disk: [],
+    disk: []
   },
   dashboardUi: {
     paused: false,
     resourceWindow: 36,
     providerFilter: "all",
-    incidentFilter: "all",
+    incidentFilter: "all"
   },
   dashboardSources: {
     health: false,
@@ -94,13 +571,15 @@ const state = {
     models: false,
     modules: false,
     inference: false,
-    audit: false,
+    audit: false
   },
   capabilities: {},
+  runtimeCapabilities: [],
   customAgents: [],
   privacySettings: {
     localOnly: true,
     auditAll: true,
+    allowExternal: false
   },
   smoothRuntime: null,
   modelSetup: {},
@@ -120,7 +599,7 @@ const state = {
     selectedRunId: "",
     runs: [],
     schema: null,
-    draftSteps: [],
+    draftSteps: []
   },
   conversationId: null,
   streamingEnabled: true,
@@ -161,7 +640,7 @@ const state = {
     filter: "",
     mode: "search",
     hasResult: false,
-    selectedDocumentId: "",
+    selectedDocumentId: ""
   },
   ultraModel: { status: {}, manifests: [], sessions: [], plan: null, manifestId: "", sessionId: "" },
   adaptiveEngine: { status: {}, plans: [], benchmarks: [], calibrations: [], direct: {}, busy: false },
@@ -185,11 +664,17 @@ const state = {
     streamController: null,
     pollTimer: null,
     liveEditToken: 0,
-    liveEditQueue: Promise.resolve(),
+    liveEditQueue: Promise.resolve()
   },
   selectedEngineRole: "chat",
   theme: "system",
-  authToken: (() => { try { return sessionStorage.getItem("oa-auth-token") || ""; } catch (e) { return ""; } })(),
+  authToken: (() => {
+    try {
+      return sessionStorage.getItem("oa-auth-token") || "";
+    } catch (e) {
+      return "";
+    }
+  })(),
   authUser: null,
   selectedSkillId: "",
   phd: {
@@ -201,30 +686,23 @@ const state = {
     selectedApplicationId: "",
     selectedArtifactId: "",
     generationRun: null,
-    busy: false,
-  },
+    busy: false
+  }
 };
-
-const activeModelJobPolls = new Set();
-
-// =============================================
-// Utilities
-// =============================================
-
-const qs  = (sel, root = document) => root.querySelector(sel);
-const qsa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-
-function escapeHtml(val) {
-  return String(val ?? "")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+var activeModelJobPolls = /* @__PURE__ */ new Set();
+var uiState = createStateStore({ activeView: state.activeView, selectedProject: state.selectedProject });
+var apiClient = new ApiClient({ getToken: () => state.authToken || "" });
+var notifications = new NotificationCenter();
+var qs = query;
+var qsa = queryAll;
+function escapeHtml2(val) {
+  return escapeHtml(val);
 }
-
 function getProject() {
   state.selectedProject = qs("#projectInput").value.trim() || "default";
+  uiState.patch({ selectedProject: state.selectedProject });
   return state.selectedProject;
 }
-
 async function refreshProjectContext() {
   const selected = getProject();
   state.conversationId = null;
@@ -236,32 +714,35 @@ async function refreshProjectContext() {
   if (loader) await loader();
   toast("Project loaded", selected);
 }
-
 function setOutput(sel, val) {
   const el = qs(sel);
   if (!el) return;
+  if (el.classList.contains("result-view")) {
+    renderResult(el, val);
+    return;
+  }
   if (typeof val === "string") {
     el.textContent = val;
     return;
   }
   el.textContent = formatStructuredOutput(val);
 }
-
 function formatStructuredOutput(value) {
   let payload = value;
   if (payload && typeof payload === "object" && "success" in payload) {
     if (payload.success === false) {
-      return `Error\n${payload.error?.message || payload.error || "The action could not be completed."}`;
+      return `Error
+${payload.error?.message || payload.error || "The action could not be completed."}`;
     }
     if (payload.data && typeof payload.data === "object") payload = payload.data;
   }
   const lines = [];
-  const label = key => String(key).replace(/_/g, " ").replace(/\b\w/g, character => character.toUpperCase());
+  const label2 = (key) => String(key).replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
   const write = (key, item, depth = 0) => {
-    if (item === null || item === undefined || item === "") return;
+    if (item === null || item === void 0 || item === "") return;
     if (Array.isArray(item)) {
       if (!item.length) return;
-      lines.push(`${label(key)} (${item.length})`);
+      lines.push(`${label2(key)} (${item.length})`);
       item.slice(0, 20).forEach((entry, index) => {
         if (entry && typeof entry === "object") {
           lines.push(`  ${index + 1}.`);
@@ -273,14 +754,14 @@ function formatStructuredOutput(value) {
       return;
     }
     if (item && typeof item === "object") {
-      const entries = Object.entries(item).filter(([, child]) => child !== null && child !== undefined && child !== "");
+      const entries = Object.entries(item).filter(([, child]) => child !== null && child !== void 0 && child !== "");
       if (!entries.length) return;
-      if (key) lines.push(`${" ".repeat(depth)}${label(key)}`);
+      if (key) lines.push(`${" ".repeat(depth)}${label2(key)}`);
       entries.forEach(([childKey, child]) => write(childKey, child, depth + (key ? 2 : 0)));
       return;
     }
-    const formatted = typeof item === "boolean" ? (item ? "Yes" : "No") : String(item);
-    lines.push(`${" ".repeat(depth)}${label(key)}: ${formatted}`);
+    const formatted = typeof item === "boolean" ? item ? "Yes" : "No" : String(item);
+    lines.push(`${" ".repeat(depth)}${label2(key)}: ${formatted}`);
   };
   if (payload && typeof payload === "object") {
     Object.entries(payload).forEach(([key, item]) => write(key, item));
@@ -289,27 +770,19 @@ function formatStructuredOutput(value) {
   }
   return lines.join("\n") || "Action completed.";
 }
-
 function toast(title, body = "") {
-  const node = document.createElement("div");
-  node.className = "toast";
-  node.innerHTML = `<strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p>`;
-  qs("#toastStack").appendChild(node);
-  setTimeout(() => node.remove(), 4200);
+  notifications.show(title, body);
 }
-
-function emptyState(text) {
-  return `<div class="empty-state">${escapeHtml(text)}</div>`;
+function emptyState(text2) {
+  return `<div class="empty-state">${escapeHtml2(text2)}</div>`;
 }
-
 function listItem(title, body = "", action = "") {
   return `<article class="list-item">
     <div class="list-item-row">
-      <div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p></div>
+      <div><strong>${escapeHtml2(title)}</strong><p>${escapeHtml2(body)}</p></div>
       ${action}
     </div></article>`;
 }
-
 function readJsonInput(sel, fallback = {}) {
   const raw = qs(sel)?.value.trim() || "";
   if (!raw) return fallback;
@@ -319,150 +792,86 @@ function readJsonInput(sel, fallback = {}) {
     throw new Error(`${sel} must contain valid JSON.`);
   }
 }
-
 async function api(path, options = {}) {
-  const authorization = state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {};
-  const contentHeaders = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
-  const res = await fetch(path, {
-    headers: { ...contentHeaders, ...authorization, ...(options.headers || {}) },
-    ...options,
-  });
-  const text = await res.text();
-  const payload = text ? JSON.parse(text) : {};
-  if (!res.ok) {
-    const err = payload.error;
-    const message = typeof err === "string" ? err : (err?.message || `Request failed: ${res.status}`);
-    throw new Error(message);
-  }
-  return payload;
+  return apiClient.request(path, options);
 }
-
-// Lightweight markdown-to-HTML renderer (no external deps)
-function renderMarkdown(text) {
-  if (!text) return "";
-  return escapeHtml(text)
-    .replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code}</code></pre>`)
-    .replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`)
-    .replace(/\*\*(.+?)\*\*/g, (_, t) => `<strong>${t}</strong>`)
-    .replace(/\*(.+?)\*/g, (_, t) => `<em>${t}</em>`)
-    .replace(/^#{3}\s+(.+)$/gm, (_, t) => `<h4>${t}</h4>`)
-    .replace(/^#{2}\s+(.+)$/gm, (_, t) => `<h3>${t}</h3>`)
-    .replace(/^#{1}\s+(.+)$/gm, (_, t) => `<h3>${t}</h3>`)
-    .replace(/\n/g, "<br>");
+function renderMarkdown(text2) {
+  if (!text2) return "";
+  return escapeHtml2(text2).replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code}</code></pre>`).replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`).replace(/\*\*(.+?)\*\*/g, (_, t) => `<strong>${t}</strong>`).replace(/\*(.+?)\*/g, (_, t) => `<em>${t}</em>`).replace(/^#{3}\s+(.+)$/gm, (_, t) => `<h4>${t}</h4>`).replace(/^#{2}\s+(.+)$/gm, (_, t) => `<h3>${t}</h3>`).replace(/^#{1}\s+(.+)$/gm, (_, t) => `<h3>${t}</h3>`).replace(/\n/g, "<br>");
 }
-
-// =============================================
-// Theme management
-// =============================================
-
-const THEME_PREFERENCES = new Set(["dark", "light", "system"]);
-let systemThemeListenerBound = false;
-
-function normalizeThemePreference(theme) {
-  return THEME_PREFERENCES.has(theme) ? theme : "system";
-}
-
-function resolveTheme(theme) {
-  const preference = normalizeThemePreference(theme);
-  if (preference !== "system") return preference;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function applyTheme(theme, { persist = true } = {}) {
-  const preference = normalizeThemePreference(theme);
-  const resolvedTheme = resolveTheme(preference);
+var themeController = new ThemeController({ onChange: (preference) => {
   state.theme = preference;
-  document.documentElement.setAttribute("data-theme", resolvedTheme);
-  document.documentElement.setAttribute("data-theme-preference", preference);
-  if (persist) {
-    try { localStorage.setItem("oa-theme", preference); } catch(e) {}
-  }
-  qsa("[data-theme-select]").forEach(btn => {
-    const selected = btn.dataset.themeSelect === preference;
-    btn.classList.toggle("active", selected);
-    btn.setAttribute("aria-pressed", String(selected));
-  });
-  const sel = qs("#settingsTheme");
-  if (sel) sel.value = preference;
-  const meta = qs('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", resolvedTheme === "dark" ? "#0b0f16" : "#f5f7fb");
+} });
+function applyTheme(theme, { persist = true } = {}) {
+  themeController.apply(theme, persist);
 }
-
 function initTheme() {
-  let saved = "system";
-  try { saved = localStorage.getItem("oa-theme") || "system"; } catch(e) {}
-  applyTheme(saved);
-  if (!systemThemeListenerBound && window.matchMedia) {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const refresh = () => {
-      if (state.theme === "system") applyTheme("system", { persist: false });
-    };
-    if (typeof media.addEventListener === "function") media.addEventListener("change", refresh);
-    else if (typeof media.addListener === "function") media.addListener(refresh);
-    systemThemeListenerBound = true;
-  }
+  themeController.initialize();
 }
-
-// =============================================
-// View navigation
-// =============================================
-
-const VIEW_LOADERS = {
-  dashboard:      () => Promise.allSettled([loadDashboardTelemetry(), loadAudit()]),
-  chat:           () => Promise.allSettled([loadConversations(), loadProviders(), loadModelSetupStatus(), loadModelJobs()]),
-  codebase:       () => loadCodebaseProjects().catch(error => toast("CodeQ unavailable", error.message)),
-  voice:          () => loadVoiceStatus().catch(() => {}),
-  agents:         () => loadAgents().catch(() => {}),
-  knowledge:      () => loadKnowledgeWorkspace().catch(error => toast("Knowledge unavailable", error.message)),
-  workspace:      () => loadWorkspaceItems().catch(() => {}),
-  automation:     () => loadWorkflows(),
-  assistant:      () => Promise.allSettled([getDailyBrief()]),
-  communications: () => loadCommunicationHub().catch(() => {}),
-  models:         () => Promise.allSettled([loadProviders(), loadModelPolicy(), loadSmoothRuntime("chat")]),
-  security:       () => Promise.allSettled([loadAudit(), loadPrivacyReport(), loadIdentityAdministration()]),
-  developer:      () => Promise.allSettled([loadDeveloperFeed(), loadDeveloperSdk(), loadIntegrationStatus(), loadSettingsModels(), loadModelSetupStatus(), loadModelJobs(), loadOperationalModules(), loadUltraModelEngine(), loadSkills()]),
-  engine:         () => loadEngineWorkspace().catch(() => {}),
-  calendar:       () => Promise.allSettled([loadCalendarEvents(), loadCalendarSyncStatus()]),
-  twin:           () => Promise.allSettled([loadTwinSuggestions(), loadTwinGoals()]),
-  vault:          () => loadVaultEntries().catch(() => {}),
-  scraper:        () => loadScraperJobs().catch(() => {}),
-  finetune:       () => Promise.allSettled([loadFinetuneStatus(), loadAdapters()]),
-  science:        () => loadScienceStatus().catch(() => {}),
+var VIEW_LOADERS = {
+  dashboard: () => Promise.allSettled([loadDashboardTelemetry(), loadAudit()]),
+  chat: () => Promise.allSettled([loadConversations(), loadProviders(), loadModelSetupStatus(), loadModelJobs()]),
+  codebase: () => loadCodebaseProjects().catch((error) => toast("CodeQ unavailable", error.message)),
+  research: () => loadResearchLibrary().catch((error) => toast("Research unavailable", error.message)),
+  voice: () => loadVoiceStatus().catch(() => {
+  }),
+  agents: () => loadAgents().catch(() => {
+  }),
+  knowledge: () => loadKnowledgeWorkspace().catch((error) => toast("Knowledge unavailable", error.message)),
+  workspace: () => loadWorkspaceItems().catch(() => {
+  }),
+  automation: () => loadWorkflows(),
+  assistant: () => Promise.allSettled([getDailyBrief()]),
+  communications: () => loadCommunicationHub().catch(() => {
+  }),
+  models: () => Promise.allSettled([loadProviders(), loadModelPolicy(), loadSmoothRuntime("chat")]),
+  security: () => Promise.allSettled([loadAudit(), loadPrivacyReport(), loadIdentityAdministration()]),
+  developer: () => Promise.allSettled([loadDeveloperFeed(), loadDeveloperSdk(), loadIntegrationStatus(), loadSettingsModels(), loadModelSetupStatus(), loadModelJobs(), loadOperationalModules(), loadUltraModelEngine(), loadSkills()]),
+  engine: () => loadEngineWorkspace().catch(() => {
+  }),
+  calendar: () => Promise.allSettled([loadCalendarEvents(), loadCalendarSyncStatus()]),
+  twin: () => Promise.allSettled([loadTwinSuggestions(), loadTwinGoals()]),
+  vault: () => loadVaultEntries().catch(() => {
+  }),
+  scraper: () => loadScraperJobs().catch(() => {
+  }),
+  finetune: () => Promise.allSettled([loadFinetuneStatus(), loadAdapters()]),
+  science: () => loadScienceStatus().catch(() => {
+  }),
+  phd: () => loadPhdWorkspace().catch((error) => toast("Application Studio unavailable", error.message))
 };
-
-function setView(view) {
-  state.activeView = view;
-  document.body.classList.toggle("codebase-mode", view === "codebase");
-  qsa("[data-view-panel]").forEach(p => p.classList.toggle("active", p.dataset.viewPanel === view));
-  qsa("[data-view-link]").forEach(b => b.classList.toggle("active", b.dataset.viewLink === view));
-  const titleEl = qs("#screenTitle");
-  const viewTitles = { phd: "PhD Studio", finetune: "Fine-Tuning", communications: "Communications" };
-  if (titleEl) titleEl.textContent = viewTitles[view] || view.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-  // Auto-load view-specific data
-  const loader = VIEW_LOADERS[view];
-  if (loader) loader();
+var viewRouter = new ViewRouter({
+  capabilities: capabilityMap(discoverCapabilities()),
+  onChange: (view) => {
+    state.activeView = view;
+    uiState.patch({ activeView: view });
+    document.body.classList.toggle("codebase-mode", view === "codebase");
+    const titleEl = qs("#screenTitle");
+    const viewTitles = { phd: "Application Studio", finetune: "Fine-Tuning", communications: "Communications" };
+    if (titleEl) titleEl.textContent = viewTitles[view] || view.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+    const loader = VIEW_LOADERS[view];
+    if (loader) loader();
+  }
+});
+function setView(view, options = {}) {
+  return viewRouter.navigate(String(view || ""), options);
 }
-
 function setScienceSection(section) {
   state.science.section = section;
-  qsa("[data-science-section]").forEach(link => link.classList.toggle("active", link.dataset.scienceSection === section));
-  qsa("[data-science-capability]").forEach(card => card.classList.toggle("active", card.dataset.scienceCapability === section));
+  qsa("[data-science-section]").forEach((link) => link.classList.toggle("active", link.dataset.scienceSection === section));
   const details = {
     agents: ["Scientific Agents", "Break a question into steps, select local tools, execute bounded work, inspect the result, and retry with traceback feedback when a repair function is supplied."],
     computing: ["Scientific Computing", "Run deterministic solvers, a trained DeepONet, and transparent surrogate benchmarks. FNO and PINN remain clearly labelled baseline interfaces."],
     engineering: ["Engineering Optimisation", "Define variables, bounds, objectives, and physical constraints, then compare random, differential-evolution, or local-search results with a visible evidence trail."],
     multimodal: ["Multimodal Science", "Fuse papers, equations, tables, sensor CSV, simulation output, and measured image features. A configured native vision provider can add attributed image observations."],
     verification: ["Scientific Verification", "Check finite values, equation residuals, dimensional units, constraints, and claim-to-evidence links before a result is marked reviewable."],
-    materials: ["Materials Discovery", "Train a standardized bootstrap ensemble, report held-out metrics, rank candidates, and expose uncertainty as a screening signal rather than a calibrated probability."],
+    materials: ["Materials Discovery", "Train a standardized bootstrap ensemble, report held-out metrics, rank candidates, and expose uncertainty as a screening signal rather than a calibrated probability."]
   };
   const detail = details[section] || details.agents;
   const title = qs("#scienceActiveTitle");
   if (title) title.textContent = detail[0];
-  const detailEl = qs("#scienceSectionDetail");
-  if (detailEl) detailEl.innerHTML = `<h3>${detail[0]}</h3><p>${detail[1]}</p>`;
   renderScienceWorkspace(section);
 }
-
 function renderScienceWorkspace(section) {
   const workspace = qs("#scienceSectionWorkspace");
   if (!workspace) return;
@@ -472,37 +881,16 @@ function renderScienceWorkspace(section) {
     engineering: `<div class="toolbar"><button class="btn btn-primary" data-science-prompt="optimise a cantilever beam for minimum mass subject to stress and deflection limits">Optimise beam</button><button class="btn btn-soft" data-science-prompt="optimise a heat exchanger and verify the engineering constraints">Optimise heat exchanger</button><button class="btn btn-soft" data-science-prompt="optimise a lighter bridge design and verify stress and deflection">Optimise bridge</button></div>`,
     multimodal: `<label class="field"><span>Evidence files</span><input id="scienceEvidenceFiles" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,image/*"></label><div class="toolbar"><button class="btn btn-primary" data-science-action="analyse-evidence">Analyse</button></div>`,
     verification: `<label class="field"><span>Result JSON</span><textarea id="scienceVerificationPayload" rows="10">{"text":"The calculated stress is within the stated limit.","values":[125000000],"units":{"stress":{"unit":"Pa","expected":"Pa"}},"residuals":[0.0],"equations":[{"expression":"stress = force/area","symbols":{"stress":125000000,"force":250000,"area":0.002}}],"claims":[{"text":"The calculated stress is within the stated limit.","evidence_ids":["calculation:stress","constraint:stress"]}],"evidence":{"calculation:stress":{"value":125000000,"unit":"Pa"},"constraint:stress":{"passed":true,"limit":250000000,"unit":"Pa"}},"citations":[],"constraints":[{"name":"stress","passed":true}]}</textarea></label><div class="toolbar"><button class="btn btn-primary" data-science-action="verify">Run verification</button></div>`,
-    materials: `<div class="science-source-band"><div><span class="eyebrow">Verified public catalog</span><strong>Reproducible materials benchmarks</strong><p id="scienceMaterialsCatalogStatus" class="muted">Loading catalog metadata...</p></div><label class="field"><span>Public dataset</span><select id="scienceMaterialsCatalog"><option value="">Loading...</option></select></label><label class="toggle-row"><input id="scienceMaterialsNetworkApproved" type="checkbox"><span><strong>Approve this download</strong><small>Allow one checksum-verified HTTPS dataset request.</small></span></label><label class="toggle-row"><input id="scienceMaterialsLicenseAccepted" type="checkbox"><span><strong>Accept dataset license</strong><small>The selected catalog entry shows its upstream license and citation.</small></span></label><div class="toolbar"><button class="btn btn-soft" data-science-action="import-public-materials">Import verified dataset</button><button class="btn btn-primary" data-science-action="analyse-public-materials">Download and analyse 80/20 split</button></div></div><div class="section-divider"><span>or use a local dataset</span></div><div class="form-grid"><label class="field"><span>Dataset</span><input id="scienceMaterialsFile" type="file" accept=".csv,.json"></label><label class="field"><span>Target property</span><input id="scienceMaterialsTarget" value="strength"></label><label class="field"><span>Dataset name</span><input id="scienceMaterialsName" value="Local materials dataset"></label><label class="field"><span>Objective</span><select id="scienceMaterialsObjective"><option value="maximize">Maximise target</option><option value="minimize">Minimise target</option></select></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-materials">Store dataset</button><button class="btn btn-primary" data-science-action="analyse-materials">Analyse and rank</button></div>`,
+    materials: `<div class="science-source-band"><div><span class="eyebrow">Verified public catalog</span><strong>Reproducible materials benchmarks</strong><p id="scienceMaterialsCatalogStatus" class="muted">Loading catalog metadata...</p></div><label class="field"><span>Public dataset</span><select id="scienceMaterialsCatalog"><option value="">Loading...</option></select></label><label class="toggle-row"><input id="scienceMaterialsNetworkApproved" type="checkbox"><span><strong>Approve this download</strong><small>Allow one checksum-verified HTTPS dataset request.</small></span></label><label class="toggle-row"><input id="scienceMaterialsLicenseAccepted" type="checkbox"><span><strong>Accept dataset license</strong><small>The selected catalog entry shows its upstream license and citation.</small></span></label><div class="toolbar"><button class="btn btn-soft" data-science-action="import-public-materials">Import verified dataset</button><button class="btn btn-primary" data-science-action="analyse-public-materials">Download and analyse 80/20 split</button></div></div><div class="section-divider"><span>or use a local dataset</span></div><div class="form-grid"><label class="field"><span>Dataset</span><input id="scienceMaterialsFile" type="file" accept=".csv,.json"></label><label class="field"><span>Target property</span><input id="scienceMaterialsTarget" value="strength"></label><label class="field"><span>Dataset name</span><input id="scienceMaterialsName" value="Local materials dataset"></label><label class="field"><span>Objective</span><select id="scienceMaterialsObjective"><option value="maximize">Maximise target</option><option value="minimize">Minimise target</option></select></label></div><div class="toolbar"><button class="btn btn-soft" data-science-action="save-materials">Store dataset</button><button class="btn btn-primary" data-science-action="analyse-materials">Analyse and rank</button></div>`
   };
   workspace.innerHTML = views[section] || views.agents;
-  if (section === "materials") loadPublicMaterialsCatalog().catch(error => {
+  if (section === "materials") loadPublicMaterialsCatalog().catch((error) => {
     const status = qs("#scienceMaterialsCatalogStatus");
     if (status) status.textContent = `Catalog unavailable: ${error.message}`;
   });
 }
-
-// =============================================
-// Dashboard
-// =============================================
-
-async function loadHealth() {
-  try {
-    state.health = await api("/api/health");
-    renderMetrics();
-    renderDashboardSystem();
-  } catch(e) { console.warn("health", e); }
-}
-
-async function loadCapabilities() {
-  try {
-    state.capabilities = await api("/api/capabilities");
-    renderMetrics();
-    renderDashboardSystem();
-  } catch(e) { console.warn("capabilities", e); }
-}
-
 async function loadDashboardTelemetry() {
-  const moduleHealthRequest = api(`/api/modules/health?project=${encodeURIComponent(getProject())}`).then(value => {
+  const moduleHealthRequest = api(`/api/modules/health?project=${encodeURIComponent(getProject())}`).then((value) => {
     state.moduleHealth = value;
     state.dashboardSources.modules = true;
     renderDashboardSystem();
@@ -517,7 +905,7 @@ async function loadDashboardTelemetry() {
     api("/api/model-policy"),
     moduleHealthRequest,
     api("/api/ui/build"),
-    api("/api/inference/status"),
+    api("/api/inference/status")
   ]);
   if (health.status === "fulfilled") state.health = health.value;
   if (metrics.status === "fulfilled") state.systemMetrics = metrics.value;
@@ -526,6 +914,10 @@ async function loadDashboardTelemetry() {
   if (localModels.status === "fulfilled") state.localModels = localModels.value.models || [];
   if (policy.status === "fulfilled") state.modelPolicy = policy.value;
   if (moduleHealth.status === "fulfilled") state.moduleHealth = moduleHealth.value;
+  if (moduleHealth.status === "fulfilled") {
+    state.runtimeCapabilities = normalizeRuntimeCapabilities(moduleHealth.value);
+    applyRuntimeCapabilities(state.runtimeCapabilities);
+  }
   if (uiBuild.status === "fulfilled") state.uiBuild = uiBuild.value;
   if (inference.status === "fulfilled") state.inferenceStatus = inference.value;
   state.dashboardSources = {
@@ -535,18 +927,16 @@ async function loadDashboardTelemetry() {
     models: localModels.status === "fulfilled",
     modules: moduleHealth.status === "fulfilled",
     inference: inference.status === "fulfilled",
-    audit: state.dashboardSources.audit,
+    audit: state.dashboardSources.audit
   };
   if (metrics.status === "fulfilled") captureDashboardSample(metrics.value);
   renderMetrics();
   renderDashboardSystem();
 }
-
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
-
 function captureDashboardSample(metrics) {
   const timestamp = Date.now();
   const append = (series, value) => {
@@ -560,19 +950,17 @@ function captureDashboardSample(metrics) {
   const updated = qs("#dashboardLastUpdated");
   if (updated) updated.textContent = `Updated ${new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
 }
-
 function chartPoints(series, width = 600, height = 180, padding = 12, maximum = 100) {
   if (!series.length) return "";
   const usableWidth = width - padding * 2;
   const usableHeight = height - padding * 2;
   return series.map((item, index) => {
-    const x = series.length === 1 ? width - padding : padding + (index / (series.length - 1)) * usableWidth;
-    const y = height - padding - (Math.max(0, Math.min(maximum, finiteNumber(item.value))) / maximum) * usableHeight;
+    const x = series.length === 1 ? width - padding : padding + index / (series.length - 1) * usableWidth;
+    const y = height - padding - Math.max(0, Math.min(maximum, finiteNumber(item.value))) / maximum * usableHeight;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
 }
-
-function telemetrySvg(series, { label, cssClass = "chart-line-primary", maximum = 100, width = 600, height = 180 } = {}) {
+function telemetrySvg(series, { label: label2, cssClass = "chart-line-primary", maximum = 100, width = 600, height = 180 } = {}) {
   if (!series.length) return "";
   const points = chartPoints(series, width, height, 12, maximum);
   const last = series[series.length - 1];
@@ -580,10 +968,9 @@ function telemetrySvg(series, { label, cssClass = "chart-line-primary", maximum 
   return `
     <polyline class="${cssClass}" points="${points}" vector-effect="non-scaling-stroke"></polyline>
     <circle class="${cssClass} chart-endpoint" cx="${lastPoint[0]}" cy="${lastPoint[1]}" r="3"></circle>
-    <title>${escapeHtml(label)}: ${escapeHtml(String(last.value))}</title>
+    <title>${escapeHtml2(label2)}: ${escapeHtml2(String(last.value))}</title>
   `;
 }
-
 function renderDashboardResourceChart() {
   const chart = qs("#dashboardResourceChart");
   if (!chart) return;
@@ -608,7 +995,6 @@ function renderDashboardResourceChart() {
     <div class="chart-axis" aria-hidden="true"><span>100%</span><span>50%</span><span>0%</span></div>
   `;
 }
-
 function pressureLevel(value) {
   if (!Number.isFinite(value)) return { label: "Unavailable", className: "badge-soft" };
   if (value >= 90) return { label: "Critical", className: "badge-danger" };
@@ -616,62 +1002,55 @@ function pressureLevel(value) {
   if (value >= 55) return { label: "Elevated", className: "badge-info" };
   return { label: "Nominal", className: "badge-success" };
 }
-
 function renderDashboardPressure() {
   const metrics = state.systemMetrics || {};
   const values = [
     ["CPU", Number(metrics.cpu?.usage_percent)],
     ["Memory", Number(metrics.memory?.used_percent)],
-    ["Disk", Number(metrics.disk?.used_percent)],
+    ["Disk", Number(metrics.disk?.used_percent)]
   ].filter(([, value]) => Number.isFinite(value));
   const pressure = values.length ? Math.max(...values.map(([, value]) => value)) : NaN;
   const level = pressureLevel(pressure);
   const badge = qs("#dashboardPressureBadge");
   if (badge) {
-    badge.textContent = Number.isFinite(pressure) ? `${level.label} · ${pressure.toFixed(0)}%` : level.label;
+    badge.textContent = Number.isFinite(pressure) ? `${level.label} \xB7 ${pressure.toFixed(0)}%` : level.label;
     badge.className = `badge ${level.className}`;
   }
   const grid = qs("#dashboardResourcePressure");
   if (!grid) return;
-  grid.innerHTML = values.length ? values.map(([label, value]) => `
+  grid.innerHTML = values.length ? values.map(([label2, value]) => `
     <div class="pressure-item">
-      <span>${escapeHtml(label)}</span><strong>${formatPercent(value)}</strong>
-      <i aria-hidden="true"><b style="width:${Math.max(0, Math.min(100, value))}%"></b></i>
+      <span>${escapeHtml2(label2)}</span><strong>${formatPercent(value)}</strong>
+      <progress class="pressure-progress" max="100" value="${Math.max(0, Math.min(100, value))}" aria-label="${escapeHtml2(label2)} pressure"></progress>
     </div>
   `).join("") : emptyState("Resource pressure is unavailable because no numeric OS metrics were returned.");
-  grid.setAttribute("aria-label", values.length
-    ? `Current resource pressure is ${level.label.toLowerCase()} at ${pressure.toFixed(0)} percent, based on the highest measured CPU, memory, or disk utilization.`
-    : "Current resource pressure is unavailable.");
+  grid.setAttribute("aria-label", values.length ? `Current resource pressure is ${level.label.toLowerCase()} at ${pressure.toFixed(0)} percent, based on the highest measured CPU, memory, or disk utilization.` : "Current resource pressure is unavailable.");
 }
-
 function inferenceThroughputSeries(events) {
-  const timed = events
-    .map(event => ({ at: finiteNumber(event.at) * 1000, value: finiteNumber(event.latency_ms) }))
-    .filter(event => event.at > 0)
-    .sort((a, b) => a.at - b.at);
-  return timed.map(event => ({
+  const timed = events.map((event) => ({ at: finiteNumber(event.at) * 1e3, value: finiteNumber(event.latency_ms) })).filter((event) => event.at > 0).sort((a, b) => a.at - b.at);
+  return timed.map((event) => ({
     at: event.at,
-    value: timed.filter(candidate => candidate.at <= event.at && candidate.at > event.at - 60000).length,
+    value: timed.filter((candidate) => candidate.at <= event.at && candidate.at > event.at - 6e4).length
   }));
 }
-
 function renderDashboardInference() {
   const status = state.inferenceStatus || {};
   const events = Array.isArray(status.last_events) ? status.last_events : [];
-  const latencySeries = events
-    .filter(event => Number.isFinite(Number(event.latency_ms)))
-    .map(event => ({ at: finiteNumber(event.at) * 1000, value: finiteNumber(event.latency_ms) }));
+  const latencySeries = events.filter((event) => Number.isFinite(Number(event.latency_ms))).map((event) => ({ at: finiteNumber(event.at) * 1e3, value: finiteNumber(event.latency_ms) }));
   const p50 = status.latency?.p50_ms;
   const firstToken = status.latency?.first_token_p50_ms;
   const p95 = status.latency?.p95_ms;
   const throughputSeries = inferenceThroughputSeries(events);
   const latestThroughput = throughputSeries.at(-1)?.value;
-  const maximum = latencySeries.length ? Math.max(1, ...latencySeries.map(item => item.value)) : 1;
+  const maximum = latencySeries.length ? Math.max(1, ...latencySeries.map((item) => item.value)) : 1;
   const chart = qs("#dashboardInferenceChart");
   const badge = qs("#dashboardInferenceBadge");
   const stats = qs("#dashboardInferenceStats");
   if (!state.dashboardSources.inference) {
-    if (badge) { badge.textContent = "Unavailable"; badge.className = "badge badge-soft"; }
+    if (badge) {
+      badge.textContent = "Unavailable";
+      badge.className = "badge badge-soft";
+    }
     if (chart) {
       chart.setAttribute("aria-label", "Model inference telemetry is unavailable.");
       chart.innerHTML = `<div class="chart-empty"><strong>Telemetry unavailable</strong><span>The inference status endpoint did not return data.</span></div>`;
@@ -680,26 +1059,23 @@ function renderDashboardInference() {
     return;
   }
   if (badge) {
-    badge.textContent = latencySeries.length ? `Warm · ${latencySeries.length} sample${latencySeries.length === 1 ? "" : "s"}` : "Cold";
+    badge.textContent = latencySeries.length ? `Warm \xB7 ${latencySeries.length} sample${latencySeries.length === 1 ? "" : "s"}` : "Cold";
     badge.className = `badge ${latencySeries.length ? "badge-success" : "badge-soft"}`;
   }
   if (chart) {
-    chart.setAttribute("aria-label", latencySeries.length
-      ? `${latencySeries.length} measured inference requests. Median response latency ${p50 ?? "unavailable"} milliseconds and current measured request rate ${latestThroughput ?? 0} per minute.`
-      : "No measured model inference requests are available yet.");
+    chart.setAttribute("aria-label", latencySeries.length ? `${latencySeries.length} measured inference requests. Median response latency ${p50 ?? "unavailable"} milliseconds and current measured request rate ${latestThroughput ?? 0} per minute.` : "No measured model inference requests are available yet.");
     chart.innerHTML = latencySeries.length ? `
-      <div class="inference-trend-band"><span>Latency · max ${maximum.toFixed(0)} ms</span><svg viewBox="0 0 600 82" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path class="chart-grid-line" d="M12 12H588 M12 41H588 M12 70H588"></path>${telemetrySvg(latencySeries, { label: "Response latency milliseconds", cssClass: "chart-line-latency", maximum, height: 82 })}</svg></div>
-      <div class="inference-trend-band"><span>Completed requests/min · max ${Math.max(1, ...throughputSeries.map(item => item.value))}</span><svg viewBox="0 0 600 82" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path class="chart-grid-line" d="M12 12H588 M12 41H588 M12 70H588"></path>${telemetrySvg(throughputSeries, { label: "Completed requests per minute", cssClass: "chart-line-throughput", maximum: Math.max(1, ...throughputSeries.map(item => item.value)), height: 82 })}</svg></div>
+      <div class="inference-trend-band"><span>Latency \xB7 max ${maximum.toFixed(0)} ms</span><svg viewBox="0 0 600 82" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path class="chart-grid-line" d="M12 12H588 M12 41H588 M12 70H588"></path>${telemetrySvg(latencySeries, { label: "Response latency milliseconds", cssClass: "chart-line-latency", maximum, height: 82 })}</svg></div>
+      <div class="inference-trend-band"><span>Completed requests/min \xB7 max ${Math.max(1, ...throughputSeries.map((item) => item.value))}</span><svg viewBox="0 0 600 82" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path class="chart-grid-line" d="M12 12H588 M12 41H588 M12 70H588"></path>${telemetrySvg(throughputSeries, { label: "Completed requests per minute", cssClass: "chart-line-throughput", maximum: Math.max(1, ...throughputSeries.map((item) => item.value)), height: 82 })}</svg></div>
     ` : `<div class="chart-empty"><strong>No measured generation yet</strong><span>Latency appears after a model request completes.</span></div>`;
   }
   if (stats) stats.innerHTML = [
-    ["p50 response", p50 == null ? "—" : `${finiteNumber(p50).toFixed(0)} ms`],
-    ["p95 response", p95 == null ? "—" : `${finiteNumber(p95).toFixed(0)} ms`],
-    ["p50 first token", firstToken == null ? "—" : `${finiteNumber(firstToken).toFixed(0)} ms`],
-    ["requests/min", latestThroughput == null ? "—" : String(latestThroughput)],
-  ].map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    ["p50 response", p50 == null ? "\u2014" : `${finiteNumber(p50).toFixed(0)} ms`],
+    ["p95 response", p95 == null ? "\u2014" : `${finiteNumber(p95).toFixed(0)} ms`],
+    ["p50 first token", firstToken == null ? "\u2014" : `${finiteNumber(firstToken).toFixed(0)} ms`],
+    ["requests/min", latestThroughput == null ? "\u2014" : String(latestThroughput)]
+  ].map(([label2, value]) => `<div><span>${escapeHtml2(label2)}</span><strong>${escapeHtml2(value)}</strong></div>`).join("");
 }
-
 function renderMetrics() {
   const metrics = state.systemMetrics || {};
   const memory = metrics.memory || {};
@@ -713,33 +1089,28 @@ function renderMetrics() {
   const inferenceRate = inferenceThroughputSeries(inferenceEvents).at(-1)?.value || 0;
   const activeInference = finiteNumber(state.inferenceStatus?.activity?.active_requests);
   const inferenceCapacity = Math.max(1, finiteNumber(state.inferenceStatus?.activity?.capacity, 1));
-  const inferenceLoad = Number.isFinite(Number(state.inferenceStatus?.activity?.load_percent))
-    ? finiteNumber(state.inferenceStatus.activity.load_percent)
-    : Math.min(100, activeInference / inferenceCapacity * 100);
+  const inferenceLoad = Number.isFinite(Number(state.inferenceStatus?.activity?.load_percent)) ? finiteNumber(state.inferenceStatus.activity.load_percent) : Math.min(100, activeInference / inferenceCapacity * 100);
   const inferenceP50 = Number(state.inferenceStatus?.latency?.p50_ms);
   const items = [
     ["CPU", cpuValue, `${cpu.count || 1} threads`],
     ["RAM", memoryValue, Number.isFinite(Number(memory.available_gb)) ? `${formatGb(memory.available_gb)} free` : "Local memory"],
     ["Disk", diskValue, Number.isFinite(Number(disk.free_gb)) ? `${formatGb(disk.free_gb)} free` : "Data volume"],
-    ["AI load", inferenceLoad, activeInference > 0
-      ? `${activeInference} active · capacity ${inferenceCapacity}`
-      : Number.isFinite(inferenceP50) ? `Idle · ${Math.round(inferenceP50)} ms p50` : "Idle · no measured request"],
+    ["AI load", inferenceLoad, activeInference > 0 ? `${activeInference} active \xB7 capacity ${inferenceCapacity}` : Number.isFinite(inferenceP50) ? `Idle \xB7 ${Math.round(inferenceP50)} ms p50` : "Idle \xB7 no measured request"]
   ];
   const el = qs("#metricGrid");
-  if (el) el.innerHTML = items.map(([label, rawValue, detail]) => {
-    const available = label === "AI load" ? sources.inference : sources.metrics;
+  if (el) el.innerHTML = items.map(([label2, rawValue, detail]) => {
+    const available = label2 === "AI load" ? sources.inference : sources.metrics;
     const value = available && Number.isFinite(rawValue) ? Math.max(0, Math.min(100, rawValue)) : 0;
     const circumference = 2 * Math.PI * 48;
     const offset = circumference * (1 - value / 100);
-    return `<article class="gauge-card" style="--gauge-value:${value}">
-      <div class="gauge-dial"><svg viewBox="0 0 112 112" aria-hidden="true"><circle class="gauge-track" cx="56" cy="56" r="48"></circle><circle class="gauge-value" cx="56" cy="56" r="48" stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle></svg><strong>${available && Number.isFinite(rawValue) ? `${rawValue.toFixed(0)}%` : "—"}</strong></div>
-      <div><span>${escapeHtml(label)}</span><small>${escapeHtml(detail)}</small></div>
+    return `<article class="gauge-card">
+      <div class="gauge-dial"><svg viewBox="0 0 112 112" aria-hidden="true"><circle class="gauge-track" cx="56" cy="56" r="48"></circle><circle class="gauge-value" cx="56" cy="56" r="48" stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle></svg><strong>${available && Number.isFinite(rawValue) ? `${rawValue.toFixed(0)}%` : "\u2014"}</strong></div>
+      <div><span>${escapeHtml2(label2)}</span><small>${escapeHtml2(detail)}</small></div>
     </article>`;
   }).join("");
   renderDashboardResourceChart();
   renderDashboardInference();
 }
-
 function renderDashboardSystem() {
   const metrics = state.systemMetrics || {};
   const platform = metrics.platform || {};
@@ -752,16 +1123,14 @@ function renderDashboardSystem() {
   const models = state.localModels || [];
   const moduleHealth = state.moduleHealth || {};
   const uiBuild = state.uiBuild || {};
-  const availableProviders = providers.filter(p => p.id !== "auto" && p.available);
+  const availableProviders = providers.filter((p) => p.id !== "auto" && p.available);
   const runtimeSummary = qs("#dashboardRuntimeSummary");
   if (runtimeSummary) {
-    runtimeSummary.textContent = `${platform.system || "Local OS"} ${platform.release || ""} · ${cpu.count || 1} CPU threads · ${formatGb(memory.total_gb)} RAM · data at ${health.database || disk.path || "local store"}`;
+    runtimeSummary.textContent = `${platform.system || "Local OS"} ${platform.release || ""} \xB7 ${cpu.count || 1} CPU threads \xB7 ${formatGb(memory.total_gb)} RAM \xB7 data at ${health.database || disk.path || "local store"}`;
   }
   const modelSummary = qs("#dashboardModelSummary");
   if (modelSummary) {
-    modelSummary.textContent = state.dashboardSources.providers && state.dashboardSources.models
-      ? `${availableProviders.length} live providers · ${models.length} registered local models · ${policy.routing_policy || "local-first"} route`
-      : "Provider or model inventory is unavailable.";
+    modelSummary.textContent = state.dashboardSources.providers && state.dashboardSources.models ? `${availableProviders.length} live providers \xB7 ${models.length} registered local models \xB7 ${policy.routing_policy || "local-first"} route` : "Provider or model inventory is unavailable.";
   }
   const systemGrid = qs("#dashboardSystemGrid");
   if (systemGrid) {
@@ -771,67 +1140,62 @@ function renderDashboardSystem() {
       ["RAM", `${formatGb(memory.used_gb)} / ${formatGb(memory.total_gb)}`],
       ["Data disk", `${formatGb(disk.free_gb)} free`],
       ["UI build", uiBuild.version || "checking"],
-      ["Database", health.database || "local SQLite"],
+      ["Database", health.database || "local SQLite"]
     ];
-    systemGrid.innerHTML = rows.map(([label, value]) => `
+    systemGrid.innerHTML = rows.map(([label2, value]) => `
       <div class="system-row">
-        <span>${escapeHtml(label)}</span>
-        <strong>${escapeHtml(String(value))}</strong>
+        <span>${escapeHtml2(label2)}</span>
+        <strong>${escapeHtml2(String(value))}</strong>
       </div>
     `).join("");
   }
   const modelGrid = qs("#dashboardModelGrid");
   if (modelGrid) {
     const filter = state.dashboardUi.providerFilter;
-    const filteredProviders = providers
-      .filter(p => p.id !== "auto")
-      .filter(p => filter === "all" || (filter === "ready" && p.available) || (filter === "local" && p.local) || (filter === "external" && !p.local));
-    const providerItems = filteredProviders
-      .map(p => {
-        const installed = Array.isArray(p.installed_models) ? p.installed_models : [];
-        const modelDetail = p.id === "ollama" && installed.length
-          ? `${p.selected_model || installed[0]} · ${installed.length} installed`
-          : p.default_model || "policy";
-        return `<div class="provider-status-row">
+    const filteredProviders = providers.filter((p) => p.id !== "auto").filter((p) => filter === "all" || filter === "ready" && p.available || filter === "local" && p.local || filter === "external" && !p.local);
+    const providerItems = filteredProviders.map((p) => {
+      const installed = Array.isArray(p.installed_models) ? p.installed_models : [];
+      const modelDetail = p.id === "ollama" && installed.length ? `${p.selected_model || installed[0]} \xB7 ${installed.length} installed` : p.default_model || "policy";
+      return `<div class="provider-status-row">
           <i class="provider-indicator ${p.available ? "online" : "offline"}" aria-hidden="true"></i>
-          <div><strong>${escapeHtml(p.label || p.id)}</strong><span>${escapeHtml(modelDetail)}</span></div>
-          <small>${escapeHtml(p.local ? "LOCAL" : "EXTERNAL")}</small>
+          <div><strong>${escapeHtml2(p.label || p.id)}</strong><span>${escapeHtml2(modelDetail)}</span></div>
+          <small>${escapeHtml2(p.local ? "LOCAL" : "EXTERNAL")}</small>
         </div>`;
-      });
-    const modelItems = filter === "all" || filter === "local" ? models.slice(0, 3).map(m => `<div class="provider-status-row model-record">
+    });
+    const modelItems = filter === "all" || filter === "local" ? models.slice(0, 3).map((m) => `<div class="provider-status-row model-record">
       <i class="provider-indicator ${m.status === "failed" ? "offline" : "standby"}" aria-hidden="true"></i>
-      <div><strong>${escapeHtml(m.name || m.id)}</strong><span>${escapeHtml(m.provider || "local")} · ${escapeHtml(m.status || "registered")}</span></div>
-      <small>${escapeHtml(m.metadata?.quantization || m.metadata?.tier || "MODEL")}</small>
+      <div><strong>${escapeHtml2(m.name || m.id)}</strong><span>${escapeHtml2(m.provider || "local")} \xB7 ${escapeHtml2(m.status || "registered")}</span></div>
+      <small>${escapeHtml2(m.metadata?.quantization || m.metadata?.tier || "MODEL")}</small>
     </div>`) : [];
     modelGrid.innerHTML = [...providerItems, ...modelItems].join("") || emptyState("No model providers or registered local models yet.");
   }
   const readiness = qs("#dashboardProviderReadiness");
   if (readiness) {
-    const listed = providers.filter(provider => provider.id !== "auto");
-    const local = listed.filter(provider => provider.local);
-    const external = listed.filter(provider => !provider.local);
+    const listed = providers.filter((provider) => provider.id !== "auto");
+    const local = listed.filter((provider) => provider.local);
+    const external = listed.filter((provider) => !provider.local);
     readiness.innerHTML = [
-      ["Local ready", local.filter(provider => provider.available).length, local.length],
-      ["External ready", external.filter(provider => provider.available).length, external.length],
-      ["Unavailable", listed.filter(provider => !provider.available).length, listed.length],
-      ["Registered models", models.length, models.length],
-    ].map(([label, value, total]) => `<div><span>${escapeHtml(label)}</span><strong>${value}${label === "Registered models" ? "" : ` / ${total}`}</strong></div>`).join("");
+      ["Local reachable", local.filter((provider) => provider.available).length, local.length],
+      ["External reachable", external.filter((provider) => provider.available).length, external.length],
+      ["Unavailable", listed.filter((provider) => !provider.available).length, listed.length],
+      ["Registered models", models.length, models.length]
+    ].map(([label2, value, total]) => `<div><span>${escapeHtml2(label2)}</span><strong>${value}${label2 === "Registered models" ? "" : ` / ${total}`}</strong></div>`).join("");
   }
   const healthBadge = qs("#dashboardModuleHealthBadge");
   if (healthBadge) {
     const counts = moduleHealth.counts || {};
-    healthBadge.textContent = state.dashboardSources.modules ? `${counts.ready || 0} ready` : "Unavailable";
-    healthBadge.className = `badge ${!state.dashboardSources.modules ? "badge-soft" : (counts.error || 0) ? "badge-danger" : (counts.degraded || 0) ? "badge-warn" : "badge-success"}`;
+    healthBadge.textContent = state.dashboardSources.modules ? `${counts.responding ?? counts.ready ?? 0} responding` : "Unavailable";
+    healthBadge.className = `badge ${!state.dashboardSources.modules ? "badge-soft" : counts.error || 0 ? "badge-danger" : counts.degraded || 0 ? "badge-warn" : "badge-success"}`;
   }
   const healthGrid = qs("#dashboardModuleHealth");
   if (healthGrid) {
     const modules = moduleHealth.modules || [];
-    const ordered = [...modules].sort((a, b) => (a.status === "ready") - (b.status === "ready"));
-    healthGrid.innerHTML = ordered.slice(0, 9).map(module => `
+    const ordered = [...modules].sort((a, b) => (a.probe_status === "responding") - (b.probe_status === "responding"));
+    healthGrid.innerHTML = ordered.slice(0, 9).map((module) => `
       <div class="module-health-row">
-        <i class="health-${escapeHtml(module.status || "unknown")}" aria-hidden="true"></i>
-        <span>${escapeHtml(module.label || module.id)}</span>
-        <small>${escapeHtml(module.status || "unknown")}</small>
+        <i class="health-${escapeHtml2(module.status || "unknown")}" aria-hidden="true"></i>
+        <span>${escapeHtml2(module.label || module.id)}</span>
+        <small>${escapeHtml2(module.probe_status || module.status || "unknown")}</small>
       </div>
     `).join("") || emptyState("Module health has not been loaded yet.");
   }
@@ -842,113 +1206,35 @@ function renderDashboardSystem() {
       healthChart.innerHTML = `<div class="chart-empty"><strong>Health unavailable</strong><span>The module health endpoint did not return data.</span></div>`;
     } else {
       const counts = moduleHealth.counts || {};
-      const total = Math.max(1, finiteNumber(counts.total) || ((moduleHealth.modules || []).length));
-      const ready = finiteNumber(counts.ready);
-      const degraded = finiteNumber(counts.degraded);
+      const total = Math.max(1, finiteNumber(counts.total) || (moduleHealth.modules || []).length);
+      const responding = finiteNumber(counts.responding ?? counts.ready);
+      const degraded = finiteNumber(counts.timeout ?? counts.degraded);
       const error = finiteNumber(counts.error);
-      healthChart.setAttribute("aria-label", `${ready} ready, ${degraded} degraded, and ${error} failed modules out of ${total}.`);
+      healthChart.setAttribute("aria-label", `${responding} status probes responding, ${degraded} timed out, and ${error} failed out of ${total}.`);
+      const readyWidth = responding / total * 100;
+      const degradedWidth = degraded / total * 100;
+      const errorWidth = error / total * 100;
       healthChart.innerHTML = `
-        <div class="health-bar" aria-hidden="true">
-          <i class="ready" style="width:${ready / total * 100}%"></i>
-          <i class="degraded" style="width:${degraded / total * 100}%"></i>
-          <i class="error" style="width:${error / total * 100}%"></i>
-        </div>
-        <div class="health-counts"><span><b>${ready}</b> Ready</span><span><b>${degraded}</b> Degraded</span><span><b>${error}</b> Failed</span></div>
+        <svg class="health-bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="ready" x="0" y="0" width="${readyWidth}" height="8"></rect>
+          <rect class="degraded" x="${readyWidth}" y="0" width="${degradedWidth}" height="8"></rect>
+          <rect class="error" x="${readyWidth + degradedWidth}" y="0" width="${errorWidth}" height="8"></rect>
+        </svg>
+        <div class="health-counts"><span><b>${responding}</b> Responding</span><span><b>${degraded}</b> Timed out</span><span><b>${error}</b> Failed</span></div>
       `;
     }
   }
   const privacy = qs("#privacyBoundary");
   if (privacy) privacy.textContent = metrics.privacy_boundary || "System telemetry remains on this machine.";
 }
-
-async function loadIntelligenceOverview() {
-  const cachedHealth = Array.isArray(state.moduleHealth?.modules) && state.moduleHealth.modules.length
-    ? Promise.resolve(state.moduleHealth)
-    : api(`/api/modules/health?project=${encodeURIComponent(getProject())}`);
-  const [moduleHealth, agents, workspace, workflows] = await Promise.allSettled([
-    cachedHealth,
-    api("/api/agents"),
-    api(`/api/workspace/items?project=${encodeURIComponent(getProject())}&limit=6`),
-    api(`/api/workflows?project=${encodeURIComponent(getProject())}&limit=6`),
-  ]);
-  const health = moduleHealth.status === "fulfilled" ? moduleHealth.value : {};
-  if (moduleHealth.status === "fulfilled") state.moduleHealth = health;
-  const modules = health.modules || [];
-  const agentsData = agents.status === "fulfilled" ? agents.value.agents || [] : [];
-  const workspaceItems = workspace.status === "fulfilled" ? workspace.value.items || [] : [];
-  const workflowItems = workflows.status === "fulfilled" ? workflows.value.workflows || [] : [];
-  const ready = (health.counts || {}).ready || 0;
-  const summary = qs("#intelligenceSummary");
-  if (summary) {
-    summary.textContent = `${ready} runtime modules ready · ${agentsData.length} built-in agents · ${workspaceItems.length} recent workspace items · ${workflowItems.length} workflows loaded.`;
-  }
-  const readiness = qs("#intelligenceReadiness");
-  if (readiness) {
-    readiness.textContent = `${agentsData.length || 0} specialists ready for local work`;
-  }
-  const moduleById = Object.fromEntries(modules.map(module => [module.id, module]));
-  const cards = [
-    {
-      id: "agents",
-      title: "Multi-agent runtime",
-      body: `${agentsData.length} specialists with delegation and verification.`,
-      status: moduleById.agents?.status || "ready",
-      action: "Open Agents",
-      view: "agents",
-    },
-    {
-      id: "knowledge",
-      title: "Knowledge and memory",
-      body: "Hybrid search, semantic memory, graph, and synthesis tools.",
-      status: moduleById.knowledge?.status || "ready",
-      action: "Open Knowledge",
-      view: "knowledge",
-    },
-    {
-      id: "workspace",
-      title: "Workspace system",
-      body: `${workspaceItems.length} recent items available in this project.`,
-      status: moduleById.workspace?.status || "ready",
-      action: "Open Workspace",
-      view: "workspace",
-    },
-    {
-      id: "automation",
-      title: "Workflow automation",
-      body: `${workflowItems.length} workflows ready for local execution.`,
-      status: moduleById.automation?.status || "ready",
-      action: "Open Automation",
-      view: "automation",
-    },
-  ];
-  const grid = qs("#intelligenceGrid");
-  if (grid) {
-    grid.innerHTML = cards.map(card => {
-      const badgeClass = card.status === "ready" ? "badge-success" : card.status === "degraded" ? "badge-warning" : "badge-danger";
-      return `
-        <article class="intelligence-card">
-          <div>
-            <span class="badge ${badgeClass}">${escapeHtml(card.status)}</span>
-            <h3>${escapeHtml(card.title)}</h3>
-            <p>${escapeHtml(card.body)}</p>
-          </div>
-          <button class="btn btn-soft" data-view-jump="${escapeHtml(card.view)}">${escapeHtml(card.action)}</button>
-        </article>
-      `;
-    }).join("");
-  }
-}
-
 function formatPercent(value) {
   const number = Number(value);
   return Number.isFinite(number) ? `${number.toFixed(number % 1 ? 1 : 0)}%` : "0%";
 }
-
 function formatGb(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? `${number.toFixed(number >= 10 ? 1 : 2)} GB` : "0 GB";
 }
-
 function formatBytes(value) {
   const bytes = Number(value || 0);
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -961,7 +1247,6 @@ function formatBytes(value) {
   }
   return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
 }
-
 function formatDateTime(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -970,14 +1255,9 @@ function formatDateTime(value) {
     month: "short",
     day: "numeric",
     hour: "2-digit",
-    minute: "2-digit",
+    minute: "2-digit"
   });
 }
-
-// =============================================
-// Chat — supports streaming and non-streaming
-// =============================================
-
 function appendChat(role, content, streaming = false) {
   const el = qs("#chatLog");
   if (!el) return null;
@@ -988,18 +1268,16 @@ function appendChat(role, content, streaming = false) {
   el.scrollTop = el.scrollHeight;
   return node;
 }
-
 function requestedChatArtifactFormat(message) {
-  const text = String(message || "").toLowerCase();
-  if (!/\b(make|create|generate|write|prepare|export|give)\b/.test(text)) return "";
-  if (/\b(pdf)\b/.test(text)) return "pdf";
-  if (/\b(docx|word document|word file)\b/.test(text)) return "docx";
-  if (/\b(markdown|\.md)\b/.test(text)) return "md";
-  if (/\b(html|web document)\b/.test(text)) return "html";
-  if (/\b(text file|\.txt)\b/.test(text)) return "txt";
+  const text2 = String(message || "").toLowerCase();
+  if (!/\b(make|create|generate|write|prepare|export|give)\b/.test(text2)) return "";
+  if (/\b(pdf)\b/.test(text2)) return "pdf";
+  if (/\b(docx|word document|word file)\b/.test(text2)) return "docx";
+  if (/\b(markdown|\.md)\b/.test(text2)) return "md";
+  if (/\b(html|web document)\b/.test(text2)) return "html";
+  if (/\b(text file|\.txt)\b/.test(text2)) return "txt";
   return "";
 }
-
 async function attachRequestedChatArtifact(message, content, node) {
   const format = requestedChatArtifactFormat(message);
   if (!format || !content || !node) return;
@@ -1007,72 +1285,68 @@ async function attachRequestedChatArtifact(message, content, node) {
     const title = String(message).replace(/\s+/g, " ").trim().slice(0, 90) || "OpenAgent document";
     const payload = await api("/api/chat/artifact", { method: "POST", body: JSON.stringify({ title, content, format, project: getProject() }) });
     const artifact = payload.artifact || {};
-    const bytes = Uint8Array.from(atob(artifact.base64 || ""), character => character.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(artifact.base64 || ""), (character) => character.charCodeAt(0));
     const url = URL.createObjectURL(new Blob([bytes], { type: artifact.content_type || "application/octet-stream" }));
     const link = document.createElement("a");
     link.className = "chat-artifact-download";
     link.href = url;
     link.download = artifact.filename || `openagent-document.${format}`;
-    link.innerHTML = `<span>${escapeHtml(format.toUpperCase())}</span><strong>${escapeHtml(artifact.filename || "Download document")}</strong><small>${escapeHtml(formatBytes(artifact.size_bytes || bytes.length))}</small>`;
+    link.innerHTML = `<span>${escapeHtml2(format.toUpperCase())}</span><strong>${escapeHtml2(artifact.filename || "Download document")}</strong><small>${escapeHtml2(formatBytes(artifact.size_bytes || bytes.length))}</small>`;
     node.appendChild(link);
-    window.setTimeout(() => URL.revokeObjectURL(url), 600000);
+    window.setTimeout(() => URL.revokeObjectURL(url), 6e5);
   } catch (error) {
     toast("Document rendering failed", error.message);
   }
 }
-
 function newConversation() {
   stopActiveChat("New conversation started.");
   state.conversationId = null;
   const el = qs("#chatLog");
   if (el) el.innerHTML = "";
-  loadConversations().catch(() => {});
+  loadConversations().catch(() => {
+  });
   updateChatControls(false);
 }
-
 function isResearchRequest(message) {
-  const text = String(message || "").toLowerCase();
-  return /\b(research|investigate|find (?:me )?(?:the )?(?:latest|recent|newest|best|options?|cars?|products?|papers?)|compare (?:current|available|the best)|latest (?:paper|study|research)|search (?:the )?(?:web|internet|papers?)|literature review|papers? on|studies on|shop for|shortlist)\b/.test(text);
+  const text2 = String(message || "").toLowerCase();
+  return /\b(research|investigate|find (?:me )?(?:the )?(?:latest|recent|newest|best|options?|cars?|products?|papers?)|compare (?:current|available|the best)|latest (?:paper|study|research)|search (?:the )?(?:web|internet|papers?)|literature review|papers? on|studies on|shop for|shortlist)\b/.test(text2);
 }
-
 function researchUsesPublicWeb(message) {
   return /\b(latest|recent|newest|current|today|web|internet|paper|study|github|kaggle|arxiv|doi)\b/i.test(String(message || ""));
 }
-
 async function sendChat() {
   const input = qs("#chatInput");
   const message = input?.value.trim();
   if (!message) return;
   if (state.chatBusy) {
     stopActiveChat("Stopped so the new message can steer the conversation.");
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await new Promise((resolve) => setTimeout(resolve, 80));
   }
-  const provider = qs("#providerSelect")?.value || "auto";
+  const provider = state.modelSettings.chatProvider || "auto";
   const configuredModel = normalizeKnownModelName(state.modelSettings.chatModel || "");
   const model = provider === "auto" ? "" : configuredModel;
-  const allowExternal = !state.privacySettings.localOnly && (qs("#allowExternal")?.checked || false);
-  const attachments = state.chatAttachments.map(item => ({ ...item }));
+  const allowExternal = !state.privacySettings.localOnly && !!state.privacySettings.allowExternal;
+  const attachments = state.chatAttachments.map((item) => ({ ...item }));
   appendChat("user", message);
   input.value = "";
   state.chatAttachments = [];
   renderChatAttachments();
-
   if (isResearchRequest(message)) {
     await sendChatResearch(message, provider, model, attachments);
-    loadConversations().catch(() => {});
+    loadConversations().catch(() => {
+    });
     return;
   }
-
   if (state.streamingEnabled) {
     await sendChatStreaming(message, provider, model, allowExternal, attachments);
   } else {
     await sendChatBlocking(message, provider, model, allowExternal, attachments);
   }
-  loadConversations().catch(() => {});
+  loadConversations().catch(() => {
+  });
 }
-
 async function sendChatStreaming(message, provider, model, allowExternal, attachments = []) {
-  const node = appendChat("assistant", `Thinking with ${provider === "auto" ? "Auto Route" : provider}${model ? ` · ${model}` : ""}…`, true);
+  const node = appendChat("assistant", `Thinking with ${provider === "auto" ? "Auto Route" : provider}${model ? ` \xB7 ${model}` : ""}\u2026`, true);
   let accum = "";
   let finalMessage = "";
   let streamError = "";
@@ -1087,7 +1361,7 @@ async function sendChatStreaming(message, provider, model, allowExternal, attach
     if (stallTimer) clearTimeout(stallTimer);
     stallTimer = setTimeout(() => {
       controller.abort("No chat stream activity for 60 seconds.");
-    }, 60000);
+    }, 6e4);
   };
   try {
     resetStallWatchdog();
@@ -1095,11 +1369,14 @@ async function sendChatStreaming(message, provider, model, allowExternal, attach
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId, attachments }),
+      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId, attachments })
     });
     if (!res.ok) {
       let detail = "";
-      try { detail = await res.text(); } catch(_) {}
+      try {
+        detail = await res.text();
+      } catch (_) {
+      }
       throw new Error(`Stream error: ${res.status}${detail ? ` ${detail.slice(0, 160)}` : ""}`);
     }
     const reader = res.body.getReader();
@@ -1112,27 +1389,53 @@ async function sendChatStreaming(message, provider, model, allowExternal, attach
       const lines = sseBuffer.split(/\r?\n/);
       sseBuffer = lines.pop() || "";
       for (const line of lines) handleChatSseLine(line, node, {
-        get accum() { return accum; },
-        set accum(value) { accum = value; },
-        get finalMessage() { return finalMessage; },
-        set finalMessage(value) { finalMessage = value; },
-        set streamError(value) { streamError = value; },
+        get accum() {
+          return accum;
+        },
+        set accum(value2) {
+          accum = value2;
+        },
+        get finalMessage() {
+          return finalMessage;
+        },
+        set finalMessage(value2) {
+          finalMessage = value2;
+        },
+        set streamError(value2) {
+          streamError = value2;
+        }
       });
       if (streamError) throw new Error(streamError);
       const visible = accum || finalMessage;
-      if (node && visible) { node.innerHTML = renderMarkdown(visible); node.scrollIntoView({ block: "nearest" }); }
+      if (node && visible) {
+        node.innerHTML = renderMarkdown(visible);
+        node.scrollIntoView({ block: "nearest" });
+      }
     }
     if (sseBuffer.trim()) {
       handleChatSseLine(sseBuffer, node, {
-        get accum() { return accum; },
-        set accum(value) { accum = value; },
-        get finalMessage() { return finalMessage; },
-        set finalMessage(value) { finalMessage = value; },
-        set streamError(value) { streamError = value; },
+        get accum() {
+          return accum;
+        },
+        set accum(value) {
+          accum = value;
+        },
+        get finalMessage() {
+          return finalMessage;
+        },
+        set finalMessage(value) {
+          finalMessage = value;
+        },
+        set streamError(value) {
+          streamError = value;
+        }
       });
       if (streamError) throw new Error(streamError);
       const visible = accum || finalMessage;
-      if (node && visible) { node.innerHTML = renderMarkdown(visible); node.scrollIntoView({ block: "nearest" }); }
+      if (node && visible) {
+        node.innerHTML = renderMarkdown(visible);
+        node.scrollIntoView({ block: "nearest" });
+      }
     }
     if (node && !accum && finalMessage) node.innerHTML = renderMarkdown(finalMessage);
     if (node && !accum && !finalMessage) node.innerHTML = "<em>No assistant text was returned. Try Setup Chat Model in Developer.</em>";
@@ -1141,14 +1444,12 @@ async function sendChatStreaming(message, provider, model, allowExternal, attach
       await attachRequestedChatArtifact(message, accum || finalMessage, node);
       speakPendingVoiceReply(accum || finalMessage);
     }
-  } catch(e) {
+  } catch (e) {
     if (node) {
       node.classList.remove("streaming");
       const stoppedByUser = e.name === "AbortError" && state.chatAbortReason;
-      const message = stoppedByUser ? state.chatAbortReason : e.name === "AbortError" ? "Chat stream stalled for 60 seconds." : e.message;
-      node.innerHTML = stoppedByUser
-        ? `<em>${escapeHtml(message)}</em>`
-        : `<em>Error: ${escapeHtml(message)}. Check Chat model readiness above or open Developer > Setup Chat Model.</em>`;
+      const message2 = stoppedByUser ? state.chatAbortReason : e.name === "AbortError" ? "Chat stream stalled for 60 seconds." : e.message;
+      node.innerHTML = stoppedByUser ? `<em>${escapeHtml2(message2)}</em>` : `<em>Error: ${escapeHtml2(message2)}. Check Chat model readiness above or open Developer > Setup Chat Model.</em>`;
     }
     if (e.name === "AbortError" && state.chatAbortReason) {
       toast("Chat stopped", state.chatAbortReason);
@@ -1165,7 +1466,6 @@ async function sendChatStreaming(message, provider, model, allowExternal, attach
     }
   }
 }
-
 function handleChatSseLine(line, node, stateRef) {
   if (!line.startsWith("data:")) return;
   const raw = line.slice(5).trim();
@@ -1174,7 +1474,7 @@ function handleChatSseLine(line, node, stateRef) {
   if (obj.type === "conversation" && obj.conversation?.id) {
     state.conversationId = obj.conversation.id;
   } else if (obj.type === "status") {
-    if (node && !stateRef.accum) node.innerHTML = renderMarkdown(`Thinking locally${obj.model ? ` with ${obj.model}` : ""}…`);
+    if (node && !stateRef.accum) node.innerHTML = renderMarkdown(`Thinking locally${obj.model ? ` with ${obj.model}` : ""}\u2026`);
   } else if (obj.type === "chunk") {
     if (obj.content) stateRef.accum += obj.content;
     if (obj.conversation_id) state.conversationId = obj.conversation_id;
@@ -1186,15 +1486,14 @@ function handleChatSseLine(line, node, stateRef) {
     stateRef.accum += obj.content;
   }
 }
-
 async function sendChatBlocking(message, provider, model, allowExternal, attachments = []) {
-  const node = appendChat("assistant", "…");
+  const node = appendChat("assistant", "\u2026");
   state.chatBusy = true;
   updateChatControls(true);
   try {
     const payload = await api("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId, attachments }),
+      body: JSON.stringify({ message, project: getProject(), provider, model, allow_external: allowExternal, conversation_id: state.conversationId, attachments })
     });
     state.conversationId = payload.conversation?.id;
     const lastMsg = (payload.messages || []).at(-1);
@@ -1203,15 +1502,14 @@ async function sendChatBlocking(message, provider, model, allowExternal, attachm
       await attachRequestedChatArtifact(message, lastMsg.content, node);
       speakPendingVoiceReply(lastMsg.content);
     }
-  } catch(e) {
-    if (node) node.innerHTML = `<em>Error: ${escapeHtml(e.message)}</em>`;
+  } catch (e) {
+    if (node) node.innerHTML = `<em>Error: ${escapeHtml2(e.message)}</em>`;
     toast("Chat error", e.message);
   } finally {
     state.chatBusy = false;
     updateChatControls(false);
   }
 }
-
 async function sendChatResearch(message, provider, model, attachments = []) {
   const node = appendChat("assistant", renderInlineResearchProgress(message, [], "Planning the investigation"), true);
   const controller = new AbortController();
@@ -1230,8 +1528,8 @@ async function sendChatResearch(message, provider, model, attachments = []) {
         max_iterations: 3,
         provider,
         model,
-        allow_external: researchUsesPublicWeb(message),
-      }),
+        allow_external: researchUsesPublicWeb(message)
+      })
     });
     sessionId = created.session?.id || "";
     if (!sessionId) throw new Error("Research did not return a session ID.");
@@ -1245,7 +1543,7 @@ async function sendChatResearch(message, provider, model, attachments = []) {
       await abortableDelay(650, controller.signal);
     }
     if (session.status !== "completed") throw new Error(session.error || `Research ${session.status}.`);
-    const result = { ...session, ...(session.result || {}) };
+    const result = { ...session, ...session.result || {} };
     const report = result.report || "No source-backed report was returned.";
     const sources = result.sources || session.sources || [];
     if (node) {
@@ -1255,19 +1553,24 @@ async function sendChatResearch(message, provider, model, attachments = []) {
     const recorded = await api("/api/chat/research-record", {
       method: "POST",
       body: JSON.stringify({
-        query: message, report, sources, research_session_id: sessionId,
-        conversation_id: state.conversationId, project: getProject(),
-      }),
+        query: message,
+        report,
+        sources,
+        research_session_id: sessionId,
+        conversation_id: state.conversationId,
+        project: getProject()
+      })
     });
     state.conversationId = recorded.conversation_id || recorded.conversation?.id || state.conversationId;
     speakPendingVoiceReply(report);
   } catch (error) {
     if (sessionId && (error.name === "AbortError" || controller.signal.aborted)) {
-      api(`/api/research/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: "{}" }).catch(() => {});
+      api(`/api/research/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: "{}" }).catch(() => {
+      });
     }
     if (node) {
       node.classList.remove("streaming");
-      node.innerHTML = `<em>${escapeHtml(error.name === "AbortError" ? (state.chatAbortReason || "Research stopped.") : error.message)}</em>`;
+      node.innerHTML = `<em>${escapeHtml2(error.name === "AbortError" ? state.chatAbortReason || "Research stopped." : error.message)}</em>`;
     }
     if (error.name !== "AbortError") toast("Research failed", error.message);
   } finally {
@@ -1279,7 +1582,6 @@ async function sendChatResearch(message, provider, model, attachments = []) {
     }
   }
 }
-
 function abortableDelay(milliseconds, signal) {
   return new Promise((resolve, reject) => {
     const onAbort = () => {
@@ -1293,46 +1595,49 @@ function abortableDelay(milliseconds, signal) {
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
-
-function renderInlineResearchProgress(query, checkpoints, status) {
-  const completed = new Set((checkpoints || []).map(item => item.stage));
+function renderInlineResearchProgress(query2, checkpoints, status) {
+  const completed = new Set((checkpoints || []).map((item) => item.stage));
   const steps = [
-    ["planning", "Master agent"], ["sources", "Source agents"], ["synthesis", "Review agent"], ["completed", "Cited answer"],
+    ["planning", "Master agent"],
+    ["sources", "Source agents"],
+    ["synthesis", "Review agent"],
+    ["completed", "Cited answer"]
   ];
-  return `<div class="chat-research-run"><strong>Researching: ${escapeHtml(query)}</strong><ol>${steps.map(([stage, label], index) => {
+  return `<div class="chat-research-run"><strong>Researching: ${escapeHtml2(query2)}</strong><ol>${steps.map(([stage, label2], index) => {
     const done = completed.has(stage) || steps.slice(index + 1).some(([later]) => completed.has(later));
     const active = !done && index === steps.findIndex(([candidate]) => !completed.has(candidate));
-    return `<li class="${done ? "done" : active ? "active" : ""}"><i>${done ? "✓" : index + 1}</i><span>${label}</span></li>`;
-  }).join("")}</ol><small>${escapeHtml(status || "Working")}</small></div>`;
+    return `<li class="${done ? "done" : active ? "active" : ""}"><i>${done ? "\u2713" : index + 1}</i><span>${label2}</span></li>`;
+  }).join("")}</ol><small>${escapeHtml2(status || "Working")}</small></div>`;
 }
-
 function renderChatResearchSources(sources) {
-  const linked = (sources || []).filter(source => /^https?:\/\//i.test(String(source.url || "")));
+  const linked = (sources || []).filter((source) => /^https?:\/\//i.test(String(source.url || "")));
   if (!linked.length) return "";
-  return `<details class="chat-research-sources" open><summary>${linked.length} verified source${linked.length === 1 ? "" : "s"}</summary>${linked.map(source => `
-    <a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(source.title || source.url)}</strong><small>${escapeHtml((source.published_at || "date unavailable").slice(0, 10))} · ${escapeHtml(source.type || "web")}</small></a>
+  return `<details class="chat-research-sources" open><summary>${linked.length} verified source${linked.length === 1 ? "" : "s"}</summary>${linked.map((source) => `
+    <a href="${escapeHtml2(source.url)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml2(source.title || source.url)}</strong><small>${escapeHtml2((source.published_at || "date unavailable").slice(0, 10))} \xB7 ${escapeHtml2(source.type || "web")}</small></a>
   `).join("")}</details>`;
 }
-
-function speakPendingVoiceReply(text) {
+function speakPendingVoiceReply(text2) {
   if (!state.voiceReplyPending && !state.chatVoiceMode) return;
   state.voiceReplyPending = false;
   if (!("speechSynthesis" in window)) return;
-  const spoken = String(text || "").replace(/```[\s\S]*?```/g, " code block omitted ").replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1").replace(/[#*_>`~-]/g, " ").replace(/\s+/g, " ").trim();
+  const spoken = String(text2 || "").replace(/```[\s\S]*?```/g, " code block omitted ").replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1").replace(/[#*_>`~-]/g, " ").replace(/\s+/g, " ").trim();
   if (!spoken) return;
   window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(spoken.slice(0, 4000));
+  const utterance = new SpeechSynthesisUtterance(spoken.slice(0, 4e3));
   utterance.rate = 1.02;
   setChatVoiceState("Speaking", spoken.slice(0, 180));
   utterance.onend = () => {
     if (!state.chatVoiceMode) return;
     setChatVoiceState("Listening", "Speak when you are ready.");
-    window.setTimeout(() => { if (state.chatVoiceMode && !state.voiceRecording) startVoiceRecording(); }, 350);
+    window.setTimeout(() => {
+      if (state.chatVoiceMode && !state.voiceRecording) startVoiceRecording();
+    }, 350);
   };
-  utterance.onerror = () => { if (state.chatVoiceMode) setChatVoiceState("Ready", "Speech playback stopped. Tap the microphone to continue."); };
+  utterance.onerror = () => {
+    if (state.chatVoiceMode) setChatVoiceState("Ready", "Speech playback stopped. Tap the microphone to continue.");
+  };
   window.speechSynthesis.speak(utterance);
 }
-
 function stopActiveChat(reason = "Response stopped by user.") {
   state.chatAbortReason = reason;
   if (state.chatAbortController) {
@@ -1341,44 +1646,15 @@ function stopActiveChat(reason = "Response stopped by user.") {
   state.chatBusy = false;
   updateChatControls(false);
 }
-
 function updateChatControls(running = state.chatBusy) {
   const stopBtn = qs("#stopChat");
   const sendBtn = qs("#sendChat");
   if (stopBtn) stopBtn.disabled = !running;
-  if (sendBtn) { sendBtn.disabled = running; sendBtn.textContent = "↑"; }
-}
-
-async function testChatModel() {
-  const node = appendChat("assistant", "Testing the local model route…", true);
-  try {
-    const payload = await api(`/api/chat/diagnose?project=${encodeURIComponent(getProject())}`);
-    const status = payload.status === "online" ? "real model online" : "offline fallback";
-    const text = [
-      `Chat model diagnosis: ${status}`,
-      "",
-      `Provider: ${payload.provider || "unknown"}`,
-      `Model: ${payload.model || "unknown"}`,
-      `Latency: ${payload.duration_ms || 0} ms`,
-      "",
-      "Model response:",
-      payload.content || "(empty)",
-    ].join("\n");
-    if (node) {
-      node.classList.remove("streaming");
-      node.innerHTML = renderMarkdown(text);
-    }
-    toast("Model diagnosis complete", `${payload.provider || "provider"} · ${payload.model || "model"}`);
-    await Promise.allSettled([loadModelSetupStatus(), loadProviders(), loadDashboardTelemetry()]);
-  } catch(e) {
-    if (node) {
-      node.classList.remove("streaming");
-      node.innerHTML = `<em>Model diagnosis failed: ${escapeHtml(e.message)}</em>`;
-    }
-    toast("Model diagnosis failed", e.message);
+  if (sendBtn) {
+    sendBtn.disabled = running;
+    sendBtn.textContent = "\u2191";
   }
 }
-
 function normalizeKnownModelName(modelName) {
   const value = String(modelName || "").trim();
   const aliases = {
@@ -1393,34 +1669,31 @@ function normalizeKnownModelName(modelName) {
     "llama3.2:3b-instruct-q4_k_m": "llama3.2:3b",
     "llama3.2:3b-instruct-q4_K_M": "llama3.2:3b",
     "qwen2.5:7b-instruct-q4_k_m": "qwen2.5:7b",
-    "qwen2.5:7b-instruct-q4_K_M": "qwen2.5:7b",
+    "qwen2.5:7b-instruct-q4_K_M": "qwen2.5:7b"
   };
   return aliases[value] || aliases[value.toLowerCase()] || value.replace(/:latest$/i, "");
 }
-
 async function loadConversations() {
-  const sort = qs("#conversationSort")?.value || "pinned";
+  const sort = "pinned";
   const archived = state.showArchivedConversations ? "true" : "false";
-  const semanticQuery = sort === "semantic" ? (qs("#chatInput")?.value.trim() || "conversation") : "";
+  const semanticQuery = sort === "semantic" ? qs("#chatInput")?.value.trim() || "conversation" : "";
   const payload = await api(`/api/conversations/organized?project=${encodeURIComponent(getProject())}&limit=100&sort=${encodeURIComponent(sort)}&include_archived=${archived}&archived_only=${archived}&q=${encodeURIComponent(semanticQuery)}`);
   const conversations = payload.conversations || [];
   const el = qs("#conversationList");
   if (el) {
-    el.innerHTML = conversations.length
-      ? conversations.map(c => `
-          <article class="conversation-item ${c.id === state.conversationId ? "active" : ""}" data-conversation-id="${escapeHtml(c.id)}">
-            <button class="conversation-open" data-conversation-open="${escapeHtml(c.id)}" title="${escapeHtml(c.title || "Conversation")}"><strong>${c.pinned ? '<i class="pin-mark" aria-hidden="true">◆</i>' : ""}${escapeHtml(c.title || "Conversation")}</strong><span>${escapeHtml(formatDateTime(c.updated_at) || "")}</span></button>
-            <button class="conversation-menu-trigger" data-conversation-menu="${escapeHtml(c.id)}" aria-label="Conversation actions" aria-haspopup="menu">•••</button>
+    el.innerHTML = conversations.length ? conversations.map((c) => `
+          <article class="conversation-item ${c.id === state.conversationId ? "active" : ""}" data-conversation-id="${escapeHtml2(c.id)}">
+            <button class="conversation-open" data-conversation-open="${escapeHtml2(c.id)}" title="${escapeHtml2(c.title || "Conversation")}"><strong>${c.pinned ? '<i class="pin-mark" aria-hidden="true">\u25C6</i>' : ""}${escapeHtml2(c.title || "Conversation")}</strong><span>${escapeHtml2(formatDateTime(c.updated_at) || "")}</span></button>
+            <button class="conversation-menu-trigger" data-conversation-menu="${escapeHtml2(c.id)}" aria-label="Conversation actions" aria-haspopup="menu">\u2022\u2022\u2022</button>
           </article>
-        `).join("")
-      : `<div class="conversation-empty">No conversations</div>`;
-    qsa("[data-conversation-open]", el).forEach(item => {
+        `).join("") : `<div class="conversation-empty">No conversations</div>`;
+    qsa("[data-conversation-open]", el).forEach((item) => {
       item.addEventListener("click", () => loadConversation(item.dataset.conversationOpen));
     });
-    qsa("[data-conversation-menu]", el).forEach(item => {
-      item.addEventListener("click", event => {
+    qsa("[data-conversation-menu]", el).forEach((item) => {
+      item.addEventListener("click", (event) => {
         event.stopPropagation();
-        openConversationActionMenu(item, conversations.find(c => c.id === item.dataset.conversationMenu));
+        openConversationActionMenu(item, conversations.find((c) => c.id === item.dataset.conversationMenu));
       });
     });
   }
@@ -1431,13 +1704,11 @@ async function loadConversations() {
     archivedButton.firstElementChild.textContent = state.showArchivedConversations ? "Back to chats" : "Archived";
   }
 }
-
 function closeConversationActionMenu() {
   const menu = qs("#conversationActionMenu");
   if (menu) menu.hidden = true;
   state.conversationMenuTarget = "";
 }
-
 function openConversationActionMenu(trigger, conversation) {
   const menu = qs("#conversationActionMenu");
   if (!menu || !conversation) return;
@@ -1449,6 +1720,8 @@ function openConversationActionMenu(trigger, conversation) {
   menu.innerHTML = `
     <button role="menuitem" data-action="${conversation.pinned ? "unpin" : "pin"}">${conversation.pinned ? "Unpin" : "Pin"}</button>
     <button role="menuitem" data-action="${conversation.archived ? "unarchive" : "archive"}">${conversation.archived ? "Unarchive" : "Archive"}</button>
+    <button role="menuitem" data-action="compact">Compact context</button>
+    <button role="menuitem" data-action="branches">Show branches</button>
     <button role="menuitem" class="danger" data-action="delete">Delete</button>`;
   menu.hidden = false;
   const rect = trigger.getBoundingClientRect();
@@ -1456,13 +1729,18 @@ function openConversationActionMenu(trigger, conversation) {
   const left = Math.min(window.innerWidth - width - 10, Math.max(10, rect.right - width));
   const top = Math.min(window.innerHeight - 132, rect.bottom + 5);
   Object.assign(menu.style, { left: `${left}px`, top: `${top}px`, width: `${width}px` });
-  qsa("[data-action]", menu).forEach(button => button.addEventListener("click", async () => {
+  qsa("[data-action]", menu).forEach((button) => button.addEventListener("click", async () => {
     const action = button.dataset.action;
     closeConversationActionMenu();
+    if (action === "compact" || action === "branches") {
+      state.conversationId = conversation.id;
+      if (action === "compact") await compactCurrentConversation();
+      else await showCurrentConversationBranches();
+      return;
+    }
     await runConversationAction(conversation.id, action);
   }));
 }
-
 async function uploadChatAttachments(files) {
   for (const file of Array.from(files || [])) {
     const form = new FormData();
@@ -1479,59 +1757,51 @@ async function uploadChatAttachments(files) {
   const input = qs("#chatAttachmentInput");
   if (input) input.value = "";
 }
-
 function renderChatAttachments() {
   const tray = qs("#chatAttachmentTray");
   if (!tray) return;
   tray.hidden = !state.chatAttachments.length;
-  tray.innerHTML = state.chatAttachments.map((item, index) => `<span><strong>${escapeHtml(item.name || "Attachment")}</strong><button type="button" data-remove-attachment="${index}" aria-label="Remove ${escapeHtml(item.name || "attachment")}">×</button></span>`).join("");
-  qsa("[data-remove-attachment]", tray).forEach(button => button.addEventListener("click", () => {
+  tray.innerHTML = state.chatAttachments.map((item, index) => `<span><strong>${escapeHtml2(item.name || "Attachment")}</strong><button type="button" data-remove-attachment="${index}" aria-label="Remove ${escapeHtml2(item.name || "attachment")}">\xD7</button></span>`).join("");
+  qsa("[data-remove-attachment]", tray).forEach((button) => button.addEventListener("click", () => {
     state.chatAttachments.splice(Number(button.dataset.removeAttachment), 1);
     renderChatAttachments();
   }));
 }
-
 async function runConversationAction(conversationId, action) {
   if (action === "delete" && !window.confirm("Delete this conversation permanently?")) return;
   await api("/api/conversations/bulk", { method: "POST", body: JSON.stringify({ conversation_ids: [conversationId], action, project: getProject() }) });
   if (action === "delete" && conversationId === state.conversationId) newConversation();
   await loadConversations();
 }
-
-async function runConversationBulk() {
-  const conversationIds = qsa("#conversationList .conversation-select:checked").map(item => item.value);
-  if (!conversationIds.length) { toast("Select conversations first"); return; }
-  const action = qs("#conversationBulkAction")?.value || "archive";
-  if (action === "delete" && !window.confirm(`Delete ${conversationIds.length} conversation(s) permanently?`)) return;
-  try {
-    await api("/api/conversations/bulk", { method: "POST", body: JSON.stringify({ conversation_ids: conversationIds, action, project: getProject() }) });
-    if (conversationIds.includes(state.conversationId) && action === "delete") newConversation();
-    await loadConversations();
-    toast("Conversation action complete", `${action}: ${conversationIds.length}`);
-  } catch (error) { toast("Conversation action failed", error.message); }
-}
-
 async function compactCurrentConversation() {
-  if (!state.conversationId) { toast("Select a conversation first"); return; }
+  if (!state.conversationId) {
+    toast("Select a conversation first");
+    return;
+  }
   try {
     const payload = await api(`/api/conversations/${encodeURIComponent(state.conversationId)}/compact`, { method: "POST", body: JSON.stringify({ preserve: 8, mode: "manual" }) });
     const item = payload.compaction || {};
     toast("Context compacted", `${item.source_message_count || 0} earlier messages summarized; ${item.preserved_message_count || 0} preserved`);
-  } catch (error) { toast("Compaction failed", error.message); }
+  } catch (error) {
+    toast("Compaction failed", error.message);
+  }
 }
-
 async function showCurrentConversationBranches() {
-  if (!state.conversationId) { toast("Select a conversation first"); return; }
+  if (!state.conversationId) {
+    toast("Select a conversation first");
+    return;
+  }
   try {
     const graph = await api(`/api/conversations/${encodeURIComponent(state.conversationId)}/branches`);
-    appendChat("assistant", [`Branch graph: ${graph.nodes?.length || 0} conversations, ${graph.edges?.length || 0} branches.`, ...(graph.edges || []).map(edge => `${edge.source.slice(0, 8)} -> ${edge.target.slice(0, 8)}`)].join("\n"));
-  } catch (error) { toast("Branch graph failed", error.message); }
+    appendChat("assistant", [`Branch graph: ${graph.nodes?.length || 0} conversations, ${graph.edges?.length || 0} branches.`, ...(graph.edges || []).map((edge) => `${edge.source.slice(0, 8)} -> ${edge.target.slice(0, 8)}`)].join("\n"));
+  } catch (error) {
+    toast("Branch graph failed", error.message);
+  }
 }
-
 async function loadConversation(conversationId) {
   if (!conversationId) return;
   stopActiveChat("Loaded another conversation.");
-  qsa("[data-conversation-id]").forEach(item => {
+  qsa("[data-conversation-id]").forEach((item) => {
     item.classList.toggle("active", item.dataset.conversationId === conversationId);
   });
   const payload = await api(`/api/conversation/messages?conversation_id=${encodeURIComponent(conversationId)}`);
@@ -1540,89 +1810,78 @@ async function loadConversation(conversationId) {
   const messages = payload.messages || [];
   if (log) {
     log.innerHTML = "";
-    messages.forEach(message => appendChat(message.role === "user" ? "user" : "assistant", message.content || ""));
+    messages.forEach((message) => appendChat(message.role === "user" ? "user" : "assistant", message.content || ""));
   }
   await loadConversations();
 }
-
 async function searchChatMemory() {
-  const query = qs("#chatInput")?.value.trim()
-    || qsa("#chatLog .message").slice(-3).map(node => node.textContent.trim()).join(" ").slice(0, 240)
-    || "summary";
-  const node = appendChat("assistant", "Searching local memory…", true);
+  const query2 = qs("#chatInput")?.value.trim() || qsa("#chatLog .message").slice(-3).map((node2) => node2.textContent.trim()).join(" ").slice(0, 240) || "summary";
+  const node = appendChat("assistant", "Searching local memory\u2026", true);
   try {
-    const payload = await api(`/api/events?project=${encodeURIComponent(getProject())}&q=${encodeURIComponent(query)}&limit=8`);
+    const payload = await api(`/api/events?project=${encodeURIComponent(getProject())}&q=${encodeURIComponent(query2)}&limit=8`);
     const events = payload.events || [];
-    const text = events.length
-      ? [
-          `Found ${events.length} local memory results for: ${query}`,
-          "",
-          ...events.map((event, index) => `${index + 1}. ${event.title || event.type || "Memory"}\n   ${String(event.content || "").slice(0, 220)}`),
-        ].join("\n")
-      : `No local memory results found for: ${query}`;
+    const text2 = events.length ? [
+      `Found ${events.length} local memory results for: ${query2}`,
+      "",
+      ...events.map((event, index) => `${index + 1}. ${event.title || event.type || "Memory"}
+   ${String(event.content || "").slice(0, 220)}`)
+    ].join("\n") : `No local memory results found for: ${query2}`;
     if (node) {
       node.classList.remove("streaming");
-      node.innerHTML = renderMarkdown(text);
+      node.innerHTML = renderMarkdown(text2);
     }
-  } catch(e) {
+  } catch (e) {
     if (node) {
       node.classList.remove("streaming");
-      node.innerHTML = `<em>Memory search failed: ${escapeHtml(e.message)}</em>`;
+      node.innerHTML = `<em>Memory search failed: ${escapeHtml2(e.message)}</em>`;
     }
     toast("Memory search failed", e.message);
   }
 }
-
 async function exportCurrentChat() {
   if (!state.conversationId) {
     toast("No conversation selected", "Send or load a conversation first.");
     return;
   }
-  const node = appendChat("assistant", "Exporting current conversation…", true);
+  const node = appendChat("assistant", "Exporting current conversation\u2026", true);
   try {
     const payload = await api(`/api/chat/export?conversation_id=${encodeURIComponent(state.conversationId)}&write_file=true`);
     const exported = payload.export || {};
-    const text = [
+    const text2 = [
       "Conversation exported.",
       "",
       `Messages: ${(exported.messages || []).length}`,
       `Path: ${exported.path || "export object returned"}`,
-      `Conversation: ${exported.conversation?.title || state.conversationId}`,
+      `Conversation: ${exported.conversation?.title || state.conversationId}`
     ].join("\n");
     if (node) {
       node.classList.remove("streaming");
-      node.innerHTML = renderMarkdown(text);
+      node.innerHTML = renderMarkdown(text2);
     }
     toast("Conversation exported", exported.path || state.conversationId.slice(0, 8));
-  } catch(e) {
+  } catch (e) {
     if (node) {
       node.classList.remove("streaming");
-      node.innerHTML = `<em>Export failed: ${escapeHtml(e.message)}</em>`;
+      node.innerHTML = `<em>Export failed: ${escapeHtml2(e.message)}</em>`;
     }
     toast("Export failed", e.message);
   }
 }
-
-// =============================================
-// Autonomous codebase workspace
-// =============================================
-
 async function loadCodebaseProjects() {
   const payload = await api(`/api/codebase/projects?project=${encodeURIComponent(getProject())}`);
   state.codebase.projects = payload.projects || [];
   const select = qs("#codebaseProjectSelect");
   if (!select) return;
   const selected = state.codebase.selectedProjectId;
-  select.innerHTML = '<option value="">Open a repository</option>' + state.codebase.projects.map(project =>
-    `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`
+  select.innerHTML = '<option value="">Open a repository</option>' + state.codebase.projects.map(
+    (project) => `<option value="${escapeHtml2(project.id)}">${escapeHtml2(project.name)}</option>`
   ).join("");
-  if (selected && state.codebase.projects.some(project => project.id === selected)) select.value = selected;
+  if (selected && state.codebase.projects.some((project) => project.id === selected)) select.value = selected;
   if (!state.codebase.selectedProjectId && state.codebase.projects.length) {
     select.value = state.codebase.projects[0].id;
     await selectCodebaseProject(select.value);
   }
 }
-
 async function createCodebaseProject() {
   const sourcePath = qs("#codebaseSourcePath")?.value.trim();
   if (!sourcePath) {
@@ -1638,8 +1897,8 @@ async function createCodebaseProject() {
         project: getProject(),
         name: qs("#codebaseProjectName")?.value.trim() || sourcePath.split(/[\\/]/).filter(Boolean).pop(),
         source_path: sourcePath,
-        backend: qs("#codebaseBackend")?.value || "local",
-      }),
+        backend: qs("#codebaseBackend")?.value || "local"
+      })
     });
     state.codebase.selectedProjectId = payload.project.id;
     toast("Repository ready", "CodeQ will work in a protected copy and publish verified files to this folder.");
@@ -1651,7 +1910,6 @@ async function createCodebaseProject() {
     if (button) button.disabled = false;
   }
 }
-
 async function pickCodebaseFolder(openWorkspace = true) {
   const button = qs("#codebaseFolderPicker");
   if (button) button.disabled = true;
@@ -1668,20 +1926,19 @@ async function pickCodebaseFolder(openWorkspace = true) {
     if (button) button.disabled = false;
   }
 }
-
 async function selectCodebaseProject(projectId) {
   if (!projectId) {
     state.codebase.selectedProjectId = "";
     state.codebase.selectedProject = null;
     qs("#codebaseIde")?.setAttribute("hidden", "");
     qs("#codebaseOpenPanel")?.removeAttribute("hidden");
-    if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = "⑂ no repository";
+    if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = "\u2442 no repository";
     if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = "Local boundary";
     return;
   }
   const [projectPayload, treePayload] = await Promise.all([
     api(`/api/codebase/projects/${encodeURIComponent(projectId)}`),
-    api(`/api/codebase/projects/${encodeURIComponent(projectId)}/tree`),
+    api(`/api/codebase/projects/${encodeURIComponent(projectId)}/tree`)
   ]);
   state.codebase.selectedProjectId = projectId;
   state.codebase.selectedProject = projectPayload.project;
@@ -1695,9 +1952,10 @@ async function selectCodebaseProject(projectId) {
   renderCodebaseMap(projectPayload.project);
   renderCodebaseTree(treePayload.entries || []);
   const terminal = qs("#codebaseTerminalOutput");
-  if (terminal && terminal.textContent.trim() === "Open a repository to begin.") terminal.textContent = `${projectPayload.project.name} terminal ready.\nCommands run inside the copied workspace.`;
+  if (terminal && terminal.textContent.trim() === "Open a repository to begin.") terminal.textContent = `${projectPayload.project.name} terminal ready.
+Commands run inside the copied workspace.`;
   const recent = await api(`/api/codebase/runs?project=${encodeURIComponent(getProject())}&limit=20`);
-  const projectRuns = (recent.runs || []).filter(item => item.codebase_project_id === projectId && item.status !== "interactive");
+  const projectRuns = (recent.runs || []).filter((item) => item.codebase_project_id === projectId && item.status !== "interactive");
   renderCodebaseRunHistory(projectRuns);
   const run = projectRuns[0];
   if (run) {
@@ -1707,60 +1965,51 @@ async function selectCodebaseProject(projectId) {
     resetCodebaseRunView();
   }
 }
-
 function renderCodebaseMap(project) {
   const map = project.map || {};
   const workspace = project.workspace || {};
   const summary = qs("#codebaseMapSummary");
   if (summary) summary.innerHTML = [
-    `<strong>${escapeHtml((map.languages || []).join(", ") || "Repository")}</strong>`,
+    `<strong>${escapeHtml2((map.languages || []).join(", ") || "Repository")}</strong>`,
     `${Number(map.file_count || 0).toLocaleString()} files`,
-    map.framework ? escapeHtml(map.framework) : "",
-    map.database ? escapeHtml(map.database) : "",
-    `<span title="${escapeHtml(workspace.workspace_path || "")}">${escapeHtml(workspace.sandbox_backend || "local")} sandbox · ${escapeHtml(workspace.branch || "agent branch")}</span>`,
+    map.framework ? escapeHtml2(map.framework) : "",
+    map.database ? escapeHtml2(map.database) : "",
+    `<span title="${escapeHtml2(workspace.workspace_path || "")}">${escapeHtml2(workspace.sandbox_backend || "local")} sandbox \xB7 ${escapeHtml2(workspace.branch || "agent branch")}</span>`
   ].filter(Boolean).join("<br>");
   const boundary = qs("#codebaseBoundary");
   if (boundary) boundary.textContent = `Protected workspace: ${workspace.workspace_path || "local workspace"}. Verified changes publish to ${project.source_path || "the selected folder"}.`;
   const git = map.git || {};
-  if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = `⑂ ${git.repository ? (git.branch || "detached") : (workspace.branch || "agent workspace")}`;
-  if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = `${workspace.sandbox_backend || "local"} · verified publish`;
+  if (qs("#codebaseBranchStatus")) qs("#codebaseBranchStatus").textContent = `\u2442 ${git.repository ? git.branch || "detached" : workspace.branch || "agent workspace"}`;
+  if (qs("#codebaseSandboxStatus")) qs("#codebaseSandboxStatus").textContent = `${workspace.sandbox_backend || "local"} \xB7 verified publish`;
   const repositoryState = qs("#codebaseRepositoryState");
-  if (repositoryState) repositoryState.textContent = git.repository
-    ? `${git.branch || "detached"} · ${(git.commit || "no commit").slice(0, 10)} · ${git.dirty ? `${(git.changes || []).length} changed` : "clean"}`
-    : "Workspace is not a Git repository.";
+  if (repositoryState) repositoryState.textContent = git.repository ? `${git.branch || "detached"} \xB7 ${(git.commit || "no commit").slice(0, 10)} \xB7 ${git.dirty ? `${(git.changes || []).length} changed` : "clean"}` : "Workspace is not a Git repository.";
 }
-
 function renderCodebaseRunHistory(runs) {
   const select = qs("#codebaseRunSelect");
   if (!select) return;
-  select.innerHTML = runs.length ? runs.map(run =>
-    `<option value="${escapeHtml(run.id)}">${escapeHtml(String(run.status).replace(/_/g, " "))} · ${escapeHtml(run.user_prompt.slice(0, 42))}</option>`
+  select.innerHTML = runs.length ? runs.map(
+    (run) => `<option value="${escapeHtml2(run.id)}">${escapeHtml2(String(run.status).replace(/_/g, " "))} \xB7 ${escapeHtml2(run.user_prompt.slice(0, 42))}</option>`
   ).join("") : '<option value="">No previous runs</option>';
-  if (state.codebase.activeRunId && runs.some(run => run.id === state.codebase.activeRunId)) select.value = state.codebase.activeRunId;
+  if (state.codebase.activeRunId && runs.some((run) => run.id === state.codebase.activeRunId)) select.value = state.codebase.activeRunId;
 }
-
 function renderCodebaseTree(entries) {
   const root = qs("#codebaseFileTree");
   if (!root) return;
-  const visible = entries
-    .filter(item => item.path !== ".openagent" && !item.path.startsWith(".openagent/"))
-    .sort((a, b) => a.path.localeCompare(b.path));
-  root.innerHTML = visible.length ? visible.slice(0, 5000).map(item =>
-    `<button class="codebase-file-item ${item.type === "directory" ? "directory" : ""} ${item.path === state.codebase.selectedTreePath ? "active" : ""}" data-codebase-path="${escapeHtml(item.path)}" data-codebase-kind="${escapeHtml(item.type)}" ${item.type === "file" ? `data-codebase-file="${escapeHtml(item.path)}"` : ""} title="${escapeHtml(item.path)}" style="padding-left:${7 + Math.min(item.path.split("/").length - 1, 8) * 10}px"><span>${item.type === "directory" ? "▾" : "◇"}</span><span>${escapeHtml(item.path.split("/").pop())}</span></button>`
+  const visible = entries.filter((item) => item.path !== ".openagent" && !item.path.startsWith(".openagent/")).sort((a, b) => a.path.localeCompare(b.path));
+  root.innerHTML = visible.length ? visible.slice(0, 5e3).map(
+    (item) => `<button class="codebase-file-item tree-depth-${Math.min(item.path.split("/").length - 1, 8)} ${item.type === "directory" ? "directory" : ""} ${item.path === state.codebase.selectedTreePath ? "active" : ""}" data-codebase-path="${escapeHtml2(item.path)}" data-codebase-kind="${escapeHtml2(item.type)}" ${item.type === "file" ? `data-codebase-file="${escapeHtml2(item.path)}"` : ""} title="${escapeHtml2(item.path)}"><span>${item.type === "directory" ? "\u25BE" : "\u25C7"}</span><span>${escapeHtml2(item.path.split("/").pop())}</span></button>`
   ).join("") : emptyState("No readable files found in this workspace.");
-  qsa("[data-codebase-path]", root).forEach(node => node.addEventListener("click", () => {
+  qsa("[data-codebase-path]", root).forEach((node) => node.addEventListener("click", () => {
     state.codebase.selectedTreePath = node.dataset.codebasePath;
-    qsa("[data-codebase-path]", root).forEach(item => item.classList.toggle("active", item === node));
+    qsa("[data-codebase-path]", root).forEach((item) => item.classList.toggle("active", item === node));
     if (node.dataset.codebaseKind === "file") openCodebaseFile(node.dataset.codebasePath);
   }));
 }
-
 function codebaseParentPath(path) {
   const parts = String(path || "").split("/").filter(Boolean);
   if (parts.length && !String(path).endsWith("/")) parts.pop();
   return parts.join("/");
 }
-
 async function mutateCodebasePath(action) {
   if (!state.codebase.selectedProjectId) return;
   const selected = state.codebase.selectedTreePath || state.codebase.selectedFile;
@@ -1772,7 +2021,10 @@ async function mutateCodebasePath(action) {
     if (!name?.trim()) return;
     path = [parent, name.trim()].filter(Boolean).join("/");
   } else {
-    if (!selected) { toast("Select a file or folder first"); return; }
+    if (!selected) {
+      toast("Select a file or folder first");
+      return;
+    }
     if (action === "rename") {
       destination = window.prompt("New path", selected) || "";
       if (!destination.trim() || destination.trim() === selected) return;
@@ -1782,7 +2034,7 @@ async function mutateCodebasePath(action) {
   try {
     await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/paths`, {
       method: "POST",
-      body: JSON.stringify({ action, path, destination }),
+      body: JSON.stringify({ action, path, destination })
     });
     if (action === "delete" || action === "rename") closeCodebaseFile(selected);
     state.codebase.selectedTreePath = destination || (action.startsWith("create_") ? path : "");
@@ -1793,13 +2045,11 @@ async function mutateCodebasePath(action) {
     toast("Explorer action failed", error.message);
   }
 }
-
 async function refreshCodebaseTree() {
   if (!state.codebase.selectedProjectId) return;
   const payload = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/tree`);
   renderCodebaseTree(payload.entries || []);
 }
-
 async function revealCodebaseAgentFile(path) {
   if (!path || !state.codebase.selectedProjectId) return;
   try {
@@ -1816,12 +2066,13 @@ async function revealCodebaseAgentFile(path) {
     if (qs("#codebaseLanguageStatus")) qs("#codebaseLanguageStatus").textContent = codebaseLanguage(path);
     if (qs("#saveCodebaseFile")) qs("#saveCodebaseFile").disabled = false;
     renderCodebaseTabs();
-    qsa("[data-codebase-file]").forEach(node => node.classList.toggle("active", node.dataset.codebaseFile === path));
+    qsa("[data-codebase-file]").forEach((node) => node.classList.toggle("active", node.dataset.codebaseFile === path));
     animateCodebaseAgentEdit(path, content);
-    refreshCodebaseTree().catch(() => {});
-  } catch (_) {}
+    refreshCodebaseTree().catch(() => {
+    });
+  } catch (_) {
+  }
 }
-
 function animateCodebaseAgentEdit(path, content) {
   const editor = qs("#codebaseEditor");
   if (!editor || state.codebase.selectedFile !== path) return;
@@ -1841,19 +2092,17 @@ function animateCodebaseAgentEdit(path, content) {
   }
   requestAnimationFrame(paint);
 }
-
 function handleCodebaseLiveEvent(event) {
   if (event.type === "tool.completed" && event.payload?.result?.path && ["write_file", "patch_file", "move_file"].includes(event.payload?.tool)) {
-    state.codebase.liveEditQueue = state.codebase.liveEditQueue
-      .catch(() => {})
-      .then(() => revealCodebaseAgentFile(event.payload.result.path));
+    state.codebase.liveEditQueue = state.codebase.liveEditQueue.catch(() => {
+    }).then(() => revealCodebaseAgentFile(event.payload.result.path));
   }
   if (event.type === "source.publish.completed") {
-    refreshCodebaseTree().catch(() => {});
+    refreshCodebaseTree().catch(() => {
+    });
     toast("Saved to selected folder", `${event.payload?.files?.length || 0} verified file(s) published.`);
   }
 }
-
 function updateCodebaseLineNumbers() {
   const editor = qs("#codebaseEditor");
   const gutter = qs("#codebaseLineNumbers");
@@ -1863,7 +2112,6 @@ function updateCodebaseLineNumbers() {
   gutter.scrollTop = editor.scrollTop;
   updateCodebaseCursorStatus();
 }
-
 function updateCodebaseCursorStatus() {
   const editor = qs("#codebaseEditor");
   if (!editor) return;
@@ -1871,12 +2119,10 @@ function updateCodebaseCursorStatus() {
   const lines = before.split("\n");
   if (qs("#codebaseCursorStatus")) qs("#codebaseCursorStatus").textContent = `Ln ${lines.length}, Col ${(lines.at(-1) || "").length + 1}`;
 }
-
 function codebaseLanguage(path) {
   const extension = String(path || "").split(".").pop().toLowerCase();
-  return ({ py: "Python", js: "JavaScript", jsx: "JavaScript React", ts: "TypeScript", tsx: "TypeScript React", json: "JSON", md: "Markdown", html: "HTML", css: "CSS", scss: "SCSS", sql: "SQL", rs: "Rust", go: "Go", java: "Java", cpp: "C++", c: "C", cs: "C#", yaml: "YAML", yml: "YAML", toml: "TOML" })[extension] || "Plain Text";
+  return { py: "Python", js: "JavaScript", jsx: "JavaScript React", ts: "TypeScript", tsx: "TypeScript React", json: "JSON", md: "Markdown", html: "HTML", css: "CSS", scss: "SCSS", sql: "SQL", rs: "Rust", go: "Go", java: "Java", cpp: "C++", c: "C", cs: "C#", yaml: "YAML", yml: "YAML", toml: "TOML" }[extension] || "Plain Text";
 }
-
 async function openCodebaseFile(path) {
   if (!state.codebase.selectedProjectId) return;
   try {
@@ -1896,13 +2142,12 @@ async function openCodebaseFile(path) {
     qs("#codebaseEditor").value = buffer.content || "";
     updateCodebaseLineNumbers();
     qs("#saveCodebaseFile").disabled = false;
-    qsa("[data-codebase-file]").forEach(node => node.classList.toggle("active", node.dataset.codebaseFile === path));
+    qsa("[data-codebase-file]").forEach((node) => node.classList.toggle("active", node.dataset.codebaseFile === path));
     renderCodebaseTabs();
   } catch (error) {
     toast("File could not be opened", error.message);
   }
 }
-
 function rememberCurrentCodebaseBuffer() {
   const path = state.codebase.selectedFile;
   const editor = qs("#codebaseEditor");
@@ -1913,25 +2158,23 @@ function rememberCurrentCodebaseBuffer() {
     buffer.dirty = true;
   }
 }
-
 function renderCodebaseTabs() {
   const root = qs("#codebaseOpenTabs");
   if (!root) return;
-  root.innerHTML = state.codebase.openFiles.map(path => {
+  root.innerHTML = state.codebase.openFiles.map((path) => {
     const buffer = state.codebase.fileBuffers[path] || {};
-    return `<div class="codebase-editor-tab ${path === state.codebase.selectedFile ? "active" : ""}" role="tab" aria-selected="${path === state.codebase.selectedFile}" data-codebase-tab="${escapeHtml(path)}"><span class="codebase-file-dot"></span><span>${escapeHtml(path.split("/").pop())}${buffer.dirty ? " •" : ""}</span><button type="button" data-codebase-tab-close="${escapeHtml(path)}" aria-label="Close ${escapeHtml(path)}">×</button></div>`;
+    return `<div class="codebase-editor-tab ${path === state.codebase.selectedFile ? "active" : ""}" role="tab" aria-selected="${path === state.codebase.selectedFile}" data-codebase-tab="${escapeHtml2(path)}"><span class="codebase-file-dot"></span><span>${escapeHtml2(path.split("/").pop())}${buffer.dirty ? " \u2022" : ""}</span><button type="button" data-codebase-tab-close="${escapeHtml2(path)}" aria-label="Close ${escapeHtml2(path)}">\xD7</button></div>`;
   }).join("");
-  qsa("[data-codebase-tab]", root).forEach(tab => tab.addEventListener("click", () => openCodebaseFile(tab.dataset.codebaseTab)));
-  qsa("[data-codebase-tab-close]", root).forEach(button => button.addEventListener("click", event => {
+  qsa("[data-codebase-tab]", root).forEach((tab) => tab.addEventListener("click", () => openCodebaseFile(tab.dataset.codebaseTab)));
+  qsa("[data-codebase-tab-close]", root).forEach((button) => button.addEventListener("click", (event) => {
     event.stopPropagation();
     closeCodebaseFile(button.dataset.codebaseTabClose);
   }));
 }
-
 function closeCodebaseFile(path) {
   rememberCurrentCodebaseBuffer();
   const index = state.codebase.openFiles.indexOf(path);
-  state.codebase.openFiles = state.codebase.openFiles.filter(item => item !== path);
+  state.codebase.openFiles = state.codebase.openFiles.filter((item) => item !== path);
   delete state.codebase.fileBuffers[path];
   if (state.codebase.selectedFile === path) {
     state.codebase.selectedFile = "";
@@ -1946,13 +2189,12 @@ function closeCodebaseFile(path) {
   }
   renderCodebaseTabs();
 }
-
 async function saveCodebaseFile() {
   if (!state.codebase.selectedProjectId || !state.codebase.selectedFile) return;
   try {
     const payload = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.selectedProjectId)}/file`, {
       method: "POST",
-      body: JSON.stringify({ path: state.codebase.selectedFile, content: qs("#codebaseEditor")?.value || "", expected_sha256: state.codebase.selectedFileHash }),
+      body: JSON.stringify({ path: state.codebase.selectedFile, content: qs("#codebaseEditor")?.value || "", expected_sha256: state.codebase.selectedFileHash })
     });
     state.codebase.selectedFileHash = payload.change.new_sha256 || "";
     const buffer = state.codebase.fileBuffers[state.codebase.selectedFile];
@@ -1967,7 +2209,6 @@ async function saveCodebaseFile() {
     toast("Save failed", error.message);
   }
 }
-
 async function scanCodebaseProject() {
   if (!state.codebase.selectedProjectId) return;
   try {
@@ -1978,7 +2219,6 @@ async function scanCodebaseProject() {
     toast("Scan failed", error.message);
   }
 }
-
 async function startCodebaseRun() {
   const prompt = qs("#codebaseGoal")?.value.trim();
   if (!state.codebase.selectedProjectId || !prompt) {
@@ -1988,11 +2228,14 @@ async function startCodebaseRun() {
   const sendButton = qs("#startCodebaseRun");
   const status = qs("#codebaseRunStatus");
   if (sendButton) sendButton.disabled = true;
-  if (status) { status.textContent = "Connecting"; status.className = "badge badge-info"; }
+  if (status) {
+    status.textContent = "Connecting";
+    status.className = "badge badge-info";
+  }
   try {
     const preflightPayload = await api("/api/codebase/preflight", {
       method: "POST",
-      body: JSON.stringify({ codebase_project_id: state.codebase.selectedProjectId, goal: prompt }),
+      body: JSON.stringify({ codebase_project_id: state.codebase.selectedProjectId, goal: prompt })
     });
     renderCodebasePreflight(preflightPayload.preflight || {});
     const payload = await api("/api/codebase/runs", {
@@ -2005,8 +2248,8 @@ async function startCodebaseRun() {
         role_models: {},
         allow_external: false,
         max_iterations: 0,
-        completion: {},
-      }),
+        completion: {}
+      })
     });
     state.codebase.activeRunId = payload.run.id;
     state.codebase.events = [];
@@ -2022,33 +2265,28 @@ async function startCodebaseRun() {
       if (recovered) return;
     }
     if (sendButton) sendButton.disabled = false;
-    if (status) { status.textContent = "Ready"; status.className = "badge"; }
-    toast("Run could not start", /failed to fetch/i.test(String(error.message || error))
-      ? "The CodeQ service disconnected. OpenAgent is still running; retry once after the workspace reconnects."
-      : error.message);
+    if (status) {
+      status.textContent = "Ready";
+      status.className = "badge";
+    }
+    toast("Run could not start", /failed to fetch/i.test(String(error.message || error)) ? "The CodeQ service disconnected. OpenAgent is still running; retry once after the workspace reconnects." : error.message);
   }
 }
-
 function renderCodebasePreflight(preflight) {
   const target = qs("#codebaseToolchainStatus");
   if (!target) return;
   const framework = preflight.framework?.label || preflight.profile?.framework || "Model-selected stack";
   const missing = Array.isArray(preflight.missing_toolchains) ? preflight.missing_toolchains.length : 0;
   const hostReady = preflight.host?.supported !== false;
-  target.textContent = hostReady && !missing
-    ? `${framework} · toolchain ready`
-    : `${framework} · ${!hostReady ? "target host required" : `${missing} toolchain item${missing === 1 ? "" : "s"} missing`}`;
-  target.title = (preflight.external_boundaries || []).length
-    ? "External release operations require their real environment and explicit approval."
-    : "Source generation and local validation are evaluated separately.";
+  target.textContent = hostReady && !missing ? `${framework} \xB7 toolchain ready` : `${framework} \xB7 ${!hostReady ? "target host required" : `${missing} toolchain item${missing === 1 ? "" : "s"} missing`}`;
+  target.title = (preflight.external_boundaries || []).length ? "External release operations require their real environment and explicit approval." : "Source generation and local validation are evaluated separately.";
 }
-
 async function recoverCodebaseRun(prompt) {
-  await new Promise(resolve => setTimeout(resolve, 450));
+  await new Promise((resolve) => setTimeout(resolve, 450));
   try {
     const payload = await api(`/api/codebase/runs?project=${encodeURIComponent(getProject())}&limit=20`);
-    const run = (payload.runs || []).find(item =>
-      item.codebase_project_id === state.codebase.selectedProjectId && item.user_prompt === prompt && item.status !== "interactive"
+    const run = (payload.runs || []).find(
+      (item) => item.codebase_project_id === state.codebase.selectedProjectId && item.user_prompt === prompt && item.status !== "interactive"
     );
     if (!run) return false;
     state.codebase.activeRunId = run.id;
@@ -2062,7 +2300,6 @@ async function recoverCodebaseRun(prompt) {
     return false;
   }
 }
-
 async function cancelCodebaseRun() {
   if (!state.codebase.activeRunId) return;
   try {
@@ -2072,7 +2309,6 @@ async function cancelCodebaseRun() {
     toast("Stop failed", error.message);
   }
 }
-
 async function resumeCodebaseRun() {
   if (!state.codebase.activeRunId) return;
   try {
@@ -2085,7 +2321,6 @@ async function resumeCodebaseRun() {
     toast("Resume failed", error.message);
   }
 }
-
 async function restoreCodebaseSnapshot() {
   const snapshotId = qs("#codebaseSnapshotSelect")?.value;
   if (!state.codebase.activeRunId || !snapshotId) return;
@@ -2097,16 +2332,14 @@ async function restoreCodebaseSnapshot() {
     toast("Restore failed", error.message);
   }
 }
-
 function scheduleCodebasePoll() {
   clearTimeout(state.codebase.pollTimer);
   state.codebase.pollTimer = setTimeout(async () => {
     if (!state.codebase.activeRunId) return;
     const run = await loadCodebaseRun(state.codebase.activeRunId, false).catch(() => null);
     if (run && !["completed", "failed", "cancelled", "blocked"].includes(run.status)) scheduleCodebasePoll();
-  }, 1000);
+  }, 1e3);
 }
-
 async function loadCodebaseRun(runId, restartStream = true) {
   const payload = await api(`/api/codebase/runs/${encodeURIComponent(runId)}`);
   state.codebase.activeRunId = runId;
@@ -2115,7 +2348,6 @@ async function loadCodebaseRun(runId, restartStream = true) {
   if (restartStream && !["completed", "failed", "cancelled"].includes(payload.run.status)) startCodebaseEventStream(runId);
   return payload.run;
 }
-
 function renderCodebaseRun(run) {
   state.codebase.activeRun = run;
   const status = qs("#codebaseRunStatus");
@@ -2130,8 +2362,8 @@ function renderCodebaseRun(run) {
   if (qs("#codebaseRunSelect")) qs("#codebaseRunSelect").value = run.id;
   const snapshotSelect = qs("#codebaseSnapshotSelect");
   if (snapshotSelect) {
-    snapshotSelect.innerHTML = (run.snapshots || []).length ? (run.snapshots || []).map(item =>
-      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${new Date(item.created_at).toLocaleTimeString()}</option>`
+    snapshotSelect.innerHTML = (run.snapshots || []).length ? (run.snapshots || []).map(
+      (item) => `<option value="${escapeHtml2(item.id)}">${escapeHtml2(item.label)} \xB7 ${new Date(item.created_at).toLocaleTimeString()}</option>`
     ).join("") : '<option value="">No snapshots</option>';
     qs("#restoreCodebaseSnapshot").disabled = !(run.snapshots || []).length;
   }
@@ -2142,7 +2374,6 @@ function renderCodebaseRun(run) {
   const latestValidation = (run.validation || []).slice(-1)[0];
   if (latestValidation) renderCodebaseTerminal(latestValidation);
 }
-
 function resetCodebaseRunView() {
   state.codebase.activeRunId = "";
   state.codebase.activeRun = null;
@@ -2157,26 +2388,23 @@ function resetCodebaseRunView() {
   if (qs("#resumeCodebaseRun")) qs("#resumeCodebaseRun").disabled = true;
   if (qs("#restoreCodebaseSnapshot")) qs("#restoreCodebaseSnapshot").disabled = true;
 }
-
 function renderCodebaseTasks(tasks) {
   const root = qs("#codebaseTaskGraph");
   if (!root) return;
-  root.innerHTML = tasks.length ? tasks.map(task =>
-    `<article class="codebase-task ${escapeHtml(task.status)}"><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.assigned_agent)} · ${escapeHtml(task.status.replace(/_/g, " "))}${task.depends_on?.length ? ` · waits for ${task.depends_on.length}` : ""}</small></article>`
-  ).join("") : emptyState("Understanding the repository and creating tasks…");
+  root.innerHTML = tasks.length ? tasks.map(
+    (task) => `<article class="codebase-task ${escapeHtml2(task.status)}"><strong>${escapeHtml2(task.title)}</strong><small>${escapeHtml2(task.assigned_agent)} \xB7 ${escapeHtml2(task.status.replace(/_/g, " "))}${task.depends_on?.length ? ` \xB7 waits for ${task.depends_on.length}` : ""}</small></article>`
+  ).join("") : emptyState("Understanding the repository and creating tasks\u2026");
 }
-
 function renderCodebaseEvents() {
   const root = qs("#codebaseEventStream");
   if (!root) return;
   const events = state.codebase.events.slice(-250).reverse();
-  root.innerHTML = events.length ? events.map(event => {
+  root.innerHTML = events.length ? events.map((event) => {
     const detail = event.payload?.tool || event.payload?.agent || event.payload?.summary || event.payload?.error || "";
-    return `<div class="codebase-event"><span class="codebase-event-dot"></span><div><strong>${escapeHtml(event.type.replace(/\./g, " "))}</strong>${detail ? `<small> · ${escapeHtml(String(detail).slice(0, 180))}</small>` : ""}</div><time>${escapeHtml(new Date(event.created_at).toLocaleTimeString())}</time></div>`;
-  }).join("") : emptyState("Waiting for agent activity…");
+    return `<div class="codebase-event"><span class="codebase-event-dot"></span><div><strong>${escapeHtml2(event.type.replace(/\./g, " "))}</strong>${detail ? `<small> \xB7 ${escapeHtml2(String(detail).slice(0, 180))}</small>` : ""}</div><time>${escapeHtml2(new Date(event.created_at).toLocaleTimeString())}</time></div>`;
+  }).join("") : emptyState("Waiting for agent activity\u2026");
   renderCodebaseCopilotFeed();
 }
-
 function codeqEventLabel(event) {
   const labels = {
     "repository.analysed": "Repository understood",
@@ -2212,17 +2440,16 @@ function codeqEventLabel(event) {
     "file.modified": "File updated",
     "command.started": "Command running",
     "command.stdout": "Command produced output",
-    "command.failed": "Command failed; investigating",
+    "command.failed": "Command failed; investigating"
   };
   return labels[event.type] || event.type.replace(/\./g, " ");
 }
-
 function codeqEventDetail(event) {
   const payload = event.payload || {};
   if (payload.preflight) {
     const framework = payload.preflight.framework?.label || payload.preflight.profile?.framework || "selected stack";
     const missing = payload.preflight.missing_toolchains?.length || 0;
-    return `${framework} · ${missing ? `${missing} missing toolchain item${missing === 1 ? "" : "s"}` : "local validation ready"}`;
+    return `${framework} \xB7 ${missing ? `${missing} missing toolchain item${missing === 1 ? "" : "s"}` : "local validation ready"}`;
   }
   if (payload.path) return String(payload.path);
   if (payload.tool) return String(payload.tool).replace(/_/g, " ");
@@ -2231,7 +2458,6 @@ function codeqEventDetail(event) {
   if (payload.summary) return String(payload.summary);
   return "";
 }
-
 function renderCodebaseCopilotFeed() {
   const root = qs("#codebaseCopilotFeed");
   if (!root) return;
@@ -2241,39 +2467,45 @@ function renderCodebaseCopilotFeed() {
     return;
   }
   const tasks = run.tasks || [];
-  const hiddenNoise = new Set(["stream.heartbeat", "task.continued"]);
-  const recentEvents = state.codebase.events.filter(event => !hiddenNoise.has(event.type)).reduce((items, event) => {
+  const hiddenNoise = /* @__PURE__ */ new Set(["stream.heartbeat", "task.continued"]);
+  const recentEvents = state.codebase.events.filter((event) => !hiddenNoise.has(event.type)).reduce((items, event) => {
     const key = `${event.type}:${codeqEventDetail(event)}`;
     if (items.length && items[items.length - 1].key === key) return items;
     items.push({ key, event });
     return items;
-  }, []).slice(-12).map(item => item.event);
+  }, []).slice(-12).map((item) => item.event);
   const validation = run.validation || [];
-  const pending = (run.approvals || []).filter(item => item.status === "pending");
+  const pending = (run.approvals || []).filter((item) => item.status === "pending");
   root.innerHTML = `
-    <article class="copilot-message user"><p>${escapeHtml(run.user_prompt || "Software engineering task")}</p><div class="copilot-message-actions"><button type="button" data-codeq-copy-prompt>Copy</button><button type="button" data-codeq-edit-prompt>Edit</button></div></article>
-    <article class="copilot-message agent"><strong>${escapeHtml(String(run.status || "working").replace(/_/g, " "))}</strong>
-      <div class="copilot-task-list">${tasks.map(task => `<span class="${escapeHtml(task.status)}"><i>${task.status === "completed" ? "✓" : task.status === "running" ? "●" : "○"}</i>${escapeHtml(task.title)}</span>`).join("") || "<span><i>●</i>Analysing repository</span>"}</div>
-      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.map(event => { const detail = codeqEventDetail(event); return `<p><i></i><span>${escapeHtml(codeqEventLabel(event))}${detail ? `<small>${escapeHtml(detail.slice(0, 120))}</small>` : ""}</span></p>`; }).join("")}</div>` : ""}
-      ${validation.length ? `<div class="copilot-validation">${validation.map(item => `<span class="${item.status === "passed" ? "passed" : "failed"}">${item.status === "passed" ? "✓" : "×"} ${escapeHtml(item.kind)}</span>`).join("")}</div>` : ""}
-      ${pending.length ? `<p class="copilot-attention">Waiting for approval: ${escapeHtml(pending[0].tool)}</p>` : ""}
-      ${run.summary ? `<p class="copilot-summary">${escapeHtml(run.summary)}</p>` : ""}
-      ${run.error ? `<p class="copilot-error">${escapeHtml(run.error)}</p>` : ""}
+    <article class="copilot-message user"><p>${escapeHtml2(run.user_prompt || "Software engineering task")}</p><div class="copilot-message-actions"><button type="button" data-codeq-copy-prompt>Copy</button><button type="button" data-codeq-edit-prompt>Edit</button></div></article>
+    <article class="copilot-message agent"><strong>${escapeHtml2(String(run.status || "working").replace(/_/g, " "))}</strong>
+      <div class="copilot-task-list">${tasks.map((task) => `<span class="${escapeHtml2(task.status)}"><i>${task.status === "completed" ? "\u2713" : task.status === "running" ? "\u25CF" : "\u25CB"}</i>${escapeHtml2(task.title)}</span>`).join("") || "<span><i>\u25CF</i>Analysing repository</span>"}</div>
+      ${recentEvents.length ? `<div class="copilot-activity">${recentEvents.map((event) => {
+    const detail = codeqEventDetail(event);
+    return `<p><i></i><span>${escapeHtml2(codeqEventLabel(event))}${detail ? `<small>${escapeHtml2(detail.slice(0, 120))}</small>` : ""}</span></p>`;
+  }).join("")}</div>` : ""}
+      ${validation.length ? `<div class="copilot-validation">${validation.map((item) => `<span class="${item.status === "passed" ? "passed" : "failed"}">${item.status === "passed" ? "\u2713" : "\xD7"} ${escapeHtml2(item.kind)}</span>`).join("")}</div>` : ""}
+      ${pending.length ? `<p class="copilot-attention">Waiting for approval: ${escapeHtml2(pending[0].tool)}</p>` : ""}
+      ${run.summary ? `<p class="copilot-summary">${escapeHtml2(run.summary)}</p>` : ""}
+      ${run.error ? `<p class="copilot-error">${escapeHtml2(run.error)}</p>` : ""}
     </article>`;
   root.scrollTop = root.scrollHeight;
 }
-
 async function copyCodeqPrompt() {
   const prompt = String(state.codebase.activeRun?.user_prompt || "");
   if (!prompt) return;
-  try { await navigator.clipboard.writeText(prompt); }
-  catch (_) {
+  try {
+    await navigator.clipboard.writeText(prompt);
+  } catch (_) {
     const input = document.createElement("textarea");
-    input.value = prompt; document.body.appendChild(input); input.select(); document.execCommand("copy"); input.remove();
+    input.value = prompt;
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
   }
   toast("Copied", "CodeQ request copied to the clipboard.");
 }
-
 function editCodeqPrompt() {
   const input = qs("#codebaseGoal");
   if (!input || !state.codebase.activeRun?.user_prompt) return;
@@ -2281,30 +2513,29 @@ function editCodeqPrompt() {
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
 }
-
 function renderCodebaseEvidence(run) {
   const root = qs("#codebaseEvidence");
   if (!root) return;
-  const rows = (run.validation || []).map(item =>
-    `<div class="codebase-evidence-row"><span>${escapeHtml(item.kind)}</span><strong class="${item.status === "passed" ? "status-ok" : "status-error"}">${escapeHtml(item.status)} · exit ${item.exit_code}</strong></div>`
+  const rows = (run.validation || []).map(
+    (item) => `<div class="codebase-evidence-row"><span>${escapeHtml2(item.kind)}</span><strong class="${item.status === "passed" ? "status-ok" : "status-error"}">${escapeHtml2(item.status)} \xB7 exit ${item.exit_code}</strong></div>`
   );
-  if (run.summary) rows.push(`<div class="codebase-evidence-row"><span>Final review</span><strong>${escapeHtml(run.summary)}</strong></div>`);
-  if (run.error) rows.push(`<div class="codebase-evidence-row"><span>Blocking error</span><strong class="status-error">${escapeHtml(run.error)}</strong></div>`);
+  if (run.summary) rows.push(`<div class="codebase-evidence-row"><span>Final review</span><strong>${escapeHtml2(run.summary)}</strong></div>`);
+  if (run.error) rows.push(`<div class="codebase-evidence-row"><span>Blocking error</span><strong class="status-error">${escapeHtml2(run.error)}</strong></div>`);
   root.innerHTML = rows.length ? rows.join("") : emptyState("Build, test, lint, typecheck, runtime, and review evidence will appear here.");
 }
-
 function renderCodebaseApprovals(approvals) {
   const root = qs("#codebaseApprovals");
   if (!root) return;
-  const pending = approvals.filter(item => item.status === "pending");
-  root.innerHTML = pending.map(item =>
-    `<article class="codebase-approval"><strong>Approval required: ${escapeHtml(item.tool)}</strong><p>${escapeHtml(item.reason)}</p><div class="toolbar"><button class="btn btn-mini btn-primary" data-codebase-approval="${escapeHtml(item.id)}" data-approved="true">Approve</button><button class="btn btn-mini btn-soft" data-codebase-approval="${escapeHtml(item.id)}" data-approved="false">Reject</button></div></article>`
+  const pending = approvals.filter((item) => item.status === "pending");
+  root.innerHTML = pending.map(
+    (item) => `<article class="codebase-approval"><strong>Approval required: ${escapeHtml2(item.tool)}</strong><p>${escapeHtml2(item.reason)}</p><div class="toolbar"><button class="btn btn-mini btn-primary" data-codebase-approval="${escapeHtml2(item.id)}" data-approved="true">Approve</button><button class="btn btn-mini btn-soft" data-codebase-approval="${escapeHtml2(item.id)}" data-approved="false">Reject</button></div></article>`
   ).join("");
   renderCodebaseCopilotFeed();
 }
-
 async function resolveCodebaseApproval(approvalId, approved) {
-  qsa(`[data-codebase-approval="${CSS.escape(approvalId)}"]`).forEach(button => { button.disabled = true; });
+  qsa(`[data-codebase-approval="${CSS.escape(approvalId)}"]`).forEach((button) => {
+    button.disabled = true;
+  });
   state.codebase.streamController?.abort();
   try {
     const payload = await api(`/api/codebase/approvals/${encodeURIComponent(approvalId)}/resolve`, { method: "POST", body: JSON.stringify({ approved }) });
@@ -2314,21 +2545,23 @@ async function resolveCodebaseApproval(approvalId, approved) {
     await loadCodebaseRun(state.codebase.activeRunId);
     scheduleCodebasePoll();
   } catch (error) {
-    await new Promise(resolve => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 350));
     try {
       const run = await loadCodebaseRun(state.codebase.activeRunId);
-      const recorded = (run?.approvals || []).find(item => item.id === approvalId && item.status !== "pending");
+      const recorded = (run?.approvals || []).find((item) => item.id === approvalId && item.status !== "pending");
       if (recorded) {
         toast("Approval recorded", `The server recorded this action as ${recorded.status}. The run is continuing from durable state.`);
         scheduleCodebasePoll();
         return;
       }
-    } catch (_) {}
-    qsa(`[data-codebase-approval="${CSS.escape(approvalId)}"]`).forEach(button => { button.disabled = false; });
+    } catch (_) {
+    }
+    qsa(`[data-codebase-approval="${CSS.escape(approvalId)}"]`).forEach((button) => {
+      button.disabled = false;
+    });
     toast("Approval could not be recorded", `${error.message}. The action was not retried automatically.`);
   }
 }
-
 async function startCodebaseEventStream(runId) {
   state.codebase.streamController?.abort();
   const controller = new AbortController();
@@ -2346,7 +2579,7 @@ async function startCodebaseEventStream(runId) {
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-      lines.forEach(line => {
+      lines.forEach((line) => {
         if (!line.startsWith("data: ")) return;
         try {
           const event = JSON.parse(line.slice(6));
@@ -2355,13 +2588,14 @@ async function startCodebaseEventStream(runId) {
           if (event.type !== "stream.closed") state.codebase.events.push(event);
           handleCodebaseLiveEvent(event);
           renderCodebaseEvents();
-        } catch (_) {}
+        } catch (_) {
+        }
       });
     }
   } catch (error) {
     if (error.name !== "AbortError") {
       const payload = await api(`/api/codebase/runs/${encodeURIComponent(runId)}/events?after=${state.codebase.eventCursor}`).catch(() => ({ events: [] }));
-      (payload.events || []).forEach(event => {
+      (payload.events || []).forEach((event) => {
         state.codebase.eventCursor = Math.max(state.codebase.eventCursor, Number(event.sequence || 0));
         state.codebase.events.push(event);
         handleCodebaseLiveEvent(event);
@@ -2370,18 +2604,17 @@ async function startCodebaseEventStream(runId) {
     }
   }
 }
-
 async function runCodebaseTool(tool, toolArguments = {}) {
   if (!state.codebase.activeRunId) {
     if (!state.codebase.activeProjectId) throw new Error("Open a repository first.");
     const session = await api(`/api/codebase/projects/${encodeURIComponent(state.codebase.activeProjectId)}/tools`, {
       method: "POST",
-      body: JSON.stringify({ tool, arguments: toolArguments }),
+      body: JSON.stringify({ tool, arguments: toolArguments })
     });
     state.codebase.activeRunId = session.run?.id || "";
     if (session.run) {
-      state.codebase.runs = [session.run, ...state.codebase.runs.filter(item => item.id !== session.run.id)];
-      renderCodebaseRunHistory(state.codebase.runs.filter(item => item.status !== "interactive"));
+      state.codebase.runs = [session.run, ...state.codebase.runs.filter((item) => item.id !== session.run.id)];
+      renderCodebaseRunHistory(state.codebase.runs.filter((item) => item.status !== "interactive"));
     }
     if (session.result?.approval_required) {
       toast("Approval required", session.result.approval_required.reason || "Review this operation in the agent panel.");
@@ -2392,7 +2625,7 @@ async function runCodebaseTool(tool, toolArguments = {}) {
   }
   const payload = await api(`/api/codebase/runs/${encodeURIComponent(state.codebase.activeRunId)}/tools`, {
     method: "POST",
-    body: JSON.stringify({ tool, arguments: toolArguments }),
+    body: JSON.stringify({ tool, arguments: toolArguments })
   });
   if (payload.result?.approval_required) {
     toast("Approval required", payload.result.approval_required.reason || "Review this operation in the agent panel.");
@@ -2401,7 +2634,6 @@ async function runCodebaseTool(tool, toolArguments = {}) {
   }
   return payload.result;
 }
-
 async function runCodebaseTests() {
   try {
     const result = await runCodebaseTool("run_tests");
@@ -2410,7 +2642,6 @@ async function runCodebaseTests() {
     toast("Tests failed to start", error.message);
   }
 }
-
 async function loadCodebaseDiff() {
   try {
     const result = await runCodebaseTool("git_diff");
@@ -2421,7 +2652,6 @@ async function loadCodebaseDiff() {
     toast("Git diff failed", error.message);
   }
 }
-
 async function loadCodebaseStatus() {
   try {
     const result = await runCodebaseTool("git_status");
@@ -2432,7 +2662,6 @@ async function loadCodebaseStatus() {
     toast("Git status failed", error.message);
   }
 }
-
 async function runCodebaseCommand() {
   const command = qs("#codebaseCommand")?.value.trim();
   if (!command) return;
@@ -2443,7 +2672,6 @@ async function runCodebaseCommand() {
     toast("Command requires attention", error.message);
   }
 }
-
 async function inspectCodebaseBrowser() {
   const url = qs("#codebaseBrowserUrl")?.value.trim();
   if (!url) return;
@@ -2453,7 +2681,7 @@ async function inspectCodebaseBrowser() {
       const browser = result.browser || {};
       renderCodebaseTerminal({
         ...result,
-        stdout: [`Page: ${browser.title || url}`, `URL: ${browser.url || url}`, `Console errors: ${(browser.console_errors || []).length}`, `Screenshot: ${result.artifact || "not created"}`].join("\n"),
+        stdout: [`Page: ${browser.title || url}`, `URL: ${browser.url || url}`, `Console errors: ${(browser.console_errors || []).length}`, `Screenshot: ${result.artifact || "not created"}`].join("\n")
       });
       toast((browser.console_errors || []).length ? "Browser issues found" : "Browser inspection passed", result.artifact || url);
     }
@@ -2461,30 +2689,22 @@ async function inspectCodebaseBrowser() {
     toast("Browser inspection failed", error.message);
   }
 }
-
 function renderCodebaseTerminal(result) {
   const command = Array.isArray(result.command) ? result.command.join(" ") : String(result.command || "validation");
-  qs("#codebaseTerminalOutput").textContent = [`> ${command}`, result.stdout || "", result.stderr || "", `exit ${result.exit_code} · ${Math.round(result.duration_ms || 0)} ms`].filter(Boolean).join("\n");
+  qs("#codebaseTerminalOutput").textContent = [`> ${command}`, result.stdout || "", result.stderr || "", `exit ${result.exit_code} \xB7 ${Math.round(result.duration_ms || 0)} ms`].filter(Boolean).join("\n");
   showCodebaseOutput("terminal");
 }
-
 function showCodebaseOutput(name) {
   const git = name === "git";
   qs("#codebaseTerminalOutput")?.toggleAttribute("hidden", git);
   qs("#codebaseGitOutput")?.toggleAttribute("hidden", !git);
-  qsa("[data-codebase-output]").forEach(button => button.classList.toggle("active", button.dataset.codebaseOutput === name));
+  qsa("[data-codebase-output]").forEach((button) => button.classList.toggle("active", button.dataset.codebaseOutput === name));
 }
-
 function showCodebaseDetail(name) {
   const map = { tasks: "#codebaseTaskGraph", events: "#codebaseEventStream", review: "#codebaseEvidence" };
   Object.entries(map).forEach(([key, selector]) => qs(selector)?.toggleAttribute("hidden", key !== name));
-  qsa("[data-codebase-detail]").forEach(button => button.classList.toggle("active", button.dataset.codebaseDetail === name));
+  qsa("[data-codebase-detail]").forEach((button) => button.classList.toggle("active", button.dataset.codebaseDetail === name));
 }
-
-// =============================================
-// Voice
-// =============================================
-
 function initVoice() {
   const btn = qs("#voiceRecordBtn");
   qs("#chatVoiceButton")?.addEventListener("click", toggleChatVoiceRecording);
@@ -2494,18 +2714,18 @@ function initVoice() {
   qs("#sendTranscript")?.addEventListener("click", sendTranscriptToChat);
   qs("#clearTranscript")?.addEventListener("click", () => {
     const el = qs("#voiceTranscript");
-    if (el) el.textContent = "Transcript will appear here…";
+    if (el) el.textContent = "Transcript will appear here\u2026";
   });
   qs("#createVoiceSession")?.addEventListener("click", createVoiceSession);
   qs("#loadVoiceStatus")?.addEventListener("click", loadVoiceStatus);
   qs("#allowFallbackStt")?.addEventListener("change", () => {
-    loadVoiceStatus().catch(() => {});
+    loadVoiceStatus().catch(() => {
+    });
     if (qs("#allowFallbackStt")?.checked) {
       toast("Fallback STT enabled", "Windows Speech may be inaccurate. Use Whisper/faster-whisper for final transcripts.");
     }
   });
 }
-
 async function toggleChatVoiceRecording() {
   state.voiceTarget = "chat";
   if (!state.chatVoiceMode) {
@@ -2516,7 +2736,6 @@ async function toggleChatVoiceRecording() {
   if (state.voiceRecording) stopVoiceRecording();
   else await startVoiceRecording();
 }
-
 function endChatVoiceConversation() {
   state.chatVoiceMode = false;
   state.voiceReplyPending = false;
@@ -2525,16 +2744,14 @@ function endChatVoiceConversation() {
   qs("#chatVoiceMode")?.setAttribute("hidden", "");
   renderVoiceRecordingButtons(false);
 }
-
 function setChatVoiceState(status, detail = "") {
   const title = qs("#chatVoiceState");
-  const text = qs("#chatVoiceLiveText");
+  const text2 = qs("#chatVoiceLiveText");
   const mode = qs("#chatVoiceMode");
   if (title) title.textContent = status;
-  if (text) text.textContent = detail;
+  if (text2) text2.textContent = detail;
   if (mode) mode.dataset.state = status.toLowerCase();
 }
-
 async function toggleVoiceRecording() {
   state.voiceTarget = "voice";
   if (state.voiceRecording) {
@@ -2543,7 +2760,6 @@ async function toggleVoiceRecording() {
     await startVoiceRecording();
   }
 }
-
 async function startVoiceRecording() {
   try {
     await ensureVoiceSession();
@@ -2552,8 +2768,8 @@ async function startVoiceRecording() {
         channelCount: 1,
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: true,
-      },
+        autoGainControl: true
+      }
     });
     if (window.AudioContext || window.webkitAudioContext) {
       await startWavVoiceRecorder(stream);
@@ -2563,17 +2779,19 @@ async function startVoiceRecording() {
     state.voicePeakLevel = 0;
     renderVoiceTranscriptionQuality({ transcript_status: "recording", stt_message: "Recording audio locally..." });
     state.voiceRecording = true;
-    if (state.voiceTarget === "chat") setChatVoiceState("Listening", "I’m listening. Tap the microphone when you finish, or pause naturally.");
+    if (state.voiceTarget === "chat") setChatVoiceState("Listening", "I\u2019m listening. Tap the microphone when you finish, or pause naturally.");
     renderVoiceRecordingButtons(true);
     const status = qs("#voiceStatus");
-    if (status) status.textContent = `Recording ${state.voiceRecordingBackend === "web-audio-wav" ? "WAV" : "audio"}… click again to stop`;
+    if (status) status.textContent = `Recording ${state.voiceRecordingBackend === "web-audio-wav" ? "WAV" : "audio"}\u2026 click again to stop`;
     const badge = qs("#voiceModeBadge");
-    if (badge) { badge.textContent = "Recording"; badge.className = "badge badge-error"; }
-  } catch(e) {
+    if (badge) {
+      badge.textContent = "Recording";
+      badge.className = "badge badge-error";
+    }
+  } catch (e) {
     toast("Microphone error", e.message);
   }
 }
-
 async function startWavVoiceRecorder(stream) {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass || !window.AudioWorkletNode) {
@@ -2594,7 +2812,7 @@ async function startWavVoiceRecorder(stream) {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       channelCount: 1,
-      channelInterpretation: "speakers",
+      channelInterpretation: "speakers"
     });
     const gain = context.createGain();
     gain.gain.value = 0;
@@ -2608,7 +2826,7 @@ async function startWavVoiceRecorder(stream) {
     state.voiceAudioProcessor = null;
     state.voiceAudioGain = gain;
     state.voiceRecordingBackend = "web-audio-wav";
-    worklet.port.onmessage = event => {
+    worklet.port.onmessage = (event) => {
       if (!state.voiceRecording) return;
       const input = event.data instanceof Float32Array ? event.data : new Float32Array(event.data || []);
       if (!input.length) return;
@@ -2620,11 +2838,11 @@ async function startWavVoiceRecorder(stream) {
     gain.connect(context.destination);
     if (context.state === "suspended") await context.resume();
   } catch (error) {
-    await context.close().catch(() => {});
+    await context.close().catch(() => {
+    });
     startMediaVoiceRecorder(stream);
   }
 }
-
 function voiceRecorderWorkletSource() {
   return `
 class OpenAgentVoiceRecorder extends AudioWorkletProcessor {
@@ -2649,18 +2867,18 @@ class OpenAgentVoiceRecorder extends AudioWorkletProcessor {
 registerProcessor("openagent-voice-recorder", OpenAgentVoiceRecorder);
 `;
 }
-
 function startMediaVoiceRecorder(stream) {
   state.voiceChunks = [];
   state.voiceMediaStream = stream;
   state.voiceRecordingBackend = "media-recorder";
-  const options = MediaRecorder.isTypeSupported("audio/webm") ? { mimeType: "audio/webm" } : undefined;
+  const options = MediaRecorder.isTypeSupported("audio/webm") ? { mimeType: "audio/webm" } : void 0;
   state.voiceMediaRecorder = new MediaRecorder(stream, options);
-  state.voiceMediaRecorder.ondataavailable = e => { if (e.data.size > 0) state.voiceChunks.push(e.data); };
+  state.voiceMediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) state.voiceChunks.push(e.data);
+  };
   state.voiceMediaRecorder.onstop = handleVoiceRecordingStop;
   state.voiceMediaRecorder.start(100);
 }
-
 function stopVoiceRecording() {
   if (!state.voiceRecording) return;
   state.voiceRecording = false;
@@ -2670,7 +2888,7 @@ function stopVoiceRecording() {
     state.voiceAudioProcessor?.disconnect();
     state.voiceAudioSource?.disconnect();
     state.voiceAudioGain?.disconnect();
-    state.voiceMediaStream?.getTracks().forEach(t => t.stop());
+    state.voiceMediaStream?.getTracks().forEach((t) => t.stop());
     state.voiceAudioContext?.close?.();
     state.voiceAudioWorklet = null;
     state.voiceAudioProcessor = null;
@@ -2680,14 +2898,13 @@ function stopVoiceRecording() {
     handleVoiceRecordingStop();
   } else if (state.voiceMediaRecorder) {
     state.voiceMediaRecorder.stop();
-    state.voiceMediaRecorder.stream?.getTracks().forEach(t => t.stop());
+    state.voiceMediaRecorder.stream?.getTracks().forEach((t) => t.stop());
   }
   renderVoiceRecordingButtons(false);
   const status = qs("#voiceStatus");
-  if (status) status.textContent = "Processing…";
+  if (status) status.textContent = "Processing\u2026";
   if (state.voiceTarget === "chat" && state.chatVoiceMode) setChatVoiceState("Transcribing", "Turning your speech into text locally.");
 }
-
 async function handleVoiceRecordingStop() {
   const recording = buildVoiceRecordingBlob();
   if (!recording) return;
@@ -2709,9 +2926,9 @@ async function handleVoiceRecordingStop() {
         metadata: {
           client: "openagent-workbench",
           mime_type: blob.type || "application/octet-stream",
-          size_bytes: blob.size,
-        },
-      }),
+          size_bytes: blob.size
+        }
+      })
     });
     const transcription = payload.transcription || {};
     const el = qs("#voiceTranscript");
@@ -2724,11 +2941,10 @@ async function handleVoiceRecordingStop() {
     }
     renderVoiceTranscriptionQuality(transcription);
     renderVoiceCaptureResult(transcription, payload);
-    loadVoiceStatus().catch(() => {});
+    loadVoiceStatus().catch(() => {
+    });
     const status = qs("#voiceStatus");
-    if (status) status.textContent = transcription.transcript_status === "transcribed"
-      ? `Transcription complete (${transcription.stt_engine}, ${transcription.confidence || "unknown"} confidence)`
-      : "Audio captured - configure a local STT engine for real transcript text";
+    if (status) status.textContent = transcription.transcript_status === "transcribed" ? `Transcription complete (${transcription.stt_engine}, ${transcription.confidence || "unknown"} confidence)` : "Audio captured - configure a local STT engine for real transcript text";
     const badge = qs("#voiceModeBadge");
     if (badge) {
       badge.textContent = transcription.transcript_status === "transcribed" ? "Transcribed" : "Needs STT";
@@ -2743,32 +2959,33 @@ async function handleVoiceRecordingStop() {
     } else if (state.voiceTarget === "chat") {
       toast("No reliable transcript", transcription.stt_message || "Configure faster-whisper or Vosk in Developer.");
     }
-  } catch(e) {
+  } catch (e) {
     toast("Transcription error", e.message);
     const status = qs("#voiceStatus");
     if (status) status.textContent = "Error - transcription request failed";
     const badge = qs("#voiceModeBadge");
-    if (badge) { badge.textContent = "Ready"; badge.className = "badge"; }
+    if (badge) {
+      badge.textContent = "Ready";
+      badge.className = "badge";
+    }
   }
 }
-
 function renderVoiceRecordingButtons(recording) {
   const dedicated = qs("#voiceRecordBtn");
   if (dedicated) {
     dedicated.classList.toggle("recording", recording);
-    dedicated.textContent = recording ? "⏹" : "🎙";
+    dedicated.textContent = recording ? "\u23F9" : "\u{1F399}";
     dedicated.setAttribute("aria-pressed", String(recording));
   }
   const chat = qs("#chatVoiceButton");
   if (chat) {
     chat.classList.toggle("recording", recording && state.voiceTarget === "chat");
-    chat.textContent = recording && state.voiceTarget === "chat" ? "■" : "🎙";
+    chat.textContent = recording && state.voiceTarget === "chat" ? "\u25A0" : "\u{1F399}";
     chat.setAttribute("aria-pressed", String(recording && state.voiceTarget === "chat"));
     chat.setAttribute("aria-label", recording && state.voiceTarget === "chat" ? "Stop voice recording" : "Start voice conversation");
     chat.title = recording && state.voiceTarget === "chat" ? "Stop and send" : "Start voice conversation";
   }
 }
-
 function renderVoiceLevel(input) {
   const bars = qsa("#voiceWaveform span");
   if (!bars.length) return;
@@ -2790,13 +3007,12 @@ function renderVoiceLevel(input) {
   const orb = qs("#chatVoiceOrb");
   if (orb && state.chatVoiceMode) orb.style.setProperty("--voice-level", String(level));
 }
-
 function renderVoiceTranscriptionQuality(transcription) {
   const el = qs("#voiceConfidence");
   if (!el) return;
   if (transcription.transcript_status === "recording") {
     el.className = "mini-status";
-    el.innerHTML = `<strong>Recording locally.</strong><span>${escapeHtml(transcription.stt_message || "Speak clearly and keep the meter moving in the middle range.")}</span>`;
+    el.innerHTML = `<strong>Recording locally.</strong><span>${escapeHtml2(transcription.stt_message || "Speak clearly and keep the meter moving in the middle range.")}</span>`;
     return;
   }
   const confidence = transcription.confidence || "unknown";
@@ -2806,29 +3022,27 @@ function renderVoiceTranscriptionQuality(transcription) {
   const engine = transcription.stt_engine || "none";
   if (transcription.transcript_status === "transcribed") {
     el.className = confidence === "high" ? "mini-status mini-status-success" : "mini-status mini-status-warning";
-    el.innerHTML = `<strong>${escapeHtml(confidence.toUpperCase())} confidence · ${escapeHtml(engine)}</strong><span>${escapeHtml(duration)} · ${escapeHtml(warnings[0] || "Edit the transcript if needed before sending.")}</span>`;
+    el.innerHTML = `<strong>${escapeHtml2(confidence.toUpperCase())} confidence \xB7 ${escapeHtml2(engine)}</strong><span>${escapeHtml2(duration)} \xB7 ${escapeHtml2(warnings[0] || "Edit the transcript if needed before sending.")}</span>`;
     return;
   }
   el.className = "mini-status mini-status-warning";
-  el.innerHTML = `<strong>No reliable transcript produced.</strong><span>${escapeHtml(transcription.stt_message || "Configure Whisper/faster-whisper/Vosk/whisper.cpp for accurate local transcription.")}</span>`;
+  el.innerHTML = `<strong>No reliable transcript produced.</strong><span>${escapeHtml2(transcription.stt_message || "Configure Whisper/faster-whisper/Vosk/whisper.cpp for accurate local transcription.")}</span>`;
 }
-
 function buildVoiceRecordingBlob() {
   if (state.voiceRecordingBackend === "web-audio-wav") {
     if (!state.voicePcmChunks.length) return null;
     return {
       blob: encodeWavBlob(state.voicePcmChunks, state.voiceSampleRate || 44100),
-      filename: "voice.wav",
+      filename: "voice.wav"
     };
   }
   if (!state.voiceChunks.length) return null;
   const blob = new Blob(state.voiceChunks, { type: state.voiceMediaRecorder?.mimeType || "audio/webm" });
   return {
     blob,
-    filename: blob.type.includes("webm") ? "voice.webm" : "voice-recording.bin",
+    filename: blob.type.includes("webm") ? "voice.webm" : "voice-recording.bin"
   };
 }
-
 function encodeWavBlob(chunks, sampleRate) {
   const samples = flattenFloat32(chunks);
   const buffer = new ArrayBuffer(44 + samples.length * 2);
@@ -2849,24 +3063,24 @@ function encodeWavBlob(chunks, sampleRate) {
   let offset = 44;
   for (const sample of samples) {
     const clamped = Math.max(-1, Math.min(1, sample));
-    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+    view.setInt16(offset, clamped < 0 ? clamped * 32768 : clamped * 32767, true);
     offset += 2;
   }
   return new Blob([buffer], { type: "audio/wav" });
 }
-
 function flattenFloat32(chunks) {
   const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const result = new Float32Array(length);
   let offset = 0;
-  chunks.forEach(chunk => { result.set(chunk, offset); offset += chunk.length; });
+  chunks.forEach((chunk) => {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  });
   return result;
 }
-
-function writeAscii(view, offset, text) {
-  for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+function writeAscii(view, offset, text2) {
+  for (let i = 0; i < text2.length; i += 1) view.setUint8(offset + i, text2.charCodeAt(i));
 }
-
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -2878,24 +3092,23 @@ function blobToBase64(blob) {
     reader.readAsDataURL(blob);
   });
 }
-
 function sendTranscriptToChat() {
   const transcript = qs("#voiceTranscript")?.textContent?.trim();
-  if (!transcript || transcript === "Transcript will appear here…") return;
+  if (!transcript || transcript === "Transcript will appear here\u2026") return;
   const input = qs("#chatInput");
   if (input) input.value = transcript;
   setView("chat");
   sendChat();
 }
-
 async function createVoiceSession() {
   try {
     const session = await ensureVoiceSession({ force: true });
     toast("Voice session created", session.id.slice(0, 8));
     await loadVoiceStatus();
-  } catch(e) { toast("Voice session error", e.message); }
+  } catch (e) {
+    toast("Voice session error", e.message);
+  }
 }
-
 async function ensureVoiceSession({ force = false } = {}) {
   if (state.voiceSessionId && !force) {
     return { id: state.voiceSessionId };
@@ -2905,20 +3118,22 @@ async function ensureVoiceSession({ force = false } = {}) {
     body: JSON.stringify({
       project: getProject(),
       mode: "push_to_talk",
-      metadata: { client: "openagent-workbench", explicit_microphone_start: true },
-    }),
+      metadata: { client: "openagent-workbench", explicit_microphone_start: true }
+    })
   });
   state.voiceSessionId = payload.session.id;
   const badge = qs("#voiceModeBadge");
-  if (badge) { badge.textContent = "Session active"; badge.className = "badge badge-success"; }
+  if (badge) {
+    badge.textContent = "Session active";
+    badge.className = "badge badge-success";
+  }
   return payload.session;
 }
-
 async function loadVoiceStatus() {
   try {
     const [statusResult, sessionsResult] = await Promise.allSettled([
       api(`/api/voice/status?project=${encodeURIComponent(getProject())}`),
-      api(`/api/voice/sessions?project=${encodeURIComponent(getProject())}&limit=8`),
+      api(`/api/voice/sessions?project=${encodeURIComponent(getProject())}&limit=8`)
     ]);
     if (statusResult.status !== "fulfilled") throw statusResult.reason;
     const data = statusResult.value;
@@ -2927,125 +3142,78 @@ async function loadVoiceStatus() {
     renderSttEngineStatus((data.stt || {}).engines || []);
     renderVoiceEngineOptions((data.stt || {}).engines || []);
     renderVoiceDashboard(data, sessions);
-  } catch(e) { toast("Voice status error", e.message); }
+  } catch (e) {
+    toast("Voice status error", e.message);
+  }
 }
-
 function renderVoiceDashboard(data, sessions = []) {
   const el = qs("#voiceOutput");
   if (!el) return;
-  const engines = (data.stt || {}).engines || [];
-  const highQuality = engines.filter(engine => engine.enabled || (engine.available && engine.quality !== "fallback" && engine.id !== "ffmpeg"));
-  const fallback = engines.find(engine => engine.id === "windows-speech" && engine.available);
-  const converter = engines.find(engine => engine.id === "ffmpeg");
-  const best = highQuality[0] || (fallback && qs("#allowFallbackStt")?.checked ? fallback : null);
-  const readiness = best ? "Ready" : "Needs STT setup";
-  const readinessClass = best ? "badge-success" : "badge-warning";
-  const cards = [
-    ["Sessions", data.sessions ?? 0],
-    ["Turns", data.turns ?? 0],
-    ["Translations", data.translations ?? 0],
-    ["Engine", best?.name || "Not configured"],
-  ];
   el.innerHTML = `
-    <div class="voice-summary">
-      ${cards.map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></article>`).join("")}
-    </div>
-    <div class="voice-runtime-card">
-      <div>
-        <strong>Speech runtime</strong>
-        <p>${escapeHtml(data.privacy_boundary || "Voice data stays local.")}</p>
-      </div>
-      <span class="badge ${readinessClass}">${escapeHtml(readiness)}</span>
-    </div>
-    <div class="voice-engine-list">
-      ${engines.filter(engine => engine.id !== "ffmpeg").map(renderVoiceEngineRow).join("")}
-      ${converter ? renderVoiceEngineRow(converter) : ""}
-    </div>
-    <h4 class="subsection-title">Recent sessions</h4>
-    <div class="stack-list">
-      ${sessions.length ? sessions.map(session => `
-        <button class="list-item voice-session-item ${session.id === state.voiceSessionId ? "active" : ""}" data-voice-session-id="${escapeHtml(session.id)}">
-          <div class="list-item-row">
-            <div>
-              <strong>${escapeHtml(session.mode || "voice session")}</strong>
-              <p>${escapeHtml(session.status || "active")} · ${escapeHtml(formatDateTime(session.updated_at) || session.id.slice(0, 8))}</p>
+    <details class="voice-history-drawer">
+      <summary><span>Recent voice conversations</span><strong>${escapeHtml2(String(sessions.length))}</strong></summary>
+      <div class="stack-list">
+        ${sessions.length ? sessions.map((session) => `
+          <button class="list-item voice-session-item ${session.id === state.voiceSessionId ? "active" : ""}" data-voice-session-id="${escapeHtml2(session.id)}">
+            <div class="list-item-row">
+              <div><strong>${escapeHtml2(formatDateTime(session.updated_at) || "Voice conversation")}</strong><p>${escapeHtml2(session.status || "active")}</p></div>
+              <span class="badge">${escapeHtml2(session.id.slice(0, 8))}</span>
             </div>
-            <span class="badge">${escapeHtml(session.id.slice(0, 8))}</span>
-          </div>
-        </button>
-      `).join("") : emptyState("No voice sessions yet.")}
-    </div>
+          </button>
+        `).join("") : emptyState("No saved voice conversations.")}
+      </div>
+    </details>
   `;
-  qsa("[data-voice-session-id]", el).forEach(item => {
+  qsa("[data-voice-session-id]", el).forEach((item) => {
     item.addEventListener("click", () => loadVoiceSession(item.dataset.voiceSessionId));
   });
 }
-
 async function loadVoiceSession(sessionId) {
   if (!sessionId) return;
   state.voiceSessionId = sessionId;
-  qsa("[data-voice-session-id]").forEach(item => {
+  qsa("[data-voice-session-id]").forEach((item) => {
     item.classList.toggle("active", item.dataset.voiceSessionId === sessionId);
   });
   const payload = await api(`/api/voice/turns?session_id=${encodeURIComponent(sessionId)}`);
   const turns = payload.turns || [];
-  const session = (state.voiceSessions || []).find(item => item.id === sessionId) || { id: sessionId, mode: "voice session" };
-  const transcript = turns.filter(turn => turn.role === "user").map(turn => turn.text).filter(Boolean).at(-1)
-    || turns.map(turn => turn.text).filter(Boolean).at(-1)
-    || "Transcript will appear here…";
+  const session = (state.voiceSessions || []).find((item) => item.id === sessionId) || { id: sessionId, mode: "voice session" };
+  const transcript = turns.filter((turn) => turn.role === "user").map((turn) => turn.text).filter(Boolean).at(-1) || turns.map((turn) => turn.text).filter(Boolean).at(-1) || "Transcript will appear here\u2026";
   const transcriptBox = qs("#voiceTranscript");
   if (transcriptBox) transcriptBox.textContent = transcript;
   renderVoiceSessionHistory(session, turns);
 }
-
 function renderVoiceSessionHistory(session, turns = []) {
   const el = qs("#voiceOutput");
   if (!el) return;
   el.innerHTML = `
     <div class="voice-runtime-card">
       <div>
-        <strong>${escapeHtml(session.mode || "Voice session")}</strong>
-        <p>${escapeHtml(session.status || "active")} · ${escapeHtml(formatDateTime(session.updated_at) || session.id)}</p>
+        <strong>${escapeHtml2(session.mode || "Voice session")}</strong>
+        <p>${escapeHtml2(session.status || "active")} \xB7 ${escapeHtml2(formatDateTime(session.updated_at) || session.id)}</p>
       </div>
       <span class="badge badge-success">open</span>
     </div>
     <div class="voice-summary">
-      <article><span>Turns</span><strong>${escapeHtml(String(turns.length))}</strong></article>
-      <article><span>Session</span><strong>${escapeHtml(session.id.slice(0, 8))}</strong></article>
-      <article><span>Mode</span><strong>${escapeHtml(session.mode || "voice")}</strong></article>
+      <article><span>Turns</span><strong>${escapeHtml2(String(turns.length))}</strong></article>
+      <article><span>Session</span><strong>${escapeHtml2(session.id.slice(0, 8))}</strong></article>
+      <article><span>Mode</span><strong>${escapeHtml2(session.mode || "voice")}</strong></article>
     </div>
     <h4 class="subsection-title">Transcript history</h4>
     <div class="stack-list">
-      ${turns.length ? turns.map(turn => `
+      ${turns.length ? turns.map((turn) => `
         <article class="list-item">
           <div class="list-item-row">
             <div>
-              <strong>${escapeHtml(turn.speaker || turn.role || "speaker")}</strong>
-              <p>${escapeHtml(turn.text || "")}</p>
+              <strong>${escapeHtml2(turn.speaker || turn.role || "speaker")}</strong>
+              <p>${escapeHtml2(turn.text || "")}</p>
             </div>
-            <span class="badge">${escapeHtml(formatDateTime(turn.created_at) || turn.id.slice(0, 8))}</span>
+            <span class="badge">${escapeHtml2(formatDateTime(turn.created_at) || turn.id.slice(0, 8))}</span>
           </div>
         </article>
       `).join("") : emptyState("No transcript turns recorded in this session yet.")}
     </div>
   `;
 }
-
-function renderVoiceEngineRow(engine) {
-  const enabled = engine.enabled || (engine.available && engine.quality !== "fallback" && engine.id !== "ffmpeg");
-  const badgeClass = enabled ? "badge-success" : engine.available ? "badge-warning" : "badge-soft";
-  const label = enabled ? "ready" : engine.available ? "available" : "setup needed";
-  return `
-    <article class="voice-engine-row">
-      <div>
-        <strong>${escapeHtml(engine.name || engine.id)}</strong>
-        <p>${escapeHtml(engine.reason || engine.privacy_boundary || "")}</p>
-      </div>
-      <span class="badge ${badgeClass}">${escapeHtml(label)}</span>
-    </article>
-  `;
-}
-
 function renderVoiceCaptureResult(transcription, payload) {
   const el = qs("#voiceOutput");
   if (!el) return;
@@ -3055,20 +3223,19 @@ function renderVoiceCaptureResult(transcription, payload) {
   el.innerHTML = `
     <div class="voice-runtime-card">
       <div>
-        <strong>${escapeHtml(status)}</strong>
-        <p>${escapeHtml(transcription.stt_message || payload.privacy_boundary || "Captured audio stayed in local storage.")}</p>
+        <strong>${escapeHtml2(status)}</strong>
+        <p>${escapeHtml2(transcription.stt_message || payload.privacy_boundary || "Captured audio stayed in local storage.")}</p>
       </div>
-      <span class="badge ${statusClass}">${escapeHtml(transcription.stt_engine || "local")}</span>
+      <span class="badge ${statusClass}">${escapeHtml2(transcription.stt_engine || "local")}</span>
     </div>
     <div class="voice-summary">
-      <article><span>Confidence</span><strong>${escapeHtml(transcription.confidence || "unknown")}</strong></article>
-      <article><span>Duration</span><strong>${escapeHtml(profile.duration_seconds ? `${profile.duration_seconds}s` : "unknown")}</strong></article>
-      <article><span>Audio</span><strong>${escapeHtml(payload.audio_asset?.mime_type || "stored")}</strong></article>
-      <article><span>Session</span><strong>${escapeHtml((payload.session_id || "").slice(0, 8))}</strong></article>
+      <article><span>Confidence</span><strong>${escapeHtml2(transcription.confidence || "unknown")}</strong></article>
+      <article><span>Duration</span><strong>${escapeHtml2(profile.duration_seconds ? `${profile.duration_seconds}s` : "unknown")}</strong></article>
+      <article><span>Audio</span><strong>${escapeHtml2(payload.audio_asset?.mime_type || "stored")}</strong></article>
+      <article><span>Session</span><strong>${escapeHtml2((payload.session_id || "").slice(0, 8))}</strong></article>
     </div>
   `;
 }
-
 function renderSttEngineStatus(engines) {
   const el = qs("#sttEngineStatus");
   if (!el) return;
@@ -3077,35 +3244,29 @@ function renderSttEngineStatus(engines) {
     el.innerHTML = `<strong>Local speech-to-text not configured.</strong><span>Recording works, but install or configure Whisper, faster-whisper, Vosk, whisper.cpp, Windows Speech WAV, or OPENAGENT_STT_COMMAND to generate real transcripts.</span>`;
     return;
   }
-  const available = engines.filter(engine => engine.enabled || (engine.available && engine.quality !== "fallback" && engine.id !== "ffmpeg"));
+  const available = engines.filter((engine) => engine.enabled || engine.available && engine.quality !== "fallback" && engine.id !== "ffmpeg");
   if (!available.length) {
     el.className = "mini-status mini-status-warning";
-    const next = engines.find(engine => engine.id !== "ffmpeg" && engine.reason)?.reason || "Install and configure a local Whisper/faster-whisper/Vosk/whisper.cpp engine.";
-    el.innerHTML = `<strong>High-quality speech-to-text is not configured.</strong><span>${escapeHtml(next)}</span>`;
+    const next = engines.find((engine) => engine.id !== "ffmpeg" && engine.reason)?.reason || "Install and configure a local Whisper/faster-whisper/Vosk/whisper.cpp engine.";
+    el.innerHTML = `<strong>High-quality speech-to-text is not configured.</strong><span>${escapeHtml2(next)}</span>`;
     return;
   }
   el.className = "mini-status mini-status-success";
-  el.innerHTML = `<strong>Speech-to-text ready.</strong><span>${escapeHtml(available.map(engine => engine.name).join(", "))}</span>`;
+  el.innerHTML = `<strong>Speech-to-text ready.</strong><span>${escapeHtml2(available.map((engine) => engine.name).join(", "))}</span>`;
 }
-
 function renderVoiceEngineOptions(engines) {
   const select = qs("#voiceEngineSelect");
   if (!select) return;
   const current = select.value;
-  const usable = engines.filter(engine => engine.id !== "ffmpeg" && (engine.enabled || engine.available));
-  select.innerHTML = `<option value="">Best high-quality local engine</option>` + usable.map(engine => {
+  const usable = engines.filter((engine) => engine.id !== "ffmpeg" && (engine.enabled || engine.available));
+  select.innerHTML = `<option value="">Best high-quality local engine</option>` + usable.map((engine) => {
     const fallback = engine.quality === "fallback" ? " fallback" : "";
     const disabled = engine.quality === "fallback" && !qs("#allowFallbackStt")?.checked ? " disabled" : "";
-    const label = `${engine.name || engine.id}${fallback}${engine.enabled ? "" : " (setup needed)"}`;
-    return `<option value="${escapeHtml(engine.id)}"${disabled}>${escapeHtml(label)}</option>`;
+    const label2 = `${engine.name || engine.id}${fallback}${engine.enabled ? "" : " (setup needed)"}`;
+    return `<option value="${escapeHtml2(engine.id)}"${disabled}>${escapeHtml2(label2)}</option>`;
   }).join("");
-  if ([...select.options].some(option => option.value === current && !option.disabled)) select.value = current;
+  if ([...select.options].some((option) => option.value === current && !option.disabled)) select.value = current;
 }
-
-// =============================================
-// Deep Research
-// =============================================
-
 function initResearch() {
   qs("#startResearch")?.addEventListener("click", startResearch);
   qs("#cancelResearch")?.addEventListener("click", cancelResearch);
@@ -3114,26 +3275,27 @@ function initResearch() {
   qs("#researchLibrary")?.addEventListener("click", handleResearchLibraryAction);
   loadResearchLibrary();
 }
-
 function updateResearchUI(running) {
   state.researchRunning = running;
   const prog = qs("#researchProgress");
   const badge = qs("#researchStatusBadge");
   const startBtn = qs("#startResearch");
   const cancelBtn = qs("#cancelResearch");
-  if (prog) prog.style.display = running ? "block" : "none";
-  if (badge) { badge.textContent = running ? "Researching…" : "Idle"; badge.className = running ? "badge badge-info" : "badge"; }
+  if (prog) prog.hidden = !running;
+  if (badge) {
+    badge.textContent = running ? "Researching\u2026" : "Idle";
+    badge.className = running ? "badge badge-info" : "badge";
+  }
   if (startBtn) startBtn.disabled = running;
   if (cancelBtn) cancelBtn.disabled = !running;
 }
-
 async function cancelResearch() {
   const sessionId = state.researchSessionId;
   try {
     if (sessionId) {
       await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/cancel`, {
         method: "POST",
-        body: JSON.stringify({ project: getProject() }),
+        body: JSON.stringify({ project: getProject() })
       });
     }
   } catch (error) {
@@ -3148,51 +3310,48 @@ async function cancelResearch() {
     toast("Research cancelled");
   }
 }
-
 function setResearchStep(step, status) {
-  // status: "active" | "done" | ""
   const el = qs(`#rStep${step} span:first-child`);
   if (!el) return;
-  if (status === "done") el.textContent = "✅";
-  else if (status === "active") el.textContent = "⏳";
+  if (status === "done") el.textContent = "\u2705";
+  else if (status === "active") el.textContent = "\u23F3";
 }
-
 async function startResearch() {
-  const query = qs("#researchQuery")?.value.trim();
-  if (!query) { toast("Research query required"); return; }
+  const query2 = qs("#researchQuery")?.value.trim();
+  if (!query2) {
+    toast("Research query required");
+    return;
+  }
   const controller = new AbortController();
   state.researchAbortController = controller;
   state.lastResearchResult = null;
   updateResearchUI(true);
   const reportBtn = qs("#researchToChat");
   if (reportBtn) reportBtn.disabled = true;
-  renderResearchLoading(query);
+  renderResearchLoading(query2);
   const sourcesEl = qs("#researchSources");
   if (sourcesEl) sourcesEl.innerHTML = "";
-
   setResearchStep(1, "active");
   try {
-    const allowExternal = !state.privacySettings.localOnly && (
-      qs("#researchAllowExternal")?.checked || qs("#allowExternal")?.checked || false
-    );
+    const allowExternal = !state.privacySettings.localOnly && (qs("#researchAllowExternal")?.checked || state.privacySettings.allowExternal || false);
     const created = await api("/api/research/sessions", {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
-        query,
+        query: query2,
         project: getProject(),
         max_iterations: parseInt(qs("#researchDepth")?.value || "3", 10),
-        provider: qs("#providerSelect")?.value || "auto",
+        provider: state.modelSettings.chatProvider || "auto",
         model: normalizeKnownModelName(state.modelSettings.researchModel || ""),
-        allow_external: allowExternal,
-      }),
+        allow_external: allowExternal
+      })
     });
     const sessionId = created.session?.id;
     if (!sessionId) throw new Error("Research server did not return a durable session ID.");
     state.researchSessionId = sessionId;
     await loadResearchLibrary();
     const session = await waitForResearchSession(sessionId, controller.signal);
-    const result = { ...session, ...(session.result || {}), run_id: session.id };
+    const result = { ...session, ...session.result || {}, run_id: session.id };
     state.lastResearchResult = result;
     setResearchStep(1, "done");
     setResearchStep(2, "done");
@@ -3201,16 +3360,16 @@ async function startResearch() {
     renderResearchResult(result);
     const sources = result.sources || [];
     if (sourcesEl && sources.length) {
-      sourcesEl.innerHTML = sources.map(s =>
-        `<span class="source-chip">${escapeHtml(typeof s === "string" ? s : (s.title || s.url || s.type || "source"))}</span>`
+      sourcesEl.innerHTML = sources.map(
+        (s) => `<span class="source-chip">${escapeHtml2(typeof s === "string" ? s : s.title || s.url || s.type || "source")}</span>`
       ).join("");
     }
     if (reportBtn) reportBtn.disabled = false;
     toast("Research complete", `Found ${sources.length} sources`);
-  } catch(e) {
+  } catch (e) {
     const cancelled = e.name === "AbortError";
     const output = qs("#researchOutput");
-    if (output) output.innerHTML = `<div class="empty-state">${cancelled ? "Research cancelled." : `Research error: ${escapeHtml(e.message)}`}</div>`;
+    if (output) output.innerHTML = `<div class="empty-state">${cancelled ? "Research cancelled." : `Research error: ${escapeHtml2(e.message)}`}</div>`;
     toast(cancelled ? "Research cancelled" : "Research error", cancelled ? "" : e.message);
   } finally {
     if (state.researchAbortController === controller) {
@@ -3220,7 +3379,6 @@ async function startResearch() {
     loadResearchLibrary();
   }
 }
-
 async function waitForResearchSession(sessionId, signal) {
   let cursor = 0;
   while (true) {
@@ -3228,7 +3386,7 @@ async function waitForResearchSession(sessionId, signal) {
     const authorization = state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {};
     const response = await fetch(
       `/api/research/sessions/${encodeURIComponent(sessionId)}/stream?after_id=${cursor}&timeout=20`,
-      { headers: authorization, signal },
+      { headers: authorization, signal }
     );
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -3244,13 +3402,13 @@ async function waitForResearchSession(sessionId, signal) {
       const frames = buffer.split("\n\n");
       buffer = frames.pop() || "";
       for (const frame of frames) {
-        const raw = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+        const raw = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
         if (!raw) continue;
         const event = JSON.parse(raw);
         cursor = Math.max(cursor, Number(event.cursor || event.checkpoint?.id || 0));
         if (event.type === "checkpoint") {
           const badge = qs("#researchStatusBadge");
-          if (badge) badge.textContent = `${event.checkpoint.stage} · ${event.checkpoint.progress}%`;
+          if (badge) badge.textContent = `${event.checkpoint.stage} \xB7 ${event.checkpoint.progress}%`;
         }
         if (event.session) renderResearchCheckpointProgress(event.session);
         if (event.type === "complete") {
@@ -3264,37 +3422,35 @@ async function waitForResearchSession(sessionId, signal) {
     }
   }
 }
-
 function renderResearchCheckpointProgress(session) {
   const checkpoints = session.checkpoints || [];
   const progress = checkpoints.length ? checkpoints[checkpoints.length - 1].progress : 0;
   const badge = qs("#researchStatusBadge");
-  if (badge) badge.textContent = `${session.status} · ${progress}%`;
-  const stages = new Set(checkpoints.map(item => item.stage));
+  if (badge) badge.textContent = `${session.status} \xB7 ${progress}%`;
+  const stages = new Set(checkpoints.map((item) => item.stage));
   if (stages.has("planning")) setResearchStep(1, "done");
   if (stages.has("sources")) setResearchStep(2, "done");
   if (stages.has("synthesis")) setResearchStep(3, "done");
   if (stages.has("completed")) setResearchStep(4, "done");
 }
-
 async function loadResearchLibrary() {
   const feed = qs("#researchLibrary");
   if (!feed) return;
   try {
     const payload = await api(`/api/research/sessions?project=${encodeURIComponent(getProject())}&limit=50`);
     const sessions = payload.sessions || [];
-    feed.innerHTML = sessions.length ? sessions.map(session => `
+    feed.innerHTML = sessions.length ? sessions.map((session) => `
       <article class="list-item research-session-row">
         <div>
-          <strong>${escapeHtml(session.query)}</strong>
-          <p>${escapeHtml(session.status)} · attempt ${escapeHtml(session.attempt || 0)}/${escapeHtml(session.max_attempts || 3)}${session.parent_id ? " · branch" : ""}</p>
+          <strong>${escapeHtml2(session.query)}</strong>
+          <p>${escapeHtml2(session.status)} \xB7 attempt ${escapeHtml2(session.attempt || 0)}/${escapeHtml2(session.max_attempts || 3)}${session.parent_id ? " \xB7 branch" : ""}</p>
         </div>
         <div class="toolbar slim">
-          <button class="btn btn-soft" data-research-action="open" data-session-id="${escapeHtml(session.id)}">Open</button>
-          ${["failed", "cancelled"].includes(session.status) ? `<button class="btn btn-outline" data-research-action="retry" data-session-id="${escapeHtml(session.id)}">Retry</button>` : ""}
-          <button class="btn btn-outline" data-research-action="branch" data-session-id="${escapeHtml(session.id)}">Branch</button>
-          <button class="btn btn-soft" data-research-action="archive" data-session-id="${escapeHtml(session.id)}">Archive</button>
-          <button class="btn btn-danger" data-research-action="delete" data-session-id="${escapeHtml(session.id)}">Delete</button>
+          <button class="btn btn-soft" data-research-action="open" data-session-id="${escapeHtml2(session.id)}">Open</button>
+          ${["failed", "cancelled"].includes(session.status) ? `<button class="btn btn-outline" data-research-action="retry" data-session-id="${escapeHtml2(session.id)}">Retry</button>` : ""}
+          <button class="btn btn-outline" data-research-action="branch" data-session-id="${escapeHtml2(session.id)}">Branch</button>
+          <button class="btn btn-soft" data-research-action="archive" data-session-id="${escapeHtml2(session.id)}">Archive</button>
+          <button class="btn btn-danger" data-research-action="delete" data-session-id="${escapeHtml2(session.id)}">Delete</button>
         </div>
       </article>
     `).join("") : emptyState("No research sessions yet.");
@@ -3302,7 +3458,6 @@ async function loadResearchLibrary() {
     feed.innerHTML = emptyState(`Research library error: ${error.message}`);
   }
 }
-
 async function handleResearchLibraryAction(event) {
   const button = event.target.closest("[data-research-action]");
   if (!button) return;
@@ -3313,7 +3468,7 @@ async function handleResearchLibraryAction(event) {
       const payload = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`);
       const session = payload.session;
       state.researchSessionId = session.id;
-      state.lastResearchResult = { ...session, ...(session.result || {}), run_id: session.id };
+      state.lastResearchResult = { ...session, ...session.result || {}, run_id: session.id };
       qs("#researchQuery").value = session.query;
       renderResearchResult(state.lastResearchResult);
       renderResearchCheckpointProgress(session);
@@ -3322,7 +3477,8 @@ async function handleResearchLibraryAction(event) {
     }
     const body = action === "branch" ? { label: "Follow-up branch" } : {};
     await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/${action}`, {
-      method: "POST", body: JSON.stringify(body),
+      method: "POST",
+      body: JSON.stringify(body)
     });
     toast(`Research ${action} complete`);
     await loadResearchLibrary();
@@ -3330,16 +3486,14 @@ async function handleResearchLibraryAction(event) {
     toast("Research action failed", error.message);
   }
 }
-
-function renderResearchLoading(query) {
+function renderResearchLoading(query2) {
   const el = qs("#researchOutput");
   if (!el) return;
   el.innerHTML = `
-    <div class="research-query-message">${escapeHtml(query)}</div>
-    <div class="research-writing"><span class="spinner"></span><span>Building the evidence set…</span></div>
+    <div class="research-query-message">${escapeHtml2(query2)}</div>
+    <div class="research-writing"><span class="spinner"></span><span>Building the evidence set\u2026</span></div>
   `;
 }
-
 function renderResearchResult(result) {
   const el = qs("#researchOutput");
   if (!el) return;
@@ -3349,70 +3503,75 @@ function renderResearchResult(result) {
     <div class="research-markdown">${renderMarkdown(report)}</div>
     <details class="research-source-list" ${sources.length ? "open" : ""}>
       <summary>${sources.length} source${sources.length === 1 ? "" : "s"}</summary>
-      ${sources.length ? sources.map(source => `
+      ${sources.length ? sources.map((source) => `
         <article class="list-item">
-          <strong>${escapeHtml(source.title || source.type || "Local source")}</strong>
-          <p>${escapeHtml(source.snippet || source.url || source.id || "")}</p>
+          <strong>${escapeHtml2(source.title || source.type || "Local source")}</strong>
+          <p>${escapeHtml2(source.snippet || source.url || source.id || "")}</p>
         </article>
       `).join("") : ""}
     </details>
   `;
 }
-
 function sendResearchToChat() {
   const result = state.lastResearchResult;
   if (!result) return;
   const input = qs("#chatInput");
   if (input) {
-    input.value = `Continue from this research report and help me act on it:\n\n${result.report || result.summary || ""}`;
+    input.value = `Continue from this research report and help me act on it:
+
+${result.report || result.summary || ""}`;
   }
   setView("chat");
   input?.focus();
 }
-
-// =============================================
-// Agents
-// =============================================
-
 async function loadAgents() {
   try {
     const payload = await api("/api/agents");
-    try { state.customAgents = JSON.parse(localStorage.getItem("oa-custom-agent-roles") || "[]"); } catch (_) { state.customAgents = []; }
-    state.agents = [...(payload.agents || []), ...state.customAgents];
+    try {
+      state.customAgents = JSON.parse(localStorage.getItem("oa-custom-agent-roles") || "[]");
+    } catch (_) {
+      state.customAgents = [];
+    }
+    state.agents = [...payload.agents || [], ...state.customAgents];
     const sel = qs("#agentSelect");
-    if (sel) sel.innerHTML = state.agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join("");
+    if (sel) sel.innerHTML = state.agents.map((a) => `<option value="${escapeHtml2(a.id)}">${escapeHtml2(a.name)}</option>`).join("");
     const grid = qs("#agentGrid");
     if (grid) {
-      grid.innerHTML = state.agents.map((a, index) => `<button class="agent-role-row ${index === 0 ? "active" : ""}" type="button" data-agent-role="${escapeHtml(a.id)}"><span class="agent-avatar">${escapeHtml((a.name || "A").slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(a.name)}</strong><small>${escapeHtml(a.id)}</small></span><i></i></button>`).join("");
-      qsa("[data-agent-role]", grid).forEach(button => button.addEventListener("click", () => {
+      grid.innerHTML = state.agents.map((a, index) => `<button class="agent-role-row ${index === 0 ? "active" : ""}" type="button" data-agent-role="${escapeHtml2(a.id)}"><span class="agent-avatar">${escapeHtml2((a.name || "A").slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml2(a.name)}</strong><small>${escapeHtml2(a.id)}</small></span><i></i></button>`).join("");
+      qsa("[data-agent-role]", grid).forEach((button) => button.addEventListener("click", () => {
         if (sel) sel.value = button.dataset.agentRole;
-        qsa("[data-agent-role]", grid).forEach(item => item.classList.toggle("active", item === button));
+        qsa("[data-agent-role]", grid).forEach((item) => item.classList.toggle("active", item === button));
       }));
     }
-  } catch(e) { console.warn("loadAgents", e); }
+  } catch (e) {
+    console.warn("loadAgents", e);
+  }
 }
-
 async function runAgent(endpoint = "/api/agents/run") {
   const selectedId = qs("#agentSelect")?.value || "executive";
-  const custom = state.customAgents.find(item => item.id === selectedId);
+  const custom = state.customAgents.find((item) => item.id === selectedId);
   const agentId = custom?.base_agent || selectedId;
   const requestedGoal = qs("#goalInput")?.value.trim() || "Review OpenAgent status";
-  const goal = custom ? `Role: ${custom.name}\nInstructions: ${custom.instructions}\n\nGoal: ${requestedGoal}` : requestedGoal;
+  const goal = custom ? `Role: ${custom.name}
+Instructions: ${custom.instructions}
+
+Goal: ${requestedGoal}` : requestedGoal;
   try {
     const payload = await api(endpoint, {
       method: "POST",
-      body: JSON.stringify({ agent: agentId, goal, project: getProject() }),
+      body: JSON.stringify({ agent: agentId, goal, project: getProject() })
     });
     renderAgentOutput(payload);
-  } catch(e) { toast("Agent error", e.message); }
+  } catch (e) {
+    toast("Agent error", e.message);
+  }
 }
-
 function openAgentRoleDialog(role = null) {
   const dialog = qs("#agentRoleDialog");
   if (!dialog) return;
-  const builtIns = state.agents.filter(item => !String(item.id).startsWith("custom:"));
+  const builtIns = state.agents.filter((item) => !String(item.id).startsWith("custom:"));
   const base = qs("#agentRoleBase");
-  if (base) base.innerHTML = builtIns.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  if (base) base.innerHTML = builtIns.map((item) => `<option value="${escapeHtml2(item.id)}">${escapeHtml2(item.name)}</option>`).join("");
   dialog.dataset.roleId = role?.id || "";
   qs("#agentRoleDialogTitle").textContent = role ? "Edit role" : "Create role";
   qs("#agentRoleName").value = role?.name || "";
@@ -3421,74 +3580,71 @@ function openAgentRoleDialog(role = null) {
   qs("#deleteAgentRole")?.toggleAttribute("hidden", !role);
   dialog.showModal();
 }
-
 function saveAgentRole() {
   const dialog = qs("#agentRoleDialog");
   const name = qs("#agentRoleName")?.value.trim();
   const instructions = qs("#agentRoleInstructions")?.value.trim();
-  if (!name || !instructions) { toast("Role needs a name and instructions"); return; }
+  if (!name || !instructions) {
+    toast("Role needs a name and instructions");
+    return;
+  }
   const previousId = dialog?.dataset.roleId || "";
   const id = previousId || `custom:${crypto.randomUUID()}`;
   const role = { id, name, description: instructions.slice(0, 140), instructions, base_agent: qs("#agentRoleBase")?.value || "executive", custom: true };
-  state.customAgents = [...state.customAgents.filter(item => item.id !== id), role];
+  state.customAgents = [...state.customAgents.filter((item) => item.id !== id), role];
   localStorage.setItem("oa-custom-agent-roles", JSON.stringify(state.customAgents));
   dialog?.close();
   loadAgents();
   toast("Role saved", name);
 }
-
 function deleteAgentRole() {
   const dialog = qs("#agentRoleDialog");
   const id = dialog?.dataset.roleId || "";
   if (!id || !window.confirm("Delete this custom role?")) return;
-  state.customAgents = state.customAgents.filter(item => item.id !== id);
+  state.customAgents = state.customAgents.filter((item) => item.id !== id);
   localStorage.setItem("oa-custom-agent-roles", JSON.stringify(state.customAgents));
   dialog?.close();
   loadAgents();
 }
-
 async function runParallelAgents() {
   const goal = qs("#goalInput")?.value.trim() || "Review OpenAgent";
   try {
     const tasks = [
       { agent: "research", goal },
-      { agent: "planning", goal },
+      { agent: "planning", goal }
     ];
     const payload = await api("/api/agents/parallel", {
       method: "POST",
-      body: JSON.stringify({ tasks, project: getProject() }),
+      body: JSON.stringify({ tasks, project: getProject() })
     });
     renderAgentOutput(payload);
-  } catch(e) { toast("Parallel agent error", e.message); }
+  } catch (e) {
+    toast("Parallel agent error", e.message);
+  }
 }
-
 function renderAgentOutput(payload = {}) {
   const el = qs("#agentOutput");
   if (!el) return;
   const runs = payload.results || payload.runs || (payload.run ? [payload.run] : []);
   const approval = payload.approval || payload.pending_approval || null;
   const approvalMarkup = approval ? `<div class="voice-runtime-card">
-    <div><strong>Approval required</strong><p>${escapeHtml(approval.reason || approval.action || "Human approval checkpoint is waiting.")}</p></div>
+    <div><strong>Approval required</strong><p>${escapeHtml2(approval.reason || approval.action || "Human approval checkpoint is waiting.")}</p></div>
     <span class="badge badge-warning">pending</span>
   </div>` : "";
-  const renderedRuns = runs.length ? runs.map(item => {
+  const renderedRuns = runs.length ? runs.map((item) => {
     const run = item.run || item;
     const response = run.response ?? item.response ?? {};
-    const content = typeof response === "string"
-      ? response
-      : response.content || response.summary || run.summary || item.summary || JSON.stringify(response || run, null, 2);
+    const content = typeof response === "string" ? response : response.content || response.summary || run.summary || item.summary || JSON.stringify(response || run, null, 2);
     const agent = run.agent || response.agent || item.task?.agent || payload.agent || "agent";
     const execution = run.metadata || response.metadata || {};
-    const runtimeLabel = execution.provider
-      ? `${execution.provider} · ${execution.model || "model"}`
-      : execution.degraded ? "Local fallback" : "Completed";
+    const runtimeLabel = execution.provider ? `${execution.provider} \xB7 ${execution.model || "model"}` : execution.degraded ? "Local fallback" : "Completed";
     return `<article class="list-item agent-output-card">
       <div class="list-item-row">
         <div>
-          <strong>${escapeHtml(agent)}</strong>
+          <strong>${escapeHtml2(agent)}</strong>
           <p>${renderMarkdown(content)}</p>
         </div>
-        <span class="badge ${execution.degraded ? "badge-warning" : "badge-success"}">${escapeHtml(runtimeLabel)}</span>
+        <span class="badge ${execution.degraded ? "badge-warning" : "badge-success"}">${escapeHtml2(runtimeLabel)}</span>
       </div>
     </article>`;
   }).join("") : `<div class="knowledge-summary-card"><strong>Agent response</strong><p>${renderMarkdown(
@@ -3496,67 +3652,52 @@ function renderAgentOutput(payload = {}) {
   )}</p></div>`;
   el.innerHTML = `${approvalMarkup}${renderedRuns}`;
 }
-
-// =============================================
-// Providers / Models
-// =============================================
-
 async function loadProviders() {
   try {
     const payload = await api("/api/models");
     state.providers = payload.providers || [];
-    const sel = qs("#providerSelect");
-    if (sel) sel.innerHTML = state.providers.map(p => {
-      const label = `${p.label || p.id}${p.available ? "" : " (setup needed)"}`;
-      return `<option value="${escapeHtml(p.id)}">${escapeHtml(label)}</option>`;
-    }).join("");
+    const sel = qs("#settingChatProvider");
+    if (sel) {
+      const current = state.modelSettings.chatProvider || "auto";
+      sel.innerHTML = [`<option value="auto">Automatic local routing</option>`, ...state.providers.map((p) => {
+        const label2 = `${p.label || p.id}${p.available ? "" : " (setup needed)"}`;
+        return `<option value="${escapeHtml2(p.id)}">${escapeHtml2(label2)}</option>`;
+      })].join("");
+      sel.value = [...sel.options].some((option) => option.value === current) ? current : "auto";
+    }
     const cards = qs("#providerCards");
-    if (cards) cards.innerHTML = state.providers.map(p => {
+    if (cards) cards.innerHTML = state.providers.map((p) => {
       const installed = Array.isArray(p.installed_models) ? p.installed_models : [];
-      const detail = p.id === "ollama" && installed.length
-        ? `Selected ${p.selected_model || installed[0]} · ${installed.length} installed`
-        : p.privacy_warning || "Local-first provider.";
-      const badge = p.id === "ollama" && installed.length && !p.default_model_ready
-        ? "Installed model"
-        : p.available ? "Available" : "Setup needed";
+      const detail = p.id === "ollama" && installed.length ? `Selected ${p.selected_model || installed[0]} \xB7 ${installed.length} installed` : p.privacy_warning || "Local-first provider.";
+      const badge = p.id === "ollama" && installed.length && !p.default_model_ready ? "Installed model" : p.available ? "Available" : "Setup needed";
       return `<article class="provider-tile">
-        <strong>${escapeHtml(p.label || p.id)}</strong>
-        <p>${escapeHtml(detail)}</p>
-        <span class="badge ${p.available ? "badge-success" : "badge-warn"}">${escapeHtml(badge)}</span>
+        <strong>${escapeHtml2(p.label || p.id)}</strong>
+        <p>${escapeHtml2(detail)}</p>
+        <span class="badge ${p.available ? "badge-success" : "badge-warn"}">${escapeHtml2(badge)}</span>
        </article>`;
     }).join("");
-    updateProviderWarning();
-  } catch(e) { console.warn("loadProviders", e); }
+  } catch (e) {
+    console.warn("loadProviders", e);
+  }
 }
-
-function updateProviderWarning() {
-  const sel = qs("#providerSelect");
-  const warn = qs("#providerWarning");
-  if (!sel || !warn) return;
-  const selected = state.providers.find(p => p.id === sel.value);
-  if (!selected) return;
-  const installed = Array.isArray(selected.installed_models) ? selected.installed_models : [];
-  warn.textContent = selected.id === "ollama" && installed.length
-    ? `Ollama local server ready. OpenAgent will use ${selected.selected_model || installed[0]} for this turn.`
-    : selected.privacy_warning || "Local-first routing.";
-}
-
 async function discoverModels() {
   try {
     const payload = await api("/api/models/discover", { method: "POST" });
     setOutput("#modelPolicyOutput", payload);
     toast("Discovery complete", `Found ${(payload.discovered || []).length} models`);
     loadProviders();
-  } catch(e) { toast("Discovery error", e.message); }
+  } catch (e) {
+    toast("Discovery error", e.message);
+  }
 }
-
 async function loadModelPolicy() {
   try {
     const payload = await api("/api/model-policy");
     setOutput("#modelPolicyOutput", payload);
-  } catch(e) { console.warn("loadModelPolicy", e); }
+  } catch (e) {
+    console.warn("loadModelPolicy", e);
+  }
 }
-
 async function loadSmoothRuntime(task = "chat") {
   try {
     const params = new URLSearchParams({ task, quantization_mode: state.modelSettings.quantizationMode || "auto" });
@@ -3565,12 +3706,11 @@ async function loadSmoothRuntime(task = "chat") {
     state.smoothRuntime = payload;
     renderSmoothRuntime(payload);
     return payload;
-  } catch(e) {
+  } catch (e) {
     toast("Smooth mode error", e.message);
     throw e;
   }
 }
-
 function renderSmoothRuntime(payload) {
   const profile = payload.profile || {};
   const badge = qs("#smoothRuntimeBadge");
@@ -3584,10 +3724,10 @@ function renderSmoothRuntime(payload) {
       ["Task", payload.task || "chat"],
       ["RAM", `${profile.ram_gb || "?"} GB`],
       ["Quant", `${profile.quantization_method || "Q4"} / ${profile.quantization_bits || 4}-bit`],
-      ["Context", profile.context_tokens || "auto"],
+      ["Context", profile.context_tokens || "auto"]
     ];
-    summary.innerHTML = items.map(([label, value]) =>
-      `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></article>`
+    summary.innerHTML = items.map(
+      ([label2, value]) => `<article class="metric-card"><span>${escapeHtml2(label2)}</span><strong>${escapeHtml2(String(value))}</strong></article>`
     ).join("");
   }
   const profiles = qs("#smoothModelProfiles");
@@ -3596,28 +3736,27 @@ function renderSmoothRuntime(payload) {
     profiles.innerHTML = `
       <section class="feature-section">
         <div class="feature-section-header">
-          <strong>Recommended model: ${escapeHtml(payload.recommended_model || "")}</strong>
-          <span class="badge badge-info">${escapeHtml(profile.tier || "auto")}</span>
+          <strong>Recommended model: ${escapeHtml2(payload.recommended_model || "")}</strong>
+          <span class="badge badge-info">${escapeHtml2(profile.tier || "auto")}</span>
         </div>
-        ${rows.map(row => `
+        ${rows.map((row) => `
           <article class="feature-row">
             <div>
-              <strong>${escapeHtml(row.task)} · ${escapeHtml(row.model)}</strong>
-              <p>${escapeHtml(row.notes || "")}</p>
+              <strong>${escapeHtml2(row.task)} \xB7 ${escapeHtml2(row.model)}</strong>
+              <p>${escapeHtml2(row.notes || "")}</p>
             </div>
-            <span class="badge badge-success">${escapeHtml(row.quantization || "local")}</span>
+            <span class="badge badge-success">${escapeHtml2(row.quantization || "local")}</span>
           </article>
         `).join("")}
       </section>`;
   }
   setOutput("#modelPolicyOutput", payload);
 }
-
 async function autoQuantizeRegisteredModel() {
   try {
     const modelsPayload = await api("/api/local-ai/models");
     const models = modelsPayload.models || [];
-    const model = models.find(m => m.status === "available") || models[0];
+    const model = models.find((m) => m.status === "available") || models[0];
     if (!model) {
       const message = "Register or download a local model first, then OpenAgent can record a RAM-safe quantization plan for it.";
       setOutput("#modelPolicyOutput", { error: message });
@@ -3631,88 +3770,71 @@ async function autoQuantizeRegisteredModel() {
       body: JSON.stringify({
         model_id: model.id,
         task,
-        target_ram_gb: targetRam || undefined,
+        target_ram_gb: targetRam || void 0,
         quantization_mode: state.modelSettings.quantizationMode || "auto",
-        parameter_count_b: state.modelSettings.parameterCountB || undefined,
-      }),
+        parameter_count_b: state.modelSettings.parameterCountB || void 0
+      })
     });
     setOutput("#modelPolicyOutput", payload);
     toast(
       "Quantization plan created",
       `${model.name || model.id}: ${payload.profile?.quantization_method || "smooth"}`
     );
-  } catch(e) {
+  } catch (e) {
     toast("Auto-quantize error", e.message);
   }
 }
-
-// =============================================
-// Workspace
-// =============================================
-
 async function loadWorkspaceItems() {
   const q = qs("#workspaceSearch")?.value.trim() || "";
   const payload = await api(`/api/workspace/items?project=${encodeURIComponent(getProject())}&q=${encodeURIComponent(q)}&limit=12`);
-  const hiddenFixtureTitles = new Set(["desktop smoke document", "hard audit", "audit dashboard", "audit template"]);
-  const items = (payload.items || []).filter(item => !hiddenFixtureTitles.has(String(item.title || "").trim().toLowerCase()));
+  const hiddenFixtureTitles = /* @__PURE__ */ new Set(["desktop smoke document", "hard audit", "audit dashboard", "audit template"]);
+  const items = (payload.items || []).filter((item) => !hiddenFixtureTitles.has(String(item.title || "").trim().toLowerCase()));
   const el = qs("#workspaceItems");
-  if (el) el.innerHTML = items.length
-    ? items.map(i => `<button class="document-list-item" type="button" data-workspace-title="${escapeHtml(i.title)}" data-workspace-content="${escapeHtml(i.content || "")}"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.kind || "document")}</span></button>`).join("")
-    : `<div class="document-empty">No documents yet</div>`;
-  qsa("[data-workspace-title]", el).forEach(item => item.addEventListener("click", () => {
-    const title = qs("#workspaceTitle"); const content = qs("#workspaceContent");
+  if (el) el.innerHTML = items.length ? items.map((i) => `<button class="document-list-item" type="button" data-workspace-title="${escapeHtml2(i.title)}" data-workspace-content="${escapeHtml2(i.content || "")}"><strong>${escapeHtml2(i.title)}</strong><span>${escapeHtml2(i.kind || "document")}</span></button>`).join("") : `<div class="document-empty">No documents yet</div>`;
+  qsa("[data-workspace-title]", el).forEach((item) => item.addEventListener("click", () => {
+    const title = qs("#workspaceTitle");
+    const content = qs("#workspaceContent");
     if (title) title.value = item.dataset.workspaceTitle || "";
     if (content) content.value = item.dataset.workspaceContent || "";
   }));
 }
-
 async function createWorkspaceItem() {
   const title = qs("#workspaceTitle")?.value.trim();
   const content = qs("#workspaceContent")?.value.trim() || "";
   const kind = qs("#workspaceKind")?.value || "note";
-  if (!title) { toast("Title required"); return; }
+  if (!title) {
+    toast("Title required");
+    return;
+  }
   try {
     const payload = await api("/api/workspace/items", {
       method: "POST",
-      body: JSON.stringify({ title, content, kind, project: getProject() }),
+      body: JSON.stringify({ title, content, kind, project: getProject() })
     });
     setOutput("#workspaceOutput", payload);
     qs("#workspaceTitle").value = "";
     qs("#workspaceContent").value = "";
     loadWorkspaceItems();
-  } catch(e) { toast("Workspace error", e.message); }
+  } catch (e) {
+    toast("Workspace error", e.message);
+  }
 }
-
-// =============================================
-// Knowledge & File upload
-// =============================================
-
 async function loadKnowledgeStatus() {
   const [payload, rag] = await Promise.all([
     api(`/api/knowledge/status?project=${encodeURIComponent(getProject())}`),
-    api(`/api/rag/status?project=${encodeURIComponent(getProject())}`),
+    api(`/api/rag/status?project=${encodeURIComponent(getProject())}`)
   ]);
   state.knowledge.status = payload;
   state.knowledge.rag = rag;
-  const backendStatus = qs("#ragBackendStatus");
   const accelerators = rag.vector_store?.active_accelerators || [];
-  if (backendStatus) {
-    backendStatus.innerHTML = [
-      payload.fts_available ? "FTS5 ready" : "Lexical fallback",
-      ...(accelerators.length ? accelerators.map(name => `${name.toUpperCase()} ready`) : ["SQLite vector fallback"]),
-      rag.algorithm || "Advanced RAG ready",
-    ].map(label => `<span>${escapeHtml(label)}</span>`).join("");
-  }
   const embeddingSelect = qs("#knowledgeEmbeddingProvider");
   if (embeddingSelect) {
     const providers = rag.vector_store?.embedding_providers || [];
-    const fastembed = providers.find(provider => provider.id === "fastembed");
-    const option = [...embeddingSelect.options].find(item => item.value === "fastembed");
+    const fastembed = providers.find((provider) => provider.id === "fastembed");
+    const option = [...embeddingSelect.options].find((item) => item.value === "fastembed");
     if (option) {
       option.disabled = !fastembed?.available;
-      option.textContent = fastembed?.available
-        ? `FastEmbed · ${fastembed.model || "local"}`
-        : "FastEmbed · setup needed";
+      option.textContent = fastembed?.available ? `FastEmbed \xB7 ${fastembed.model || "local"}` : "FastEmbed \xB7 setup needed";
       if (option.disabled && embeddingSelect.value === "fastembed") embeddingSelect.value = "local-hash";
     }
   }
@@ -3720,37 +3842,25 @@ async function loadKnowledgeStatus() {
   if (!state.knowledge.hasResult) renderKnowledgeLanding();
   return { payload, rag };
 }
-
 function setKnowledgeOutput(html, { result = true } = {}) {
-  for (const el of [qs("#knowledgeOutput"), qs("#knowledgeWorkspaceOutput")]) {
-    if (!el) continue;
+  const el = qs("#knowledgeWorkspaceOutput");
+  if (el) {
     el.innerHTML = html;
     el.dataset.knowledgeResult = result ? "true" : "false";
   }
   state.knowledge.hasResult = result;
 }
-
 function renderKnowledgeLanding() {
   const payload = state.knowledge.status || {};
   const rag = state.knowledge.rag || {};
   setKnowledgeOutput(`
     <div class="knowledge-empty-state">
-      <span>✦</span>
+      <span>\u2726</span>
       <strong>${payload.documents ? "Search your local sources" : "Build a local source library"}</strong>
-      <p>${payload.documents
-        ? `${payload.documents} source${payload.documents === 1 ? "" : "s"} and ${payload.chunks || 0} indexed chunks are ready for retrieval.`
-        : "Add a PDF, document, note, or dataset to begin."}</p>
+      <p>${payload.documents ? `${payload.documents} source${payload.documents === 1 ? "" : "s"} and ${payload.chunks || 0} indexed chunks are ready for retrieval.` : "Add a PDF, document, note, or dataset to begin."}</p>
     </div>
   `, { result: false });
-  const output = qs("#knowledgeOutput");
-  if (output) output.innerHTML = `
-    <div class="knowledge-summary-card">
-      <strong>Knowledge index</strong>
-      <p>${escapeHtml(payload.fts_available ? "Full-text retrieval is enabled." : "Fallback lexical retrieval is enabled.")} ${escapeHtml(rag.algorithm || "Local retrieval is ready.")}</p>
-    </div>
-  `;
 }
-
 function renderKnowledgeIndexStatus() {
   const status = state.knowledge.status || {};
   const rag = state.knowledge.rag || {};
@@ -3759,23 +3869,22 @@ function renderKnowledgeIndexStatus() {
   const accelerators = rag.vector_store?.active_accelerators || [];
   const retrieval = [
     status.fts_available ? "Full-text" : "Lexical",
-    accelerators.length ? accelerators.map(item => String(item).toUpperCase()).join(" + ") : "Local vectors",
+    accelerators.length ? accelerators.map((item) => String(item).toUpperCase()).join(" + ") : "Local vectors"
   ];
   el.innerHTML = `
-    <div><strong>${escapeHtml(String(status.documents ?? 0))}</strong><span>sources</span></div>
-    <div><strong>${escapeHtml(String(status.chunks ?? 0))}</strong><span>chunks</span></div>
-    <div><strong>${escapeHtml(String(status.entities ?? 0))}</strong><span>entities</span></div>
-    <p>${escapeHtml(retrieval.join(" · "))}</p>
+    <div><strong>${escapeHtml2(String(status.documents ?? 0))}</strong><span>sources</span></div>
+    <div><strong>${escapeHtml2(String(status.chunks ?? 0))}</strong><span>chunks</span></div>
+    <div><strong>${escapeHtml2(String(status.entities ?? 0))}</strong><span>entities</span></div>
+    <p>${escapeHtml2(retrieval.join(" \xB7 "))}</p>
   `;
 }
-
 async function loadKnowledgeWorkspace() {
   const project = encodeURIComponent(getProject());
   const [status, documents, tags, timeline] = await Promise.all([
     loadKnowledgeStatus(),
     api(`/api/knowledge/documents?project=${project}&limit=200`),
     api(`/api/knowledge/tags?project=${project}&limit=48`),
-    api(`/api/knowledge/timeline?project=${project}&limit=8`),
+    api(`/api/knowledge/timeline?project=${project}&limit=8`)
   ]);
   state.knowledge.status = status.payload;
   state.knowledge.rag = status.rag;
@@ -3785,26 +3894,23 @@ async function loadKnowledgeWorkspace() {
   renderKnowledgeLibrary();
   renderKnowledgeInspector();
 }
-
 function renderKnowledgeLibrary() {
   const list = qs("#knowledgeDocumentList");
   const summary = qs("#knowledgeLibrarySummary");
   if (!list || !summary) return;
   const filter = state.knowledge.filter.trim().toLowerCase();
-  const documents = state.knowledge.documents.filter(document => {
+  const documents = state.knowledge.documents.filter((document2) => {
     if (!filter) return true;
-    return [document.title, document.source, ...(document.tags || [])]
-      .join(" ").toLowerCase().includes(filter);
+    return [document2.title, document2.source, ...document2.tags || []].join(" ").toLowerCase().includes(filter);
   });
   summary.textContent = `${documents.length} of ${state.knowledge.documents.length} sources`;
-  list.innerHTML = documents.length ? documents.map(document => `
-    <button class="knowledge-document${document.id === state.knowledge.selectedDocumentId ? " active" : ""}" type="button" data-knowledge-document="${escapeHtml(document.id)}">
-      <span class="knowledge-document-icon">${escapeHtml(knowledgeSourceIcon(document.source))}</span>
-      <span class="knowledge-document-copy"><strong>${escapeHtml(document.title || "Untitled source")}</strong><small>${escapeHtml(String(document.chunk_count || 0))} chunks · ${escapeHtml(formatCompactDate(document.created_at))}</small></span>
+  list.innerHTML = documents.length ? documents.map((document2) => `
+    <button class="knowledge-document${document2.id === state.knowledge.selectedDocumentId ? " active" : ""}" type="button" data-knowledge-document="${escapeHtml2(document2.id)}">
+      <span class="knowledge-document-icon">${escapeHtml2(knowledgeSourceIcon(document2.source))}</span>
+      <span class="knowledge-document-copy"><strong>${escapeHtml2(document2.title || "Untitled source")}</strong><small>${escapeHtml2(String(document2.chunk_count || 0))} chunks \xB7 ${escapeHtml2(formatCompactDate(document2.created_at))}</small></span>
     </button>
   `).join("") : `<div class="knowledge-library-empty">${state.knowledge.documents.length ? "No sources match this filter." : "No local sources yet."}</div>`;
 }
-
 function knowledgeSourceIcon(source) {
   const value = String(source || "").toLowerCase();
   if (value.includes("pdf")) return "PDF";
@@ -3813,46 +3919,43 @@ function knowledgeSourceIcon(source) {
   if (value.includes("note") || value.includes("manual")) return "NOTE";
   return "DOC";
 }
-
 function formatCompactDate(value) {
   if (!value) return "local";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "local";
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
-
 function renderKnowledgeInspector() {
   const tagList = qs("#knowledgeWorkspaceTags");
   const timeline = qs("#knowledgeTimelinePreview");
   if (tagList) {
-    const tags = [...new Map(state.knowledge.tags.map(tag => [tag.tag, tag])).values()].slice(0, 14);
-    tagList.innerHTML = tags.length ? tags.map(tag => `<button type="button" data-knowledge-tag="${escapeHtml(tag.tag)}">${escapeHtml(tag.tag)}</button>`).join("") : `<span class="knowledge-muted">Tags appear after sources are indexed.</span>`;
+    const tags = [...new Map(state.knowledge.tags.map((tag) => [tag.tag, tag])).values()].slice(0, 14);
+    tagList.innerHTML = tags.length ? tags.map((tag) => `<button type="button" data-knowledge-tag="${escapeHtml2(tag.tag)}">${escapeHtml2(tag.tag)}</button>`).join("") : `<span class="knowledge-muted">Tags appear after sources are indexed.</span>`;
   }
   if (timeline) {
     const items = state.knowledge.timeline.slice(0, 5);
-    timeline.innerHTML = items.length ? items.map(item => `<button type="button" data-knowledge-timeline="${escapeHtml(item.source_id || "")}"><span>${escapeHtml(formatCompactDate(item.timestamp))}</span><strong>${escapeHtml(item.title || item.type || "Source activity")}</strong></button>`).join("") : `<span class="knowledge-muted">No source activity yet.</span>`;
+    timeline.innerHTML = items.length ? items.map((item) => `<button type="button" data-knowledge-timeline="${escapeHtml2(item.source_id || "")}"><span>${escapeHtml2(formatCompactDate(item.timestamp))}</span><strong>${escapeHtml2(item.title || item.type || "Source activity")}</strong></button>`).join("") : `<span class="knowledge-muted">No source activity yet.</span>`;
   }
 }
-
 function initKnowledgeWorkspace() {
   const fileInput = qs("#knowledgeLibraryFileInput");
   qs("#knowledgeAddFile")?.addEventListener("click", () => fileInput?.click());
-  fileInput?.addEventListener("change", async event => {
+  fileInput?.addEventListener("change", async (event) => {
     await uploadFiles([...event.target.files]);
     event.target.value = "";
   });
-  qs("#knowledgeLibraryFilter")?.addEventListener("input", event => {
+  qs("#knowledgeLibraryFilter")?.addEventListener("input", (event) => {
     state.knowledge.filter = event.target.value || "";
     renderKnowledgeLibrary();
   });
-  qsa("#knowledgeModeSearch, #knowledgeModeSynthesize, #knowledgeModeRag").forEach(button => {
+  qsa("#knowledgeModeSearch, #knowledgeModeSynthesize, #knowledgeModeRag").forEach((button) => {
     button.addEventListener("click", () => {
       state.knowledge.mode = button.dataset.knowledgeMode || "search";
-      qsa("#knowledgeModeSearch, #knowledgeModeSynthesize, #knowledgeModeRag").forEach(item => item.classList.toggle("active", item === button));
+      qsa("#knowledgeModeSearch, #knowledgeModeSynthesize, #knowledgeModeRag").forEach((item) => item.classList.toggle("active", item === button));
     });
   });
   qs("#runKnowledgeWorkspace")?.addEventListener("click", runKnowledgeWorkspace);
-  qs("#knowledgeWorkspaceQuery")?.addEventListener("keydown", event => {
+  qs("#knowledgeWorkspaceQuery")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       runKnowledgeWorkspace();
@@ -3861,10 +3964,9 @@ function initKnowledgeWorkspace() {
   qs("#showKnowledgeGraphWorkspace")?.addEventListener("click", showKnowledgeGraph);
   qs("#showKnowledgeTimeline")?.addEventListener("click", showKnowledgeTimeline);
 }
-
 async function runKnowledgeWorkspace() {
-  const query = qs("#knowledgeWorkspaceQuery")?.value.trim() || "";
-  if (!query) {
+  const query2 = qs("#knowledgeWorkspaceQuery")?.value.trim() || "";
+  if (!query2) {
     toast("Enter a knowledge question");
     qs("#knowledgeWorkspaceQuery")?.focus();
     return;
@@ -3872,19 +3974,18 @@ async function runKnowledgeWorkspace() {
   const button = qs("#runKnowledgeWorkspace");
   if (button) button.disabled = true;
   try {
-    if (state.knowledge.mode === "synthesize") await synthesizeKnowledge(query);
+    if (state.knowledge.mode === "synthesize") await synthesizeKnowledge(query2);
     else if (state.knowledge.mode === "rag") {
       await runAdvancedRag({
-        query,
+        query: query2,
         button,
-        generate: Boolean(qs("#knowledgeGenerateAnswer")?.checked),
+        generate: Boolean(qs("#knowledgeGenerateAnswer")?.checked)
       });
-    } else await searchKnowledge(query);
+    } else await searchKnowledge(query2);
   } finally {
     if (button) button.disabled = false;
   }
 }
-
 async function showKnowledgeGraph() {
   try {
     const payload = await api(`/api/knowledge/graph?project=${encodeURIComponent(getProject())}`);
@@ -3893,7 +3994,6 @@ async function showKnowledgeGraph() {
     toast("Knowledge graph unavailable", error.message);
   }
 }
-
 async function showKnowledgeTimeline() {
   try {
     const payload = await api(`/api/knowledge/timeline?project=${encodeURIComponent(getProject())}&limit=40`);
@@ -3901,53 +4001,56 @@ async function showKnowledgeTimeline() {
     state.knowledge.timeline = items;
     renderKnowledgeInspector();
     setKnowledgeOutput(`
-      <div class="knowledge-summary-card"><strong>Source timeline</strong><p>${escapeHtml(items.length)} local events in this project.</p></div>
+      <div class="knowledge-summary-card"><strong>Source timeline</strong><p>${escapeHtml2(items.length)} local events in this project.</p></div>
       <div class="knowledge-result-list">
-        ${items.length ? items.map(item => `<article class="list-item"><strong>${escapeHtml(item.title || item.type || "Source activity")}</strong><p>${escapeHtml(formatDateTime(item.timestamp) || "Local source activity")}</p></article>`).join("") : emptyState("No source activity yet.")}
+        ${items.length ? items.map((item) => `<article class="list-item"><strong>${escapeHtml2(item.title || item.type || "Source activity")}</strong><p>${escapeHtml2(formatDateTime(item.timestamp) || "Local source activity")}</p></article>`).join("") : emptyState("No source activity yet.")}
       </div>
     `);
   } catch (error) {
     toast("Timeline unavailable", error.message);
   }
 }
-
 function selectKnowledgeDocument(documentId) {
-  const document = state.knowledge.documents.find(item => item.id === documentId);
-  if (!document) return;
-  state.knowledge.selectedDocumentId = document.id;
+  const document2 = state.knowledge.documents.find((item) => item.id === documentId);
+  if (!document2) return;
+  state.knowledge.selectedDocumentId = document2.id;
   renderKnowledgeLibrary();
-  const query = qs("#knowledgeWorkspaceQuery");
-  if (query && !query.value.trim()) query.value = `What does ${document.title} cover?`;
+  const query2 = qs("#knowledgeWorkspaceQuery");
+  if (query2 && !query2.value.trim()) query2.value = `What does ${document2.title} cover?`;
 }
-
 function initUpload() {
   const zone = qs("#uploadZone");
   const input = qs("#fileInput");
   if (!zone || !input) return;
-
   zone.addEventListener("click", () => input.click());
-  zone.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") input.click(); });
-  input.addEventListener("change", e => uploadFiles([...e.target.files]));
-
-  zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag-over"); });
+  zone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") input.click();
+  });
+  input.addEventListener("change", (e) => uploadFiles([...e.target.files]));
+  zone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    zone.classList.add("drag-over");
+  });
   zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
-  zone.addEventListener("drop", e => {
+  zone.addEventListener("drop", (e) => {
     e.preventDefault();
     zone.classList.remove("drag-over");
     uploadFiles([...e.dataTransfer.files]);
   });
 }
-
 async function uploadFiles(files) {
   for (const file of files) await uploadFile(file);
   const input = qs("#fileInput");
   if (input) input.value = "";
-  await loadKnowledgeWorkspace().catch(() => {});
+  await loadKnowledgeWorkspace().catch(() => {
+  });
 }
-
 async function uploadFile(file) {
   const status = qs("#uploadStatus");
-  if (status) { status.style.display = "block"; status.textContent = `Uploading ${file.name}…`; }
+  if (status) {
+    status.hidden = false;
+    status.textContent = `Uploading ${file.name}\u2026`;
+  }
   const formData = new FormData();
   formData.append("file", file);
   formData.append("project", getProject());
@@ -3956,67 +4059,79 @@ async function uploadFile(file) {
     const res = await fetch("/api/knowledge/upload", { method: "POST", body: formData });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Upload failed");
-    if (status) status.textContent = `✅ Ingested: ${file.name}`;
+    if (status) status.textContent = `\u2705 Ingested: ${file.name}`;
     renderKnowledgeIngest(data.document || data, `Ingested ${file.name}`);
     toast("File ingested", file.name);
-  } catch(e) {
+  } catch (e) {
     if (status) status.textContent = `Error: ${e.message}`;
     toast("Upload error", e.message);
   }
 }
-
 async function ingestKnowledge() {
   const title = qs("#knowledgeTitle")?.value.trim();
   const content = qs("#knowledgeContent")?.value.trim();
-  if (!title || !content) { toast("Title and content required"); return; }
+  if (!title || !content) {
+    toast("Title and content required");
+    return;
+  }
   try {
     const payload = await api("/api/knowledge/ingest", {
       method: "POST",
-      body: JSON.stringify({ title, content, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" }),
+      body: JSON.stringify({ title, content, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" })
     });
     renderKnowledgeIngest(payload.document || payload, "Text ingested");
-    await loadKnowledgeWorkspace().catch(() => {});
+    await loadKnowledgeWorkspace().catch(() => {
+    });
     toast("Ingested", title);
-  } catch(e) { toast("Ingest error", e.message); }
+  } catch (e) {
+    toast("Ingest error", e.message);
+  }
 }
-
-async function searchKnowledge(query = "") {
-  const q = query.trim() || qs("#knowledgeQuery")?.value.trim() || "";
+async function searchKnowledge(query2 = "") {
+  const q = query2.trim() || qs("#knowledgeWorkspaceQuery")?.value.trim() || "";
   if (!q) return;
   try {
     const payload = await api("/api/knowledge/hybrid-search", {
       method: "POST",
-      body: JSON.stringify({ query: q, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" }),
+      body: JSON.stringify({ query: q, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" })
     });
     renderKnowledgeSearch(q, payload.results || []);
-  } catch(e) { toast("Search error", e.message); }
+  } catch (e) {
+    toast("Search error", e.message);
+  }
 }
-
-async function synthesizeKnowledge(query = "") {
-  const q = query.trim() || qs("#knowledgeQuery")?.value.trim() || "summary";
+async function synthesizeKnowledge(query2 = "") {
+  const q = query2.trim() || qs("#knowledgeWorkspaceQuery")?.value.trim() || "summary";
   try {
     const payload = await api("/api/knowledge/synthesize", {
       method: "POST",
-      body: JSON.stringify({ query: q, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" }),
+      body: JSON.stringify({ query: q, project: getProject(), embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "" })
     });
     renderKnowledgeSynthesis(payload);
-  } catch(e) { toast("Synthesis error", e.message); }
+  } catch (e) {
+    toast("Synthesis error", e.message);
+  }
 }
-
 async function runAdvancedRag(options = {}) {
-  const query = String(options.query || qs("#knowledgeQuery")?.value || "").trim();
-  if (!query) { toast("Enter a knowledge question first"); return; }
-  const button = options.button || qs("#runAdvancedRag");
+  const query2 = String(options.query || qs("#knowledgeWorkspaceQuery")?.value || "").trim();
+  if (!query2) {
+    toast("Enter a knowledge question first");
+    return;
+  }
+  const button = options.button || qs("#runKnowledgeWorkspace");
   const original = button?.textContent || "Deep RAG";
-  if (button) { button.disabled = true; button.textContent = "Retrieving…"; }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Retrieving\u2026";
+  }
   try {
     const generate = options.generate ?? Boolean(qs("#ragGenerate")?.checked);
-    const provider = qs("#providerSelect")?.value || "auto";
+    const provider = state.modelSettings.chatProvider || "auto";
     const model = provider === "auto" ? "" : normalizeKnownModelName(state.modelSettings.chatModel || "");
     const payload = await api("/api/rag/query", {
       method: "POST",
       body: JSON.stringify({
-        query,
+        query: query2,
         project: getProject(),
         limit: 8,
         context_token_budget: 1200,
@@ -4025,17 +4140,19 @@ async function runAdvancedRag(options = {}) {
         model,
         allow_external: false,
         use_cache: true,
-        embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || "",
-      }),
+        embedding_provider: qs("#knowledgeEmbeddingProvider")?.value || ""
+      })
     });
     renderAdvancedRag(payload);
-  } catch(e) {
+  } catch (e) {
     toast("Deep RAG error", e.message);
   } finally {
-    if (button) { button.disabled = false; button.textContent = original; }
+    if (button) {
+      button.disabled = false;
+      button.textContent = original;
+    }
   }
 }
-
 function renderAdvancedRag(payload) {
   const sources = payload.sources || [];
   const confidence = payload.confidence || {};
@@ -4046,71 +4163,68 @@ function renderAdvancedRag(payload) {
     <div class="knowledge-summary-card rag-answer-card">
       <div class="list-item-row">
         <strong>Grounded answer</strong>
-        <span class="badge ${confidence.level === "high" ? "badge-success" : confidence.level === "low" || confidence.level === "insufficient" ? "badge-error" : "badge-info"}">${escapeHtml(confidence.level || "unknown")}</span>
+        <span class="badge ${confidence.level === "high" ? "badge-success" : confidence.level === "low" || confidence.level === "insufficient" ? "badge-error" : "badge-info"}">${escapeHtml2(confidence.level || "unknown")}</span>
       </div>
       <p>${renderMarkdown(payload.answer || "No grounded answer returned.")}</p>
     </div>
     <div class="research-meta-grid">
-      <article><span>Confidence</span><strong>${escapeHtml(confidence.score != null ? `${Math.round(Number(confidence.score) * 100)}%` : "n/a")}</strong></article>
-      <article><span>Sources</span><strong>${escapeHtml(sources.length)}</strong></article>
-      <article><span>Latency</span><strong>${escapeHtml(Number(payload.latency_ms || 0).toFixed(1))} ms</strong></article>
+      <article><span>Confidence</span><strong>${escapeHtml2(confidence.score != null ? `${Math.round(Number(confidence.score) * 100)}%` : "n/a")}</strong></article>
+      <article><span>Sources</span><strong>${escapeHtml2(sources.length)}</strong></article>
+      <article><span>Latency</span><strong>${escapeHtml2(Number(payload.latency_ms || 0).toFixed(1))} ms</strong></article>
       <article><span>Cache</span><strong>${cache.hit ? "hit" : "fresh"}</strong></article>
     </div>
     <div class="mini-chip-row">
-      ${(retrieval.techniques || []).map(item => `<span>${escapeHtml(item)}</span>`).join("")}
+      ${(retrieval.techniques || []).map((item) => `<span>${escapeHtml2(item)}</span>`).join("")}
     </div>
-    ${conflicts.length ? `<div class="notice notice-warning"><strong>Evidence conflict detected</strong><p>${escapeHtml(conflicts.map(item => item.reason).join(" "))}</p></div>` : ""}
+    ${conflicts.length ? `<div class="notice notice-warning"><strong>Evidence conflict detected</strong><p>${escapeHtml2(conflicts.map((item) => item.reason).join(" "))}</p></div>` : ""}
     <div class="knowledge-result-list rag-source-list">
-      ${sources.length ? sources.map(source => `
+      ${sources.length ? sources.map((source) => `
         <article class="list-item">
           <div class="list-item-row">
             <div>
-              <strong>[${escapeHtml(source.citation || "S")}] ${escapeHtml(source.title || "Local source")}</strong>
-              <p>${escapeHtml((source.retrieval || []).join(" · ") || "local evidence")}</p>
+              <strong>[${escapeHtml2(source.citation || "S")}] ${escapeHtml2(source.title || "Local source")}</strong>
+              <p>${escapeHtml2((source.retrieval || []).join(" \xB7 ") || "local evidence")}</p>
             </div>
-            <span class="badge">${escapeHtml(Number(source.score || 0).toFixed(3))}</span>
+            <span class="badge">${escapeHtml2(Number(source.score || 0).toFixed(3))}</span>
           </div>
         </article>
       `).join("") : emptyState("No evidence met the grounding threshold.")}
     </div>
   `);
 }
-
-function renderKnowledgeIngest(document, title = "Knowledge saved") {
-  const tags = document.tags || [];
+function renderKnowledgeIngest(document2, title = "Knowledge saved") {
+  const tags = document2.tags || [];
   setKnowledgeOutput(`
     <div class="knowledge-summary-card">
-      <strong>${escapeHtml(title)}</strong>
-      <p>${escapeHtml(document.title || "Document")} · ${escapeHtml(document.chunk_count ?? 0)} chunks · source ${escapeHtml(document.source || "local")}</p>
+      <strong>${escapeHtml2(title)}</strong>
+      <p>${escapeHtml2(document2.title || "Document")} \xB7 ${escapeHtml2(document2.chunk_count ?? 0)} chunks \xB7 source ${escapeHtml2(document2.source || "local")}</p>
     </div>
     <div class="mini-chip-row">
-      ${tags.length ? tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join("") : `<span>No automatic tags yet</span>`}
+      ${tags.length ? tags.map((tag) => `<span>${escapeHtml2(tag)}</span>`).join("") : `<span>No automatic tags yet</span>`}
     </div>
   `);
 }
-
-function renderKnowledgeSearch(query, results) {
+function renderKnowledgeSearch(query2, results) {
   setKnowledgeOutput(`
     <div class="knowledge-summary-card">
-      <strong>${escapeHtml(results.length)} results</strong>
-      <p>${escapeHtml(query)} · ranked with local hybrid retrieval.</p>
+      <strong>${escapeHtml2(results.length)} results</strong>
+      <p>${escapeHtml2(query2)} \xB7 ranked with local hybrid retrieval.</p>
     </div>
     <div class="knowledge-result-list">
-      ${results.length ? results.map(result => `
+      ${results.length ? results.map((result) => `
         <article class="list-item">
           <div class="list-item-row">
             <div>
-              <strong>${escapeHtml(result.title || "Knowledge chunk")}</strong>
-              <p>${escapeHtml(result.content || result.snippet || "")}</p>
+              <strong>${escapeHtml2(result.title || "Knowledge chunk")}</strong>
+              <p>${escapeHtml2(result.content || result.snippet || "")}</p>
             </div>
-            <span class="badge">${escapeHtml(result.score != null ? Number(result.score).toFixed(2) : result.type || "local")}</span>
+            <span class="badge">${escapeHtml2(result.score != null ? Number(result.score).toFixed(2) : result.type || "local")}</span>
           </div>
         </article>
       `).join("") : emptyState("No matching knowledge found yet.")}
     </div>
   `);
 }
-
 function renderKnowledgeSynthesis(payload) {
   const sources = payload.sources || payload.results || [];
   const entities = payload.related_entities || [];
@@ -4122,25 +4236,24 @@ function renderKnowledgeSynthesis(payload) {
       <p>${renderMarkdown(synthesis)}</p>
     </div>
     <div class="knowledge-steps">
-      ${(payload.reasoning_steps || []).map(step => `<span>${escapeHtml(step)}</span>`).join("")}
+      ${(payload.reasoning_steps || []).map((step) => `<span>${escapeHtml2(step)}</span>`).join("")}
     </div>
     <div class="research-meta-grid">
-      <article><span>Sources</span><strong>${escapeHtml(sources.length)}</strong></article>
-      <article><span>Entities</span><strong>${escapeHtml(entities.length)}</strong></article>
-      <article><span>Relations</span><strong>${escapeHtml(relationships.length)}</strong></article>
-      <article><span>Project</span><strong>${escapeHtml(payload.project || getProject())}</strong></article>
+      <article><span>Sources</span><strong>${escapeHtml2(sources.length)}</strong></article>
+      <article><span>Entities</span><strong>${escapeHtml2(entities.length)}</strong></article>
+      <article><span>Relations</span><strong>${escapeHtml2(relationships.length)}</strong></article>
+      <article><span>Project</span><strong>${escapeHtml2(payload.project || getProject())}</strong></article>
     </div>
     <div class="knowledge-result-list">
-      ${sources.length ? sources.slice(0, 8).map(source => `
+      ${sources.length ? sources.slice(0, 8).map((source) => `
         <article class="list-item">
-          <strong>${escapeHtml(source.title || source.source || "Local source")}</strong>
-          <p>${escapeHtml(source.content || source.snippet || source.id || "")}</p>
+          <strong>${escapeHtml2(source.title || source.source || "Local source")}</strong>
+          <p>${escapeHtml2(source.content || source.snippet || source.id || "")}</p>
         </article>
       `).join("") : emptyState("No direct source chunks were returned.")}
     </div>
   `);
 }
-
 function renderKnowledgeGraph(payload) {
   const nodes = (payload.nodes || []).slice(0, 32);
   const edges = payload.edges || [];
@@ -4152,7 +4265,6 @@ function renderKnowledgeGraph(payload) {
     `);
     return;
   }
-
   const width = 760;
   const height = 390;
   const centerX = width / 2;
@@ -4162,34 +4274,34 @@ function renderKnowledgeGraph(payload) {
     const ring = index < 12 ? 0 : 1;
     const ringIndex = ring ? index - 12 : index;
     const ringSize = ring ? Math.max(1, nodes.length - 12) : Math.min(12, nodes.length);
-    const angle = (Math.PI * 2 * ringIndex / ringSize) - Math.PI / 2;
+    const angle = Math.PI * 2 * ringIndex / ringSize - Math.PI / 2;
     const radiusX = ring ? 325 : 205;
     const radiusY = ring ? 158 : 112;
     return [node.id, { x: centerX + Math.cos(angle) * radiusX, y: centerY + Math.sin(angle) * radiusY }];
   }));
-  const visibleEdges = edges.filter(edge => positions.has(edge.source) && positions.has(edge.target));
-  const edgeMarkup = visibleEdges.map(edge => {
+  const visibleEdges = edges.filter((edge) => positions.has(edge.source) && positions.has(edge.target));
+  const edgeMarkup = visibleEdges.map((edge) => {
     const source = positions.get(edge.source);
     const target = positions.get(edge.target);
-    return `<line class="knowledge-graph-edge" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml(edge.label || "related to")}</title></line>`;
+    return `<line class="knowledge-graph-edge" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml2(edge.label || "related to")}</title></line>`;
   }).join("");
-  const nodeMarkup = nodes.map(node => {
+  const nodeMarkup = nodes.map((node) => {
     const point = positions.get(node.id);
     const radius = Math.min(16, 7 + Number(node.degree || 0) * 1.5);
-    const label = String(node.name || "Entity");
-    const shortLabel = label.length > 18 ? `${label.slice(0, 16)}…` : label;
+    const label2 = String(node.name || "Entity");
+    const shortLabel = label2.length > 18 ? `${label2.slice(0, 16)}\u2026` : label2;
     return `<g class="knowledge-graph-node" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})">
       <circle r="${radius.toFixed(1)}"></circle>
-      <text y="${(radius + 14).toFixed(1)}" text-anchor="middle">${escapeHtml(shortLabel)}</text>
-      <title>${escapeHtml(label)} · ${escapeHtml(node.entity_type || "entity")} · ${escapeHtml(node.degree || 0)} connection(s)</title>
+      <text y="${(radius + 14).toFixed(1)}" text-anchor="middle">${escapeHtml2(shortLabel)}</text>
+      <title>${escapeHtml2(label2)} \xB7 ${escapeHtml2(node.entity_type || "entity")} \xB7 ${escapeHtml2(node.degree || 0)} connection(s)</title>
     </g>`;
   }).join("");
   setKnowledgeOutput(`
     <div class="knowledge-summary-card">
       <strong>Knowledge graph</strong>
-      <p>${escapeHtml(stats.nodes || nodes.length)} concepts · ${escapeHtml(stats.edges || edges.length)} links · ${escapeHtml(stats.connected_nodes || 0)} connected.</p>
+      <p>${escapeHtml2(stats.nodes || nodes.length)} concepts \xB7 ${escapeHtml2(stats.edges || edges.length)} links \xB7 ${escapeHtml2(stats.connected_nodes || 0)} connected.</p>
     </div>
-    <div class="knowledge-graph-shell" role="img" aria-label="Knowledge graph with ${escapeHtml(nodes.length)} visible concepts and ${escapeHtml(visibleEdges.length)} visible links">
+    <div class="knowledge-graph-shell" role="img" aria-label="Knowledge graph with ${escapeHtml2(nodes.length)} visible concepts and ${escapeHtml2(visibleEdges.length)} visible links">
       <svg class="knowledge-graph-canvas" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
         <g>${edgeMarkup}</g>
         <g>${nodeMarkup}</g>
@@ -4197,12 +4309,7 @@ function renderKnowledgeGraph(payload) {
     </div>
   `);
 }
-
-// =============================================
-// Workflows
-// =============================================
-
-const WORKFLOW_ACTION_FIELDS = {
+var WORKFLOW_ACTION_FIELDS = {
   add_event: { primary: "content", primaryLabel: "Memory content", secondary: "title", secondaryLabel: "Title" },
   run_agent: { primary: "goal", primaryLabel: "Agent goal", secondary: "agent", secondaryLabel: "Agent role", secondaryDefault: "executive" },
   search_context: { primary: "query", primaryLabel: "Search query" },
@@ -4219,30 +4326,26 @@ const WORKFLOW_ACTION_FIELDS = {
   alert: { primary: "message", primaryLabel: "Alert message", secondary: "severity", secondaryLabel: "Severity", secondaryDefault: "info" },
   browser_fetch: { primary: "url", primaryLabel: "Web address" },
   api_request: { primary: "url", primaryLabel: "API address", secondary: "method", secondaryLabel: "Method", secondaryDefault: "GET" },
-  audit: { primary: "audit_action", primaryLabel: "Audit action", secondary: "resource", secondaryLabel: "Resource" },
+  audit: { primary: "audit_action", primaryLabel: "Audit action", secondary: "resource", secondaryLabel: "Resource" }
 };
-
 function workflowActionOptions(selected) {
   const actions = state.automation.schema?.actions || {};
-  return Object.entries(actions).map(([id, item]) =>
-    `<option value="${escapeHtml(id)}" ${id === selected ? "selected" : ""}>${escapeHtml(item.label || id)}</option>`
+  return Object.entries(actions).map(
+    ([id, item]) => `<option value="${escapeHtml2(id)}" ${id === selected ? "selected" : ""}>${escapeHtml2(item.label || id)}</option>`
   ).join("");
 }
-
 function newWorkflowStep(action = "run_agent") {
   const fields = WORKFLOW_ACTION_FIELDS[action] || WORKFLOW_ACTION_FIELDS.run_agent;
   return {
     action,
     [fields.primary]: fields.primaryDefault || "",
-    ...(fields.secondary ? { [fields.secondary]: fields.secondaryDefault || "" } : {}),
+    ...fields.secondary ? { [fields.secondary]: fields.secondaryDefault || "" } : {}
   };
 }
-
 function formatWorkflowField(value, json = false) {
   if (json && typeof value === "object") return JSON.stringify(value, null, 2);
   return String(value ?? "");
 }
-
 function syncWorkflowDraftFields(skipIndex = -1) {
   state.automation.draftSteps.forEach((step, index) => {
     if (index === skipIndex) return;
@@ -4251,8 +4354,11 @@ function syncWorkflowDraftFields(skipIndex = -1) {
     if (primaryInput) {
       const raw = primaryInput.value.trim();
       if (fields.json) {
-        try { step[fields.primary] = JSON.parse(raw || "{}"); }
-        catch (_) { step[fields.primary] = raw; }
+        try {
+          step[fields.primary] = JSON.parse(raw || "{}");
+        } catch (_) {
+          step[fields.primary] = raw;
+        }
       } else {
         step[fields.primary] = raw;
       }
@@ -4263,7 +4369,6 @@ function syncWorkflowDraftFields(skipIndex = -1) {
     }
   });
 }
-
 function renderWorkflowSteps() {
   const host = qs("#workflowSteps");
   if (!host) return;
@@ -4271,29 +4376,29 @@ function renderWorkflowSteps() {
   host.innerHTML = state.automation.draftSteps.map((step, index) => {
     const fields = WORKFLOW_ACTION_FIELDS[step.action] || WORKFLOW_ACTION_FIELDS.run_agent;
     const primaryValue = formatWorkflowField(step[fields.primary] ?? fields.primaryDefault, fields.json);
-    const secondary = fields.secondary ? `<label><span>${escapeHtml(fields.secondaryLabel)}</span><input data-step-secondary="${index}" value="${escapeHtml(step[fields.secondary] ?? fields.secondaryDefault ?? "")}"></label>` : "";
+    const secondary = fields.secondary ? `<label><span>${escapeHtml2(fields.secondaryLabel)}</span><input data-step-secondary="${index}" value="${escapeHtml2(step[fields.secondary] ?? fields.secondaryDefault ?? "")}"></label>` : "";
     return `<article class="automation-step" data-step-index="${index}">
-      <div class="automation-step-order"><span>${String(index + 2).padStart(2, "0")}</span><div><button type="button" data-step-move="up" aria-label="Move action up" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" data-step-move="down" aria-label="Move action down" ${index === state.automation.draftSteps.length - 1 ? "disabled" : ""}>↓</button></div></div>
+      <div class="automation-step-order"><span>${String(index + 2).padStart(2, "0")}</span><div><button type="button" data-step-move="up" aria-label="Move action up" ${index === 0 ? "disabled" : ""}>\u2191</button><button type="button" data-step-move="down" aria-label="Move action down" ${index === state.automation.draftSteps.length - 1 ? "disabled" : ""}>\u2193</button></div></div>
       <label class="automation-step-action"><span>Action</span><select data-step-action="${index}">${workflowActionOptions(step.action)}</select></label>
-      <label class="automation-step-primary"><span>${escapeHtml(fields.primaryLabel)}</span><textarea rows="2" data-step-primary="${index}">${escapeHtml(primaryValue)}</textarea></label>
+      <label class="automation-step-primary"><span>${escapeHtml2(fields.primaryLabel)}</span><textarea rows="2" data-step-primary="${index}">${escapeHtml2(primaryValue)}</textarea></label>
       ${secondary}
-      <button class="automation-step-remove" type="button" data-step-remove="${index}" aria-label="Remove action" title="Remove action">×</button>
+      <button class="automation-step-remove" type="button" data-step-remove="${index}" aria-label="Remove action" title="Remove action">\xD7</button>
     </article>`;
   }).join("");
   const count = state.automation.draftSteps.length;
   if (qs("#workflowStepCount")) qs("#workflowStepCount").textContent = `${count} ${count === 1 ? "step" : "steps"}`;
-  qsa("[data-step-action]").forEach(select => select.addEventListener("change", () => {
+  qsa("[data-step-action]").forEach((select) => select.addEventListener("change", () => {
     const index = Number(select.dataset.stepAction);
     syncWorkflowDraftFields(index);
     state.automation.draftSteps[index] = newWorkflowStep(select.value);
     renderWorkflowSteps();
   }));
-  qsa("[data-step-remove]").forEach(button => button.addEventListener("click", () => {
+  qsa("[data-step-remove]").forEach((button) => button.addEventListener("click", () => {
     syncWorkflowDraftFields();
     state.automation.draftSteps.splice(Number(button.dataset.stepRemove), 1);
     renderWorkflowSteps();
   }));
-  qsa("[data-step-move]").forEach(button => button.addEventListener("click", () => {
+  qsa("[data-step-move]").forEach((button) => button.addEventListener("click", () => {
     syncWorkflowDraftFields();
     const row = button.closest("[data-step-index]");
     const index = Number(row?.dataset.stepIndex || 0);
@@ -4303,38 +4408,38 @@ function renderWorkflowSteps() {
     renderWorkflowSteps();
   }));
 }
-
 function captureWorkflowSteps() {
   return state.automation.draftSteps.map((step, index) => {
     const action = qs(`[data-step-action="${index}"]`)?.value || step.action;
     const fields = WORKFLOW_ACTION_FIELDS[action] || WORKFLOW_ACTION_FIELDS.run_agent;
     let primary = qs(`[data-step-primary="${index}"]`)?.value.trim() || "";
     if (fields.json) {
-      try { primary = JSON.parse(primary || "{}"); }
-      catch (_) { throw new Error(`Action ${index + 1} has invalid JSON.`); }
+      try {
+        primary = JSON.parse(primary || "{}");
+      } catch (_) {
+        throw new Error(`Action ${index + 1} has invalid JSON.`);
+      }
     }
     const result = { action, [fields.primary]: primary };
     if (fields.secondary) result[fields.secondary] = qs(`[data-step-secondary="${index}"]`)?.value.trim() || "";
     return result;
   });
 }
-
 function updateWorkflowTriggerEditor() {
   const type = qs("#workflowTrigger")?.value || "manual";
   const wrap = qs("#workflowTriggerConfigWrap");
-  const label = qs("#workflowTriggerConfigLabel");
+  const label2 = qs("#workflowTriggerConfigLabel");
   const input = qs("#workflowTriggerConfig");
-  if (!wrap || !label || !input) return;
+  if (!wrap || !label2 || !input) return;
   wrap.hidden = type === "manual";
-  label.textContent = type === "scheduled" ? "Interval (seconds)" : "Event name";
+  label2.textContent = type === "scheduled" ? "Interval (seconds)" : "Event name";
   input.placeholder = type === "scheduled" ? "3600" : "document.created";
 }
-
 async function loadWorkflows() {
   const [payload, schema, runPayload] = await Promise.all([
     api(`/api/workflows?project=${encodeURIComponent(getProject())}&limit=100`),
     api("/api/workflows/builder"),
-    api(`/api/workflow-runs?project=${encodeURIComponent(getProject())}&limit=60`),
+    api(`/api/workflow-runs?project=${encodeURIComponent(getProject())}&limit=60`)
   ]);
   state.workflows = payload.workflows || [];
   state.automation.schema = schema;
@@ -4343,24 +4448,22 @@ async function loadWorkflows() {
   renderWorkflowRuns();
   if (!state.automation.selectedWorkflowId) renderWorkflowAuthoring();
 }
-
 function renderWorkflowList() {
   const el = qs("#workflows");
-  const query = qs("#automationSearch")?.value.trim().toLowerCase() || "";
-  const filtered = state.workflows.filter(item => !query || `${item.name} ${item.description}`.toLowerCase().includes(query));
-  if (el) el.innerHTML = filtered.length ? filtered.map(workflow => {
+  const query2 = qs("#automationSearch")?.value.trim().toLowerCase() || "";
+  const filtered = state.workflows.filter((item) => !query2 || `${item.name} ${item.description}`.toLowerCase().includes(query2));
+  if (el) el.innerHTML = filtered.length ? filtered.map((workflow) => {
     const trigger = workflow.trigger || {};
-    const schedule = workflow.trigger_type === "scheduled" ? ` · next ${formatCompactDate(trigger.next_run_at)}` : "";
-    return `<button class="automation-workflow-row ${workflow.id === state.automation.selectedWorkflowId ? "active" : ""}" type="button" data-workflow-open="${escapeHtml(workflow.id)}">
+    const schedule = workflow.trigger_type === "scheduled" ? ` \xB7 next ${formatCompactDate(trigger.next_run_at)}` : "";
+    return `<button class="automation-workflow-row ${workflow.id === state.automation.selectedWorkflowId ? "active" : ""}" type="button" data-workflow-open="${escapeHtml2(workflow.id)}">
       <span class="automation-workflow-state ${workflow.enabled ? "enabled" : ""}"></span>
-      <span><strong>${escapeHtml(workflow.name)}</strong><small>${escapeHtml(workflow.trigger_type)} · ${(workflow.steps || []).length} actions${escapeHtml(schedule)}</small></span>
+      <span><strong>${escapeHtml2(workflow.name)}</strong><small>${escapeHtml2(workflow.trigger_type)} \xB7 ${(workflow.steps || []).length} actions${escapeHtml2(schedule)}</small></span>
     </button>`;
-  }).join("") : `<div class="automation-empty">${query ? "No matching workflows" : "No workflows saved"}</div>`;
-  if (qs("#automationActiveCount")) qs("#automationActiveCount").textContent = state.workflows.filter(item => item.enabled).length;
+  }).join("") : `<div class="automation-empty">${query2 ? "No matching workflows" : "No workflows saved"}</div>`;
+  if (qs("#automationActiveCount")) qs("#automationActiveCount").textContent = state.workflows.filter((item) => item.enabled).length;
   if (qs("#automationRunCount")) qs("#automationRunCount").textContent = state.automation.runs.length;
-  qsa("[data-workflow-open]").forEach(button => button.addEventListener("click", () => openWorkflow(button.dataset.workflowOpen)));
+  qsa("[data-workflow-open]").forEach((button) => button.addEventListener("click", () => openWorkflow(button.dataset.workflowOpen)));
 }
-
 async function runWorkflow(id) {
   try {
     const output = qs("#workflowOutput");
@@ -4369,15 +4472,16 @@ async function runWorkflow(id) {
     const run = payload.run || {};
     if (output) output.textContent = run.status === "completed" ? "Run completed" : "Run failed";
     await loadWorkflowRuns(run.id);
-    toast(run.status === "completed" ? "Workflow completed" : "Workflow failed", state.workflows.find(item => item.id === id)?.name || "");
-  } catch(e) { toast("Workflow error", e.message); }
+    toast(run.status === "completed" ? "Workflow completed" : "Workflow failed", state.workflows.find((item) => item.id === id)?.name || "");
+  } catch (e) {
+    toast("Workflow error", e.message);
+  }
 }
-
 function openWorkflow(id) {
-  const workflow = state.workflows.find(item => item.id === id);
+  const workflow = state.workflows.find((item) => item.id === id);
   if (!workflow) return;
   state.automation.selectedWorkflowId = id;
-  state.automation.draftSteps = (workflow.steps || []).map(step => ({ ...step }));
+  state.automation.draftSteps = (workflow.steps || []).map((step) => ({ ...step }));
   qs("#workflowName").value = workflow.name || "Untitled workflow";
   qs("#workflowDescription").value = workflow.description || "";
   qs("#workflowTrigger").value = workflow.trigger_type || "manual";
@@ -4392,7 +4496,6 @@ function openWorkflow(id) {
   renderWorkflowList();
   qs("#workflowOutput").textContent = workflow.enabled ? "Ready to run" : "Workflow disabled";
 }
-
 async function loadWorkflowRuns(selectedRunId = "") {
   const payload = await api(`/api/workflow-runs?project=${encodeURIComponent(getProject())}&limit=60`);
   state.automation.runs = payload.runs || [];
@@ -4400,7 +4503,6 @@ async function loadWorkflowRuns(selectedRunId = "") {
   renderWorkflowRuns();
   renderWorkflowList();
 }
-
 function renderWorkflowAuthoring() {
   state.automation.selectedWorkflowId = "";
   state.automation.draftSteps = [newWorkflowStep()];
@@ -4417,17 +4519,25 @@ function renderWorkflowAuthoring() {
   renderWorkflowList();
   qs("#workflowName")?.focus();
 }
-
 async function createWorkflowFromEditor() {
   try {
     const name = qs("#workflowName")?.value.trim();
-    if (!name) { toast("Workflow name required"); return; }
+    if (!name) {
+      toast("Workflow name required");
+      return;
+    }
     const steps = captureWorkflowSteps();
-    if (!steps.length) { toast("Add at least one action"); return; }
+    if (!steps.length) {
+      toast("Add at least one action");
+      return;
+    }
     const triggerType = qs("#workflowTrigger")?.value || "manual";
     const triggerValue = qs("#workflowTriggerConfig")?.value.trim() || "";
     const trigger = triggerType === "scheduled" ? { interval_seconds: Math.max(1, Number(triggerValue || 3600)) } : triggerType === "event" ? { event_name: triggerValue } : {};
-    if (triggerType === "event" && !trigger.event_name) { toast("Event name required"); return; }
+    if (triggerType === "event" && !trigger.event_name) {
+      toast("Event name required");
+      return;
+    }
     const payload = { name, description: qs("#workflowDescription")?.value.trim() || "", project: getProject(), trigger_type: triggerType, trigger, steps };
     const id = state.automation.selectedWorkflowId;
     const response = await api(id ? `/api/workflows/${id}` : "/api/workflows", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
@@ -4436,21 +4546,23 @@ async function createWorkflowFromEditor() {
     await loadWorkflows();
     openWorkflow(state.automation.selectedWorkflowId);
     toast("Workflow saved", name);
-  } catch(e) { toast("Workflow error", e.message); }
+  } catch (e) {
+    toast("Workflow error", e.message);
+  }
 }
-
 async function toggleSelectedWorkflow() {
-  const workflow = state.workflows.find(item => item.id === state.automation.selectedWorkflowId);
+  const workflow = state.workflows.find((item) => item.id === state.automation.selectedWorkflowId);
   if (!workflow) return;
   try {
     await api(`/api/workflows/${workflow.id}`, { method: "PUT", body: JSON.stringify({ enabled: !workflow.enabled }) });
     await loadWorkflows();
     openWorkflow(workflow.id);
-  } catch (error) { toast("Workflow update failed", error.message); }
+  } catch (error) {
+    toast("Workflow update failed", error.message);
+  }
 }
-
 async function deleteSelectedWorkflow() {
-  const workflow = state.workflows.find(item => item.id === state.automation.selectedWorkflowId);
+  const workflow = state.workflows.find((item) => item.id === state.automation.selectedWorkflowId);
   if (!workflow || !window.confirm(`Delete ${workflow.name} and its run history?`)) return;
   try {
     await api(`/api/workflows/${workflow.id}`, { method: "DELETE" });
@@ -4459,37 +4571,36 @@ async function deleteSelectedWorkflow() {
     await loadWorkflows();
     renderWorkflowAuthoring();
     toast("Workflow deleted", workflow.name);
-  } catch (error) { toast("Workflow delete failed", error.message); }
+  } catch (error) {
+    toast("Workflow delete failed", error.message);
+  }
 }
-
 function renderWorkflowRuns() {
   const host = qs("#workflowRuns");
   if (!host) return;
   const runs = state.automation.runs;
   qs("#automationRunStatus").textContent = runs.length ? `${runs.length} recent` : "No runs yet";
-  host.innerHTML = runs.length ? runs.map(run => {
-    const workflow = state.workflows.find(item => item.id === run.workflow_id);
-    return `<button class="automation-run-row ${run.id === state.automation.selectedRunId ? "active" : ""}" type="button" data-workflow-run-detail="${escapeHtml(run.id)}">
-      <span class="run-status ${escapeHtml(run.status)}"></span><span><strong>${escapeHtml(workflow?.name || run.result?.workflow || "Workflow")}</strong><small>${escapeHtml(run.status)} · ${escapeHtml(formatCompactDate(run.completed_at || run.created_at))}</small></span>
+  host.innerHTML = runs.length ? runs.map((run) => {
+    const workflow = state.workflows.find((item) => item.id === run.workflow_id);
+    return `<button class="automation-run-row ${run.id === state.automation.selectedRunId ? "active" : ""}" type="button" data-workflow-run-detail="${escapeHtml2(run.id)}">
+      <span class="run-status ${escapeHtml2(run.status)}"></span><span><strong>${escapeHtml2(workflow?.name || run.result?.workflow || "Workflow")}</strong><small>${escapeHtml2(run.status)} \xB7 ${escapeHtml2(formatCompactDate(run.completed_at || run.created_at))}</small></span>
     </button>`;
   }).join("") : `<div class="automation-empty">Runs appear here after execution</div>`;
-  qsa("[data-workflow-run-detail]").forEach(button => button.addEventListener("click", () => showWorkflowRun(button.dataset.workflowRunDetail)));
+  qsa("[data-workflow-run-detail]").forEach((button) => button.addEventListener("click", () => showWorkflowRun(button.dataset.workflowRunDetail)));
   if (state.automation.selectedRunId) showWorkflowRun(state.automation.selectedRunId, false);
 }
-
 function showWorkflowRun(id, rerender = true) {
-  const run = state.automation.runs.find(item => item.id === id);
+  const run = state.automation.runs.find((item) => item.id === id);
   if (!run) return;
   state.automation.selectedRunId = id;
   if (rerender) renderWorkflowRuns();
   const steps = run.result?.steps || [];
-  qs("#workflowRunDetail").innerHTML = `<header><strong>${escapeHtml(run.status)}</strong><span>${escapeHtml(formatCompactDate(run.completed_at || run.created_at))}</span></header>
+  qs("#workflowRunDetail").innerHTML = `<header><strong>${escapeHtml2(run.status)}</strong><span>${escapeHtml2(formatCompactDate(run.completed_at || run.created_at))}</span></header>
     <div class="automation-run-steps">${steps.map((step, index) => {
-      const detail = Object.fromEntries(Object.entries(step).filter(([key]) => !["status", "action"].includes(key)));
-      return `<details ${step.status === "failed" ? "open" : ""}><summary><span class="run-status ${escapeHtml(step.status)}"></span><strong>${index + 1}. ${escapeHtml(step.action || "action")}</strong><small>${escapeHtml(step.status)}</small></summary><div class="automation-run-output">${escapeHtml(formatStructuredOutput(detail) || "Action completed.")}</div></details>`;
-    }).join("") || "<p>No action output was recorded.</p>"}</div>`;
+    const detail = Object.fromEntries(Object.entries(step).filter(([key]) => !["status", "action"].includes(key)));
+    return `<details ${step.status === "failed" ? "open" : ""}><summary><span class="run-status ${escapeHtml2(step.status)}"></span><strong>${index + 1}. ${escapeHtml2(step.action || "action")}</strong><small>${escapeHtml2(step.status)}</small></summary><div class="automation-run-output">${escapeHtml2(formatStructuredOutput(detail) || "Action completed.")}</div></details>`;
+  }).join("") || "<p>No action output was recorded.</p>"}</div>`;
 }
-
 async function loadRuntimeTools() {
   try {
     const payload = await api("/api/runtime-tools/status");
@@ -4498,18 +4609,20 @@ async function loadRuntimeTools() {
     toast("Runtime tools unavailable", error.message);
   }
 }
-
 async function runRuntimeBrowserTest() {
   const url = qs("#runtimeBrowserUrl")?.value.trim() || "";
-  if (!url) { toast("Browser URL required"); return; }
+  if (!url) {
+    toast("Browser URL required");
+    return;
+  }
   try {
     const payload = await api("/api/runtime-tools/browser-test", {
       method: "POST",
       body: JSON.stringify({
         url,
         project: getProject(),
-        approved_external: Boolean(qs("#runtimeBrowserApproval")?.checked),
-      }),
+        approved_external: Boolean(qs("#runtimeBrowserApproval")?.checked)
+      })
     });
     setOutput("#runtimeToolsOutput", payload);
     toast("Browser test completed");
@@ -4517,48 +4630,48 @@ async function runRuntimeBrowserTest() {
     toast("Browser test did not run", error.message);
   }
 }
-
-// =============================================
-// Assistant
-// =============================================
-
 async function createTask() {
   const title = qs("#assistantTitle")?.value.trim();
-  if (!title) { toast("Title required"); return; }
+  if (!title) {
+    toast("Title required");
+    return;
+  }
   try {
     const payload = await api("/api/assistant/tasks", {
       method: "POST",
-      body: JSON.stringify({ title, description: qs("#assistantBody")?.value || "", project: getProject() }),
+      body: JSON.stringify({ title, description: qs("#assistantBody")?.value || "", project: getProject() })
     });
     setOutput("#assistantOutput", payload);
     toast("Task created", title);
-  } catch(e) { toast("Task error", e.message); }
+  } catch (e) {
+    toast("Task error", e.message);
+  }
 }
-
 async function createGoal() {
   const title = qs("#assistantTitle")?.value.trim();
-  if (!title) { toast("Title required"); return; }
+  if (!title) {
+    toast("Title required");
+    return;
+  }
   try {
     const payload = await api("/api/assistant/goals", {
       method: "POST",
-      body: JSON.stringify({ title, description: qs("#assistantBody")?.value || "", project: getProject() }),
+      body: JSON.stringify({ title, description: qs("#assistantBody")?.value || "", project: getProject() })
     });
     setOutput("#assistantOutput", payload);
     toast("Goal created", title);
-  } catch(e) { toast("Goal error", e.message); }
+  } catch (e) {
+    toast("Goal error", e.message);
+  }
 }
-
 async function getDailyBrief() {
   try {
     const payload = await api(`/api/assistant/daily-brief?project=${encodeURIComponent(getProject())}`);
     setOutput("#assistantOutput", payload);
-  } catch(e) { toast("Brief error", e.message); }
+  } catch (e) {
+    toast("Brief error", e.message);
+  }
 }
-
-// =============================================
-// Communications
-// =============================================
-
 async function importMessage() {
   try {
     const payload = await api("/api/communication/messages/import", {
@@ -4568,82 +4681,76 @@ async function importMessage() {
         sender: qs("#commSender")?.value.trim() || "unknown",
         subject: qs("#commSubject")?.value.trim() || "",
         body: qs("#commBody")?.value.trim() || "",
-        project: getProject(),
-      }),
+        project: getProject()
+      })
     });
     setOutput("#commOutput", payload);
     toast("Message imported");
-  } catch(e) { toast("Import error", e.message); }
+  } catch (e) {
+    toast("Import error", e.message);
+  }
 }
-
 async function loadCommunicationFeed() {
   try {
     const [inbox, calendar] = await Promise.all([
       api(`/api/communication/inbox?project=${encodeURIComponent(getProject())}&limit=5`),
-      api(`/api/communication/calendar?project=${encodeURIComponent(getProject())}&limit=5`),
+      api(`/api/communication/calendar?project=${encodeURIComponent(getProject())}&limit=5`)
     ]);
     const messages = inbox.messages || [];
     const events = calendar.events || [];
     const el = qs("#communicationFeed");
-    if (el) el.innerHTML = (messages.length || events.length)
-      ? [
-          ...messages.map(m => listItem(m.subject || "Message", `${m.platform||"email"} — ${m.sender||"?"}`)),
-          ...events.map(e => listItem(e.title || "Calendar event", `${e.starts_at||""}`)),
-        ].join("")
-      : emptyState("No messages or events");
-  } catch(e) { console.warn("communicationFeed", e); }
+    if (el) el.innerHTML = messages.length || events.length ? [
+      ...messages.map((m) => listItem(m.subject || "Message", `${m.platform || "email"} \u2014 ${m.sender || "?"}`)),
+      ...events.map((e) => listItem(e.title || "Calendar event", `${e.starts_at || ""}`))
+    ].join("") : emptyState("No messages or events");
+  } catch (e) {
+    console.warn("communicationFeed", e);
+  }
 }
-
 async function loadCommunicationHub() {
   await Promise.allSettled([
     loadCommunicationFeed(),
     loadCommunicationOAuth(),
-    loadCommunicationSyncStatus(),
+    loadCommunicationSyncStatus()
   ]);
 }
-
 async function loadCommunicationOAuth() {
   try {
     const [providersPayload, accountsPayload] = await Promise.all([
       api("/api/communication/oauth/providers"),
-      api(`/api/communication/oauth/accounts?project=${encodeURIComponent(getProject())}`),
+      api(`/api/communication/oauth/accounts?project=${encodeURIComponent(getProject())}`)
     ]);
     state.communication.oauthProviders = providersPayload.providers || [];
     state.communication.oauthAccounts = accountsPayload.accounts || [];
     renderCommunicationOAuth();
     return state.communication;
-  } catch(e) {
+  } catch (e) {
     renderCommunicationOAuth({ error: e.message });
     return null;
   }
 }
-
 function renderCommunicationOAuth(error = null) {
   const providers = state.communication.oauthProviders || [];
   const accounts = state.communication.oauthAccounts || [];
   const providerSelect = qs("#communicationOauthProvider");
   if (providerSelect) {
     const current = providerSelect.value;
-    providerSelect.innerHTML = providers.length
-      ? providers.map(provider => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name || provider.id)}</option>`).join("")
-      : '<option value="generic">Generic OAuth</option>';
+    providerSelect.innerHTML = providers.length ? providers.map((provider) => `<option value="${escapeHtml2(provider.id)}">${escapeHtml2(provider.name || provider.id)}</option>`).join("") : '<option value="generic">Generic OAuth</option>';
     if (current) providerSelect.value = current;
   }
   const accountSelect = qs("#communicationAccountSelect");
   if (accountSelect) {
     const current = accountSelect.value;
-    accountSelect.innerHTML = accounts.length
-      ? accounts.map(account => `<option value="${escapeHtml(account.account_id)}">${escapeHtml(account.label || account.provider)} · ${escapeHtml(account.status || "configured")}</option>`).join("")
-      : '<option value="">No OAuth accounts</option>';
+    accountSelect.innerHTML = accounts.length ? accounts.map((account) => `<option value="${escapeHtml2(account.account_id)}">${escapeHtml2(account.label || account.provider)} \xB7 ${escapeHtml2(account.status || "configured")}</option>`).join("") : '<option value="">No OAuth accounts</option>';
     if (current) accountSelect.value = current;
   }
   const cards = qs("#communicationStatusCards");
   if (cards) {
     cards.innerHTML = [
       opsTile("OAuth providers", providers.length || "0", "Gmail, Microsoft, generic"),
-      opsTile("Accounts", accounts.length || "0", `${accounts.filter(a => a.token_present).length} token-ready`),
+      opsTile("Accounts", accounts.length || "0", `${accounts.filter((a) => a.token_present).length} token-ready`),
       opsTile("Privacy", "Local", "Secrets never returned by API"),
-      opsTile("External calls", state.privacySettings.localOnly ? "Blocked" : "Explicit", "Token exchange requires approval"),
+      opsTile("External calls", state.privacySettings.localOnly ? "Blocked" : "Explicit", "Token exchange requires approval")
     ].join("");
   }
   const feed = qs("#communicationOAuthFeed");
@@ -4652,25 +4759,21 @@ function renderCommunicationOAuth(error = null) {
     feed.innerHTML = emptyState(`OAuth status unavailable: ${error.error}`);
     return;
   }
-  const providerRows = providers.slice(0, 4).map(provider => {
+  const providerRows = providers.slice(0, 4).map((provider) => {
     const mailboxes = provider.mailbox_policy || {};
-    const detail = Object.entries(mailboxes).map(([k, v]) => `${k}: ${v}`).join(" · ");
-    return listItem(provider.name || provider.id, detail || "Provider policy ready", `<span class="badge badge-info">${escapeHtml(provider.id)}</span>`);
+    const detail = Object.entries(mailboxes).map(([k, v]) => `${k}: ${v}`).join(" \xB7 ");
+    return listItem(provider.name || provider.id, detail || "Provider policy ready", `<span class="badge badge-info">${escapeHtml2(provider.id)}</span>`);
   });
-  const accountRows = accounts.map(account => {
+  const accountRows = accounts.map((account) => {
     const tokenBadge = account.token_present ? "badge-success" : "badge-warning";
-    const status = `${account.provider} · ${account.platform} · ${account.redirect_uri || "no redirect URI"}`;
+    const status = `${account.provider} \xB7 ${account.platform} \xB7 ${account.redirect_uri || "no redirect URI"}`;
     return listItem(account.label || account.account_id, status, `<span class="badge ${tokenBadge}">${account.token_present ? "token ready" : "needs token"}</span>`);
   });
   feed.innerHTML = [...accountRows, ...providerRows].join("") || emptyState("Save an OAuth account to enable provider-backed email sync.");
 }
-
 async function createOauthAccount() {
   try {
-    const scopes = (qs("#communicationOauthScopes")?.value || "")
-      .split(/[,\s]+/)
-      .map(item => item.trim())
-      .filter(Boolean);
+    const scopes = (qs("#communicationOauthScopes")?.value || "").split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
     const payload = await api("/api/communication/oauth/configure", {
       method: "POST",
       body: JSON.stringify({
@@ -4683,22 +4786,26 @@ async function createOauthAccount() {
         redirect_uri: qs("#communicationOauthRedirect")?.value.trim() || "",
         auth_endpoint: qs("#communicationOauthAuthEndpoint")?.value.trim() || "",
         token_endpoint: qs("#communicationOauthTokenEndpoint")?.value.trim() || "",
-        scopes,
-      }),
+        scopes
+      })
     });
     setOutput("#commOutput", payload);
     toast("OAuth account saved", payload.account?.label || payload.account?.provider || "local account");
     await loadCommunicationOAuth();
-  } catch(e) { toast("OAuth account error", e.message); }
+  } catch (e) {
+    toast("OAuth account error", e.message);
+  }
 }
-
 async function buildOauthUrl() {
   const accountId = qs("#communicationAccountSelect")?.value;
-  if (!accountId) { toast("Select an OAuth account first"); return; }
+  if (!accountId) {
+    toast("Select an OAuth account first");
+    return;
+  }
   try {
     const payload = await api("/api/communication/oauth/authorize-url", {
       method: "POST",
-      body: JSON.stringify({ account_id: accountId, state: `openagent-${Date.now()}` }),
+      body: JSON.stringify({ account_id: accountId, state: `openagent-${Date.now()}` })
     });
     setOutput("#commOutput", payload);
     const feed = qs("#communicationOAuthFeed");
@@ -4706,16 +4813,20 @@ async function buildOauthUrl() {
       feed.insertAdjacentHTML("afterbegin", listItem(
         "Authorization URL ready",
         payload.privacy_boundary || "Open this URL only when you approve the external provider step.",
-        `<a class="btn btn-mini btn-primary" target="_blank" rel="noreferrer" href="${escapeHtml(payload.authorization_url || "#")}">Open</a>`
+        `<a class="btn btn-mini btn-primary" target="_blank" rel="noreferrer" href="${escapeHtml2(payload.authorization_url || "#")}">Open</a>`
       ));
     }
     toast("Authorization URL built");
-  } catch(e) { toast("Authorization URL error", e.message); }
+  } catch (e) {
+    toast("Authorization URL error", e.message);
+  }
 }
-
 async function refreshOauthToken() {
   const accountId = qs("#communicationAccountSelect")?.value;
-  if (!accountId) { toast("Select an OAuth account first"); return; }
+  if (!accountId) {
+    toast("Select an OAuth account first");
+    return;
+  }
   const allowExternal = !state.privacySettings.localOnly && !!qs("#communicationAllowExternal")?.checked;
   try {
     const payload = await api("/api/communication/oauth/refresh", {
@@ -4723,31 +4834,31 @@ async function refreshOauthToken() {
       body: JSON.stringify({
         account_id: accountId,
         authorization_code: qs("#communicationOauthCode")?.value.trim() || "",
-        allow_external: allowExternal,
-      }),
+        allow_external: allowExternal
+      })
     });
     setOutput("#commOutput", payload);
     await loadCommunicationOAuth();
     toast(payload.approval_required ? "External approval required" : "Token status updated", payload.reason || payload.status || "");
-  } catch(e) { toast("Token refresh error", e.message); }
+  } catch (e) {
+    toast("Token refresh error", e.message);
+  }
 }
-
 async function loadCommunicationSyncStatus() {
   try {
     const [runsPayload, deadPayload] = await Promise.all([
       api(`/api/communication/sync-runs?project=${encodeURIComponent(getProject())}&limit=8`),
-      api(`/api/communication/dead-letters?project=${encodeURIComponent(getProject())}`),
+      api(`/api/communication/dead-letters?project=${encodeURIComponent(getProject())}`)
     ]);
     state.communication.syncRuns = runsPayload.runs || [];
     state.communication.deadLetters = deadPayload.dead_letters || [];
     renderCommunicationSyncStatus();
     return state.communication;
-  } catch(e) {
+  } catch (e) {
     renderCommunicationSyncStatus({ error: e.message });
     return null;
   }
 }
-
 function renderCommunicationSyncStatus(error = null) {
   const syncFeed = qs("#communicationSyncFeed");
   const deadFeed = qs("#communicationDeadLetterFeed");
@@ -4759,28 +4870,23 @@ function renderCommunicationSyncStatus(error = null) {
   const runs = state.communication.syncRuns || [];
   const deadLetters = state.communication.deadLetters || [];
   if (syncFeed) {
-    syncFeed.innerHTML = runs.length
-      ? runs.map(run => {
-          const badgeClass = run.status === "ok" || run.status === "completed" ? "badge-success" : run.status === "failed" ? "badge-error" : "badge-warning";
-          return listItem(
-            `${run.platform || "connector"} sync`,
-            `${run.status || "queued"} · ${run.started_at || ""} · imported ${run.imported_messages ?? 0} message(s)`,
-            `<span class="badge ${badgeClass}">${escapeHtml(run.status || "unknown")}</span>`
-          );
-        }).join("")
-      : emptyState("No connector sync runs yet.");
+    syncFeed.innerHTML = runs.length ? runs.map((run) => {
+      const badgeClass = run.status === "ok" || run.status === "completed" ? "badge-success" : run.status === "failed" ? "badge-error" : "badge-warning";
+      return listItem(
+        `${run.platform || "connector"} sync`,
+        `${run.status || "queued"} \xB7 ${run.started_at || ""} \xB7 imported ${run.imported_messages ?? 0} message(s)`,
+        `<span class="badge ${badgeClass}">${escapeHtml2(run.status || "unknown")}</span>`
+      );
+    }).join("") : emptyState("No connector sync runs yet.");
   }
   if (deadFeed) {
-    deadFeed.innerHTML = deadLetters.length
-      ? deadLetters.slice(0, 5).map(item => listItem(
-          `Dead letter ${item.platform || "connector"}`,
-          `${item.error || item.reason || "Provider payload was retained for review."}`,
-          `<span class="badge badge-error">${escapeHtml(item.status || "dead")}</span>`
-        )).join("")
-      : `<div class="mini-status mini-status-success"><strong>No dead letters</strong><p>Failed provider payloads will appear here without crashing the runtime.</p></div>`;
+    deadFeed.innerHTML = deadLetters.length ? deadLetters.slice(0, 5).map((item) => listItem(
+      `Dead letter ${item.platform || "connector"}`,
+      `${item.error || item.reason || "Provider payload was retained for review."}`,
+      `<span class="badge badge-error">${escapeHtml2(item.status || "dead")}</span>`
+    )).join("") : `<div class="mini-status mini-status-success"><strong>No dead letters</strong><p>Failed provider payloads will appear here without crashing the runtime.</p></div>`;
   }
 }
-
 async function syncCommunicationProvider() {
   const allowExternal = !state.privacySettings.localOnly && !!qs("#communicationAllowExternal")?.checked;
   try {
@@ -4792,28 +4898,25 @@ async function syncCommunicationProvider() {
         project: getProject(),
         payload: payloadJson,
         allow_external: allowExternal,
-        max_attempts: Number(qs("#commSyncAttempts")?.value || 3),
-      }),
+        max_attempts: Number(qs("#commSyncAttempts")?.value || 3)
+      })
     });
     setOutput("#commOutput", payload);
     await loadCommunicationSyncStatus();
     toast("Connector sync finished", payload.status || payload.run?.status || "recorded");
-  } catch(e) { toast("Connector sync error", e.message); }
+  } catch (e) {
+    toast("Connector sync error", e.message);
+  }
 }
-
-// =============================================
-// Audit / Security
-// =============================================
-
 function setAuthSession(payload) {
   state.authToken = payload?.access_token || "";
   state.authUser = payload?.user || null;
   try {
     if (state.authToken) sessionStorage.setItem("oa-auth-token", state.authToken);
     else sessionStorage.removeItem("oa-auth-token");
-  } catch (e) {}
+  } catch (e) {
+  }
 }
-
 async function registerIdentityAccount() {
   try {
     const username = qs("#identityUsername")?.value.trim() || "";
@@ -4823,59 +4926,70 @@ async function registerIdentityAccount() {
     setAuthSession(session);
     await loadIdentityAdministration();
     toast("Local account created", username);
-  } catch (error) { toast("Account creation failed", error.message); }
+  } catch (error) {
+    toast("Account creation failed", error.message);
+  }
 }
-
 async function loginIdentityAccount() {
   try {
     const session = await api("/api/auth/login", { method: "POST", body: JSON.stringify({
-      username_or_email: qs("#identityUsername")?.value.trim() || "", password: qs("#identityPassword")?.value || "",
+      username_or_email: qs("#identityUsername")?.value.trim() || "",
+      password: qs("#identityPassword")?.value || ""
     }) });
     setAuthSession(session);
     await loadIdentityAdministration();
     toast("Signed in", session.user?.display_name || session.user?.username || "Local account");
-  } catch (error) { toast("Sign in failed", error.message); }
+  } catch (error) {
+    toast("Sign in failed", error.message);
+  }
 }
-
 async function logoutIdentityAccount() {
-  try { if (state.authToken) await api("/api/auth/logout", { method: "POST", body: "{}" }); } catch (e) {}
+  try {
+    if (state.authToken) await api("/api/auth/logout", { method: "POST", body: "{}" });
+  } catch (e) {
+  }
   setAuthSession({});
   await loadIdentityAdministration();
   toast("Signed out");
 }
-
 function base64urlToBytes(value) {
   const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(normalized + "=".repeat((4 - normalized.length % 4) % 4));
-  return Uint8Array.from(binary, character => character.charCodeAt(0));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
-
 function bytesToBase64url(value) {
   if (!value) return "";
   const bytes = new Uint8Array(value);
   let binary = "";
-  bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-
 function prepareCreationOptions(options) {
-  return { ...options, challenge: base64urlToBytes(options.challenge),
+  return {
+    ...options,
+    challenge: base64urlToBytes(options.challenge),
     user: { ...options.user, id: base64urlToBytes(options.user.id) },
-    excludeCredentials: (options.excludeCredentials || []).map(item => ({ ...item, id: base64urlToBytes(item.id) })) };
+    excludeCredentials: (options.excludeCredentials || []).map((item) => ({ ...item, id: base64urlToBytes(item.id) }))
+  };
 }
-
 function prepareRequestOptions(options) {
-  return { ...options, challenge: base64urlToBytes(options.challenge),
-    allowCredentials: (options.allowCredentials || []).map(item => ({ ...item, id: base64urlToBytes(item.id) })) };
+  return {
+    ...options,
+    challenge: base64urlToBytes(options.challenge),
+    allowCredentials: (options.allowCredentials || []).map((item) => ({ ...item, id: base64urlToBytes(item.id) }))
+  };
 }
-
 function serializePublicKeyCredential(credential) {
   const response = credential.response;
   const serialized = {
-    id: credential.id, rawId: bytesToBase64url(credential.rawId), type: credential.type,
+    id: credential.id,
+    rawId: bytesToBase64url(credential.rawId),
+    type: credential.type,
     authenticatorAttachment: credential.authenticatorAttachment || null,
     clientExtensionResults: credential.getClientExtensionResults(),
-    response: { clientDataJSON: bytesToBase64url(response.clientDataJSON) },
+    response: { clientDataJSON: bytesToBase64url(response.clientDataJSON) }
   };
   if (response.attestationObject) serialized.response.attestationObject = bytesToBase64url(response.attestationObject);
   if (response.authenticatorData) serialized.response.authenticatorData = bytesToBase64url(response.authenticatorData);
@@ -4884,23 +4998,34 @@ function serializePublicKeyCredential(credential) {
   if (response.getTransports) serialized.response.transports = response.getTransports();
   return serialized;
 }
-
 async function addIdentityPasskey() {
-  if (!state.authToken) { toast("Sign in before adding a passkey"); return; }
-  if (!window.PublicKeyCredential || !navigator.credentials) { toast("Passkeys are unavailable in this desktop runtime"); return; }
+  if (!state.authToken) {
+    toast("Sign in before adding a passkey");
+    return;
+  }
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    toast("Passkeys are unavailable in this desktop runtime");
+    return;
+  }
   try {
     const options = await api("/api/auth/passkeys/registration/options", { method: "POST", body: "{}" });
     const credential = await navigator.credentials.create({ publicKey: prepareCreationOptions(options.publicKey) });
     await api("/api/auth/passkeys/registration/verify", { method: "POST", body: JSON.stringify({
-      ceremony_id: options.ceremony_id, credential: serializePublicKeyCredential(credential), label: "Windows Hello / security key",
+      ceremony_id: options.ceremony_id,
+      credential: serializePublicKeyCredential(credential),
+      label: "Windows Hello / security key"
     }) });
     await loadIdentityAdministration();
     toast("Passkey added");
-  } catch (error) { toast("Passkey registration failed", error.message); }
+  } catch (error) {
+    toast("Passkey registration failed", error.message);
+  }
 }
-
 async function loginWithIdentityPasskey() {
-  if (!window.PublicKeyCredential || !navigator.credentials) { toast("Passkeys are unavailable in this desktop runtime"); return; }
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    toast("Passkeys are unavailable in this desktop runtime");
+    return;
+  }
   try {
     const options = await api("/api/auth/passkeys/authentication/options", { method: "POST", body: JSON.stringify({ username_or_email: qs("#identityUsername")?.value.trim() || "" }) });
     const credential = await navigator.credentials.get({ publicKey: prepareRequestOptions(options.publicKey) });
@@ -4908,50 +5033,66 @@ async function loginWithIdentityPasskey() {
     setAuthSession(session);
     await loadIdentityAdministration();
     toast("Passkey sign in complete");
-  } catch (error) { toast("Passkey sign in failed", error.message); }
+  } catch (error) {
+    toast("Passkey sign in failed", error.message);
+  }
 }
-
 async function rotateIdentityRecoveryCodes() {
   try {
     const result = await api("/api/auth/recovery/rotate", { method: "POST", body: JSON.stringify({ count: 8 }) });
     const output = qs("#identitySensitiveOutput");
-    if (output) { output.hidden = false; output.textContent = `Recovery codes - shown once\n\n${(result.recovery_codes || []).join("\n")}`; }
-    toast("Recovery codes rotated");
-  } catch (error) { toast("Recovery rotation failed", error.message); }
-}
+    if (output) {
+      output.hidden = false;
+      output.textContent = `Recovery codes - shown once
 
+${(result.recovery_codes || []).join("\n")}`;
+    }
+    toast("Recovery codes rotated");
+  } catch (error) {
+    toast("Recovery rotation failed", error.message);
+  }
+}
 async function localDeviceFingerprint() {
   const input = `${navigator.userAgent}|${navigator.platform}|${navigator.language}|${screen.width}x${screen.height}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-
 async function trustCurrentIdentityDevice() {
   try {
     const device = await api("/api/auth/devices/trust", { method: "POST", body: JSON.stringify({
-      name: navigator.platform || "Local desktop", fingerprint: await localDeviceFingerprint(), trust_level: "standard", days: 30,
+      name: navigator.platform || "Local desktop",
+      fingerprint: await localDeviceFingerprint(),
+      trust_level: "standard",
+      days: 30
     }) });
-    try { sessionStorage.setItem("oa-device-token", device.device?.device_token || ""); } catch (e) {}
+    try {
+      sessionStorage.setItem("oa-device-token", device.device?.device_token || "");
+    } catch (e) {
+    }
     await loadIdentityAdministration();
     toast("Device trusted for 30 days");
-  } catch (error) { toast("Device trust failed", error.message); }
+  } catch (error) {
+    toast("Device trust failed", error.message);
+  }
 }
-
 async function saveIdentityFederationPolicy() {
-  const values = selector => (qs(selector)?.value || "").split(",").map(item => item.trim()).filter(Boolean);
+  const values = (selector) => (qs(selector)?.value || "").split(",").map((item) => item.trim()).filter(Boolean);
   try {
     await api("/api/auth/federation/policies", { method: "POST", body: JSON.stringify({
       provider: qs("#identityFederationProvider")?.value.trim() || "",
       issuer: qs("#identityFederationIssuer")?.value.trim() || "",
       audience: qs("#identityFederationAudience")?.value.trim() || "",
-      allowed_domains: values("#identityFederationDomains"), required_groups: values("#identityFederationGroups"),
-      default_role: "member", enabled: true,
+      allowed_domains: values("#identityFederationDomains"),
+      required_groups: values("#identityFederationGroups"),
+      default_role: "member",
+      enabled: true
     }) });
     await loadIdentityAdministration();
     toast("Federation policy saved");
-  } catch (error) { toast("Federation policy failed", error.message); }
+  } catch (error) {
+    toast("Federation policy failed", error.message);
+  }
 }
-
 async function loadIdentityAdministration() {
   const status = await api("/api/auth/identity/status").catch(() => ({}));
   let me = null;
@@ -4960,73 +5101,74 @@ async function loadIdentityAdministration() {
   let policies = [];
   if (state.authToken) {
     const results = await Promise.allSettled([api("/api/auth/me"), api("/api/auth/passkeys"), api("/api/auth/devices"), api("/api/auth/federation/policies")]);
-    if (results[0].status === "fulfilled") { me = results[0].value.user; state.authUser = me; }
-    else { setAuthSession({}); }
+    if (results[0].status === "fulfilled") {
+      me = results[0].value.user;
+      state.authUser = me;
+    } else {
+      setAuthSession({});
+    }
     if (results[1].status === "fulfilled") passkeys = results[1].value.passkeys || [];
     if (results[2].status === "fulfilled") devices = results[2].value.devices || [];
     if (results[3].status === "fulfilled") policies = results[3].value.policies || [];
   }
   const badge = qs("#identitySessionBadge");
-  if (badge) { badge.textContent = me ? `${me.display_name || me.username} · ${me.role}` : "Signed out"; badge.classList.toggle("badge-success", !!me); }
+  if (badge) {
+    badge.textContent = me ? `${me.display_name || me.username} \xB7 ${me.role}` : "Signed out";
+    badge.classList.toggle("badge-success", !!me);
+  }
   const cards = qs("#identityStatusCards");
   if (cards) cards.innerHTML = [
-    ["WebAuthn", status.webauthn_available ? "Ready" : "Dependency missing"], ["Passkeys", passkeys.length],
-    ["Trusted devices", devices.filter(item => !item.revoked_at).length], ["Federation policies", policies.length],
-  ].map(([label, value]) => `<div class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    ["WebAuthn", status.webauthn_available ? "Ready" : "Dependency missing"],
+    ["Passkeys", passkeys.length],
+    ["Trusted devices", devices.filter((item) => !item.revoked_at).length],
+    ["Federation policies", policies.length]
+  ].map(([label2, value]) => `<div class="metric-card"><span>${escapeHtml2(label2)}</span><strong>${escapeHtml2(value)}</strong></div>`).join("");
   const resources = qs("#identityResourceList");
-  if (resources) resources.innerHTML = me
-    ? [...passkeys.map(item => listItem(item.label || "Passkey", `${item.device_type || "credential"} · counter ${item.sign_count || 0}`)),
-       ...devices.map(item => listItem(item.name, `${item.trust_level} · ${item.revoked_at ? "revoked" : "trusted until " + item.expires_at}`))].join("") || emptyState("No passkeys or trusted devices")
-    : emptyState("Sign in to manage passkeys, recovery, and trusted devices");
+  if (resources) resources.innerHTML = me ? [
+    ...passkeys.map((item) => listItem(item.label || "Passkey", `${item.device_type || "credential"} \xB7 counter ${item.sign_count || 0}`)),
+    ...devices.map((item) => listItem(item.name, `${item.trust_level} \xB7 ${item.revoked_at ? "revoked" : "trusted until " + item.expires_at}`))
+  ].join("") || emptyState("No passkeys or trusted devices") : emptyState("Sign in to manage passkeys, recovery, and trusted devices");
   const federation = qs("#identityFederationList");
-  if (federation) federation.innerHTML = policies.length
-    ? policies.map(item => listItem(item.provider, `${item.issuer} · ${item.audience} · ${item.enabled ? "enabled" : "disabled"}`)).join("")
-    : emptyState(me ? "No federation policies" : "Administrator sign in required");
+  if (federation) federation.innerHTML = policies.length ? policies.map((item) => listItem(item.provider, `${item.issuer} \xB7 ${item.audience} \xB7 ${item.enabled ? "enabled" : "disabled"}`)).join("") : emptyState(me ? "No federation policies" : "Administrator sign in required");
 }
-
 function auditEventTime(event) {
   const parsed = Date.parse(event.created_at || "");
   return Number.isFinite(parsed) ? parsed : 0;
 }
-
 function auditIncidentKey(event) {
-  return `${event.action || "action"}\u0000${event.resource || "resource"}`;
+  return `${event.action || "action"}\0${event.resource || "resource"}`;
 }
-
 function classifyAuditIncidents(events, now = Date.now()) {
   const ordered = [...events].sort((a, b) => auditEventTime(b) - auditEventTime(a));
   const current = [];
   const history = [];
-  const recentWindowMs = 15 * 60 * 1000;
-  ordered.filter(event => event.status === "failed").forEach(failure => {
+  const recentWindowMs = 15 * 60 * 1e3;
+  ordered.filter((event) => event.status === "failed").forEach((failure) => {
     const failureTime = auditEventTime(failure);
-    const recovered = ordered.some(event =>
-      event.status !== "failed"
-      && auditIncidentKey(event) === auditIncidentKey(failure)
-      && auditEventTime(event) > failureTime
+    const recovered = ordered.some(
+      (event) => event.status !== "failed" && auditIncidentKey(event) === auditIncidentKey(failure) && auditEventTime(event) > failureTime
     );
-    if (!recovered && failureTime > 0 && failureTime <= now + 60000 && now - failureTime <= recentWindowMs) current.push(failure);
+    if (!recovered && failureTime > 0 && failureTime <= now + 6e4 && now - failureTime <= recentWindowMs) current.push(failure);
     else history.push({ ...failure, incident_state: recovered ? "resolved" : "aged" });
   });
   return { current, history };
 }
-
 function renderDashboardAudit(events) {
   const chart = qs("#dashboardAuditChart");
-  const failures = events.filter(event => event.status === "failed");
+  const failures = events.filter((event) => event.status === "failed");
   const incidents = classifyAuditIncidents(events);
   const currentSet = new Set(incidents.current);
-  const historyMap = new Map(incidents.history.map(event => [auditIncidentKey(event) + auditEventTime(event), event.incident_state]));
-  const allowed = events.filter(event => event.status !== "failed");
+  const historyMap = new Map(incidents.history.map((event) => [auditIncidentKey(event) + auditEventTime(event), event.incident_state]));
+  const allowed = events.filter((event) => event.status !== "failed");
   if (chart) {
     chart.setAttribute("aria-label", `${events.length} recent audit actions: ${allowed.length} allowed, ${incidents.current.length} current incidents, and ${incidents.history.length} historical failures.`);
     chart.innerHTML = events.length ? `
       <div class="audit-bars" aria-hidden="true">
-        ${[...events].reverse().map(event => {
-          const historical = historyMap.has(auditIncidentKey(event) + auditEventTime(event));
-          const eventClass = currentSet.has(event) ? "failed" : historical ? "historical" : "allowed";
-          return `<i class="${eventClass}" title="${escapeHtml(event.action || "action")}"></i>`;
-        }).join("")}
+        ${[...events].reverse().map((event) => {
+      const historical = historyMap.has(auditIncidentKey(event) + auditEventTime(event));
+      const eventClass = currentSet.has(event) ? "failed" : historical ? "historical" : "allowed";
+      return `<i class="${eventClass}" title="${escapeHtml2(event.action || "action")}"></i>`;
+    }).join("")}
       </div>
       <div class="audit-summary"><span><b>${allowed.length}</b> allowed</span><span class="${incidents.current.length ? "has-failures" : ""}"><b>${incidents.current.length}</b> current</span><span><b>${incidents.history.length}</b> history</span></div>
     ` : `<div class="chart-empty"><strong>No audit activity</strong><span>Actions appear here as they are recorded.</span></div>`;
@@ -5036,7 +5178,7 @@ function renderDashboardAudit(events) {
     if (incidents.current.length) {
       const latest = incidents.current[0];
       const detail = latest.metadata?.error || latest.resource || "No failure detail was recorded.";
-      rail.innerHTML = `<div><span>Attention required</span><strong>${escapeHtml(latest.action || "Failed action")}</strong><p>${escapeHtml(String(detail))}</p></div><button class="btn btn-mini btn-outline" data-view-jump="security">Inspect</button>`;
+      rail.innerHTML = `<div><span>Attention required</span><strong>${escapeHtml2(latest.action || "Failed action")}</strong><p>${escapeHtml2(String(detail))}</p></div><button class="btn btn-mini btn-outline" data-view-jump="security">Inspect</button>`;
       rail.classList.add("visible");
     } else {
       rail.innerHTML = "";
@@ -5044,23 +5186,23 @@ function renderDashboardAudit(events) {
     }
   }
   const dashboard = qs("#auditEvents");
-  const visibleEvents = events.filter(event => {
+  const visibleEvents = events.filter((event) => {
     if (state.dashboardUi.incidentFilter === "all") return true;
     if (state.dashboardUi.incidentFilter === "current") return currentSet.has(event);
     return event.status === "failed" && historyMap.has(auditIncidentKey(event) + auditEventTime(event));
   });
-  if (dashboard) dashboard.innerHTML = visibleEvents.length ? visibleEvents.slice(0, 8).map(event => {
+  if (dashboard) dashboard.innerHTML = visibleEvents.length ? visibleEvents.slice(0, 8).map((event) => {
     const incidentState = currentSet.has(event) ? "current" : historyMap.get(auditIncidentKey(event) + auditEventTime(event));
     return `
     <div class="audit-event-row ${incidentState === "current" ? "failed current" : incidentState ? "historical" : ""}">
       <i aria-hidden="true"></i>
-      <div><strong>${escapeHtml(event.action || "action")}</strong><span>${escapeHtml(event.actor || "system")} · ${escapeHtml(event.resource || "local resource")}</span></div>
-      <time datetime="${escapeHtml(event.created_at || "")}">${escapeHtml(formatDateTime(event.created_at))}</time>
-      <small>${escapeHtml(incidentState || event.status || "allowed")}</small>
+      <div><strong>${escapeHtml2(event.action || "action")}</strong><span>${escapeHtml2(event.actor || "system")} \xB7 ${escapeHtml2(event.resource || "local resource")}</span></div>
+      <time datetime="${escapeHtml2(event.created_at || "")}">${escapeHtml2(formatDateTime(event.created_at))}</time>
+      <small>${escapeHtml2(incidentState || event.status || "allowed")}</small>
     </div>
-  `; }).join("") : emptyState(state.dashboardUi.incidentFilter === "all" ? "No audit events yet" : `No ${state.dashboardUi.incidentFilter} incidents in the loaded audit window.`);
+  `;
+  }).join("") : emptyState(state.dashboardUi.incidentFilter === "all" ? "No audit events yet" : `No ${state.dashboardUi.incidentFilter} incidents in the loaded audit window.`);
 }
-
 async function loadAudit() {
   try {
     const payload = await api(`/api/audit?project=${encodeURIComponent(getProject())}&limit=8`);
@@ -5069,98 +5211,91 @@ async function loadAudit() {
     state.auditEvents = events;
     renderDashboardAudit(events);
     renderMetrics();
-    const securityHtml = events.length
-      ? events.map(e => listItem(e.action, `${e.actor||"system"} — ${e.status||"ok"}`)).join("")
-      : emptyState("No audit events yet");
-    const s = qs("#securityAuditFeed"); if (s) s.innerHTML = securityHtml;
-  } catch(e) {
+    const securityHtml = events.length ? events.map((e) => listItem(e.action, `${e.actor || "system"} \u2014 ${e.status || "ok"}`)).join("") : emptyState("No audit events yet");
+    const s = qs("#securityAuditFeed");
+    if (s) s.innerHTML = securityHtml;
+  } catch (e) {
     state.dashboardSources.audit = false;
     renderMetrics();
     console.warn("loadAudit", e);
   }
 }
-
 async function loadPrivacyReport() {
   try {
     const payload = await api(`/api/security/privacy-report?project=${encodeURIComponent(getProject())}`);
     setOutput("#privacyOutput", payload);
-  } catch(e) { toast("Privacy report error", e.message); }
+  } catch (e) {
+    toast("Privacy report error", e.message);
+  }
 }
-
-// =============================================
-// Developer
-// =============================================
-
 async function loadDeveloperFeed() {
   try {
     const schema = await api("/api/developer/schema");
     const fields = Object.entries(schema.fields || {});
     const el = qs("#developerFeed");
-    if (el) el.innerHTML = fields.length
-      ? fields.slice(0,12).map(([n,d]) => listItem(n, d)).join("")
-      : emptyState("No schema fields");
-  } catch(e) { console.warn("developerFeed", e); }
+    if (el) el.innerHTML = fields.length ? fields.slice(0, 12).map(([n, d]) => listItem(n, d)).join("") : emptyState("No schema fields");
+  } catch (e) {
+    console.warn("developerFeed", e);
+  }
 }
-
 async function loadDeveloperSdk() {
   try {
     const sdk = await api("/api/developer/sdk");
     setOutput("#developerOutput", sdk);
-  } catch(e) { console.warn("developerSdk", e); }
+  } catch (e) {
+    console.warn("developerSdk", e);
+  }
 }
-
 async function createApiKey() {
   try {
     const payload = await api("/api/developer/api-keys", {
       method: "POST",
-      body: JSON.stringify({ label: "ui-generated", scopes: ["api.read", "api.write"] }),
+      body: JSON.stringify({ label: "ui-generated", scopes: ["api.read", "api.write"] })
     });
     setOutput("#developerOutput", payload);
     toast("API key created");
-  } catch(e) { toast("API key error", e.message); }
+  } catch (e) {
+    toast("API key error", e.message);
+  }
 }
-
 function showSkillResult(value, tone = "") {
   const output = qs("#skillEditorResult");
   if (!output) return;
   output.className = `mini-status${tone ? ` mini-status-${tone}` : ""}`;
   output.textContent = typeof value === "string" ? value : formatStructuredOutput(value);
 }
-
 async function loadSkills() {
   try {
     const project = encodeURIComponent(getProject());
     const [payload, marketplace, installations] = await Promise.all([
       api(`/api/skills?project=${project}`),
       api(`/api/skills/marketplace?project=${project}`),
-      api(`/api/skills/installations?project=${project}`),
+      api(`/api/skills/installations?project=${project}`)
     ]);
     const skills = payload.skills || [];
     const list = qs("#skillEditorList");
     if (list) {
-      list.innerHTML = skills.length ? skills.map(skill => listItem(
-        skill.name, `${skill.version} · ${skill.status || "draft"}`,
-        `<button class="btn btn-mini btn-soft" data-open-skill="${escapeHtml(skill.id)}">Edit</button>`
+      list.innerHTML = skills.length ? skills.map((skill) => listItem(
+        skill.name,
+        `${skill.version} \xB7 ${skill.status || "draft"}`,
+        `<button class="btn btn-mini btn-soft" data-open-skill="${escapeHtml2(skill.id)}">Edit</button>`
       )).join("") : emptyState("No local skills yet");
-      qsa("[data-open-skill]", list).forEach(button => button.addEventListener("click", () => openSkill(button.dataset.openSkill)));
+      qsa("[data-open-skill]", list).forEach((button) => button.addEventListener("click", () => openSkill(button.dataset.openSkill)));
     }
     const marketList = qs("#skillMarketplaceList");
     if (marketList) {
-      const installedListingIds = new Set((installations.installations || []).filter(item => item.status === "installed").map(item => item.listing_id));
-      marketList.innerHTML = (marketplace.listings || []).length
-        ? (marketplace.listings || []).map(listing => listItem(
-            `${listing.name} ${listing.version}`,
-            `${listing.visibility} · ${listing.status}`,
-            installedListingIds.has(listing.id)
-              ? '<span class="badge badge-success">Installed</span>'
-              : `<button class="btn btn-mini btn-outline" data-install-skill="${escapeHtml(listing.id)}">Install</button>`,
-          )).join("")
-        : emptyState("No signed local marketplace listings yet");
-      qsa("[data-install-skill]", marketList).forEach(button => button.addEventListener("click", () => installMarketplaceSkill(button.dataset.installSkill)));
+      const installedListingIds = new Set((installations.installations || []).filter((item) => item.status === "installed").map((item) => item.listing_id));
+      marketList.innerHTML = (marketplace.listings || []).length ? (marketplace.listings || []).map((listing) => listItem(
+        `${listing.name} ${listing.version}`,
+        `${listing.visibility} \xB7 ${listing.status}`,
+        installedListingIds.has(listing.id) ? '<span class="badge badge-success">Installed</span>' : `<button class="btn btn-mini btn-outline" data-install-skill="${escapeHtml2(listing.id)}">Install</button>`
+      )).join("") : emptyState("No signed local marketplace listings yet");
+      qsa("[data-install-skill]", marketList).forEach((button) => button.addEventListener("click", () => installMarketplaceSkill(button.dataset.installSkill)));
     }
-  } catch (error) { showSkillResult(`Skill list failed: ${error.message}`, "error"); }
+  } catch (error) {
+    showSkillResult(`Skill list failed: ${error.message}`, "error");
+  }
 }
-
 async function openSkill(skillId) {
   try {
     const payload = await api(`/api/skills/${encodeURIComponent(skillId)}`);
@@ -5170,77 +5305,85 @@ async function openSkill(skillId) {
     if (qs("#skillEditorVersion")) qs("#skillEditorVersion").value = skill.version || "0.1.0";
     if (qs("#skillEditorMarkdown")) qs("#skillEditorMarkdown").value = skill.markdown || "";
     if (qs("#skillEditorManifest")) qs("#skillEditorManifest").value = JSON.stringify(skill.manifest || {}, null, 2);
-    const badge = qs("#skillEditorBadge"); if (badge) badge.textContent = skill.status || "draft";
+    const badge = qs("#skillEditorBadge");
+    if (badge) badge.textContent = skill.status || "draft";
     showSkillResult(`Editing ${skill.name}`);
-  } catch (error) { showSkillResult(error.message, "error"); }
+  } catch (error) {
+    showSkillResult(error.message, "error");
+  }
 }
-
 async function saveSkillEditor() {
   try {
     const manifest = readJsonInput("#skillEditorManifest", {});
     const payload = await api("/api/skills", { method: "POST", body: JSON.stringify({
-      skill_id: state.selectedSkillId, project: getProject(), name: qs("#skillEditorName")?.value.trim() || "",
-      version: qs("#skillEditorVersion")?.value.trim() || "0.1.0", markdown: qs("#skillEditorMarkdown")?.value || "", manifest,
+      skill_id: state.selectedSkillId,
+      project: getProject(),
+      name: qs("#skillEditorName")?.value.trim() || "",
+      version: qs("#skillEditorVersion")?.value.trim() || "0.1.0",
+      markdown: qs("#skillEditorMarkdown")?.value || "",
+      manifest
     }) });
     state.selectedSkillId = payload.skill?.id || state.selectedSkillId;
     showSkillResult(payload.skill || payload, "success");
     await loadSkills();
-  } catch (error) { showSkillResult(error.message, "error"); }
+  } catch (error) {
+    showSkillResult(error.message, "error");
+  }
 }
-
 async function runSkillEditorAction(action) {
-  if (!state.selectedSkillId) { showSkillResult("Save or select a skill first.", "error"); return; }
+  if (!state.selectedSkillId) {
+    showSkillResult("Save or select a skill first.", "error");
+    return;
+  }
   try {
     let payload;
     if (action === "permissions" || action === "dependency-scan") {
       payload = await api(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/${action}`);
     } else {
-      const signingActions = new Set(["package", "publish"]);
-      const body = signingActions.has(action)
-        ? { signing_key: qs("#skillSigningKey")?.value || "", visibility: "local" }
-        : action === "sandbox"
-          ? { input: { request: "Local UI sandbox verification" }, approved_permissions: [] }
-          : {};
+      const signingActions = /* @__PURE__ */ new Set(["package", "publish"]);
+      const body = signingActions.has(action) ? { signing_key: qs("#skillSigningKey")?.value || "", visibility: "local" } : action === "sandbox" ? { input: { request: "Local UI sandbox verification" }, approved_permissions: [] } : {};
       payload = await api(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/${action}`, { method: "POST", body: JSON.stringify(body) });
     }
     showSkillResult(payload, payload.status === "failed" || payload.error ? "error" : "success");
-    const badge = qs("#skillEditorBadge"); if (badge && payload.status) badge.textContent = payload.status;
+    const badge = qs("#skillEditorBadge");
+    if (badge && payload.status) badge.textContent = payload.status;
     await loadSkills();
-  } catch (error) { showSkillResult(error.message, "error"); }
+  } catch (error) {
+    showSkillResult(error.message, "error");
+  }
 }
-
 async function installMarketplaceSkill(listingId) {
   try {
     const payload = await api(`/api/skills/marketplace/${encodeURIComponent(listingId)}/install`, {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), signing_key: qs("#skillSigningKey")?.value || "" }),
+      body: JSON.stringify({ project: getProject(), signing_key: qs("#skillSigningKey")?.value || "" })
     });
     showSkillResult(payload, "success");
     await loadSkills();
-  } catch (error) { showSkillResult(error.message, "error"); }
+  } catch (error) {
+    showSkillResult(error.message, "error");
+  }
 }
-
 async function loadIntegrationStatus() {
   try {
     const [status, safe, parity] = await Promise.all([
       api(`/api/integrations/status?project=${encodeURIComponent(getProject())}`),
       api(`/api/integrations/safe-shell?project=${encodeURIComponent(getProject())}&limit=5`),
-      api(`/api/integrations/parity?project=${encodeURIComponent(getProject())}`),
+      api(`/api/integrations/parity?project=${encodeURIComponent(getProject())}`)
     ]);
     state.integrations = { status, safe, parity };
     renderIntegrationStatus(state.integrations);
     return state.integrations;
-  } catch(e) {
+  } catch (e) {
     renderIntegrationStatus({ error: e.message });
     return null;
   }
 }
-
 function renderIntegrationStatus(data = {}) {
   const cards = qs("#integrationStatusCards");
   const feed = qs("#integrationFeed");
   if (data.error) {
-    if (cards) cards.innerHTML = `<article class="ops-tile ops-danger"><span>Status</span><strong>Attention</strong><p>${escapeHtml(data.error)}</p></article>`;
+    if (cards) cards.innerHTML = `<article class="ops-tile ops-danger"><span>Status</span><strong>Attention</strong><p>${escapeHtml2(data.error)}</p></article>`;
     if (feed) feed.innerHTML = emptyState("Integration status is unavailable");
     return;
   }
@@ -5252,37 +5395,35 @@ function renderIntegrationStatus(data = {}) {
     opsTile("Pairing", `${status.pairing?.active_codes ?? 0} active`, "Hashed one-time codes"),
     opsTile("Backups", status.backups ?? 0, "Local restore points"),
     opsTile("Diagnostics", latest?.status || "ready", "Local module checks"),
-    opsTile("Safe Tools", (safe.commands || []).length, "Allowlisted commands"),
+    opsTile("Safe Tools", (safe.commands || []).length, "Allowlisted commands")
   ].join("");
   const items = [];
   if (latest) {
     items.push(listItem(
       "Latest diagnostic",
-      `${latest.status || "ok"} — ${(latest.issues || []).length} issue(s)`,
-      `<span class="badge ${latest.status === "ok" ? "badge-success" : "badge-warning"}">${escapeHtml(latest.status || "ok")}</span>`
+      `${latest.status || "ok"} \u2014 ${(latest.issues || []).length} issue(s)`,
+      `<span class="badge ${latest.status === "ok" ? "badge-success" : "badge-warning"}">${escapeHtml2(latest.status || "ok")}</span>`
     ));
   }
-  (safe.runs || []).slice(0, 3).forEach(run => {
+  (safe.runs || []).slice(0, 3).forEach((run) => {
     items.push(listItem(
       `Safe command: ${run.command_key}`,
-      `${run.status} — ${run.duration_ms || 0} ms`,
-      `<span class="badge ${run.status === "completed" ? "badge-success" : "badge-warning"}">${escapeHtml(run.status)}</span>`
+      `${run.status} \u2014 ${run.duration_ms || 0} ms`,
+      `<span class="badge ${run.status === "completed" ? "badge-success" : "badge-warning"}">${escapeHtml2(run.status)}</span>`
     ));
   });
-  (parity.items || []).slice(0, 4).forEach(item => {
-    items.push(listItem(item.label, item.endpoint, `<span class="badge badge-success">${escapeHtml(item.status)}</span>`));
+  (parity.items || []).slice(0, 4).forEach((item) => {
+    items.push(listItem(item.label, item.endpoint, `<span class="badge badge-success">${escapeHtml2(item.status)}</span>`));
   });
   if (feed) feed.innerHTML = items.length ? items.join("") : emptyState("No integration activity yet");
 }
-
-function opsTile(label, value, detail) {
+function opsTile(label2, value, detail) {
   return `<article class="ops-tile">
-    <span>${escapeHtml(label)}</span>
-    <strong>${escapeHtml(String(value))}</strong>
-    <p>${escapeHtml(detail)}</p>
+    <span>${escapeHtml2(label2)}</span>
+    <strong>${escapeHtml2(String(value))}</strong>
+    <p>${escapeHtml2(detail)}</p>
   </article>`;
 }
-
 async function createPairingCode() {
   try {
     const payload = await api("/api/integrations/pairing-codes", {
@@ -5291,76 +5432,84 @@ async function createPairingCode() {
         project: getProject(),
         label: "Desktop companion",
         scopes: ["api.read", "workspace.read", "chat.write"],
-        ttl_minutes: 15,
-      }),
+        ttl_minutes: 15
+      })
     });
     const code = payload.code || {};
     const feed = qs("#integrationFeed");
     if (feed) feed.innerHTML = listItem(
       "Pairing code created",
       `Expires ${code.expires_at || "soon"}`,
-      `<code class="inline-code">${escapeHtml(code.code || "")}</code>`
+      `<code class="inline-code">${escapeHtml2(code.code || "")}</code>`
     ) + feed.innerHTML;
-    setOutput("#developerOutput", { pairing_code: { ...code, code: code.code ? `${code.code.slice(0, 8)}…` : "" } });
+    setOutput("#developerOutput", { pairing_code: { ...code, code: code.code ? `${code.code.slice(0, 8)}\u2026` : "" } });
     toast("Pairing code ready", "Code is shown once in Local operations.");
-    loadIntegrationStatus().catch(() => {});
-  } catch(e) { toast("Pairing error", e.message); }
+    loadIntegrationStatus().catch(() => {
+    });
+  } catch (e) {
+    toast("Pairing error", e.message);
+  }
 }
-
 async function runIntegrationDiagnostics() {
   try {
     const payload = await api("/api/integrations/diagnostics", {
       method: "POST",
-      body: JSON.stringify({ project: getProject() }),
+      body: JSON.stringify({ project: getProject() })
     });
     const diagnostic = payload.diagnostic || {};
     const feed = qs("#integrationFeed");
     if (feed) feed.innerHTML = listItem(
       "Diagnostic completed",
-      `${diagnostic.status || "ok"} — ${(diagnostic.issues || []).length} issue(s)`,
-      `<span class="badge ${diagnostic.status === "ok" ? "badge-success" : "badge-warning"}">${escapeHtml(diagnostic.status || "ok")}</span>`
+      `${diagnostic.status || "ok"} \u2014 ${(diagnostic.issues || []).length} issue(s)`,
+      `<span class="badge ${diagnostic.status === "ok" ? "badge-success" : "badge-warning"}">${escapeHtml2(diagnostic.status || "ok")}</span>`
     ) + feed.innerHTML;
     setOutput("#developerOutput", diagnostic);
-    loadIntegrationStatus().catch(() => {});
-  } catch(e) { toast("Diagnostics error", e.message); }
+    loadIntegrationStatus().catch(() => {
+    });
+  } catch (e) {
+    toast("Diagnostics error", e.message);
+  }
 }
-
 async function createIntegrationBackup() {
   try {
     const payload = await api("/api/integrations/backups", {
       method: "POST",
-      body: JSON.stringify({ project: getProject() }),
+      body: JSON.stringify({ project: getProject() })
     });
     const backup = payload.backup || {};
     const feed = qs("#integrationFeed");
     if (feed) feed.innerHTML = listItem(
       "Backup completed",
       backup.path || "Local backup saved",
-      `<span class="badge badge-success">${escapeHtml(backup.status || "completed")}</span>`
+      `<span class="badge badge-success">${escapeHtml2(backup.status || "completed")}</span>`
     ) + feed.innerHTML;
     setOutput("#developerOutput", payload);
-    loadIntegrationStatus().catch(() => {});
-  } catch(e) { toast("Backup error", e.message); }
+    loadIntegrationStatus().catch(() => {
+    });
+  } catch (e) {
+    toast("Backup error", e.message);
+  }
 }
-
 async function runSafePythonCheck() {
   try {
     const payload = await api("/api/integrations/safe-shell", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), command_key: "python-version" }),
+      body: JSON.stringify({ project: getProject(), command_key: "python-version" })
     });
     const run = payload.run || {};
     const feed = qs("#integrationFeed");
     if (feed) feed.innerHTML = listItem(
       "Runtime check",
       `${run.output || run.error || "No output"} (${run.duration_ms || 0} ms)`,
-      `<span class="badge ${run.status === "completed" ? "badge-success" : "badge-warning"}">${escapeHtml(run.status || "done")}</span>`
+      `<span class="badge ${run.status === "completed" ? "badge-success" : "badge-warning"}">${escapeHtml2(run.status || "done")}</span>`
     ) + feed.innerHTML;
     setOutput("#developerOutput", payload);
-    loadIntegrationStatus().catch(() => {});
-  } catch(e) { toast("Runtime check error", e.message); }
+    loadIntegrationStatus().catch(() => {
+    });
+  } catch (e) {
+    toast("Runtime check error", e.message);
+  }
 }
-
 async function saveUiPreference() {
   try {
     const payload = await api("/api/integrations/preferences", {
@@ -5372,19 +5521,21 @@ async function saveUiPreference() {
         value: {
           theme: state.theme,
           sidebar_collapsed: document.body.classList.contains("sidebar-collapsed"),
-          active_view: state.activeView,
-        },
-      }),
+          active_view: state.activeView
+        }
+      })
     });
     const pref = payload.preference || {};
     const feed = qs("#integrationFeed");
     if (feed) feed.innerHTML = listItem("Preference saved", `${pref.scope || "ui"}:${pref.key || "workspace"}`) + feed.innerHTML;
     setOutput("#developerOutput", payload);
     toast("Preference saved", "Stored locally in OpenAgent.");
-    loadIntegrationStatus().catch(() => {});
-  } catch(e) { toast("Preference error", e.message); }
+    loadIntegrationStatus().catch(() => {
+    });
+  } catch (e) {
+    toast("Preference error", e.message);
+  }
 }
-
 async function loadPersonalOsStatus() {
   try {
     const project = encodeURIComponent(getProject());
@@ -5395,22 +5546,21 @@ async function loadPersonalOsStatus() {
       api(`/api/personal-os/drafts?project=${project}`),
       api(`/api/personal-os/notes?project=${project}`),
       api(`/api/personal-os/gallery?project=${project}`),
-      api(`/api/personal-os/compare?project=${project}`),
+      api(`/api/personal-os/compare?project=${project}`)
     ]);
     state.personalOs = { status, presets, signatures, drafts, notes, gallery, compares };
     renderPersonalOsStatus(state.personalOs);
     return state.personalOs;
-  } catch(e) {
+  } catch (e) {
     renderPersonalOsStatus({ error: e.message });
     return null;
   }
 }
-
 function renderPersonalOsStatus(data = {}) {
   const cards = qs("#personalOsCards");
   const feed = qs("#personalOsFeed");
   if (data.error) {
-    if (cards) cards.innerHTML = `<article class="ops-tile ops-danger"><span>Status</span><strong>Attention</strong><p>${escapeHtml(data.error)}</p></article>`;
+    if (cards) cards.innerHTML = `<article class="ops-tile ops-danger"><span>Status</span><strong>Attention</strong><p>${escapeHtml2(data.error)}</p></article>`;
     if (feed) feed.innerHTML = emptyState("Personal OS status is unavailable");
     return;
   }
@@ -5419,44 +5569,40 @@ function renderPersonalOsStatus(data = {}) {
     opsTile("Presets", counts.presets ?? 0, "Reusable chat and model profiles"),
     opsTile("Drafts", counts.drafts ?? 0, "Versioned local writing"),
     opsTile("Notes", counts.notes ?? 0, "Tagged tasks and reminders"),
-    opsTile("Gallery", counts.gallery ?? 0, "Local media references"),
+    opsTile("Gallery", counts.gallery ?? 0, "Local media references")
   ].join("");
-
   const items = [];
-  (data.drafts?.drafts || []).slice(0, 2).forEach(draft => {
-    items.push(listItem(`Draft: ${draft.title}`, `v${draft.version} · ${draft.status} · ${draft.updated_at}`));
+  (data.drafts?.drafts || []).slice(0, 2).forEach((draft) => {
+    items.push(listItem(`Draft: ${draft.title}`, `v${draft.version} \xB7 ${draft.status} \xB7 ${draft.updated_at}`));
   });
-  (data.notes?.notes || []).slice(0, 2).forEach(note => {
+  (data.notes?.notes || []).slice(0, 2).forEach((note) => {
     const tags = (note.tags || []).join(", ") || "no tags";
-    items.push(listItem(`Note: ${note.title}`, `${note.status} · ${tags}${note.due_at ? ` · due ${note.due_at}` : ""}`));
+    items.push(listItem(`Note: ${note.title}`, `${note.status} \xB7 ${tags}${note.due_at ? ` \xB7 due ${note.due_at}` : ""}`));
   });
-  (data.gallery?.assets || []).slice(0, 2).forEach(asset => {
-    items.push(listItem(`Gallery: ${asset.title}`, `${asset.media_type} · ${(asset.tags || []).join(", ") || "untagged"}`));
+  (data.gallery?.assets || []).slice(0, 2).forEach((asset) => {
+    items.push(listItem(`Gallery: ${asset.title}`, `${asset.media_type} \xB7 ${(asset.tags || []).join(", ") || "untagged"}`));
   });
-  (data.compares?.compares || []).slice(0, 2).forEach(compare => {
+  (data.compares?.compares || []).slice(0, 2).forEach((compare) => {
     items.push(listItem(`Compare: ${compare.prompt}`, compare.winner ? `Winner: ${compare.winner}` : "Awaiting vote"));
   });
   if (feed) feed.innerHTML = items.length ? items.join("") : emptyState("Create a preset, draft, note, gallery asset, or compare run to begin.");
 }
-
 function personalOsForm() {
   return {
     title: qs("#personalOsTitle")?.value.trim() || "",
     body: qs("#personalOsBody")?.value.trim() || "",
-    project: getProject(),
+    project: getProject()
   };
 }
-
-function personalOsTags(text) {
+function personalOsTags(text2) {
   const tags = [];
-  String(text || "").replace(/#([a-z0-9_-]+)/gi, (_, tag) => {
+  String(text2 || "").replace(/#([a-z0-9_-]+)/gi, (_, tag) => {
     const clean = tag.toLowerCase();
     if (!tags.includes(clean)) tags.push(clean);
     return "";
   });
   return tags.length ? tags.slice(0, 8) : ["personal"];
 }
-
 async function savePersonalPreset() {
   const form = personalOsForm();
   try {
@@ -5469,15 +5615,16 @@ async function savePersonalPreset() {
         provider: "auto",
         model: state.modelSettings.chatModel || DEFAULT_MODEL_SETTINGS.chatModel,
         instructions: form.body || "Answer with local project context first and ask before external actions.",
-        parameters: { temperature: 0.4, privacy: "local-first" },
-      }),
+        parameters: { temperature: 0.4, privacy: "local-first" }
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Preset saved", payload.preset?.name || "Personal OS");
     await loadPersonalOsStatus();
-  } catch(e) { toast("Preset error", e.message); }
+  } catch (e) {
+    toast("Preset error", e.message);
+  }
 }
-
 async function savePersonalSignature() {
   const form = personalOsForm();
   try {
@@ -5487,15 +5634,16 @@ async function savePersonalSignature() {
         project: form.project,
         label: form.title || "Default signature",
         content: form.body || "Best regards,\nOpenAgent",
-        is_default: true,
-      }),
+        is_default: true
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Signature saved", payload.signature?.label || "");
     await loadPersonalOsStatus();
-  } catch(e) { toast("Signature error", e.message); }
+  } catch (e) {
+    toast("Signature error", e.message);
+  }
 }
-
 async function savePersonalDraft() {
   const form = personalOsForm();
   try {
@@ -5505,15 +5653,16 @@ async function savePersonalDraft() {
         project: form.project,
         title: form.title || "Untitled draft",
         content: form.body || "Draft content",
-        status: "draft",
-      }),
+        status: "draft"
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Draft saved", `Version ${payload.draft?.version || 1}`);
     await loadPersonalOsStatus();
-  } catch(e) { toast("Draft error", e.message); }
+  } catch (e) {
+    toast("Draft error", e.message);
+  }
 }
-
 async function savePersonalNote() {
   const form = personalOsForm();
   try {
@@ -5524,15 +5673,16 @@ async function savePersonalNote() {
         title: form.title || "Quick note",
         body: form.body || "",
         tags: personalOsTags(`${form.title} ${form.body}`),
-        status: "open",
-      }),
+        status: "open"
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Note saved", payload.note?.title || "");
     await loadPersonalOsStatus();
-  } catch(e) { toast("Note error", e.message); }
+  } catch (e) {
+    toast("Note error", e.message);
+  }
 }
-
 async function addGalleryAsset() {
   const form = personalOsForm();
   try {
@@ -5545,15 +5695,16 @@ async function addGalleryAsset() {
         source_path: form.body.startsWith("/") || /^[A-Za-z]:\\/.test(form.body) ? form.body : "",
         content: form.body,
         tags: personalOsTags(`${form.title} ${form.body}`),
-        metadata: { added_from: "developer-ui" },
-      }),
+        metadata: { added_from: "developer-ui" }
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Gallery asset saved", payload.asset?.title || "");
     await loadPersonalOsStatus();
-  } catch(e) { toast("Gallery error", e.message); }
+  } catch (e) {
+    toast("Gallery error", e.message);
+  }
 }
-
 async function startCompareRun() {
   const form = personalOsForm();
   const parts = form.body.split(/\n-{3,}\n/);
@@ -5570,30 +5721,27 @@ async function startCompareRun() {
         left_label: "A",
         left_output: parts[0].trim(),
         right_label: "B",
-        right_output: parts.slice(1).join("\n---\n").trim(),
-      }),
+        right_output: parts.slice(1).join("\n---\n").trim()
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Compare run saved", payload.compare?.prompt || "");
     await loadPersonalOsStatus();
-  } catch(e) { toast("Compare error", e.message); }
+  } catch (e) {
+    toast("Compare error", e.message);
+  }
 }
-
 async function exportPersonalOs() {
   try {
     const payload = await api(`/api/personal-os/export?project=${encodeURIComponent(getProject())}`);
     setOutput("#developerOutput", payload);
     toast("Personal OS exported", `${(payload.notes || []).length} notes, ${(payload.drafts || []).length} drafts`);
     await loadPersonalOsStatus();
-  } catch(e) { toast("Export error", e.message); }
+  } catch (e) {
+    toast("Export error", e.message);
+  }
 }
-
-// =============================================
-// Deep operational modules
-// =============================================
-
-const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEUAAACnej3aAAAAAXRSTlMAQObYZgAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAASUVORK5CYII=";
-
+var TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEUAAACnej3aAAAAAXRSTlMAQObYZgAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAASUVORK5CYII=";
 async function loadOperationalModules() {
   await Promise.allSettled([
     loadModelCookbook(),
@@ -5603,10 +5751,9 @@ async function loadOperationalModules() {
     loadSchedulerStatus(),
     loadImageStudio(),
     loadAgentBridgeStatus(),
-    loadProviderCertification(false),
+    loadProviderCertification(false)
   ]);
 }
-
 async function loadModelCookbook() {
   try {
     const project = encodeURIComponent(getProject());
@@ -5614,7 +5761,7 @@ async function loadModelCookbook() {
       api(`/api/model-cookbook/hosts?project=${project}`),
       api(`/api/model-cookbook/cached?project=${project}`),
       api(`/api/model-cookbook/hardware-fit?project=${project}&model_ref=${encodeURIComponent(state.modelSettings.chatModel || "local-model")}`),
-      api(`/api/model-cookbook/certifications?project=${project}`),
+      api(`/api/model-cookbook/certifications?project=${project}`)
     ]);
     const feed = qs("#modelCookbookFeed");
     if (feed) {
@@ -5622,41 +5769,42 @@ async function loadModelCookbook() {
         listItem("Hosts", `${(hosts.hosts || []).length} configured`, "Safe local/remote model endpoints"),
         listItem("Cached model files", `${(cached.files || []).length} discovered`, "Scans local model folders only"),
         listItem("Hardware fit", `${fit.recommended_bits || "auto"} bit`, `${fit.expected_memory_gb || "?"} GB expected memory`),
-        listItem("Certified endpoints", `${(certifications.certifications || []).filter(item => item.status === "certified").length} active`, `${(certifications.certifications || []).length} signed probe report(s)`),
+        listItem("Certified endpoints", `${(certifications.certifications || []).filter((item) => item.status === "certified").length} active`, `${(certifications.certifications || []).length} signed probe report(s)`)
       ];
       feed.innerHTML = rows.join("");
     }
     return { hosts, cached, fit, certifications };
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#modelCookbookFeed");
     if (feed) feed.innerHTML = emptyState(`Cookbook unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function certifyModelEndpoint() {
   try {
     const endpoint = qs("#modelCertificationEndpoint")?.value.trim() || "";
     const payload = await api("/api/model-cookbook/certify", {
       method: "POST",
       body: JSON.stringify({
-        project: getProject(), endpoint,
+        project: getProject(),
+        endpoint,
         model_ref: qs("#modelCertificationModel")?.value.trim() || "",
         allow_external: !state.privacySettings.localOnly,
-        completion_probe: true,
-      }),
+        completion_probe: true
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Endpoint certification complete", payload.certification?.status || "recorded");
     await loadModelCookbook();
-  } catch(e) { toast("Endpoint certification failed", e.message); }
+  } catch (e) {
+    toast("Endpoint certification failed", e.message);
+  }
 }
-
 async function loadInferenceEngine() {
   try {
     const [inference, rag] = await Promise.all([
       api("/api/inference/status"),
-      api(`/api/rag/status?project=${encodeURIComponent(getProject())}`),
+      api(`/api/rag/status?project=${encodeURIComponent(getProject())}`)
     ]);
     const feed = qs("#inferenceEngineFeed");
     if (feed) {
@@ -5664,58 +5812,58 @@ async function loadInferenceEngine() {
       const latency = inference.latency || {};
       const vector = rag.vector_store || {};
       feed.innerHTML = [
-        listItem("First-token latency", latency.first_token_p50_ms != null ? `${latency.first_token_p50_ms} ms p50` : "No samples yet", `Target ${latency.target_first_token_ms || 1000} ms`),
+        listItem("First-token latency", latency.first_token_p50_ms != null ? `${latency.first_token_p50_ms} ms p50` : "No samples yet", `Target ${latency.target_first_token_ms || 1e3} ms`),
         listItem("Response cache", `${cache.entries || 0}/${cache.max_entries || 0} entries`, `${Math.round(Number(cache.hit_rate || 0) * 100)}% hit rate`),
         listItem("Vector engines", (vector.active_accelerators || []).join(" + ") || "SQLite fallback", `${vector.chunk_count || 0} indexed chunks`),
-        listItem("RAG pipeline", rag.algorithm || "advanced local RAG", `${rag.query_runs || 0} measured queries`),
+        listItem("RAG pipeline", rag.algorithm || "advanced local RAG", `${rag.query_runs || 0} measured queries`)
       ].join("");
     }
     return { inference, rag };
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#inferenceEngineFeed");
     if (feed) feed.innerHTML = emptyState(`Inference metrics unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function runInferenceAction(path, body, successMessage) {
   try {
     const payload = await api(path, { method: "POST", body: JSON.stringify({ project: getProject(), ...body }) });
     setOutput("#developerOutput", payload);
     toast(successMessage, payload.latency_ms != null ? `${payload.latency_ms} ms` : payload.status || "done");
     await loadInferenceEngine();
-  } catch(e) { toast("Inference action error", e.message); }
+  } catch (e) {
+    toast("Inference action error", e.message);
+  }
 }
-
 function renderAdaptiveEngine() {
   const snapshot = state.adaptiveEngine || {};
   const status = snapshot.status || {};
   const profile = status.hardware_profile || {};
   const devices = profile.devices || [];
   const badge = qs("#adaptiveEngineBadge");
-  const usable = devices.filter(device => (device.backends || []).length > 0);
+  const usable = devices.filter((device) => (device.backends || []).length > 0);
   if (badge) {
     badge.textContent = usable.length ? `${usable.length} runtime${usable.length === 1 ? "" : "s"} exposed` : "Runtime needed";
     badge.className = `badge ${usable.length ? "badge-success" : "badge-warning"}`;
   }
   const grid = qs("#adaptiveHardwareGrid");
   if (grid) {
-    grid.innerHTML = devices.map(device => {
+    grid.innerHTML = devices.map((device) => {
       const backend = (device.backends || []).join(" + ") || "No execution backend";
       const memory = Number(device.memory_gb || 0).toFixed(1);
-      return `<div class="adaptive-device-tile" data-device-kind="${escapeHtml(device.kind || "device")}">
-        <div class="adaptive-device-heading"><span>${escapeHtml((device.kind || "device").toUpperCase())}</span><i class="status-dot ${(device.backends || []).length ? "online" : ""}"></i></div>
-        <strong>${escapeHtml(device.name || device.id)}</strong>
-        <p>${memory} GB visible · ${escapeHtml(backend)} · verify model before assignment</p>
-        <small>${escapeHtml((device.precisions || []).join(" · ") || "Capabilities unavailable")}</small>
+      return `<div class="adaptive-device-tile" data-device-kind="${escapeHtml2(device.kind || "device")}">
+        <div class="adaptive-device-heading"><span>${escapeHtml2((device.kind || "device").toUpperCase())}</span><i class="status-dot ${(device.backends || []).length ? "online" : ""}"></i></div>
+        <strong>${escapeHtml2(device.name || device.id)}</strong>
+        <p>${memory} GB visible \xB7 ${escapeHtml2(backend)} \xB7 verify model before assignment</p>
+        <small>${escapeHtml2((device.precisions || []).join(" \xB7 ") || "Capabilities unavailable")}</small>
       </div>`;
     }).join("") || emptyState("No compute devices discovered");
   }
   const select = qs("#adaptiveDeviceSelect");
   if (select) {
     const selected = select.value;
-    select.innerHTML = usable.map(device => `<option value="${escapeHtml(device.id)}">${escapeHtml(device.kind.toUpperCase())} · ${escapeHtml(device.name)}</option>`).join("");
-    if (selected && usable.some(device => device.id === selected)) select.value = selected;
+    select.innerHTML = usable.map((device) => `<option value="${escapeHtml2(device.id)}">${escapeHtml2(device.kind.toUpperCase())} \xB7 ${escapeHtml2(device.name)}</option>`).join("");
+    if (selected && usable.some((device) => device.id === selected)) select.value = selected;
   }
   const plan = (snapshot.plans || [])[0] || {};
   const prefill = plan.prefill || {};
@@ -5730,7 +5878,7 @@ function renderAdaptiveEngine() {
   const feed = qs("#adaptiveEngineFeed");
   if (!feed) return;
   const rows = [
-    listItem("Hardware profile", `${profile.cpu_threads || 0} CPU threads · ${Number(profile.available_ram_gb || 0).toFixed(1)} GB RAM free`, `${devices.length} local compute device(s)`),
+    listItem("Hardware profile", `${profile.cpu_threads || 0} CPU threads \xB7 ${Number(profile.available_ram_gb || 0).toFixed(1)} GB RAM free`, `${devices.length} local compute device(s)`),
     listItem(
       "Unified model execution",
       ownership.gateway_bound ? `${(ownership.shared_consumers || []).length} app modules share one resident gateway` : "Model gateway is not bound",
@@ -5739,50 +5887,49 @@ function renderAdaptiveEngine() {
     listItem("Compiler boundary", "Plans are estimates until a vendor backend accepts the model", "No model weights or telemetry leave this machine"),
     listItem(
       "Direct hardware runtime",
-      direct.status === "ready" || direct.running ? `${residentModels.length} resident model(s) · inherited local pipes` : "Available on demand · no native worker kept open",
-      `<span class="badge ${direct.status === "ready" || direct.running ? "badge-success" : "badge-soft"}">${escapeHtml(direct.status || "available")}</span>`
-    ),
+      direct.status === "ready" || direct.running ? `${residentModels.length} resident model(s) \xB7 inherited local pipes` : "Available on demand \xB7 no native worker kept open",
+      `<span class="badge ${direct.status === "ready" || direct.running ? "badge-success" : "badge-soft"}">${escapeHtml2(direct.status || "available")}</span>`
+    )
   ];
   if (calibration.id) {
     rows.push(listItem(
       "Exact-model calibration",
       `${calibration.winner?.device || "Unknown"} won after ${calibration.devices?.length || 0} device validation(s)`,
-      `<span class="badge badge-success">${escapeHtml(calibration.status || "verified")}</span>`
+      `<span class="badge badge-success">${escapeHtml2(calibration.status || "verified")}</span>`
     ));
   }
-  residentModels.slice(0, 4).forEach(model => rows.push(listItem(
-    `Resident · ${model.model_id || "model"}`,
-    `${String(model.kind || "model").toUpperCase()} · ${model.device || "device"} · ${model.calls || 0} call(s)`,
+  residentModels.slice(0, 4).forEach((model) => rows.push(listItem(
+    `Resident \xB7 ${model.model_id || "model"}`,
+    `${String(model.kind || "model").toUpperCase()} \xB7 ${model.device || "device"} \xB7 ${model.calls || 0} call(s)`,
     `${Number(model.average_infer_ms || model.average_generate_ms || 0).toFixed(3)} ms average`
   )));
   if (plan.id) {
     rows.push(listItem(
-      `Plan ${String(plan.id).slice(0, 8)} · ${plan.status || "planned"}`,
-      `${plan.model_name || "Local model"} · ${plan.source_format || "unknown"} · ${Number(precision.planned_weight_gb || 0).toFixed(2)} GB planned weights`,
-      `<span class="badge ${plan.status === "compiled" ? "badge-success" : "badge-warning"}">${escapeHtml(plan.status || "planned")}</span>`
+      `Plan ${String(plan.id).slice(0, 8)} \xB7 ${plan.status || "planned"}`,
+      `${plan.model_name || "Local model"} \xB7 ${plan.source_format || "unknown"} \xB7 ${Number(precision.planned_weight_gb || 0).toFixed(2)} GB planned weights`,
+      `<span class="badge ${plan.status === "compiled" ? "badge-success" : "badge-warning"}">${escapeHtml2(plan.status || "planned")}</span>`
     ));
     rows.push(listItem(
       "Prefill execution",
-      `${Number(prefill.estimated_tokens_per_second || 0).toFixed(2)} token/s estimated · ${prefill.transfer_count || 0} transfers`,
-      `${(prefill.device_regions || []).map(region => region.device_id).join(" → ") || "No regions"}`
+      `${Number(prefill.estimated_tokens_per_second || 0).toFixed(2)} token/s estimated \xB7 ${prefill.transfer_count || 0} transfers`,
+      `${(prefill.device_regions || []).map((region) => region.device_id).join(" \u2192 ") || "No regions"}`
     ));
     rows.push(listItem(
       "Decode execution",
-      `${Number(decode.estimated_tokens_per_second || 0).toFixed(2)} token/s estimated · ${decode.transfer_count || 0} transfers`,
-      `${(decode.device_regions || []).map(region => region.device_id).join(" → ") || "No regions"}`
+      `${Number(decode.estimated_tokens_per_second || 0).toFixed(2)} token/s estimated \xB7 ${decode.transfer_count || 0} transfers`,
+      `${(decode.device_regions || []).map((region) => region.device_id).join(" \u2192 ") || "No regions"}`
     ));
-    (plan.warnings || []).slice(0, 2).forEach(warning => rows.push(listItem("Planner constraint", warning)));
+    (plan.warnings || []).slice(0, 2).forEach((warning) => rows.push(listItem("Planner constraint", warning)));
   }
   if (evidence.status) {
     rows.push(listItem(
       `${benchmark.device_name || benchmark.device_id} validation`,
-      `${Number(evidence.latency_ms?.mean || 0).toFixed(4)} ms mean · max error ${evidence.max_absolute_error ?? "n/a"}`,
-      `<span class="badge ${evidence.status === "verified" ? "badge-success" : "badge-danger"}">${escapeHtml(evidence.status)}</span>`
+      `${Number(evidence.latency_ms?.mean || 0).toFixed(4)} ms mean \xB7 max error ${evidence.max_absolute_error ?? "n/a"}`,
+      `<span class="badge ${evidence.status === "verified" ? "badge-success" : "badge-danger"}">${escapeHtml2(evidence.status)}</span>`
     ));
   }
   feed.innerHTML = rows.join("");
 }
-
 async function loadAdaptiveEngine(refresh = false) {
   try {
     const project = encodeURIComponent(getProject());
@@ -5792,7 +5939,7 @@ async function loadAdaptiveEngine(refresh = false) {
       api(`/api/adaptive-engine/plans?project=${project}&limit=8`),
       api(`/api/adaptive-engine/benchmarks?project=${project}&limit=8`),
       api(`/api/adaptive-engine/direct/status?project=${project}`),
-      api(`/api/adaptive-engine/direct/calibrations?project=${project}&limit=8`),
+      api(`/api/adaptive-engine/direct/calibrations?project=${project}&limit=8`)
     ]);
     state.adaptiveEngine = {
       ...state.adaptiveEngine,
@@ -5800,17 +5947,16 @@ async function loadAdaptiveEngine(refresh = false) {
       plans: plans.plans || [],
       benchmarks: benchmarks.benchmarks || [],
       direct,
-      calibrations: calibrations.calibrations || [],
+      calibrations: calibrations.calibrations || []
     };
     renderAdaptiveEngine();
     return state.adaptiveEngine;
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#adaptiveEngineFeed");
     if (feed) feed.innerHTML = emptyState(`Adaptive engine unavailable: ${e.message}`);
     return null;
   }
 }
-
 function adaptiveModelPayload() {
   const budget = qs("#adaptiveMemoryBudget")?.value.trim();
   return {
@@ -5822,118 +5968,147 @@ function adaptiveModelPayload() {
     quality_loss_limit: Number(qs("#adaptiveQualityLimit")?.value || 0.08),
     power_mode: qs("#adaptivePowerMode")?.value || "balanced",
     max_device_transitions: 4,
-    backend_compile: true,
+    backend_compile: true
   };
 }
-
 async function inspectAdaptiveModel() {
   const body = adaptiveModelPayload();
-  if (!body.path) { toast("Model path required", "Choose a local GGUF, SafeTensors, ONNX, or OpenVINO model."); return; }
+  if (!body.path) {
+    toast("Model path required", "Choose a local GGUF, SafeTensors, ONNX, or OpenVINO model.");
+    return;
+  }
   try {
     const payload = await api("/api/adaptive-engine/inspect", { method: "POST", body: JSON.stringify(body) });
     setOutput("#developerOutput", payload);
-    toast("Model graph inspected", `${payload.graph_node_count || 0} graph nodes · ${payload.tensor_count || 0} tensors`);
+    toast("Model graph inspected", `${payload.graph_node_count || 0} graph nodes \xB7 ${payload.tensor_count || 0} tensors`);
     await loadAdaptiveEngine();
-  } catch(e) { toast("Inspection failed", e.message); }
+  } catch (e) {
+    toast("Inspection failed", e.message);
+  }
 }
-
 async function compileAdaptiveModel() {
   const body = adaptiveModelPayload();
-  if (!body.path) { toast("Model path required", "Choose a local model before compiling a plan."); return; }
+  if (!body.path) {
+    toast("Model path required", "Choose a local model before compiling a plan.");
+    return;
+  }
   try {
     const payload = await api("/api/adaptive-engine/compile", { method: "POST", body: JSON.stringify(body) });
     setOutput("#developerOutput", payload);
-    toast("Adaptive plan complete", `${payload.status || "planned"} · ${Number(payload.decode?.estimated_tokens_per_second || 0).toFixed(2)} token/s estimated`);
+    toast("Adaptive plan complete", `${payload.status || "planned"} \xB7 ${Number(payload.decode?.estimated_tokens_per_second || 0).toFixed(2)} token/s estimated`);
     await loadAdaptiveEngine();
-  } catch(e) { toast("Compilation failed", e.message); }
+  } catch (e) {
+    toast("Compilation failed", e.message);
+  }
 }
-
 async function benchmarkAdaptiveDevice() {
   const deviceId = qs("#adaptiveDeviceSelect")?.value || "";
-  if (!deviceId) { toast("No executable device detected"); return; }
+  if (!deviceId) {
+    toast("No executable device detected");
+    return;
+  }
   try {
     const payload = await api("/api/adaptive-engine/benchmark", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), device_id: deviceId, iterations: 20, dimension: 256 }),
+      body: JSON.stringify({ project: getProject(), device_id: deviceId, iterations: 20, dimension: 256 })
     });
     setOutput("#developerOutput", payload);
-    toast("Device verified", `${payload.evidence?.latency_ms?.mean || 0} ms · ${payload.evidence?.status || "complete"}`);
+    toast("Device verified", `${payload.evidence?.latency_ms?.mean || 0} ms \xB7 ${payload.evidence?.status || "complete"}`);
     await loadAdaptiveEngine();
-  } catch(e) { toast("Device validation failed", e.message); }
+  } catch (e) {
+    toast("Device validation failed", e.message);
+  }
 }
-
 async function autotuneAdaptiveDevice() {
   const deviceId = qs("#adaptiveDeviceSelect")?.value || "";
-  if (!deviceId) { toast("No executable device detected"); return; }
+  if (!deviceId) {
+    toast("No executable device detected");
+    return;
+  }
   try {
     const payload = await api("/api/adaptive-engine/autotune", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), device_id: deviceId, phase: "decode", iterations: 12 }),
+      body: JSON.stringify({ project: getProject(), device_id: deviceId, phase: "decode", iterations: 12 })
     });
     setOutput("#developerOutput", payload);
     const winner = payload.winner?.configuration || {};
-    toast("Autotuning complete", `${winner.performance_hint || "Backend"} · ${winner.num_streams || "default streams"}`);
+    toast("Autotuning complete", `${winner.performance_hint || "Backend"} \xB7 ${winner.num_streams || "default streams"}`);
     await loadAdaptiveEngine();
-  } catch(e) { toast("Autotuning failed", e.message); }
+  } catch (e) {
+    toast("Autotuning failed", e.message);
+  }
 }
-
 async function calibrateAdaptiveModel() {
   const body = adaptiveModelPayload();
-  if (!body.path) { toast("Model path required", "Choose a local ONNX or OpenVINO XML model."); return; }
+  if (!body.path) {
+    toast("Model path required", "Choose a local ONNX or OpenVINO XML model.");
+    return;
+  }
   try {
     const payload = await api("/api/adaptive-engine/direct/calibrate", {
       method: "POST",
       body: JSON.stringify({
-        project: getProject(), path: body.path, iterations: 10,
+        project: getProject(),
+        path: body.path,
+        iterations: 10,
         keep_resident: true,
-        model_id: qs("#adaptiveResidentModelId")?.value.trim() || "",
-      }),
+        model_id: qs("#adaptiveResidentModelId")?.value.trim() || ""
+      })
     });
     setOutput("#developerOutput", payload);
-    toast("Exact model verified", `${payload.winner?.device || "Device"} · ${Number(payload.winner?.latency_ms?.mean || 0).toFixed(3)} ms mean`);
+    toast("Exact model verified", `${payload.winner?.device || "Device"} \xB7 ${Number(payload.winner?.latency_ms?.mean || 0).toFixed(3)} ms mean`);
     await loadAdaptiveEngine();
-  } catch(e) { toast("Calibration failed", e.message); }
+  } catch (e) {
+    toast("Calibration failed", e.message);
+  }
 }
-
 async function loadAdaptiveResident() {
   const path = qs("#adaptiveModelPath")?.value.trim() || "";
   const deviceId = qs("#adaptiveDeviceSelect")?.value || "";
   const modelId = qs("#adaptiveResidentModelId")?.value.trim() || "openagent-direct-chat";
   const kind = qs("#adaptiveModelKind")?.value || "generic";
-  if (!path || !deviceId) { toast("Model and device required", "Choose a local model path and an executable device."); return; }
+  if (!path || !deviceId) {
+    toast("Model and device required", "Choose a local model path and an executable device.");
+    return;
+  }
   try {
     const endpoint = kind === "llm" ? "/api/adaptive-engine/direct/load-llm" : "/api/adaptive-engine/direct/load";
     const payload = await api(endpoint, {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), path, device_id: deviceId, model_id: modelId }),
+      body: JSON.stringify({ project: getProject(), path, device_id: deviceId, model_id: modelId })
     });
     setOutput("#developerOutput", payload);
-    toast("Model resident", `${payload.device || deviceId} · ${Number(payload.load_ms || payload.compile_ms || 0).toFixed(1)} ms load`);
+    toast("Model resident", `${payload.device || deviceId} \xB7 ${Number(payload.load_ms || payload.compile_ms || 0).toFixed(1)} ms load`);
     await loadAdaptiveEngine();
-  } catch(e) { toast("Direct load failed", e.message); }
+  } catch (e) {
+    toast("Direct load failed", e.message);
+  }
 }
-
 async function unloadAdaptiveResident() {
   const modelId = qs("#adaptiveResidentModelId")?.value.trim() || "openagent-direct-chat";
   try {
     const payload = await api("/api/adaptive-engine/direct/unload", {
-      method: "POST", body: JSON.stringify({ project: getProject(), model_id: modelId }),
+      method: "POST",
+      body: JSON.stringify({ project: getProject(), model_id: modelId })
     });
     toast("Resident model", payload.status || "unloaded");
     await loadAdaptiveEngine();
-  } catch(e) { toast("Unload failed", e.message); }
+  } catch (e) {
+    toast("Unload failed", e.message);
+  }
 }
-
 async function stopAdaptiveRuntime() {
   try {
     await api("/api/adaptive-engine/direct/stop", {
-      method: "POST", body: JSON.stringify({ project: getProject() }),
+      method: "POST",
+      body: JSON.stringify({ project: getProject() })
     });
     toast("Direct runtime stopped", "Native model memory released");
     await loadAdaptiveEngine();
-  } catch(e) { toast("Runtime stop failed", e.message); }
+  } catch (e) {
+    toast("Runtime stop failed", e.message);
+  }
 }
-
 async function loadEngineWorkspace(refresh = false) {
   const project = encodeURIComponent(getProject());
   try {
@@ -5941,70 +6116,69 @@ async function loadEngineWorkspace(refresh = false) {
       loadAdaptiveEngine(refresh),
       api(`/api/adaptive-engine/roles?project=${project}`),
       api("/api/adaptive-engine/role-options"),
-      api(`/api/adaptive-engine/orchestrations?project=${project}&limit=12`),
+      api(`/api/adaptive-engine/orchestrations?project=${project}&limit=12`)
     ]);
     state.engineRoles = rolesPayload.roles || [];
     state.engineRoleOptions = options || { roles: [], providers: [], models: [] };
     state.engineRuns = runsPayload.runs || [];
-    if (!state.engineRoles.some(role => role.role === state.selectedEngineRole)) {
+    if (!state.engineRoles.some((role) => role.role === state.selectedEngineRole)) {
       state.selectedEngineRole = state.engineRoles[0]?.role || "chat";
     }
     renderEngineWorkspace();
     return { adaptive, roles: state.engineRoles, runs: state.engineRuns };
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#engineRunFeed");
     if (feed) feed.innerHTML = emptyState(`Engine workspace unavailable: ${e.message}`);
     throw e;
   }
 }
-
 function renderEngineWorkspace() {
   const roles = state.engineRoles || [];
   const options = state.engineRoleOptions || {};
-  const selected = roles.find(role => role.role === state.selectedEngineRole) || roles[0];
+  const selected = roles.find((role) => role.role === state.selectedEngineRole) || roles[0];
   const summary = qs("#engineRoleSummary");
   if (summary) {
-    summary.innerHTML = roles.map(role => `
-      <button class="engine-role-pill ${role.role === selected?.role ? "active" : ""}" data-engine-role="${escapeHtml(role.role)}" type="button">
-        <span>${escapeHtml(role.label || role.role)}</span>
-        <strong>${escapeHtml(role.model_id || "Not assigned")}</strong>
-        <small>${escapeHtml(role.provider_id)} · ${escapeHtml(role.device_id || "auto")}</small>
+    summary.innerHTML = roles.map((role) => `
+      <button class="engine-role-pill ${role.role === selected?.role ? "active" : ""}" data-engine-role="${escapeHtml2(role.role)}" type="button">
+        <span>${escapeHtml2(role.label || role.role)}</span>
+        <strong>${escapeHtml2(role.model_id || "Not assigned")}</strong>
+        <small>${escapeHtml2(role.provider_id)} \xB7 ${escapeHtml2(role.device_id || "auto")}</small>
         <i class="status-dot ${role.enabled ? "online" : ""}"></i>
       </button>
     `).join("");
   }
   const roleSelect = qs("#engineRoleSelect");
   if (roleSelect) {
-    roleSelect.innerHTML = roles.map(role => `<option value="${escapeHtml(role.role)}">${escapeHtml(role.label || role.role)}</option>`).join("");
+    roleSelect.innerHTML = roles.map((role) => `<option value="${escapeHtml2(role.role)}">${escapeHtml2(role.label || role.role)}</option>`).join("");
     if (selected) roleSelect.value = selected.role;
   }
   const providers = options.providers || [];
   const providerSelect = qs("#engineRoleProvider");
   if (providerSelect) {
-    providerSelect.innerHTML = providers.map(provider => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.label || provider.id)}${provider.available ? " · ready" : ""}</option>`).join("");
-    if (selected && providers.some(provider => provider.id === selected.provider_id)) providerSelect.value = selected.provider_id;
+    providerSelect.innerHTML = providers.map((provider) => `<option value="${escapeHtml2(provider.id)}">${escapeHtml2(provider.label || provider.id)}${provider.available ? " \xB7 ready" : ""}</option>`).join("");
+    if (selected && providers.some((provider) => provider.id === selected.provider_id)) providerSelect.value = selected.provider_id;
   }
   const discovered = options.models || [];
   const modelValues = [];
-  discovered.forEach(item => {
+  discovered.forEach((item) => {
     const value = String(item.model || "").trim();
-    if (value && !modelValues.some(existing => existing.value === value)) {
-      modelValues.push({ value, label: `${value} · ${item.provider || "local"}` });
+    if (value && !modelValues.some((existing) => existing.value === value)) {
+      modelValues.push({ value, label: `${value} \xB7 ${item.provider || "local"}` });
     }
   });
-  if (selected?.model_id && !modelValues.some(item => item.value === selected.model_id)) {
-    modelValues.unshift({ value: selected.model_id, label: `${selected.model_id} · configured` });
+  if (selected?.model_id && !modelValues.some((item) => item.value === selected.model_id)) {
+    modelValues.unshift({ value: selected.model_id, label: `${selected.model_id} \xB7 configured` });
   }
   const modelSelect = qs("#engineRoleModelSelect");
   if (modelSelect) {
-    modelSelect.innerHTML = modelValues.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("") || `<option value="">No local models discovered</option>`;
-    if (selected && modelValues.some(item => item.value === selected.model_id)) modelSelect.value = selected.model_id;
+    modelSelect.innerHTML = modelValues.map((item) => `<option value="${escapeHtml2(item.value)}">${escapeHtml2(item.label)}</option>`).join("") || `<option value="">No local models discovered</option>`;
+    if (selected && modelValues.some((item) => item.value === selected.model_id)) modelSelect.value = selected.model_id;
   }
   const profileDevices = state.adaptiveEngine?.status?.hardware_profile?.devices || [];
   const deviceSelect = qs("#engineRoleDevice");
   if (deviceSelect) {
-    deviceSelect.innerHTML = `<option value="auto">Auto measured target</option>` + profileDevices.map(device => `<option value="${escapeHtml(device.id)}">${escapeHtml((device.kind || "device").toUpperCase())} · ${escapeHtml(device.name || device.id)}</option>`).join("");
-    if (selected && (selected.device_id === "auto" || profileDevices.some(device => device.id === selected.device_id))) deviceSelect.value = selected.device_id || "auto";
+    deviceSelect.innerHTML = `<option value="auto">Auto measured target</option>` + profileDevices.map((device) => `<option value="${escapeHtml2(device.id)}">${escapeHtml2((device.kind || "device").toUpperCase())} \xB7 ${escapeHtml2(device.name || device.id)}</option>`).join("");
+    if (selected && (selected.device_id === "auto" || profileDevices.some((device) => device.id === selected.device_id))) deviceSelect.value = selected.device_id || "auto";
   }
   if (qs("#engineRoleModelCustom")) qs("#engineRoleModelCustom").value = selected?.model_id || "";
   if (qs("#engineRoleModelPath")) qs("#engineRoleModelPath").value = selected?.model_path || "";
@@ -6012,23 +6186,20 @@ function renderEngineWorkspace() {
   if (qs("#engineRoleEnabled")) qs("#engineRoleEnabled").checked = selected?.enabled !== false;
   const sequence = qs("#engineSequenceRoles");
   if (sequence) {
-    sequence.innerHTML = roles.filter(role => role.enabled).map(role => `<option value="${escapeHtml(role.role)}" ${["reasoning", "research", "supervisor"].includes(role.role) ? "selected" : ""}>${escapeHtml(role.label || role.role)}</option>`).join("");
+    sequence.innerHTML = roles.filter((role) => role.enabled).map((role) => `<option value="${escapeHtml2(role.role)}" ${["reasoning", "research", "supervisor"].includes(role.role) ? "selected" : ""}>${escapeHtml2(role.label || role.role)}</option>`).join("");
   }
   renderEngineRuns();
   updateEngineModeVisibility();
 }
-
 function selectEngineRole(roleId) {
-  if (!(state.engineRoles || []).some(role => role.role === roleId)) return;
+  if (!(state.engineRoles || []).some((role) => role.role === roleId)) return;
   state.selectedEngineRole = roleId;
   renderEngineWorkspace();
 }
-
 function updateEngineModeVisibility() {
   const sequenceField = qs(".engine-sequence-field");
   if (sequenceField) sequenceField.hidden = (qs("#engineOrchestrationMode")?.value || "supervised-code") !== "sequence";
 }
-
 async function saveEngineRole() {
   const role = qs("#engineRoleSelect")?.value || state.selectedEngineRole;
   const customModel = qs("#engineRoleModelCustom")?.value.trim();
@@ -6037,7 +6208,8 @@ async function saveEngineRole() {
     const payload = await api("/api/adaptive-engine/roles", {
       method: "POST",
       body: JSON.stringify({
-        project: getProject(), role,
+        project: getProject(),
+        role,
         provider_id: qs("#engineRoleProvider")?.value || "auto",
         model_id: customModel || selectedModel,
         model_path: qs("#engineRoleModelPath")?.value.trim() || "",
@@ -6045,25 +6217,26 @@ async function saveEngineRole() {
         system_prompt: qs("#engineRolePrompt")?.value.trim() || "",
         enabled: Boolean(qs("#engineRoleEnabled")?.checked),
         config: {
-          scheduler: { enabled: true, enable_prefix_caching: true, dynamic_split_fuse: true, max_num_seqs: 4 },
-        },
-      }),
+          scheduler: { enabled: true, enable_prefix_caching: true, dynamic_split_fuse: true, max_num_seqs: 4 }
+        }
+      })
     });
     state.selectedEngineRole = payload.role;
-    toast("Role assignment saved", `${payload.label} · ${payload.model_id || "not assigned"}`);
+    toast("Role assignment saved", `${payload.label} \xB7 ${payload.model_id || "not assigned"}`);
     await loadEngineWorkspace();
-  } catch(e) { toast("Role save failed", e.message); }
+  } catch (e) {
+    toast("Role save failed", e.message);
+  }
 }
-
 function renderEngineRuns() {
   const feed = qs("#engineRunFeed");
   const output = qs("#engineRunOutput");
   const runs = state.engineRuns || [];
   if (feed) {
-    feed.innerHTML = runs.slice(0, 8).map(run => listItem(
-      `${run.mode || "model team"} · ${run.status || "unknown"}`,
-      `${run.turns?.length || 0} model turn(s) · ${run.rounds || 0} review round(s)`,
-      `<span class="badge ${run.approved ? "badge-success" : run.status === "failed" ? "badge-danger" : "badge-warning"}">${run.approved ? "approved" : escapeHtml(run.status || "review")}</span>`
+    feed.innerHTML = runs.slice(0, 8).map((run2) => listItem(
+      `${run2.mode || "model team"} \xB7 ${run2.status || "unknown"}`,
+      `${run2.turns?.length || 0} model turn(s) \xB7 ${run2.rounds || 0} review round(s)`,
+      `<span class="badge ${run2.approved ? "badge-success" : run2.status === "failed" ? "badge-danger" : "badge-warning"}">${run2.approved ? "approved" : escapeHtml2(run2.status || "review")}</span>`
     )).join("") || emptyState("No model collaboration runs yet.");
   }
   if (!output) return;
@@ -6073,42 +6246,57 @@ function renderEngineRuns() {
     return;
   }
   output.innerHTML = `
-    <div class="engine-run-heading"><div><span>${escapeHtml(run.mode)}</span><strong>${escapeHtml(run.task)}</strong></div><span class="badge ${run.approved ? "badge-success" : "badge-warning"}">${run.approved ? "Approved" : escapeHtml(run.status)}</span></div>
-    ${(run.turns || []).map(turn => `<section class="engine-turn"><header><strong>${escapeHtml(turn.label || turn.role)}</strong><span>${escapeHtml(turn.provider_id)} · ${escapeHtml(turn.model_id)}</span></header><pre>${escapeHtml(turn.content)}</pre></section>`).join("")}
-    <section class="engine-final-output"><header><strong>Final output</strong></header><pre>${escapeHtml(run.final_output || run.error || "No output")}</pre></section>
+    <div class="engine-run-heading"><div><span>${escapeHtml2(run.mode)}</span><strong>${escapeHtml2(run.task)}</strong></div><span class="badge ${run.approved ? "badge-success" : "badge-warning"}">${run.approved ? "Approved" : escapeHtml2(run.status)}</span></div>
+    ${(run.turns || []).map((turn) => `<section class="engine-turn"><header><strong>${escapeHtml2(turn.label || turn.role)}</strong><span>${escapeHtml2(turn.provider_id)} \xB7 ${escapeHtml2(turn.model_id)}</span></header><pre>${escapeHtml2(turn.content)}</pre></section>`).join("")}
+    <section class="engine-final-output"><header><strong>Final output</strong></header><pre>${escapeHtml2(run.final_output || run.error || "No output")}</pre></section>
   `;
 }
-
 async function runEngineCollaboration() {
   const task = qs("#engineCollaborationTask")?.value.trim() || "";
-  if (!task) { toast("Task required", "Describe what the model team should build or analyze."); return; }
+  if (!task) {
+    toast("Task required", "Describe what the model team should build or analyze.");
+    return;
+  }
   const button = qs("#runEngineCollaboration");
   const badge = qs("#engineCollaborationBadge");
   const sequence = qs("#engineSequenceRoles");
-  const roles = sequence ? Array.from(sequence.selectedOptions).map(option => option.value) : [];
-  if (button) { button.disabled = true; button.textContent = "Models working…"; }
-  if (badge) { badge.textContent = "Running"; badge.className = "badge badge-warning"; }
+  const roles = sequence ? Array.from(sequence.selectedOptions).map((option) => option.value) : [];
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Models working\u2026";
+  }
+  if (badge) {
+    badge.textContent = "Running";
+    badge.className = "badge badge-warning";
+  }
   try {
     const payload = await api("/api/adaptive-engine/orchestrate", {
       method: "POST",
       body: JSON.stringify({
-        project: getProject(), task,
+        project: getProject(),
+        task,
         mode: qs("#engineOrchestrationMode")?.value || "supervised-code",
         max_rounds: Number(qs("#engineMaxRounds")?.value || 2),
         roles,
-        allow_external: Boolean(qs("#engineAllowExternal")?.checked),
-      }),
+        allow_external: Boolean(qs("#engineAllowExternal")?.checked)
+      })
     });
-    state.engineRuns = [payload, ...(state.engineRuns || []).filter(item => item.id !== payload.id)];
+    state.engineRuns = [payload, ...(state.engineRuns || []).filter((item) => item.id !== payload.id)];
     renderEngineRuns();
     toast("Model team completed", payload.approved ? "Supervisor approved the result" : "Review limit reached; inspect the final feedback");
-  } catch(e) { toast("Model collaboration failed", e.message); }
-  finally {
-    if (button) { button.disabled = false; button.textContent = "Run Model Team"; }
-    if (badge) { badge.textContent = "Ready"; badge.className = "badge badge-soft"; }
+  } catch (e) {
+    toast("Model collaboration failed", e.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Run Model Team";
+    }
+    if (badge) {
+      badge.textContent = "Ready";
+      badge.className = "badge badge-soft";
+    }
   }
 }
-
 function ultraModelSpecification() {
   const architecture = qs("#ultraModelArchitecture")?.value || "dense";
   const total = Number(qs("#ultraModelParams")?.value || 0);
@@ -6119,23 +6307,22 @@ function ultraModelSpecification() {
     parameter_count_b: total,
     active_parameter_count_b: active,
     quantization_bits: Number(qs("#ultraModelBits")?.value || 4),
-    metadata: { kv_type: "q8_0" },
+    metadata: { kv_type: "q8_0" }
   };
 }
-
 function renderUltraModelEngine() {
   const data = state.ultraModel || {};
   const status = data.status || {};
   const manifests = data.manifests || [];
   const sessions = data.sessions || [];
-  const active = sessions.filter(session => ["starting", "warming", "ready"].includes(session.status));
+  const active = sessions.filter((session) => ["starting", "warming", "ready"].includes(session.status));
   const select = qs("#ultraManifestSelect");
   if (select) {
     const selected = data.manifestId || select.value;
-    select.innerHTML = '<option value="">Planning profile (not registered)</option>' + manifests.map(manifest =>
-      `<option value="${escapeHtml(manifest.id)}">${escapeHtml(manifest.name)} · ${manifest.parameter_count_b}B ${escapeHtml(manifest.architecture)}</option>`
+    select.innerHTML = '<option value="">Planning profile (not registered)</option>' + manifests.map(
+      (manifest) => `<option value="${escapeHtml2(manifest.id)}">${escapeHtml2(manifest.name)} \xB7 ${manifest.parameter_count_b}B ${escapeHtml2(manifest.architecture)}</option>`
     ).join("");
-    if (selected && manifests.some(manifest => manifest.id === selected)) select.value = selected;
+    if (selected && manifests.some((manifest) => manifest.id === selected)) select.value = selected;
   }
   const badge = qs("#ultraEngineBadge");
   if (badge) {
@@ -6154,59 +6341,60 @@ function renderUltraModelEngine() {
       status.llama_server?.available ? status.llama_server.path : "Install llama-server or set OPENAGENT_LLAMA_SERVER",
       `<span class="badge ${status.llama_server?.available ? "badge-success" : "badge-warning"}">${status.llama_server?.available ? "Available" : "Offline"}</span>`
     ),
-    listItem("Registered shard sets", `${manifests.length} manifest(s) · ${active.length} active server(s)`, `${status.hardware?.available_ram_gb || 0} GB RAM free`),
+    listItem("Registered shard sets", `${manifests.length} manifest(s) \xB7 ${active.length} active server(s)`, `${status.hardware?.available_ram_gb || 0} GB RAM free`)
   ];
   if (plan.mode) {
     rows.push(listItem(
       `Plan: ${plan.mode}`,
-      `${performance.predicted_tokens_per_second ?? 0} token/s predicted · ${performance.bottleneck || "unknown"}`,
+      `${performance.predicted_tokens_per_second ?? 0} token/s predicted \xB7 ${performance.bottleneck || "unknown"}`,
       `<span class="badge ${plan.interactive_predicted ? "badge-success" : "badge-warning"}">${plan.interactive_predicted ? "Interactive" : "Slow path"}</span>`
     ));
     rows.push(listItem(
       "Memory working set",
-      `${memory.resident_requirement_gb || 0} GB required · ${memory.usable_local_ram_gb || 0} GB usable · ${memory.disk_streamed_active_gb || 0} GB streamed/token`,
+      `${memory.resident_requirement_gb || 0} GB required \xB7 ${memory.usable_local_ram_gb || 0} GB usable \xB7 ${memory.disk_streamed_active_gb || 0} GB streamed/token`,
       `<span class="badge ${plan.launchable ? "badge-success" : "badge-soft"}">${plan.launchable ? "Launchable" : "Plan only"}</span>`
     ));
-    (plan.warnings || []).slice(0, 3).forEach(warning => rows.push(listItem("Constraint", warning)));
+    (plan.warnings || []).slice(0, 3).forEach((warning) => rows.push(listItem("Constraint", warning)));
   }
-  active.slice(0, 2).forEach(session => rows.push(listItem(
+  active.slice(0, 2).forEach((session) => rows.push(listItem(
     `Server ${session.status}`,
-    `PID ${session.pid} · http://${session.host}:${session.port} · ${session.manifest_id.slice(0, 8)}`,
+    `PID ${session.pid} \xB7 http://${session.host}:${session.port} \xB7 ${session.manifest_id.slice(0, 8)}`,
     `<span class="badge badge-success">Warm</span>`
   )));
   feed.innerHTML = rows.join("");
 }
-
 async function loadUltraModelEngine() {
   try {
     const project = encodeURIComponent(getProject());
     const [status, manifests, sessions] = await Promise.all([
       api(`/api/ultra-model/status?project=${project}`),
       api(`/api/ultra-model/manifests?project=${project}`),
-      api(`/api/ultra-model/sessions?project=${project}`),
+      api(`/api/ultra-model/sessions?project=${project}`)
     ]);
     state.ultraModel = {
       ...state.ultraModel,
       status,
       manifests: manifests.manifests || [],
-      sessions: sessions.sessions || [],
+      sessions: sessions.sessions || []
     };
     const selected = qs("#ultraManifestSelect")?.value;
     if (selected) state.ultraModel.manifestId = selected;
-    const running = state.ultraModel.sessions.find(session => ["starting", "warming", "ready"].includes(session.status));
+    const running = state.ultraModel.sessions.find((session) => ["starting", "warming", "ready"].includes(session.status));
     if (running) state.ultraModel.sessionId = running.id;
     renderUltraModelEngine();
     return state.ultraModel;
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#ultraModelEngineFeed");
     if (feed) feed.innerHTML = emptyState(`Ultra-scale engine unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function registerUltraModel() {
   const path = qs("#ultraModelPath")?.value.trim();
-  if (!path) { toast("GGUF path required", "Choose the first shard of the local model."); return; }
+  if (!path) {
+    toast("GGUF path required", "Choose the first shard of the local model.");
+    return;
+  }
   const spec = ultraModelSpecification();
   try {
     const payload = await api("/api/ultra-model/manifests", {
@@ -6214,16 +6402,17 @@ async function registerUltraModel() {
       body: JSON.stringify({
         project: getProject(),
         ...spec,
-        shard_paths: [path],
-      }),
+        shard_paths: [path]
+      })
     });
     state.ultraModel.manifestId = payload.manifest?.id || "";
     toast("GGUF shards registered", `${payload.manifest?.shard_paths?.length || 0} local shard(s)`);
     await loadUltraModelEngine();
     await planUltraModel();
-  } catch(e) { toast("Registration failed", e.message); }
+  } catch (e) {
+    toast("Registration failed", e.message);
+  }
 }
-
 async function planUltraModel() {
   const selected = qs("#ultraManifestSelect")?.value || state.ultraModel.manifestId || "";
   try {
@@ -6234,34 +6423,42 @@ async function planUltraModel() {
         manifest_id: selected,
         specification: selected ? {} : ultraModelSpecification(),
         context_tokens: Number(qs("#ultraModelContext")?.value || 2048),
-        expected_output_tokens: 256,
-      }),
+        expected_output_tokens: 256
+      })
     });
     state.ultraModel.plan = payload.plan || {};
     if (selected) state.ultraModel.manifestId = selected;
     renderUltraModelEngine();
     const speed = payload.plan?.performance?.predicted_tokens_per_second ?? 0;
-    toast("Feasibility plan ready", `${payload.plan?.mode || "planned"} · ${speed} token/s predicted`);
-  } catch(e) { toast("Planning failed", e.message); }
+    toast("Feasibility plan ready", `${payload.plan?.mode || "planned"} \xB7 ${speed} token/s predicted`);
+  } catch (e) {
+    toast("Planning failed", e.message);
+  }
 }
-
 async function calibrateUltraModel() {
   try {
     const payload = await api("/api/ultra-model/calibrate", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), size_mb: 32 }),
+      body: JSON.stringify({ project: getProject(), size_mb: 32 })
     });
     const result = payload.calibration || {};
-    toast("Local I/O calibrated", `${result.memory_copy_gbps || 0} GB/s memory · ${result.planning_disk_gbps || 0} GB/s disk`);
+    toast("Local I/O calibrated", `${result.memory_copy_gbps || 0} GB/s memory \xB7 ${result.planning_disk_gbps || 0} GB/s disk`);
     setOutput("#developerOutput", result);
-  } catch(e) { toast("Calibration failed", e.message); }
+  } catch (e) {
+    toast("Calibration failed", e.message);
+  }
 }
-
 async function launchUltraModel() {
   const manifestId = qs("#ultraManifestSelect")?.value || state.ultraModel.manifestId || "";
-  if (!manifestId) { toast("Register a GGUF model first"); return; }
+  if (!manifestId) {
+    toast("Register a GGUF model first");
+    return;
+  }
   const approved = Boolean(qs("#ultraLaunchApproval")?.checked);
-  if (!approved) { toast("Approval required", "Enable the local process approval control first."); return; }
+  if (!approved) {
+    toast("Approval required", "Enable the local process approval control first.");
+    return;
+  }
   try {
     const payload = await api("/api/ultra-model/launch", {
       method: "POST",
@@ -6270,43 +6467,49 @@ async function launchUltraModel() {
         manifest_id: manifestId,
         approved,
         port: Number(qs("#ultraModelPort")?.value || 8081),
-        keep_warm: true,
-      }),
+        keep_warm: true
+      })
     });
     state.ultraModel.sessionId = payload.session?.id || "";
     state.ultraModel.plan = payload.plan || state.ultraModel.plan;
     toast("Local model server starting", `PID ${payload.session?.pid || "pending"}`);
     await loadUltraModelEngine();
-  } catch(e) { toast("Launch failed", e.message); }
+  } catch (e) {
+    toast("Launch failed", e.message);
+  }
 }
-
 async function stopUltraModel() {
-  const running = (state.ultraModel.sessions || []).find(session => ["starting", "warming", "ready"].includes(session.status));
+  const running = (state.ultraModel.sessions || []).find((session) => ["starting", "warming", "ready"].includes(session.status));
   const sessionId = state.ultraModel.sessionId || running?.id || "";
-  if (!sessionId) { toast("No active ultra-model server"); return; }
+  if (!sessionId) {
+    toast("No active ultra-model server");
+    return;
+  }
   try {
     await api(`/api/ultra-model/sessions/${encodeURIComponent(sessionId)}/stop`, {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), reason: "Stopped from Developer UI" }),
+      body: JSON.stringify({ project: getProject(), reason: "Stopped from Developer UI" })
     });
     state.ultraModel.sessionId = "";
     toast("Local model server stopped");
     await loadUltraModelEngine();
-  } catch(e) { toast("Stop failed", e.message); }
+  } catch (e) {
+    toast("Stop failed", e.message);
+  }
 }
-
 async function createModelHost() {
   try {
     const payload = await api("/api/model-cookbook/hosts", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), label: "CPU host", host_type: "local", address: "127.0.0.1" }),
+      body: JSON.stringify({ project: getProject(), label: "CPU host", host_type: "local", address: "127.0.0.1" })
     });
     setOutput("#developerOutput", payload);
     toast("Model host added", payload.host?.label || "CPU host");
     await loadModelCookbook();
-  } catch(e) { toast("Model host error", e.message); }
+  } catch (e) {
+    toast("Model host error", e.message);
+  }
 }
-
 async function planModelServe() {
   try {
     const payload = await api("/api/model-cookbook/serve", {
@@ -6316,85 +6519,95 @@ async function planModelServe() {
         model_ref: state.modelSettings.chatModel || "local-model",
         runner: "python",
         args: ["--version"],
-        allow_process: false,
-      }),
+        allow_process: false
+      })
     });
     setOutput("#developerOutput", payload);
     toast("Serve plan recorded", payload.session?.status || "planned");
     await loadModelCookbook();
-  } catch(e) { toast("Serve plan error", e.message); }
+  } catch (e) {
+    toast("Serve plan error", e.message);
+  }
 }
-
 async function checkHardwareFit() {
   try {
     const payload = await api(`/api/model-cookbook/hardware-fit?project=${encodeURIComponent(getProject())}&model_ref=${encodeURIComponent(state.modelSettings.chatModel || "local-model")}`);
     setOutput("#developerOutput", payload);
     toast("Hardware fit ready", `${payload.recommended_bits || "auto"} bit profile`);
     await loadModelCookbook();
-  } catch(e) { toast("Hardware fit error", e.message); }
+  } catch (e) {
+    toast("Hardware fit error", e.message);
+  }
 }
-
 async function loadMcpRuntime() {
   try {
     const project = encodeURIComponent(getProject());
     const [servers, tools, permissions] = await Promise.all([
       api(`/api/mcp/servers?project=${project}`),
       api(`/api/mcp/tools?project=${project}`),
-      api(`/api/mcp/permissions?project=${project}`),
+      api(`/api/mcp/permissions?project=${project}`)
     ]);
     const feed = qs("#mcpRuntimeFeed");
     if (feed) {
-      const serverItems = (servers.servers || []).slice(0, 3).map(server =>
-        listItem(server.name, `${server.transport} · ${server.status}`, `${(server.command || []).join(" ") || server.endpoint || "configured locally"}`)
+      const serverItems = (servers.servers || []).slice(0, 3).map(
+        (server) => listItem(server.name, `${server.transport} \xB7 ${server.status}`, `${(server.command || []).join(" ") || server.endpoint || "configured locally"}`)
       );
       const toolLine = listItem("Tools", `${(tools.tools || []).length} registered`, `${(permissions.permissions || []).length} permission changes`);
-      const toolItems = (tools.tools || []).slice(0, 8).map(tool => {
-        const action = `<button class="btn btn-soft btn-small" data-mcp-invoke="${escapeHtml(tool.id)}">Test</button>`;
-        return listItem(tool.name, `${tool.enabled ? "enabled" : "disabled"} · ${tool.approval_required ? "approval required" : "local call"}`, action);
+      const toolItems = (tools.tools || []).slice(0, 8).map((tool) => {
+        const action = `<button class="btn btn-soft btn-small" data-mcp-invoke="${escapeHtml2(tool.id)}">Test</button>`;
+        return listItem(tool.name, `${tool.enabled ? "enabled" : "disabled"} \xB7 ${tool.approval_required ? "approval required" : "local call"}`, action);
       });
       feed.innerHTML = [toolLine, ...toolItems, ...serverItems].join("") || emptyState("No MCP servers registered yet.");
     }
     return { servers, tools, permissions };
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#mcpRuntimeFeed");
     if (feed) feed.innerHTML = emptyState(`MCP runtime unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function invokeMcpTool(toolId) {
   const raw = window.prompt("Arguments as JSON", "{}");
   if (raw === null) return;
   let argumentsPayload;
-  try { argumentsPayload = raw.trim() ? JSON.parse(raw) : {}; } catch (_) { toast("MCP call stopped", "Arguments must be valid JSON."); return; }
+  try {
+    argumentsPayload = raw.trim() ? JSON.parse(raw) : {};
+  } catch (_) {
+    toast("MCP call stopped", "Arguments must be valid JSON.");
+    return;
+  }
   if (!window.confirm("Allow this registered MCP tool to run locally now?")) return;
   try {
     const payload = await api(`/api/mcp/tools/${encodeURIComponent(toolId)}/invoke`, {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), arguments: argumentsPayload, approval_id: "ui-confirmed" }),
+      body: JSON.stringify({ project: getProject(), arguments: argumentsPayload, approval_id: "ui-confirmed" })
     });
     setOutput("#developerOutput", payload);
     toast("MCP tool completed", toolId.slice(0, 8));
     await loadMcpRuntime();
-  } catch (e) { toast("MCP tool failed", e.message); }
+  } catch (e) {
+    toast("MCP tool failed", e.message);
+  }
 }
-
 async function loadRuntimeFabric() {
   try {
     const [runtime, compute] = await Promise.all([api("/api/tools/runtime"), api("/api/compute/status")]);
     const providers = compute.providers || [];
-    const ready = providers.filter(item => item.available && (item.local || item.id === "auto")).length;
-    const local = providers.filter(item => item.available && item.local && item.id !== "auto").length;
+    const ready = providers.filter((item) => item.available && (item.local || item.id === "auto")).length;
+    const local = providers.filter((item) => item.available && item.local && item.id !== "auto").length;
     const hardware = compute.hardware || {};
     const devices = hardware.backends || [];
     const badge = qs("#runtimeFabricBadge");
-    if (badge) { badge.textContent = `${local} local ready`; badge.className = local ? "badge badge-success" : "badge badge-warning"; }
+    if (badge) {
+      badge.textContent = `${local} local ready`;
+      badge.className = local ? "badge badge-success" : "badge badge-warning";
+    }
     const feed = qs("#runtimeFabricFeed");
     if (feed) {
       feed.innerHTML = [
         `<div class="runtime-fabric-metrics"><div><strong>${ready}</strong><span>routable providers</span></div><div><strong>${runtime.tools?.length || 0}</strong><span>shared tools</span></div><div><strong>${devices.length || 0}</strong><span>hardware profiles</span></div></div>`,
         listItem("Policy", compute.policy?.routing_policy || "local-first", "The plan is advisory; ModelGateway owns the actual call."),
-        listItem("Hardware evidence", devices.length ? `${devices.length} backend profile(s) reported` : "No refreshed device profile", hardware.status || "capability probe available"),
+        listItem("Hardware evidence", devices.length ? `${devices.length} backend profile(s) reported` : "No refreshed device profile", hardware.status || "capability probe available")
       ].join("");
     }
     return { runtime, compute };
@@ -6402,11 +6615,13 @@ async function loadRuntimeFabric() {
     const feed = qs("#runtimeFabricFeed");
     if (feed) feed.innerHTML = emptyState(`Runtime capability check unavailable: ${e.message}`);
     const badge = qs("#runtimeFabricBadge");
-    if (badge) { badge.textContent = "Unavailable"; badge.className = "badge badge-warning"; }
+    if (badge) {
+      badge.textContent = "Unavailable";
+      badge.className = "badge badge-warning";
+    }
     return null;
   }
 }
-
 async function planRuntimeFabric() {
   try {
     const payload = await api("/api/compute/plan", {
@@ -6414,15 +6629,16 @@ async function planRuntimeFabric() {
       body: JSON.stringify({
         task: qs("#runtimePlanTask")?.value.trim() || "chat",
         model: qs("#runtimePlanModel")?.value.trim() || "",
-        allow_external: Boolean(qs("#runtimePlanExternal")?.checked),
-      }),
+        allow_external: Boolean(qs("#runtimePlanExternal")?.checked)
+      })
     });
     setOutput("#developerOutput", payload);
     const selected = payload.selected;
-    toast("Execution plan ready", selected ? `${selected.provider} · ${selected.model || "automatic model"}` : "Needs local setup");
-  } catch (e) { toast("Execution planning failed", e.message); }
+    toast("Execution plan ready", selected ? `${selected.provider} \xB7 ${selected.model || "automatic model"}` : "Needs local setup");
+  } catch (e) {
+    toast("Execution planning failed", e.message);
+  }
 }
-
 async function registerMcpServer() {
   try {
     const payload = await api("/api/mcp/servers", {
@@ -6432,79 +6648,80 @@ async function registerMcpServer() {
         name: "local-tools",
         transport: "stdio",
         command: ["python", "-m", "openagent"],
-        tools: [{ name: "local_search", description: "Local OpenAgent search", approval_required: true }],
-      }),
+        tools: [{ name: "local_search", description: "Local OpenAgent search", approval_required: true }]
+      })
     });
     setOutput("#developerOutput", payload);
     toast("MCP server registered", payload.server?.name || "local-tools");
     await loadMcpRuntime();
-  } catch(e) { toast("MCP error", e.message); }
+  } catch (e) {
+    toast("MCP error", e.message);
+  }
 }
-
 async function loadTerminalRuns() {
   try {
     const payload = await api(`/api/terminal/runs?project=${encodeURIComponent(getProject())}&limit=5`);
     const feed = qs("#terminalFeed");
     if (feed) {
-      feed.innerHTML = (payload.runs || []).map(run =>
-        listItem(`${run.command?.join(" ") || "command"}`, `${run.status} · exit ${run.exit_code}`, run.started_at)
+      feed.innerHTML = (payload.runs || []).map(
+        (run) => listItem(`${run.command?.join(" ") || "command"}`, `${run.status} \xB7 exit ${run.exit_code}`, run.started_at)
       ).join("") || emptyState("No terminal runs yet.");
     }
     return payload;
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#terminalFeed");
     if (feed) feed.innerHTML = emptyState(`Terminal unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function runTerminalVersion() {
   try {
     const payload = await api("/api/terminal/stream", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), command: ["python", "--version"] }),
+      body: JSON.stringify({ project: getProject(), command: ["python", "--version"] })
     });
     setOutput("#developerOutput", payload);
     toast("Terminal run complete", payload.run?.status || "done");
     await loadTerminalRuns();
-  } catch(e) { toast("Terminal error", e.message); }
+  } catch (e) {
+    toast("Terminal error", e.message);
+  }
 }
-
 async function loadSchedulerStatus() {
   try {
     const project = encodeURIComponent(getProject());
-    const [tasks, notifications] = await Promise.all([
+    const [tasks, notifications2] = await Promise.all([
       api(`/api/tasks?project=${project}&limit=5`),
-      api(`/api/tasks/notifications?project=${project}&limit=5`),
+      api(`/api/tasks/notifications?project=${project}&limit=5`)
     ]);
     const feed = qs("#schedulerFeed");
     if (feed) {
-      const taskItems = (tasks.tasks || []).slice(0, 4).map(task =>
-        listItem(task.title, `${task.status} · ${task.next_run_at}`, task.task_type)
+      const taskItems = (tasks.tasks || []).slice(0, 4).map(
+        (task) => listItem(task.title, `${task.status} \xB7 ${task.next_run_at}`, task.task_type)
       );
-      const noteLine = listItem("Notifications", `${(notifications.notifications || []).length} recent`, "Local notification records");
+      const noteLine = listItem("Notifications", `${(notifications2.notifications || []).length} recent`, "Local notification records");
       feed.innerHTML = [noteLine, ...taskItems].join("") || emptyState("No scheduled tasks yet.");
     }
-    return { tasks, notifications };
-  } catch(e) {
+    return { tasks, notifications: notifications2 };
+  } catch (e) {
     const feed = qs("#schedulerFeed");
     if (feed) feed.innerHTML = emptyState(`Scheduler unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function createSchedulerTask() {
   try {
     const payload = await api("/api/tasks", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), title: "Developer UI due task", schedule: { delay_seconds: 0 } }),
+      body: JSON.stringify({ project: getProject(), title: "Developer UI due task", schedule: { delay_seconds: 0 } })
     });
     setOutput("#developerOutput", payload);
     toast("Task created", payload.task?.title || "Scheduled task");
     await loadSchedulerStatus();
-  } catch(e) { toast("Task error", e.message); }
+  } catch (e) {
+    toast("Task error", e.message);
+  }
 }
-
 async function addSchedulerOutput() {
   try {
     const tasks = await api(`/api/tasks?project=${encodeURIComponent(getProject())}&limit=1`);
@@ -6512,66 +6729,69 @@ async function addSchedulerOutput() {
     if (!task) throw new Error("Create a task before adding an output destination.");
     const payload = await api(`/api/tasks/${encodeURIComponent(task.id)}/destinations`, {
       method: "POST",
-      body: JSON.stringify({ destination_type: "local_file", config: { filename: `${task.id}.jsonl` } }),
+      body: JSON.stringify({ destination_type: "local_file", config: { filename: `${task.id}.jsonl` } })
     });
     setOutput("#developerOutput", payload);
     toast("Local output destination added", task.title);
-  } catch(e) { toast("Output destination error", e.message); }
+  } catch (e) {
+    toast("Output destination error", e.message);
+  }
 }
-
 async function runDueSchedulerTasks() {
   try {
     const payload = await api("/api/tasks/run-due", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), limit: 10 }),
+      body: JSON.stringify({ project: getProject(), limit: 10 })
     });
     setOutput("#developerOutput", payload);
     toast("Due tasks processed", `${payload.count || 0} run`);
     await loadSchedulerStatus();
-  } catch(e) { toast("Run due error", e.message); }
+  } catch (e) {
+    toast("Run due error", e.message);
+  }
 }
-
 async function loadImageStudio() {
   try {
     const payload = await api(`/api/gallery/library?project=${encodeURIComponent(getProject())}&limit=5`);
     const feed = qs("#imageStudioFeed");
     if (feed) {
-      feed.innerHTML = (payload.assets || []).map(asset =>
-        listItem(
+      feed.innerHTML = (payload.assets || []).map(
+        (asset) => listItem(
           asset.filename,
-          `${asset.width || 0}x${asset.height || 0} · ${asset.size_bytes} bytes · ${(asset.tags || []).join(", ") || "untagged"}`,
+          `${asset.width || 0}x${asset.height || 0} \xB7 ${asset.size_bytes} bytes \xB7 ${(asset.tags || []).join(", ") || "untagged"}`,
           `<div class="toolbar slim">
-            <button class="btn btn-mini btn-soft" data-image-action="favorite" data-image-id="${escapeHtml(asset.id)}">Favorite</button>
-            <button class="btn btn-mini btn-outline" data-image-action="restore" data-image-id="${escapeHtml(asset.id)}">Restore</button>
-            <button class="btn btn-mini btn-outline" data-image-action="remove-background" data-image-id="${escapeHtml(asset.id)}">Remove BG</button>
-            <button class="btn btn-mini btn-soft" data-image-action="undo" data-image-id="${escapeHtml(asset.id)}">Undo</button>
+            <button class="btn btn-mini btn-soft" data-image-action="favorite" data-image-id="${escapeHtml2(asset.id)}">Favorite</button>
+            <button class="btn btn-mini btn-outline" data-image-action="restore" data-image-id="${escapeHtml2(asset.id)}">Restore</button>
+            <button class="btn btn-mini btn-outline" data-image-action="remove-background" data-image-id="${escapeHtml2(asset.id)}">Remove BG</button>
+            <button class="btn btn-mini btn-soft" data-image-action="undo" data-image-id="${escapeHtml2(asset.id)}">Undo</button>
           </div>`
         )
       ).join("") || emptyState("No image assets yet.");
-      qsa("[data-image-action]", feed).forEach(button => button.addEventListener("click", () => runImageAction(button.dataset.imageId, button.dataset.imageAction)));
+      qsa("[data-image-action]", feed).forEach((button) => button.addEventListener("click", () => runImageAction(button.dataset.imageId, button.dataset.imageAction)));
     }
     return payload;
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#imageStudioFeed");
     if (feed) feed.innerHTML = emptyState(`Image studio unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function batchTagImages() {
   try {
     const library = await api(`/api/gallery/library?project=${encodeURIComponent(getProject())}&limit=20`);
-    const assetIds = (library.assets || []).map(asset => asset.id);
+    const assetIds = (library.assets || []).map((asset) => asset.id);
     if (!assetIds.length) throw new Error("Add an image before using batch tags.");
     const payload = await api("/api/gallery/batch-tags", {
-      method: "POST", body: JSON.stringify({ asset_ids: assetIds, tags: ["reviewed"] }),
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds, tags: ["reviewed"] })
     });
     setOutput("#developerOutput", payload);
     toast("Images tagged", `${payload.count || 0} updated`);
     await loadImageStudio();
-  } catch(e) { toast("Batch tag error", e.message); }
+  } catch (e) {
+    toast("Batch tag error", e.message);
+  }
 }
-
 async function runImageAction(assetId, action) {
   try {
     let path = `/api/gallery/${encodeURIComponent(assetId)}/transform`;
@@ -6587,21 +6807,23 @@ async function runImageAction(assetId, action) {
     setOutput("#developerOutput", payload);
     toast("Image operation complete", action);
     await loadImageStudio();
-  } catch(e) { toast("Image operation failed", e.message); }
+  } catch (e) {
+    toast("Image operation failed", e.message);
+  }
 }
-
 async function uploadTinyImage() {
   try {
     const payload = await api("/api/gallery/upload", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), filename: "ui-test-pixel.png", content_type: "image/png", content_base64: TINY_PNG_BASE64, tags: ["ui", "test"] }),
+      body: JSON.stringify({ project: getProject(), filename: "ui-test-pixel.png", content_type: "image/png", content_base64: TINY_PNG_BASE64, tags: ["ui", "test"] })
     });
     setOutput("#developerOutput", payload);
     toast("Image stored", payload.asset?.filename || "image");
     await loadImageStudio();
-  } catch(e) { toast("Image error", e.message); }
+  } catch (e) {
+    toast("Image error", e.message);
+  }
 }
-
 async function loadAgentBridgeStatus() {
   try {
     const project = encodeURIComponent(getProject());
@@ -6609,7 +6831,7 @@ async function loadAgentBridgeStatus() {
       api("/api/agent-bridge/capabilities"),
       api(`/api/agent-bridge/tasks?project=${project}&limit=5`),
       api(`/api/agent-bridge/memory?project=${project}&limit=5`),
-      api(`/api/agent-bridge/documents?project=${project}&limit=5`),
+      api(`/api/agent-bridge/documents?project=${project}&limit=5`)
     ]);
     const feed = qs("#agentBridgeFeed");
     if (feed) {
@@ -6617,41 +6839,42 @@ async function loadAgentBridgeStatus() {
         listItem("Capabilities", `${(capabilities.capabilities || []).length} scopes`, capabilities.runtime || "local-agent-bridge"),
         listItem("Bridge tasks", `${(tasks.tasks || []).length} recent`, "External agents use scoped local APIs"),
         listItem("Memory events", `${(memory.events || []).length} recent`, "Local context records"),
-        listItem("Documents", `${documents.count || 0} visible`, "Local editor documents"),
+        listItem("Documents", `${documents.count || 0} visible`, "Local editor documents")
       ].join("");
     }
     return { capabilities, tasks, memory, documents };
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#agentBridgeFeed");
     if (feed) feed.innerHTML = emptyState(`Agent bridge unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function writeBridgeMemory() {
   try {
     const payload = await api("/api/agent-bridge/memory", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), title: "Developer UI memory", content: "Agent bridge wrote this local memory record." }),
+      body: JSON.stringify({ project: getProject(), title: "Developer UI memory", content: "Agent bridge wrote this local memory record." })
     });
     setOutput("#developerOutput", payload);
     toast("Bridge memory written", payload.event?.title || "memory");
     await loadAgentBridgeStatus();
-  } catch(e) { toast("Bridge memory error", e.message); }
+  } catch (e) {
+    toast("Bridge memory error", e.message);
+  }
 }
-
 async function createBridgeTask() {
   try {
     const payload = await api("/api/agent-bridge/tasks", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), goal: "Review local project status", agent: "assistant" }),
+      body: JSON.stringify({ project: getProject(), goal: "Review local project status", agent: "assistant" })
     });
     setOutput("#developerOutput", payload);
     toast("Bridge task created", payload.task?.goal || "task");
     await loadAgentBridgeStatus();
-  } catch(e) { toast("Bridge task error", e.message); }
+  } catch (e) {
+    toast("Bridge task error", e.message);
+  }
 }
-
 async function loadProviderCertification(writeOutput = true) {
   try {
     const payload = await api("/api/communication/provider-certification");
@@ -6659,77 +6882,66 @@ async function loadProviderCertification(writeOutput = true) {
     if (feed) {
       feed.innerHTML = [
         listItem("Mail providers", `${(payload.providers || []).length} presets`, "Gmail, Microsoft, generic IMAP/SMTP"),
-        listItem("Calendar providers", `${(payload.caldav_profiles || []).length} profiles`, "Fastmail, Nextcloud, Radicale"),
+        listItem("Calendar providers", `${(payload.caldav_profiles || []).length} profiles`, "Fastmail, Nextcloud, Radicale")
       ].join("");
     }
     if (writeOutput) setOutput("#developerOutput", payload);
     return payload;
-  } catch(e) {
+  } catch (e) {
     const feed = qs("#providerDocumentFeed");
     if (feed) feed.innerHTML = emptyState(`Provider certification unavailable: ${e.message}`);
     return null;
   }
 }
-
 async function recordOauthCallbackDemo() {
   try {
     const payload = await api(`/api/communication/oauth/callback?project=${encodeURIComponent(getProject())}&state=ui-demo&code=demo-code`);
     setOutput("#developerOutput", payload);
     toast("OAuth callback recorded", payload.callback?.code_received ? "Code fingerprint stored" : "No code");
     await loadProviderCertification(false);
-  } catch(e) { toast("OAuth callback error", e.message); }
+  } catch (e) {
+    toast("OAuth callback error", e.message);
+  }
 }
-
 async function importDeveloperDocument() {
   try {
     const content = btoa("Imported from Developer UI into the local document processor.");
     const payload = await api("/api/documents/import", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), title: "Developer UI import", filename: "developer-import.txt", content_base64: content }),
+      body: JSON.stringify({ project: getProject(), title: "Developer UI import", filename: "developer-import.txt", content_base64: content })
     });
     setOutput("#developerOutput", payload);
     toast("Document imported", payload.document?.title || "document");
     await loadAgentBridgeStatus();
-  } catch(e) { toast("Document import error", e.message); }
+  } catch (e) {
+    toast("Document import error", e.message);
+  }
 }
-
-// =============================================
-// Hard check
-// =============================================
-
-async function runHardCheck() {
-  try {
-    toast("Hard check running…");
-    const payload = await api("/api/capabilities/hard-audit", {
-      method: "POST",
-      body: JSON.stringify({ project: "ui-hard-check" }),
-    });
-    setView("security");
-    setOutput("#privacyOutput", payload);
-    toast(`Hard check ${payload.ok ? "✅ passed" : "❌ failed"}`, `${payload.passed}/${payload.total}`);
-  } catch(e) { toast("Hard check error", e.message); }
-}
-
-// =============================================
-// Settings
-// =============================================
-
 function initSettings() {
   loadModelSettingsFromStorage();
   loadPrivacySettingsFromStorage();
   syncModelSettingsFields();
   syncPrivacySettingsFields();
   const themeSelect = qs("#settingsTheme");
-  if (themeSelect) themeSelect.addEventListener("change", e => applyTheme(e.target.value));
+  if (themeSelect) themeSelect.addEventListener("change", (e) => applyTheme(e.target.value));
   [
-    "#settingChatModel", "#settingCodeModel", "#settingResearchModel", "#settingVoiceModel",
-    "#settingQuantMode", "#settingTargetRam", "#settingModelTimeout", "#settingModelParameterCount",
-  ].forEach(sel => qs(sel)?.addEventListener("change", () => {
+    "#settingChatProvider",
+    "#settingChatStreaming",
+    "#settingChatModel",
+    "#settingCodeModel",
+    "#settingResearchModel",
+    "#settingVoiceModel",
+    "#settingQuantMode",
+    "#settingTargetRam",
+    "#settingModelTimeout",
+    "#settingModelParameterCount"
+  ].forEach((sel) => qs(sel)?.addEventListener("change", () => {
     readModelSettingsFromFields();
     persistModelSettings();
   }));
-  ["#settingLocalOnly", "#settingAuditAll"].forEach(sel => qs(sel)?.addEventListener("change", () => {
+  ["#settingLocalOnly", "#settingAuditAll", "#settingAllowExternal"].forEach((sel) => qs(sel)?.addEventListener("change", () => {
     readPrivacySettingsFromFields();
+    if (state.privacySettings.localOnly) state.privacySettings.allowExternal = false;
     persistPrivacySettings();
     applyPrivacySettingsToUi();
   }));
@@ -6751,16 +6963,17 @@ function initSettings() {
     try {
       const [health, runtime] = await Promise.all([
         api("/api/health"),
-        loadSmoothRuntime("chat"),
+        loadSmoothRuntime("chat")
       ]);
       const d = { health, runtime, settings: state.modelSettings, privacy: state.privacySettings };
       setOutput("#settingsOutput", d);
-    } catch(e) { toast("Status error", e.message); }
+    } catch (e) {
+      toast("Status error", e.message);
+    }
   });
   Promise.allSettled([loadSettingsModels(), loadModelSetupStatus(), loadModelJobs()]);
   applyPrivacySettingsToUi();
 }
-
 function initDeveloperConsole() {
   const view = qs("#view-developer");
   if (!view) return;
@@ -6770,33 +6983,38 @@ function initDeveloperConsole() {
     knowledge: ["#uploadZone"],
     api: ["#developerFeed", "#developerOutput"],
     operations: ["#integrationStatusCards"],
-    skills: ["#skillEditorList"],
+    skills: ["#skillEditorList"]
   };
   Object.entries(sectionCards).forEach(([section, selectors]) => {
-    selectors.forEach(selector => {
+    selectors.forEach((selector) => {
       const card = qs(selector)?.closest("article");
       if (card) card.dataset.developerPanel = section;
     });
   });
-  const activate = section => {
-    qsa("[data-developer-section]", view).forEach(button => {
+  const activate = (section) => {
+    qsa("[data-developer-section]", view).forEach((button) => {
       const selected = button.dataset.developerSection === section;
       button.classList.toggle("is-active", selected);
       button.setAttribute("aria-selected", String(selected));
     });
-    qsa("[data-developer-panel]", view).forEach(card => {
+    qsa("[data-developer-panel]", view).forEach((card) => {
       card.hidden = card.dataset.developerPanel !== section;
     });
-    try { localStorage.setItem("oa-developer-section", section); } catch (_) {}
+    try {
+      localStorage.setItem("oa-developer-section", section);
+    } catch (_) {
+    }
   };
-  qsa("[data-developer-section]", view).forEach(button => {
+  qsa("[data-developer-section]", view).forEach((button) => {
     button.addEventListener("click", () => activate(button.dataset.developerSection));
   });
   let saved = "models";
-  try { saved = localStorage.getItem("oa-developer-section") || "models"; } catch (_) {}
+  try {
+    saved = localStorage.getItem("oa-developer-section") || "models";
+  } catch (_) {
+  }
   activate(sectionCards[saved] ? saved : "models");
 }
-
 async function saveSettings() {
   const theme = qs("#settingsTheme")?.value || "system";
   applyTheme(theme);
@@ -6822,33 +7040,33 @@ async function saveSettings() {
           voice_model: state.modelSettings.voiceModel,
           quantization_mode: state.modelSettings.quantizationMode,
           target_ram_gb: state.modelSettings.targetRamGb,
-          model_timeout_seconds: state.modelSettings.modelTimeoutSeconds,
-        },
-      }),
+          model_timeout_seconds: state.modelSettings.modelTimeoutSeconds
+        }
+      })
     });
     toast("Settings saved", "Local model and quantization controls are active in the running OpenAgent core.");
     const saveState = qs("#settingsSaveState");
-    if (saveState) saveState.textContent = `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    if (saveState) saveState.textContent = `Saved ${(/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     setOutput("#settingsOutput", { theme, saved: true, model_settings: state.modelSettings, privacy: state.privacySettings, runtime: payload.settings });
-    loadSmoothRuntime("chat").catch(() => {});
-  } catch(e) {
+    loadSmoothRuntime("chat").catch(() => {
+    });
+  } catch (e) {
     toast("Settings save error", e.message);
   }
 }
-
 function applyCpuModelStack() {
   state.modelSettings = { ...state.modelSettings, ...DEFAULT_MODEL_SETTINGS };
   syncModelSettingsFields();
   persistModelSettings();
   toast("CPU model stack applied", "Phi-4 Mini for chat/research, Qwen2.5 Coder 3B for code, Gemma 3 2B for speed.");
-  loadSmoothRuntime("chat").catch(() => {});
+  loadSmoothRuntime("chat").catch(() => {
+  });
 }
-
 async function loadModelSetupStatus() {
   try {
     const [setupResult, modelsResult] = await Promise.allSettled([
       api("/api/local-ai/setup/status"),
-      api("/api/local-ai/models"),
+      api("/api/local-ai/models")
     ]);
     if (setupResult.status !== "fulfilled") throw setupResult.reason;
     const payload = setupResult.value;
@@ -6859,42 +7077,37 @@ async function loadModelSetupStatus() {
     state.modelSetup = payload;
     renderModelSetupStatus(payload);
     return payload;
-  } catch(e) {
+  } catch (e) {
     renderModelSetupStatus({ error: e.message });
     return null;
   }
 }
-
 async function loadModelJobs() {
   try {
     const payload = await api(`/api/local-ai/jobs?project=${encodeURIComponent(getProject())}&limit=8`);
     state.modelSetupJobs = payload.jobs || [];
     renderModelJobs();
-    state.modelSetupJobs
-      .filter(job => !["completed", "failed", "cancelled"].includes(job.status))
-      .forEach(job => pollModelJob(job.id));
+    state.modelSetupJobs.filter((job) => !["completed", "failed", "cancelled"].includes(job.status)).forEach((job) => pollModelJob(job.id));
     return state.modelSetupJobs;
-  } catch(e) {
+  } catch (e) {
     renderModelJobs([{ status: "failed", current_step: e.message, progress: 100 }]);
     return [];
   }
 }
-
 function renderModelSetupStatus(payload = {}) {
   const el = qs("#modelSetupStatus");
-  const chatEl = qs("#chatModelReadiness");
   const ollama = payload.ollama || {};
   const llamacpp = payload.llamacpp || {};
   const latestJob = (state.modelSetupJobs || [])[0] || {};
   const localModels = state.localModels || [];
-  const ggufModels = localModels.filter(model =>
-    model.status === "available" && String(model.local_path || "").toLowerCase().endsWith(".gguf")
+  const ggufModels = localModels.filter(
+    (model) => model.status === "available" && String(model.local_path || "").toLowerCase().endsWith(".gguf")
   );
-  const roleCount = role => localModels.filter(model => {
+  const roleCount = (role) => localModels.filter((model) => {
     if (model.status !== "available") return false;
     const metadata = model.metadata || {};
     const roles = Array.isArray(metadata.roles) ? metadata.roles : [metadata.role, metadata.registered_for].filter(Boolean);
-    return roles.some(item => String(item || "").toLowerCase().includes(role));
+    return roles.some((item) => String(item || "").toLowerCase().includes(role));
   }).length;
   const installedOllamaCount = Number(ollama.installed_model_count || (Array.isArray(ollama.installed_models) ? ollama.installed_models.length : 0));
   const runnerReady = ollama.model_ready || llamacpp.model_ready;
@@ -6906,14 +7119,9 @@ function renderModelSetupStatus(payload = {}) {
     <span>GGUF ${ggufModels.length}</span>
     <span>Code ${roleCount("code")}</span>
     <span>Reasoning ${roleCount("reasoning")}</span>
-    ${latestJob.current_step && !["completed", "failed", "cancelled"].includes(latestJob.status) ? `<span class="runtime-current-step">${escapeHtml(latestJob.current_step)}</span>` : ""}`;
+    ${latestJob.current_step && !["completed", "failed", "cancelled"].includes(latestJob.status) ? `<span class="runtime-current-step">${escapeHtml2(latestJob.current_step)}</span>` : ""}`;
   if (el) el.innerHTML = statusMarkup;
-  if (chatEl) {
-    chatEl.className = runnerReady ? "mini-status mini-status-success" : runnerInstalled ? "mini-status mini-status-warning" : "mini-status";
-    chatEl.innerHTML = statusMarkup;
-  }
 }
-
 function renderModelJobs(overrideJobs = null) {
   const el = qs("#modelSetupJobs");
   if (!el) return;
@@ -6922,32 +7130,28 @@ function renderModelJobs(overrideJobs = null) {
     el.innerHTML = "";
     return;
   }
-  const activeJobs = jobs.filter(job => !["completed", "failed", "cancelled"].includes(job.status));
-  const latestTerminal = jobs.find(job => ["completed", "failed", "cancelled"].includes(job.status));
-  const visibleJobs = [...activeJobs, ...(latestTerminal ? [latestTerminal] : [])]
-    .filter((job, index, items) => items.findIndex(item => item.id === job.id) === index);
-  el.innerHTML = visibleJobs.map(job => {
+  const activeJobs = jobs.filter((job) => !["completed", "failed", "cancelled"].includes(job.status));
+  const latestTerminal = jobs.find((job) => ["completed", "failed", "cancelled"].includes(job.status));
+  const visibleJobs = [...activeJobs, ...latestTerminal ? [latestTerminal] : []].filter((job, index, items) => items.findIndex((item) => item.id === job.id) === index);
+  el.innerHTML = visibleJobs.map((job) => {
     const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
     const terminal = ["completed", "failed", "cancelled"].includes(job.status);
     const badgeClass = job.status === "completed" ? "badge-success" : job.status === "failed" ? "badge-danger" : job.status === "cancelled" ? "badge-warn" : "badge-info";
     const benchmark = job.result?.benchmark || {};
-    const benchmarkText = benchmark.tokens_per_second
-      ? `${benchmark.tokens_per_second} tok/s · ${benchmark.provider || "local"}`
-      : "";
+    const benchmarkText = benchmark.tokens_per_second ? `${benchmark.tokens_per_second} tok/s \xB7 ${benchmark.provider || "local"}` : "";
     return `<div class="model-job">
-      <div class="model-job-copy"><strong>${escapeHtml(job.model_name || "Model setup")}</strong><span>${escapeHtml(job.current_step || job.status || "queued")}${benchmarkText ? ` · ${escapeHtml(benchmarkText)}` : ""}</span></div>
+      <div class="model-job-copy"><strong>${escapeHtml2(job.model_name || "Model setup")}</strong><span>${escapeHtml2(job.current_step || job.status || "queued")}${benchmarkText ? ` \xB7 ${escapeHtml2(benchmarkText)}` : ""}</span></div>
       <div class="job-actions">
-        <span class="badge ${badgeClass}">${escapeHtml(job.status || "queued")}</span>
-        <div class="progress-bar" title="${progress}%"><div class="progress-bar-fill" style="width:${progress}%"></div></div>
-        ${terminal ? "" : `<button class="btn btn-mini btn-outline" data-cancel-model-job="${escapeHtml(job.id)}">Cancel</button>`}
+        <span class="badge ${badgeClass}">${escapeHtml2(job.status || "queued")}</span>
+        <progress class="progress-bar" max="100" value="${progress}" title="${progress}%">${progress}%</progress>
+        ${terminal ? "" : `<button class="btn btn-mini btn-outline" data-cancel-model-job="${escapeHtml2(job.id)}">Cancel</button>`}
       </div>
     </div>`;
   }).join("");
-  qsa("[data-cancel-model-job]").forEach(button => {
+  qsa("[data-cancel-model-job]").forEach((button) => {
     button.addEventListener("click", () => cancelModelJob(button.dataset.cancelModelJob));
   });
 }
-
 async function pollModelJob(jobId) {
   if (!jobId || activeModelJobPolls.has(jobId)) return;
   activeModelJobPolls.add(jobId);
@@ -6955,7 +7159,7 @@ async function pollModelJob(jobId) {
     try {
       const payload = await api(`/api/local-ai/jobs/${encodeURIComponent(jobId)}`);
       const job = payload.job;
-      const existing = (state.modelSetupJobs || []).filter(item => item.id !== job.id);
+      const existing = (state.modelSetupJobs || []).filter((item) => item.id !== job.id);
       state.modelSetupJobs = [job, ...existing].slice(0, 8);
       renderModelJobs();
       renderModelSetupStatus(state.modelSetup || {});
@@ -6970,7 +7174,7 @@ async function pollModelJob(jobId) {
         if (job.status === "cancelled") toast("Model setup cancelled", job.model_name || "");
         return;
       }
-    } catch(e) {
+    } catch (e) {
       activeModelJobPolls.delete(jobId);
       toast("Model job status error", e.message);
       return;
@@ -6979,26 +7183,23 @@ async function pollModelJob(jobId) {
   };
   tick();
 }
-
 async function cancelModelJob(jobId) {
   if (!jobId) return;
   try {
     const payload = await api("/api/local-ai/jobs/cancel", {
       method: "POST",
-      body: JSON.stringify({ job_id: jobId }),
+      body: JSON.stringify({ job_id: jobId })
     });
     setOutput("#developerOutput", payload);
     await loadModelJobs();
     toast("Cancel requested", payload.job?.model_name || "model setup");
-  } catch(e) {
+  } catch (e) {
     toast("Cancel error", e.message);
   }
 }
-
 async function pullRecommendedOllamaModel() {
   return setupModelForTask("chat");
 }
-
 async function setupModelForTask(task = "chat") {
   readModelSettingsFromFields();
   const modelByTask = {
@@ -7007,47 +7208,47 @@ async function setupModelForTask(task = "chat") {
     research: state.modelSettings.researchModel || DEFAULT_MODEL_SETTINGS.researchModel,
     code: state.modelSettings.codeModel || DEFAULT_MODEL_SETTINGS.codeModel,
     speed: DEFAULT_MODEL_SETTINGS.speedModel || "gemma3:2b",
-    vision: "qwen2.5vl:3b",
+    vision: "qwen2.5vl:3b"
   };
   const model = normalizeKnownModelName(modelByTask[task] || modelByTask.chat);
-  const label = task === "code" ? "code model" : task === "reasoning" ? "reasoning model" : task === "vision" ? "vision model" : "chat model";
+  const label2 = task === "code" ? "code model" : task === "reasoning" ? "reasoning model" : task === "vision" ? "vision model" : "chat model";
   try {
     setModelSetupButtonBusy(task, true);
-    toast(`Setting up ${label}`, `Started local setup job for ${model}.`);
+    toast(`Setting up ${label2}`, `Started local setup job for ${model}.`);
     const payload = await api("/api/local-ai/models/setup/job", {
       method: "POST",
-      body: JSON.stringify({ task, model, allow_network: true, project: getProject() }),
+      body: JSON.stringify({ task, model, allow_network: true, project: getProject() })
     });
     setOutput("#developerOutput", payload);
     setOutput("#settingsOutput", payload);
     const job = payload.job || {};
-    state.modelSetupJobs = [job, ...(state.modelSetupJobs || []).filter(item => item.id !== job.id)].slice(0, 8);
+    state.modelSetupJobs = [job, ...(state.modelSetupJobs || []).filter((item) => item.id !== job.id)].slice(0, 8);
     renderModelJobs();
     pollModelJob(job.id);
     await Promise.allSettled([loadModelSetupStatus(), loadModelJobs()]);
-  } catch(e) {
+  } catch (e) {
     setModelSetupButtonBusy(task, false);
     const message = e.message || "Ollama pull failed";
     const payload = {
       error: message,
       next_step: "Install Ollama for one-click downloads, or register a local .gguf file for llama.cpp.",
       model,
-      task,
+      task
     };
     setOutput("#developerOutput", payload);
     setOutput("#settingsOutput", payload);
-    loadModelSetupStatus().catch(() => {});
+    loadModelSetupStatus().catch(() => {
+    });
     toast("Model download error", message);
   }
 }
-
 function setModelSetupButtonBusy(task, busy) {
   const selectors = {
     chat: "#pullRecommendedOllamaModel",
     reasoning: "#setupReasoningModel",
     research: "#setupReasoningModel",
     code: "#setupCodeModel",
-    vision: "#setupVisionModel",
+    vision: "#setupVisionModel"
   };
   const button = qs(selectors[task]);
   if (!button) return;
@@ -7056,13 +7257,12 @@ function setModelSetupButtonBusy(task, busy) {
   const action = button.querySelector("small");
   if (action) action.textContent = busy ? "Working" : "Install";
 }
-
 async function setupVoskStt() {
   try {
     toast("Setting up Vosk", "Downloading the small local English STT model when needed.");
     const payload = await api("/api/voice/vosk/setup", {
       method: "POST",
-      body: JSON.stringify({ allow_network: true, project: getProject() }),
+      body: JSON.stringify({ allow_network: true, project: getProject() })
     });
     setOutput("#developerOutput", payload);
     setOutput("#settingsOutput", payload);
@@ -7070,76 +7270,80 @@ async function setupVoskStt() {
     renderVoiceEngineOptions((payload.stt || {}).engines || []);
     await loadVoiceStatus();
     toast("Vosk setup checked", payload.enabled ? "Local Vosk STT is ready." : payload.next_step || "Install voice extras to enable Vosk.");
-  } catch(e) {
+  } catch (e) {
     const payload = {
       error: e.message,
-      next_step: "Install voice extras with python -m pip install \"openagent-ai[voice]\", then run Setup Vosk again.",
+      next_step: 'Install voice extras with python -m pip install "openagent-ai[voice]", then run Setup Vosk again.'
     };
     setOutput("#developerOutput", payload);
     setOutput("#settingsOutput", payload);
     toast("Vosk setup error", e.message);
   }
 }
-
 function loadModelSettingsFromStorage() {
   try {
     const saved = JSON.parse(localStorage.getItem("oa-model-settings") || "{}");
     state.modelSettings = { ...state.modelSettings, ...saved };
-  } catch(_) {}
+  } catch (_) {
+  }
   normalizeModelSettings();
 }
-
 function persistModelSettings() {
-  try { localStorage.setItem("oa-model-settings", JSON.stringify(state.modelSettings)); } catch(_) {}
+  try {
+    localStorage.setItem("oa-model-settings", JSON.stringify(state.modelSettings));
+  } catch (_) {
+  }
 }
-
 function normalizeModelSettings() {
   Object.entries(DEFAULT_MODEL_SETTINGS).forEach(([key, value]) => {
-    if (state.modelSettings[key] === undefined || state.modelSettings[key] === null || state.modelSettings[key] === "") {
+    if (state.modelSettings[key] === void 0 || state.modelSettings[key] === null || state.modelSettings[key] === "") {
       state.modelSettings[key] = value;
     }
   });
-  ["chatModel", "codeModel", "researchModel"].forEach(key => {
+  ["chatModel", "codeModel", "researchModel"].forEach((key) => {
     state.modelSettings[key] = normalizeKnownModelName(state.modelSettings[key]);
   });
 }
-
 function loadPrivacySettingsFromStorage() {
   try {
     const saved = JSON.parse(localStorage.getItem("oa-privacy-settings") || "{}");
     state.privacySettings = { ...state.privacySettings, ...saved };
-  } catch(_) {}
+  } catch (_) {
+  }
+  if (state.privacySettings.localOnly) state.privacySettings.allowExternal = false;
 }
-
 function persistPrivacySettings() {
-  try { localStorage.setItem("oa-privacy-settings", JSON.stringify(state.privacySettings)); } catch(_) {}
+  try {
+    localStorage.setItem("oa-privacy-settings", JSON.stringify(state.privacySettings));
+  } catch (_) {
+  }
 }
-
 function syncPrivacySettingsFields() {
   const localOnly = qs("#settingLocalOnly");
   const auditAll = qs("#settingAuditAll");
+  const allowExternal = qs("#settingAllowExternal");
   if (localOnly) localOnly.checked = !!state.privacySettings.localOnly;
   if (auditAll) auditAll.checked = !!state.privacySettings.auditAll;
+  if (allowExternal) allowExternal.checked = !!state.privacySettings.allowExternal;
 }
-
 function readPrivacySettingsFromFields() {
   state.privacySettings = {
     localOnly: qs("#settingLocalOnly")?.checked !== false,
     auditAll: qs("#settingAuditAll")?.checked !== false,
+    allowExternal: !!qs("#settingAllowExternal")?.checked
   };
 }
-
 function applyPrivacySettingsToUi() {
-  const allowExternal = qs("#allowExternal");
+  const allowExternal = qs("#settingAllowExternal");
   if (!allowExternal) return;
   allowExternal.disabled = !!state.privacySettings.localOnly;
-  if (state.privacySettings.localOnly) allowExternal.checked = false;
-  const label = allowExternal.closest(".switch-row");
-  if (label) label.classList.toggle("is-disabled", !!state.privacySettings.localOnly);
+  allowExternal.checked = !state.privacySettings.localOnly && !!state.privacySettings.allowExternal;
+  const label2 = allowExternal.closest(".settings-switch");
+  if (label2) label2.classList.toggle("is-disabled", !!state.privacySettings.localOnly);
 }
-
 function syncModelSettingsFields() {
   const map = {
+    "#settingChatProvider": "chatProvider",
     "#settingChatModel": "chatModel",
     "#settingCodeModel": "codeModel",
     "#settingResearchModel": "researchModel",
@@ -7147,17 +7351,21 @@ function syncModelSettingsFields() {
     "#settingQuantMode": "quantizationMode",
     "#settingTargetRam": "targetRamGb",
     "#settingModelTimeout": "modelTimeoutSeconds",
-    "#settingModelParameterCount": "parameterCountB",
+    "#settingModelParameterCount": "parameterCountB"
   };
   Object.entries(map).forEach(([sel, key]) => {
     const el = qs(sel);
     if (el) el.value = state.modelSettings[key] || "";
   });
+  const streaming = qs("#settingChatStreaming");
+  if (streaming) streaming.checked = state.modelSettings.streamingEnabled !== false;
+  state.streamingEnabled = state.modelSettings.streamingEnabled !== false;
 }
-
 function readModelSettingsFromFields() {
   state.modelSettings = {
     ...state.modelSettings,
+    chatProvider: qs("#settingChatProvider")?.value || "auto",
+    streamingEnabled: qs("#settingChatStreaming")?.checked !== false,
     chatModel: qs("#settingChatModel")?.value.trim() || DEFAULT_MODEL_SETTINGS.chatModel,
     codeModel: qs("#settingCodeModel")?.value.trim() || DEFAULT_MODEL_SETTINGS.codeModel,
     researchModel: qs("#settingResearchModel")?.value.trim() || DEFAULT_MODEL_SETTINGS.researchModel,
@@ -7165,48 +7373,44 @@ function readModelSettingsFromFields() {
     quantizationMode: qs("#settingQuantMode")?.value || "auto",
     targetRamGb: qs("#settingTargetRam")?.value || "",
     modelTimeoutSeconds: qs("#settingModelTimeout")?.value || "35",
-    parameterCountB: qs("#settingModelParameterCount")?.value || "",
+    parameterCountB: qs("#settingModelParameterCount")?.value || ""
   };
+  state.streamingEnabled = state.modelSettings.streamingEnabled !== false;
 }
-
 async function loadSettingsModels() {
   const payload = await api("/api/local-ai/models");
   state.localModels = payload.models || [];
   renderSettingsModels();
   return state.localModels;
 }
-
 function selectedSettingsModelId() {
   return qs("#settingsModelSelect")?.value || "";
 }
-
 function renderSettingsModels() {
   const select = qs("#settingsModelSelect");
   if (select) {
-    select.innerHTML = state.localModels.length
-      ? state.localModels.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)} · ${escapeHtml(m.status)}</option>`).join("")
-      : '<option value="">No registered models</option>';
+    select.innerHTML = state.localModels.length ? state.localModels.map((m) => `<option value="${escapeHtml2(m.id)}">${escapeHtml2(m.name)} \xB7 ${escapeHtml2(m.status)}</option>`).join("") : '<option value="">No registered models</option>';
   }
   const feed = qs("#settingsModelFeed");
   if (feed) {
-    feed.innerHTML = state.localModels.length
-      ? state.localModels.map(m => `<div class="model-inventory-row">
-          <span class="model-provider-mark">${escapeHtml(String(m.provider || "L").slice(0, 1).toUpperCase())}</span>
-          <span class="model-inventory-copy"><strong>${escapeHtml(m.name || m.id)}</strong><small>${escapeHtml(m.provider)} · ${escapeHtml(m.status)}${m.size_bytes ? ` · ${escapeHtml(formatBytes(m.size_bytes))}` : ""}</small></span>
-          <span class="badge">${escapeHtml((m.metadata?.tier || m.metadata?.quantization || "local"))}</span>
-          <button class="icon-button danger" data-remove-model="${escapeHtml(m.id)}" title="Remove model" aria-label="Remove ${escapeHtml(m.name || m.id)}">×</button>
-        </div>`).join("")
-      : '<div class="model-empty">No models installed</div>';
-    qsa("[data-remove-model]", feed).forEach(button => {
+    feed.innerHTML = state.localModels.length ? state.localModels.map((m) => `<div class="model-inventory-row">
+          <span class="model-provider-mark">${escapeHtml2(String(m.provider || "L").slice(0, 1).toUpperCase())}</span>
+          <span class="model-inventory-copy"><strong>${escapeHtml2(m.name || m.id)}</strong><small>${escapeHtml2(m.provider)} \xB7 ${escapeHtml2(m.status)}${m.size_bytes ? ` \xB7 ${escapeHtml2(formatBytes(m.size_bytes))}` : ""}</small></span>
+          <span class="badge">${escapeHtml2(m.metadata?.tier || m.metadata?.quantization || "local")}</span>
+          <button class="icon-button danger" data-remove-model="${escapeHtml2(m.id)}" title="Remove model" aria-label="Remove ${escapeHtml2(m.name || m.id)}">\xD7</button>
+        </div>`).join("") : '<div class="model-empty">No models installed</div>';
+    qsa("[data-remove-model]", feed).forEach((button) => {
       button.addEventListener("click", () => deleteSettingsModel(button.dataset.removeModel));
     });
   }
 }
-
 async function registerSettingsModel() {
   try {
     const name = qs("#settingsModelName")?.value.trim();
-    if (!name) { toast("Model name required"); return; }
+    if (!name) {
+      toast("Model name required");
+      return;
+    }
     const payload = await api("/api/local-ai/models/register", {
       method: "POST",
       body: JSON.stringify({
@@ -7216,16 +7420,17 @@ async function registerSettingsModel() {
         local_path: qs("#settingsModelLocalPath")?.value.trim() || "",
         metadata: {
           registered_from: "settings",
-          quantization_mode: state.modelSettings.quantizationMode,
-        },
-      }),
+          quantization_mode: state.modelSettings.quantizationMode
+        }
+      })
     });
     setOutput("#settingsOutput", payload);
     toast("Model registered", name);
     await loadSettingsModels();
-  } catch(e) { toast("Register model error", e.message); }
+  } catch (e) {
+    toast("Register model error", e.message);
+  }
 }
-
 async function registerLlamaCppModel() {
   try {
     const localPath = qs("#settingsModelLocalPath")?.value.trim() || qs("#settingsModelSource")?.value.trim() || "";
@@ -7236,73 +7441,80 @@ async function registerLlamaCppModel() {
     }
     const payload = await api("/api/local-ai/llamacpp/register", {
       method: "POST",
-      body: JSON.stringify({ local_path: localPath, name, project: getProject() }),
+      body: JSON.stringify({ local_path: localPath, name, project: getProject() })
     });
     setOutput("#developerOutput", payload);
     setOutput("#settingsOutput", payload);
     toast("GGUF registered", payload.model?.name || name || "llama.cpp model");
     await Promise.allSettled([loadSettingsModels(), loadProviders(), loadModelSetupStatus()]);
-  } catch(e) {
+  } catch (e) {
     toast("GGUF register error", e.message);
     setOutput("#developerOutput", { error: e.message });
   }
 }
-
 async function downloadSettingsModel() {
   const modelId = selectedSettingsModelId();
-  if (!modelId) { toast("Select a model first"); return; }
+  if (!modelId) {
+    toast("Select a model first");
+    return;
+  }
   try {
     const payload = await api("/api/local-ai/models/download", {
       method: "POST",
-      body: JSON.stringify({ model_id: modelId, allow_network: false }),
+      body: JSON.stringify({ model_id: modelId, allow_network: false })
     });
     setOutput("#settingsOutput", payload);
     toast("Model copied locally", payload.model?.name || modelId);
     await loadSettingsModels();
-  } catch(e) { toast("Download/copy error", e.message); }
+  } catch (e) {
+    toast("Download/copy error", e.message);
+  }
 }
-
 async function quantizeSettingsModel() {
   readModelSettingsFromFields();
   const modelId = selectedSettingsModelId();
-  if (!modelId) { toast("Select a model first"); return; }
+  if (!modelId) {
+    toast("Select a model first");
+    return;
+  }
   try {
     const payload = await api("/api/local-ai/models/auto-quantize", {
       method: "POST",
       body: JSON.stringify({
         model_id: modelId,
         task: "chat",
-        target_ram_gb: state.modelSettings.targetRamGb || undefined,
+        target_ram_gb: state.modelSettings.targetRamGb || void 0,
         quantization_mode: state.modelSettings.quantizationMode,
-        parameter_count_b: state.modelSettings.parameterCountB || undefined,
-      }),
+        parameter_count_b: state.modelSettings.parameterCountB || void 0
+      })
     });
     setOutput("#settingsOutput", payload);
     toast("Quantization plan ready", payload.profile?.quantization_method || "smooth");
-  } catch(e) { toast("Quantization error", e.message); }
+  } catch (e) {
+    toast("Quantization error", e.message);
+  }
 }
-
 async function deleteSettingsModel(requestedModelId = "") {
   const modelId = requestedModelId || selectedSettingsModelId();
-  if (!modelId) { toast("Select a model first"); return; }
-  const model = (state.localModels || []).find(item => item.id === modelId);
+  if (!modelId) {
+    toast("Select a model first");
+    return;
+  }
+  const model = (state.localModels || []).find((item) => item.id === modelId);
   if (!window.confirm(`Remove ${model?.name || "this model"} from this computer?`)) return;
   try {
     const payload = await api("/api/local-ai/models/delete", {
       method: "POST",
-      body: JSON.stringify({ model_id: modelId, delete_file: true }),
+      body: JSON.stringify({ model_id: modelId, delete_file: true })
     });
     setOutput("#settingsOutput", payload);
     toast("Model removed", payload.deleted_runtime_artifact || payload.deleted_file ? "Files removed from disk." : "Registration removed.");
     await Promise.allSettled([loadSettingsModels(), loadProviders(), loadModelSetupStatus()]);
-  } catch(e) { toast("Delete model error", e.message); }
+  } catch (e) {
+    toast("Delete model error", e.message);
+  }
 }
-
-// =============================================
-// PhD Application Studio
-// =============================================
-
-const PHD_PROFILE_FIELDS = {
+var PHD_PROFILE_FIELDS = {
   full_name: "#phdFullName",
   email: "#phdEmail",
   phone: "#phdPhone",
@@ -7321,12 +7533,11 @@ const PHD_PROFILE_FIELDS = {
   courses: "#phdCourses",
   certifications: "#phdCertifications",
   languages: "#phdLanguages",
-  referees: "#phdReferees",
+  referees: "#phdReferees"
 };
-
 function setPhdTab(tab) {
   const tabMap = { studio: "#phdTabStudio", data: "#phdTabData", research: "#phdTabResearch", library: "#phdTabLibrary" };
-  qsa("[data-phd-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.phdPanel === tab));
+  qsa("[data-phd-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.phdPanel === tab));
   Object.entries(tabMap).forEach(([name, selector]) => {
     const button = qs(selector);
     if (!button) return;
@@ -7334,10 +7545,10 @@ function setPhdTab(tab) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
-  if (tab === "research") loadPhdResearchForSelection().catch(() => {});
+  if (tab === "research") loadPhdResearchForSelection().catch(() => {
+  });
   if (tab === "library") renderPhdArtifactLibrary();
 }
-
 async function loadPhdWorkspace() {
   const project = encodeURIComponent(getProject());
   try {
@@ -7346,7 +7557,7 @@ async function loadPhdWorkspace() {
       api(`/api/phd/profile?project=${project}`),
       api(`/api/phd/documents?project=${project}&limit=150`),
       api(`/api/phd/applications?project=${project}&limit=150`),
-      api(`/api/phd/artifacts?project=${project}&limit=300`),
+      api(`/api/phd/artifacts?project=${project}&limit=300`)
     ]);
     state.phd.status = status;
     state.phd.profile = profile.profile || {};
@@ -7354,7 +7565,7 @@ async function loadPhdWorkspace() {
     state.phd.documents = documents.documents || [];
     state.phd.applications = applications.applications || [];
     state.phd.artifacts = artifacts.artifacts || [];
-    if (state.phd.selectedApplicationId && !state.phd.applications.some(item => item.id === state.phd.selectedApplicationId)) {
+    if (state.phd.selectedApplicationId && !state.phd.applications.some((item) => item.id === state.phd.selectedApplicationId)) {
       state.phd.selectedApplicationId = "";
     }
     if (!state.phd.selectedApplicationId && state.phd.applications.length) {
@@ -7374,7 +7585,6 @@ async function loadPhdWorkspace() {
     throw error;
   }
 }
-
 function renderPhdHeader() {
   const score = Number(state.phd.profileCompleteness?.score || 0);
   if (qs("#phdProfileScore")) qs("#phdProfileScore").textContent = `${Math.round(score * 100)}%`;
@@ -7384,54 +7594,59 @@ function renderPhdHeader() {
   if (qs("#phdLibraryCount")) qs("#phdLibraryCount").textContent = String(state.phd.artifacts.length);
   if (qs("#phdRagChunkCount")) qs("#phdRagChunkCount").textContent = String(state.phd.status?.rag?.indexed_chunks || 0);
 }
-
 function renderPhdProfile() {
   const profile = state.phd.profile || {};
   Object.entries(PHD_PROFILE_FIELDS).forEach(([key, selector]) => {
     const input = qs(selector);
     if (input) input.value = typeof profile[key] === "string" ? profile[key] : formatProfileValue(profile[key]);
   });
-  const preferences = profile.writing_preferences || {};
-  if (qs("#phdWritingTone")) qs("#phdWritingTone").value = preferences.tone || "clear, specific, and professional";
-  if (qs("#phdWritingSpelling")) qs("#phdWritingSpelling").value = preferences.spelling || "international English";
+  const preferences2 = profile.writing_preferences || {};
+  if (qs("#phdWritingTone")) qs("#phdWritingTone").value = preferences2.tone || "clear, specific, and professional";
+  if (qs("#phdWritingSpelling")) qs("#phdWritingSpelling").value = preferences2.spelling || "international English";
 }
-
 function formatProfileValue(value) {
   if (!value) return "";
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(item => typeof item === "string" ? item : JSON.stringify(item)).join("\n");
+  if (Array.isArray(value)) return value.map((item) => typeof item === "string" ? item : JSON.stringify(item)).join("\n");
   return Object.entries(value).map(([key, item]) => `${key}: ${item}`).join("\n");
 }
-
 function profileFromPhdFields() {
   const profile = {};
-  Object.entries(PHD_PROFILE_FIELDS).forEach(([key, selector]) => { profile[key] = qs(selector)?.value.trim() || ""; });
+  Object.entries(PHD_PROFILE_FIELDS).forEach(([key, selector]) => {
+    profile[key] = qs(selector)?.value.trim() || "";
+  });
   profile.writing_preferences = {
     tone: qs("#phdWritingTone")?.value.trim() || "clear, specific, and professional",
     spelling: qs("#phdWritingSpelling")?.value || "international English",
-    avoid: "generic praise, inflated claims, and unsupported superlatives",
+    avoid: "generic praise, inflated claims, and unsupported superlatives"
   };
   return profile;
 }
-
 async function savePhdProfile() {
   try {
     const payload = await api("/api/phd/profile", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), profile: profileFromPhdFields() }),
+      body: JSON.stringify({ project: getProject(), profile: profileFromPhdFields() })
     });
     state.phd.profile = payload.profile || {};
     state.phd.profileCompleteness = payload.completeness || {};
     renderPhdHeader();
     if (qs("#phdDataSaved")) qs("#phdDataSaved").textContent = "Saved locally";
     toast("My Data saved", "The reusable application profile is available to this project.");
-  } catch (error) { toast("Profile save failed", error.message); }
+  } catch (error) {
+    toast("Profile save failed", error.message);
+  }
 }
-
 async function uploadPhdDocument() {
   const file = qs("#phdDocumentFile")?.files?.[0];
-  if (!file) { toast("Choose a document first"); return; }
-  if (file.size > 25 * 1024 * 1024) { toast("File is too large", "Maximum upload size is 25 MB."); return; }
+  if (!file) {
+    toast("Choose a document first");
+    return;
+  }
+  if (file.size > 25 * 1024 * 1024) {
+    toast("File is too large", "Maximum upload size is 25 MB.");
+    return;
+  }
   const button = qs("#uploadPhdDocument");
   if (button) button.disabled = true;
   try {
@@ -7444,61 +7659,61 @@ async function uploadPhdDocument() {
         content_type: file.type || "application/octet-stream",
         content_base64: contentBase64,
         category: qs("#phdDocumentCategory")?.value || "other",
-        label: qs("#phdDocumentLabel")?.value.trim() || file.name.replace(/\.[^.]+$/, ""),
-      }),
+        label: qs("#phdDocumentLabel")?.value.trim() || file.name.replace(/\.[^.]+$/, "")
+      })
     });
     toast(payload.document?.duplicate ? "Document already stored" : "Document added", `${payload.document?.chars_extracted || 0} characters available as evidence.`);
     if (qs("#phdDocumentFile")) qs("#phdDocumentFile").value = "";
     if (qs("#phdDocumentLabel")) qs("#phdDocumentLabel").value = "";
     await loadPhdDocuments();
-  } catch (error) { toast("Document upload failed", error.message); }
-  finally { if (button) button.disabled = false; }
+  } catch (error) {
+    toast("Document upload failed", error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
-
 async function loadPhdDocuments() {
   const payload = await api(`/api/phd/documents?project=${encodeURIComponent(getProject())}&limit=150`);
   state.phd.documents = payload.documents || [];
   renderPhdDocuments();
   renderPhdHeader();
 }
-
 function renderPhdDocuments() {
   const library = qs("#phdDocumentLibrary");
   if (library) {
-    library.innerHTML = state.phd.documents.length ? state.phd.documents.map(document => `
+    library.innerHTML = state.phd.documents.length ? state.phd.documents.map((document2) => `
       <div class="phd-record">
-        <div><strong>${escapeHtml(document.label)}</strong><p>${escapeHtml(document.category)} · ${formatBytes(document.size_bytes)} · ${document.chars_extracted || 0} extracted chars</p></div>
-        <div class="phd-record-actions"><button class="btn btn-mini btn-danger" data-phd-delete-document="${escapeHtml(document.id)}">Delete</button></div>
+        <div><strong>${escapeHtml2(document2.label)}</strong><p>${escapeHtml2(document2.category)} \xB7 ${formatBytes(document2.size_bytes)} \xB7 ${document2.chars_extracted || 0} extracted chars</p></div>
+        <div class="phd-record-actions"><button class="btn btn-mini btn-danger" data-phd-delete-document="${escapeHtml2(document2.id)}">Delete</button></div>
       </div>`).join("") : emptyState("No personal documents uploaded yet.");
-    qsa("[data-phd-delete-document]", library).forEach(button => button.addEventListener("click", () => deletePhdDocument(button.dataset.phdDeleteDocument)));
+    qsa("[data-phd-delete-document]", library).forEach((button) => button.addEventListener("click", () => deletePhdDocument(button.dataset.phdDeleteDocument)));
   }
   if (qs("#phdDocumentCount")) qs("#phdDocumentCount").textContent = String(state.phd.documents.length);
   const selector = qs("#phdSourceSelector");
   if (selector) {
-    selector.innerHTML = state.phd.documents.length ? state.phd.documents.map(document => `
+    selector.innerHTML = state.phd.documents.length ? state.phd.documents.map((document2) => `
       <label class="phd-source-check">
-        <input type="checkbox" data-phd-source-id="${escapeHtml(document.id)}" checked>
-        <span><strong>${escapeHtml(document.label)}</strong><span>${escapeHtml(document.category)} · ${document.chars_extracted || 0} chars</span></span>
+        <input type="checkbox" data-phd-source-id="${escapeHtml2(document2.id)}" checked>
+        <span><strong>${escapeHtml2(document2.label)}</strong><span>${escapeHtml2(document2.category)} \xB7 ${document2.chars_extracted || 0} chars</span></span>
       </label>`).join("") : emptyState("Upload CV, transcripts, or writing samples in My Data.");
   }
 }
-
 async function deletePhdDocument(documentId) {
   if (!documentId || !window.confirm("Delete this local source document?")) return;
   try {
     await api(`/api/phd/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
     await loadPhdDocuments();
     toast("Document deleted");
-  } catch (error) { toast("Delete failed", error.message); }
+  } catch (error) {
+    toast("Delete failed", error.message);
+  }
 }
-
 function selectedPhdApplication() {
-  return state.phd.applications.find(item => item.id === state.phd.selectedApplicationId) || null;
+  return state.phd.applications.find((item) => item.id === state.phd.selectedApplicationId) || null;
 }
-
 function renderPhdApplications() {
   const applications = state.phd.applications;
-  const options = applications.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
+  const options = applications.map((item) => `<option value="${escapeHtml2(item.id)}">${escapeHtml2(item.label)}</option>`).join("");
   const studio = qs("#phdApplicationSelect");
   const research = qs("#phdResearchApplication");
   const library = qs("#phdLibraryApplication");
@@ -7513,12 +7728,11 @@ function renderPhdApplications() {
   if (library) {
     const current = library.value;
     library.innerHTML = `<option value="">All positions</option>${options}`;
-    library.value = current && applications.some(item => item.id === current) ? current : "";
+    library.value = current && applications.some((item) => item.id === current) ? current : "";
   }
   if (qs("#exportPhdBundle")) qs("#exportPhdBundle").disabled = !state.phd.selectedApplicationId;
   if (qs("#deletePhdApplication")) qs("#deletePhdApplication").disabled = !state.phd.selectedApplicationId;
 }
-
 function populatePhdApplicationForm(application) {
   const values = {
     "#phdInstitution": application.institution,
@@ -7531,25 +7745,27 @@ function populatePhdApplicationForm(application) {
     "#phdPositionUrl": application.position_url,
     "#phdPositionDescription": application.description,
     "#phdRequirements": (application.requirements || []).join("\n"),
-    "#phdPositionNotes": application.notes,
+    "#phdPositionNotes": application.notes
   };
-  Object.entries(values).forEach(([selector, value]) => { if (qs(selector)) qs(selector).value = value || ""; });
+  Object.entries(values).forEach(([selector, value]) => {
+    if (qs(selector)) qs(selector).value = value || "";
+  });
   if (qs("#phdPositionStatus")) qs("#phdPositionStatus").textContent = application.status || "draft";
   if (qs("#phdWebQuery") && !qs("#phdWebQuery").value.trim()) {
     qs("#phdWebQuery").value = [application.supervisor, application.lab, application.institution, application.position_title, "research publications PhD"].filter(Boolean).join(" ");
   }
   if (qs("#phdResearchUrls") && application.position_url && !qs("#phdResearchUrls").value.trim()) qs("#phdResearchUrls").value = application.position_url;
 }
-
 function clearPhdApplicationForm() {
   state.phd.selectedApplicationId = "";
-  ["#phdInstitution", "#phdProgram", "#phdPositionTitle", "#phdSupervisor", "#phdLab", "#phdDepartment", "#phdDeadline", "#phdPositionUrl", "#phdPositionDescription", "#phdRequirements", "#phdPositionNotes"].forEach(selector => { if (qs(selector)) qs(selector).value = ""; });
+  ["#phdInstitution", "#phdProgram", "#phdPositionTitle", "#phdSupervisor", "#phdLab", "#phdDepartment", "#phdDeadline", "#phdPositionUrl", "#phdPositionDescription", "#phdRequirements", "#phdPositionNotes"].forEach((selector) => {
+    if (qs(selector)) qs(selector).value = "";
+  });
   if (qs("#phdPositionStatus")) qs("#phdPositionStatus").textContent = "Draft";
   if (qs("#phdApplicationSelect")) qs("#phdApplicationSelect").value = "";
   if (qs("#deletePhdApplication")) qs("#deletePhdApplication").disabled = true;
   if (qs("#exportPhdBundle")) qs("#exportPhdBundle").disabled = true;
 }
-
 function phdApplicationFromFields() {
   return {
     institution: qs("#phdInstitution")?.value.trim() || "",
@@ -7561,12 +7777,11 @@ function phdApplicationFromFields() {
     deadline: qs("#phdDeadline")?.value || "",
     position_url: qs("#phdPositionUrl")?.value.trim() || "",
     description: qs("#phdPositionDescription")?.value.trim() || "",
-    requirements: (qs("#phdRequirements")?.value || "").split(/\r?\n/).map(item => item.trim()).filter(Boolean),
+    requirements: (qs("#phdRequirements")?.value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
     notes: qs("#phdPositionNotes")?.value.trim() || "",
-    status: selectedPhdApplication()?.status || "draft",
+    status: selectedPhdApplication()?.status || "draft"
   };
 }
-
 async function savePhdApplication({ quiet = false } = {}) {
   const application = phdApplicationFromFields();
   if (!application.institution && !application.program && !application.position_title) {
@@ -7577,7 +7792,7 @@ async function savePhdApplication({ quiet = false } = {}) {
     const id = state.phd.selectedApplicationId;
     const payload = await api(id ? `/api/phd/applications/${encodeURIComponent(id)}` : "/api/phd/applications", {
       method: id ? "PATCH" : "POST",
-      body: JSON.stringify({ project: getProject(), application }),
+      body: JSON.stringify({ project: getProject(), application })
     });
     state.phd.selectedApplicationId = payload.application?.id || id;
     await loadPhdApplications();
@@ -7588,7 +7803,6 @@ async function savePhdApplication({ quiet = false } = {}) {
     return "";
   }
 }
-
 async function loadPhdApplications() {
   const payload = await api(`/api/phd/applications?project=${encodeURIComponent(getProject())}&limit=150`);
   state.phd.applications = payload.applications || [];
@@ -7597,7 +7811,6 @@ async function loadPhdApplications() {
   const selected = selectedPhdApplication();
   if (selected) populatePhdApplicationForm(selected);
 }
-
 async function selectPhdApplication(applicationId) {
   state.phd.selectedApplicationId = applicationId || "";
   if (!applicationId) {
@@ -7608,9 +7821,9 @@ async function selectPhdApplication(applicationId) {
   if (application) populatePhdApplicationForm(application);
   renderPhdApplications();
   renderPhdArtifactLibrary();
-  await loadPhdResearchForSelection().catch(() => {});
+  await loadPhdResearchForSelection().catch(() => {
+  });
 }
-
 async function deletePhdApplication() {
   const id = state.phd.selectedApplicationId;
   if (!id || !window.confirm("Delete this position, its research sources, and all generated revisions?")) return;
@@ -7621,13 +7834,13 @@ async function deletePhdApplication() {
     clearPhdApplicationForm();
     await loadPhdWorkspace();
     toast("Position deleted");
-  } catch (error) { toast("Delete failed", error.message); }
+  } catch (error) {
+    toast("Delete failed", error.message);
+  }
 }
-
 function selectedPhdDocumentIds() {
-  return qsa("[data-phd-source-id]:checked").map(input => input.dataset.phdSourceId).filter(Boolean);
+  return qsa("[data-phd-source-id]:checked").map((input) => input.dataset.phdSourceId).filter(Boolean);
 }
-
 function renderPhdGenerationRun(run) {
   if (!run) return;
   state.phd.generationRun = run;
@@ -7641,32 +7854,33 @@ function renderPhdGenerationRun(run) {
   const timeline = qs("#phdProgressTimeline");
   if (!timeline) return;
   const events = Array.isArray(run.events) ? run.events.slice(-10) : [];
-  timeline.innerHTML = events.map(event => {
-    const model = [event.provider || event.requested_provider, event.model || event.requested_model].filter(Boolean).join(" · ");
-    return `<div class="phd-progress-event ${escapeHtml(event.status || "running")}">
-      <strong>${escapeHtml(event.stage || "working")}</strong>
-      <span>${escapeHtml(event.message || "Working locally.")}${model ? `<br><small>${escapeHtml(model)}</small>` : ""}</span>
+  timeline.innerHTML = events.map((event) => {
+    const model = [event.provider || event.requested_provider, event.model || event.requested_model].filter(Boolean).join(" \xB7 ");
+    return `<div class="phd-progress-event ${escapeHtml2(event.status || "running")}">
+      <strong>${escapeHtml2(event.stage || "working")}</strong>
+      <span>${escapeHtml2(event.message || "Working locally.")}${model ? `<br><small>${escapeHtml2(model)}</small>` : ""}</span>
     </div>`;
   }).join("");
   timeline.scrollTop = timeline.scrollHeight;
 }
-
 async function pollPhdGenerationRun(runId) {
   while (state.phd.busy && state.phd.generationRun?.id === runId) {
     const payload = await api(`/api/phd/generation-runs/${encodeURIComponent(runId)}?project=${encodeURIComponent(getProject())}`);
     const run = payload.run;
     renderPhdGenerationRun(run);
     if (["completed", "failed"].includes(run.status)) return run;
-    await new Promise(resolve => setTimeout(resolve, 650));
+    await new Promise((resolve) => setTimeout(resolve, 650));
   }
   return state.phd.generationRun;
 }
-
 async function generatePhdBundle() {
   const applicationId = await savePhdApplication({ quiet: true });
-  if (!applicationId) { toast("Save a position first"); return; }
+  if (!applicationId) {
+    toast("Save a position first");
+    return;
+  }
   const autoDetect = Boolean(qs("#phdAutoDetectOutputs")?.checked);
-  const artifactTypes = autoDetect ? [] : qsa("[data-phd-artifact-type]:checked").map(input => input.value);
+  const artifactTypes = autoDetect ? [] : qsa("[data-phd-artifact-type]:checked").map((input) => input.value);
   if (!autoDetect && !artifactTypes.length) {
     toast("Choose an output", "Select one or more documents, or enable Choose from command.");
     return;
@@ -7687,11 +7901,15 @@ async function generatePhdBundle() {
     const payload = await api(`/api/phd/applications/${encodeURIComponent(applicationId)}/generate/start`, {
       method: "POST",
       body: JSON.stringify({
-        project: getProject(), command, artifact_types: artifactTypes,
-        document_ids: selectedPhdDocumentIds(), provider, allow_external_model: allowExternal,
+        project: getProject(),
+        command,
+        artifact_types: artifactTypes,
+        document_ids: selectedPhdDocumentIds(),
+        provider,
+        allow_external_model: allowExternal,
         research_before_generation: researchBeforeGeneration,
-        allow_external_research: researchBeforeGeneration,
-      }),
+        allow_external_research: researchBeforeGeneration
+      })
     });
     renderPhdGenerationRun(payload.run);
     const run = await pollPhdGenerationRun(payload.run.id);
@@ -7713,40 +7931,37 @@ async function generatePhdBundle() {
     if (button) button.disabled = false;
   }
 }
-
 async function loadPhdArtifacts() {
   const payload = await api(`/api/phd/artifacts?project=${encodeURIComponent(getProject())}&limit=300`);
   state.phd.artifacts = payload.artifacts || [];
   renderPhdArtifactLibrary();
   renderPhdHeader();
 }
-
 function renderPhdArtifactLibrary() {
   const container = qs("#phdArtifactLibrary");
   if (!container) return;
   const filter = qs("#phdLibraryApplication")?.value || "";
-  const artifacts = state.phd.artifacts.filter(item => !filter || item.application_id === filter);
-  container.innerHTML = artifacts.length ? artifacts.map(item => {
-    const app = state.phd.applications.find(candidate => candidate.id === item.application_id);
+  const artifacts = state.phd.artifacts.filter((item) => !filter || item.application_id === filter);
+  container.innerHTML = artifacts.length ? artifacts.map((item) => {
+    const app = state.phd.applications.find((candidate) => candidate.id === item.application_id);
     return `<div class="phd-record">
-      <button class="phd-artifact-button ${item.id === state.phd.selectedArtifactId ? "active" : ""}" data-phd-open-artifact="${escapeHtml(item.id)}">
-        <strong>${escapeHtml(item.title)}</strong>
-        <p>${escapeHtml(app?.institution || "Application")} · revision ${item.revision} · ${item.word_count} words · score ${item.quality?.score ?? "-"}</p>
+      <button class="phd-artifact-button ${item.id === state.phd.selectedArtifactId ? "active" : ""}" data-phd-open-artifact="${escapeHtml2(item.id)}">
+        <strong>${escapeHtml2(item.title)}</strong>
+        <p>${escapeHtml2(app?.institution || "Application")} \xB7 revision ${item.revision} \xB7 ${item.word_count} words \xB7 score ${item.quality?.score ?? "-"}</p>
       </button>
       <div class="phd-record-actions">
-        <button class="btn btn-mini btn-soft" data-phd-quick-export="${escapeHtml(item.id)}" data-phd-export-format="docx">DOCX</button>
-        <button class="btn btn-mini btn-soft" data-phd-quick-export="${escapeHtml(item.id)}" data-phd-export-format="pdf">PDF</button>
-        <button class="btn btn-mini btn-soft" data-phd-quick-export="${escapeHtml(item.id)}" data-phd-export-format="md">MD</button>
+        <button class="btn btn-mini btn-soft" data-phd-quick-export="${escapeHtml2(item.id)}" data-phd-export-format="docx">DOCX</button>
+        <button class="btn btn-mini btn-soft" data-phd-quick-export="${escapeHtml2(item.id)}" data-phd-export-format="pdf">PDF</button>
+        <button class="btn btn-mini btn-soft" data-phd-quick-export="${escapeHtml2(item.id)}" data-phd-export-format="md">MD</button>
       </div>
     </div>`;
   }).join("") : emptyState("No application documents generated yet.");
-  qsa("[data-phd-open-artifact]", container).forEach(button => button.addEventListener("click", () => openPhdArtifact(button.dataset.phdOpenArtifact)));
-  qsa("[data-phd-quick-export]", container).forEach(button => button.addEventListener("click", () => {
+  qsa("[data-phd-open-artifact]", container).forEach((button) => button.addEventListener("click", () => openPhdArtifact(button.dataset.phdOpenArtifact)));
+  qsa("[data-phd-quick-export]", container).forEach((button) => button.addEventListener("click", () => {
     exportPhdArtifact(button.dataset.phdExportFormat || "docx", button.dataset.phdQuickExport);
   }));
   if (qs("#phdLibraryCount")) qs("#phdLibraryCount").textContent = String(artifacts.length);
 }
-
 async function openPhdArtifact(artifactId, { quiet = false } = {}) {
   if (!artifactId) return;
   try {
@@ -7756,9 +7971,10 @@ async function openPhdArtifact(artifactId, { quiet = false } = {}) {
     renderPhdArtifact(artifact);
     renderPhdArtifactLibrary();
     if (!quiet) toast("Deliverable opened", `Revision ${artifact.revision}`);
-  } catch (error) { if (!quiet) toast("Open failed", error.message); }
+  } catch (error) {
+    if (!quiet) toast("Open failed", error.message);
+  }
 }
-
 function renderPhdArtifact(artifact) {
   if (qs("#phdPreviewTitle")) qs("#phdPreviewTitle").textContent = artifact.title;
   if (qs("#phdArtifactPreview")) qs("#phdArtifactPreview").innerHTML = renderMarkdown(artifact.content);
@@ -7767,11 +7983,10 @@ function renderPhdArtifact(artifact) {
   if (qs("#phdArtifactEditor")) qs("#phdArtifactEditor").value = artifact.content;
   renderPhdQuality(artifact.quality || {}, "#phdQualityPanel", artifact.pipeline || {});
   renderPhdQuality(artifact.quality || {}, "#phdEditorQuality", artifact.pipeline || {});
-  ["#phdPreviewDocx", "#phdPreviewPdf", "#phdPreviewMarkdown", "#savePhdArtifactRevision", "#reviewPhdAuthenticity", "#deletePhdArtifact"].forEach(selector => {
+  ["#phdPreviewDocx", "#phdPreviewPdf", "#phdPreviewMarkdown", "#savePhdArtifactRevision", "#reviewPhdAuthenticity", "#deletePhdArtifact"].forEach((selector) => {
     if (qs(selector)) qs(selector).disabled = false;
   });
 }
-
 function renderPhdQuality(quality, selector, pipeline = {}) {
   const panel = qs(selector);
   if (!panel) return;
@@ -7780,17 +7995,16 @@ function renderPhdQuality(quality, selector, pipeline = {}) {
     [quality.length_ok, `Length ${quality.word_count ?? 0} words`],
     [!(quality.placeholders || []).length, `${(quality.placeholders || []).length} unresolved placeholders`],
     [!(quality.unsupported_numeric_claims || []).length, `${(quality.unsupported_numeric_claims || []).length} numeric claims to verify`],
-    [Number(quality.evidence_alignment || 0) >= .08, `Evidence alignment ${Math.round(Number(quality.evidence_alignment || 0) * 100)}%`],
+    [Number(quality.evidence_alignment || 0) >= 0.08, `Evidence alignment ${Math.round(Number(quality.evidence_alignment || 0) * 100)}%`]
   ];
-  if (quality.voice_alignment !== null && quality.voice_alignment !== undefined) checks.push([Number(quality.voice_alignment) >= .65, `Writing-sample alignment ${Math.round(Number(quality.voice_alignment) * 100)}%`]);
+  if (quality.voice_alignment !== null && quality.voice_alignment !== void 0) checks.push([Number(quality.voice_alignment) >= 0.65, `Writing-sample alignment ${Math.round(Number(quality.voice_alignment) * 100)}%`]);
   panel.innerHTML = `
     <div class="phd-quality-score"><strong>${quality.score ?? "-"}</strong><span>/ 100 local review</span></div>
-    <div class="phd-check-list">${checks.map(([ok, label]) => `<div class="phd-check-item ${ok ? "ok" : "warn"}">${ok ? "Pass" : "Review"}: ${escapeHtml(label)}</div>`).join("")}</div>
-    ${flags.length ? `<div class="phd-quality-note"><strong>Before submission</strong><br>${flags.map(escapeHtml).join("<br>")}</div>` : '<div class="phd-quality-note">No automatic issues found. A final human review is still required.</div>'}
-    ${pipeline.stage_count ? `<div class="phd-pipeline-note"><strong>Writing pipeline</strong><span>${Number(pipeline.stage_count)} stages · ${Number(pipeline.distinct_models || 1)} model${Number(pipeline.distinct_models || 1) === 1 ? "" : "s"} · ${pipeline.quality_gate === "passed" ? "independent proofread passed" : pipeline.finalized ? "review finalized" : "quality gate needs review"}</span></div>` : ""}
-    <p class="phd-quality-note">${escapeHtml(quality.detector_note || "This checks grounding and authentic voice; it does not target AI detectors.")}</p>`;
+    <div class="phd-check-list">${checks.map(([ok, label2]) => `<div class="phd-check-item ${ok ? "ok" : "warn"}">${ok ? "Pass" : "Review"}: ${escapeHtml2(label2)}</div>`).join("")}</div>
+    ${flags.length ? `<div class="phd-quality-note"><strong>Before submission</strong><br>${flags.map(escapeHtml2).join("<br>")}</div>` : '<div class="phd-quality-note">No automatic issues found. A final human review is still required.</div>'}
+    ${pipeline.stage_count ? `<div class="phd-pipeline-note"><strong>Writing pipeline</strong><span>${Number(pipeline.stage_count)} stages \xB7 ${Number(pipeline.distinct_models || 1)} model${Number(pipeline.distinct_models || 1) === 1 ? "" : "s"} \xB7 ${pipeline.quality_gate === "passed" ? "independent proofread passed" : pipeline.finalized ? "review finalized" : "quality gate needs review"}</span></div>` : ""}
+    <p class="phd-quality-note">${escapeHtml2(quality.detector_note || "This checks grounding and authentic voice; it does not target AI detectors.")}</p>`;
 }
-
 async function savePhdArtifactRevision() {
   const artifactId = state.phd.selectedArtifactId;
   const content = qs("#phdArtifactEditor")?.value.trim() || "";
@@ -7798,15 +8012,16 @@ async function savePhdArtifactRevision() {
   try {
     const payload = await api(`/api/phd/artifacts/${encodeURIComponent(artifactId)}`, {
       method: "PATCH",
-      body: JSON.stringify({ project: getProject(), content }),
+      body: JSON.stringify({ project: getProject(), content })
     });
     state.phd.selectedArtifactId = payload.artifact.id;
     await loadPhdArtifacts();
     renderPhdArtifact(payload.artifact);
     toast("New revision saved", `Revision ${payload.artifact.revision}`);
-  } catch (error) { toast("Revision save failed", error.message); }
+  } catch (error) {
+    toast("Revision save failed", error.message);
+  }
 }
-
 async function reviewPhdAuthenticity() {
   const artifactId = state.phd.selectedArtifactId;
   if (!artifactId) return;
@@ -7815,9 +8030,10 @@ async function reviewPhdAuthenticity() {
     renderPhdQuality(payload.quality || {}, "#phdEditorQuality");
     renderPhdQuality(payload.quality || {}, "#phdQualityPanel");
     toast("Grounding review complete", `Score ${payload.quality?.score ?? "-"}/100`);
-  } catch (error) { toast("Review failed", error.message); }
+  } catch (error) {
+    toast("Review failed", error.message);
+  }
 }
-
 async function deletePhdArtifact() {
   const artifactId = state.phd.selectedArtifactId;
   if (!artifactId || !window.confirm("Delete this revision? Other revisions will remain.")) return;
@@ -7827,22 +8043,24 @@ async function deletePhdArtifact() {
     await loadPhdArtifacts();
     if (qs("#phdArtifactEditor")) qs("#phdArtifactEditor").value = "";
     toast("Revision deleted");
-  } catch (error) { toast("Delete failed", error.message); }
+  } catch (error) {
+    toast("Delete failed", error.message);
+  }
 }
-
 async function exportPhdArtifact(format, artifactId = "") {
   const id = artifactId || state.phd.selectedArtifactId;
   if (!id) return;
   try {
     const payload = await api(`/api/phd/artifacts/${encodeURIComponent(id)}/export`, {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), format }),
+      body: JSON.stringify({ project: getProject(), format })
     });
     downloadBase64File(payload);
     toast("Export ready", payload.filename);
-  } catch (error) { toast("Export failed", error.message); }
+  } catch (error) {
+    toast("Export failed", error.message);
+  }
 }
-
 async function exportPhdBundle() {
   const applicationId = state.phd.selectedApplicationId;
   if (!applicationId) return;
@@ -7852,14 +8070,15 @@ async function exportPhdBundle() {
       body: JSON.stringify({
         project: getProject(),
         include_source_documents: Boolean(qs("#phdIncludeSourcesInPackage")?.checked),
-        document_ids: selectedPhdDocumentIds(),
-      }),
+        document_ids: selectedPhdDocumentIds()
+      })
     });
     downloadBase64File(payload);
     toast("Application package ready", `${payload.artifact_count || 0} latest deliverables included.`);
-  } catch (error) { toast("Package export failed", error.message); }
+  } catch (error) {
+    toast("Package export failed", error.message);
+  }
 }
-
 function downloadBase64File(payload) {
   const binary = atob(payload.content_base64 || "");
   const bytes = new Uint8Array(binary.length);
@@ -7873,13 +8092,18 @@ function downloadBase64File(payload) {
   anchor.remove();
   URL.revokeObjectURL(url);
 }
-
 async function runPhdResearch() {
   const applicationId = qs("#phdResearchApplication")?.value || state.phd.selectedApplicationId;
-  if (!applicationId) { toast("Select a saved position first"); return; }
+  if (!applicationId) {
+    toast("Select a saved position first");
+    return;
+  }
   const allowExternal = Boolean(qs("#phdAllowWebResearch")?.checked);
-  const urls = (qs("#phdResearchUrls")?.value || "").split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-  if (urls.length && !allowExternal) { toast("Approval required", "Enable the per-run web research boundary first."); return; }
+  const urls = (qs("#phdResearchUrls")?.value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  if (urls.length && !allowExternal) {
+    toast("Approval required", "Enable the per-run web research boundary first.");
+    return;
+  }
   const button = qs("#runPhdResearch");
   if (button) button.disabled = true;
   if (qs("#phdResearchState")) qs("#phdResearchState").textContent = allowExternal ? "Searching public web..." : "Reading local evidence...";
@@ -7887,9 +8111,12 @@ async function runPhdResearch() {
     const payload = await api(`/api/phd/applications/${encodeURIComponent(applicationId)}/research`, {
       method: "POST",
       body: JSON.stringify({
-        project: getProject(), query: qs("#phdWebQuery")?.value.trim() || "", urls,
-        allow_external: allowExternal, max_sources: 6,
-      }),
+        project: getProject(),
+        query: qs("#phdWebQuery")?.value.trim() || "",
+        urls,
+        allow_external: allowExternal,
+        max_sources: 6
+      })
     });
     state.phd.selectedApplicationId = applicationId;
     renderPhdResearch(payload.summary || "", payload.sources || []);
@@ -7899,31 +8126,30 @@ async function runPhdResearch() {
   } catch (error) {
     if (qs("#phdResearchState")) qs("#phdResearchState").textContent = "Failed";
     toast("Research failed", error.message);
-  } finally { if (button) button.disabled = false; }
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
-
 async function loadPhdResearchForSelection() {
   const applicationId = qs("#phdResearchApplication")?.value || state.phd.selectedApplicationId;
   if (!applicationId) {
     renderPhdResearch("", []);
     return;
   }
-  const application = state.phd.applications.find(item => item.id === applicationId);
+  const application = state.phd.applications.find((item) => item.id === applicationId);
   const payload = await api(`/api/phd/applications/${encodeURIComponent(applicationId)}/sources`);
   renderPhdResearch(application?.research_summary || "", payload.sources || []);
 }
-
 function renderPhdResearch(summary, sources) {
   if (qs("#phdResearchSummary")) qs("#phdResearchSummary").innerHTML = summary ? renderMarkdown(summary) : emptyState("Research findings will appear here.");
   if (qs("#phdResearchSourceCount")) qs("#phdResearchSourceCount").textContent = String(sources.length);
   const container = qs("#phdResearchSources");
   if (container) {
-    container.innerHTML = sources.length ? sources.map(source => `
-      <div class="phd-record"><div><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.source_type)} · ${escapeHtml(source.snippet || "Saved public source")}</p></div>
-      <a class="btn btn-mini btn-outline" href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">Open</a></div>`).join("") : emptyState("No public sources saved for this position.");
+    container.innerHTML = sources.length ? sources.map((source) => `
+      <div class="phd-record"><div><strong>${escapeHtml2(source.title)}</strong><p>${escapeHtml2(source.source_type)} \xB7 ${escapeHtml2(source.snippet || "Saved public source")}</p></div>
+      <a class="btn btn-mini btn-outline" href="${escapeHtml2(source.url)}" target="_blank" rel="noopener noreferrer">Open</a></div>`).join("") : emptyState("No public sources saved for this position.");
   }
 }
-
 function initPhdWorkspace() {
   qs("#phdTabStudio")?.addEventListener("click", () => setPhdTab("studio"));
   qs("#phdTabData")?.addEventListener("click", () => setPhdTab("data"));
@@ -7932,25 +8158,29 @@ function initPhdWorkspace() {
   qs("#refreshPhdWorkspace")?.addEventListener("click", loadPhdWorkspace);
   qs("#savePhdProfile")?.addEventListener("click", savePhdProfile);
   qs("#uploadPhdDocument")?.addEventListener("click", uploadPhdDocument);
-  qs("#phdDocumentFile")?.addEventListener("change", event => {
+  qs("#phdDocumentFile")?.addEventListener("change", (event) => {
     const file = event.target.files?.[0];
     if (file && qs("#phdDocumentLabel") && !qs("#phdDocumentLabel").value.trim()) qs("#phdDocumentLabel").value = file.name.replace(/\.[^.]+$/, "");
   });
   qs("#savePhdApplication")?.addEventListener("click", () => savePhdApplication());
   qs("#newPhdApplication")?.addEventListener("click", clearPhdApplicationForm);
   qs("#deletePhdApplication")?.addEventListener("click", deletePhdApplication);
-  qs("#phdApplicationSelect")?.addEventListener("change", event => selectPhdApplication(event.target.value));
-  qs("#phdResearchApplication")?.addEventListener("change", event => selectPhdApplication(event.target.value));
+  qs("#phdApplicationSelect")?.addEventListener("change", (event) => selectPhdApplication(event.target.value));
+  qs("#phdResearchApplication")?.addEventListener("change", (event) => selectPhdApplication(event.target.value));
   qs("#phdLibraryApplication")?.addEventListener("change", renderPhdArtifactLibrary);
   qs("#selectAllPhdSources")?.addEventListener("click", () => {
     const inputs = qsa("[data-phd-source-id]");
-    const shouldSelect = inputs.some(input => !input.checked);
-    inputs.forEach(input => { input.checked = shouldSelect; });
+    const shouldSelect = inputs.some((input) => !input.checked);
+    inputs.forEach((input) => {
+      input.checked = shouldSelect;
+    });
   });
-  qs("#phdAutoDetectOutputs")?.addEventListener("change", event => {
-    if (event.target.checked) qsa("[data-phd-artifact-type]").forEach(input => { input.checked = false; });
+  qs("#phdAutoDetectOutputs")?.addEventListener("change", (event) => {
+    if (event.target.checked) qsa("[data-phd-artifact-type]").forEach((input) => {
+      input.checked = false;
+    });
   });
-  qsa("[data-phd-artifact-type]").forEach(input => input.addEventListener("change", event => {
+  qsa("[data-phd-artifact-type]").forEach((input) => input.addEventListener("change", (event) => {
     if (event.target.checked && qs("#phdAutoDetectOutputs")) qs("#phdAutoDetectOutputs").checked = false;
     if (!qsa("[data-phd-artifact-type]:checked").length && qs("#phdAutoDetectOutputs")) qs("#phdAutoDetectOutputs").checked = true;
   }));
@@ -7964,116 +8194,98 @@ function initPhdWorkspace() {
   qs("#reviewPhdAuthenticity")?.addEventListener("click", reviewPhdAuthenticity);
   qs("#deletePhdArtifact")?.addEventListener("click", deletePhdArtifact);
 }
-
-// =============================================
-// Command Palette
-// =============================================
-
-let paletteIndex = -1;
-
-function openCommandPalette() { openPalette(); }
-
+var palette;
 function openPalette() {
-  const overlay = qs("#commandPalette");
-  overlay?.classList.add("open");
-  const input = qs("#paletteInput");
-  if (input) { input.value = ""; input.focus(); }
-  paletteIndex = -1;
-  renderPaletteResults("");
+  palette?.open();
 }
-
 function closePalette() {
-  qs("#commandPalette")?.classList.remove("open");
+  palette?.close();
 }
-
-function renderPaletteResults(query) {
-  const filtered = query
-    ? PALETTE_COMMANDS.filter(c => c.label.toLowerCase().includes(query.toLowerCase()) || c.group.toLowerCase().includes(query.toLowerCase()))
-    : PALETTE_COMMANDS;
-  const results = qs("#paletteResults");
-  if (!results) return;
-  results.innerHTML = filtered.map((c, i) =>
-    `<div class="palette-item ${i === paletteIndex ? "focused" : ""}" data-palette-idx="${i}" role="option" aria-selected="${i === paletteIndex}">
-       <span class="pi-icon">${c.icon}</span>
-       <span class="pi-label">${escapeHtml(c.label)}</span>
-       <span class="pi-group">${escapeHtml(c.group)}</span>
-     </div>`
-  ).join("");
-  qsa(".palette-item").forEach(item =>
-    item.addEventListener("click", () => {
-      const idx = parseInt(item.dataset.paletteIdx, 10);
-      if (filtered[idx]) { filtered[idx].action(); closePalette(); }
-    })
-  );
-}
-
 function initPalette() {
+  const overlay = qs("#commandPalette");
+  const input = qs("#paletteInput");
+  const results = qs("#paletteResults");
+  if (!overlay || !input || !results) return;
+  palette = new CommandPalette(overlay, input, results, (view) => setView(view), [
+    { label: "New chat", run: () => {
+      setView("chat");
+      newConversation();
+    } }
+  ]);
   qs("#openPalette")?.addEventListener("click", openPalette);
   qs("#globalSearch")?.addEventListener("focus", openPalette);
-  qs("#commandPalette")?.addEventListener("click", e => { if (e.target === qs("#commandPalette")) closePalette(); });
-
-  const input = qs("#paletteInput");
-  if (input) {
-    input.addEventListener("input", e => { paletteIndex = -1; renderPaletteResults(e.target.value); });
-    input.addEventListener("keydown", e => {
-      const items = qsa(".palette-item");
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        paletteIndex = Math.min(paletteIndex + 1, items.length - 1);
-        renderPaletteResults(input.value);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        paletteIndex = Math.max(paletteIndex - 1, 0);
-        renderPaletteResults(input.value);
-      } else if (e.key === "Enter") {
-        if (paletteIndex >= 0 && items[paletteIndex]) items[paletteIndex].click();
-      } else if (e.key === "Escape") {
-        closePalette();
-      }
-    });
-  }
 }
-
-// =============================================
-// Global keyboard shortcuts
-// =============================================
-
 function initKeyboardShortcuts() {
-  document.addEventListener("keydown", e => {
-    // Ctrl/Cmd+K — command palette
+  document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       const overlay = qs("#commandPalette");
-      if (overlay?.classList.contains("open")) closePalette(); else openPalette();
+      if (overlay?.classList.contains("open")) closePalette();
+      else openPalette();
       return;
     }
-    // Escape — close palette
     if (e.key === "Escape") {
       closePalette();
       return;
     }
-    // Skip if typing in an input
     const tag = document.activeElement?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-    // Single-key shortcuts
-    if (e.key === "g" && !e.ctrlKey) { e.preventDefault(); setView("chat"); }
+    if (e.key === "g" && !e.ctrlKey) {
+      e.preventDefault();
+      setView("chat");
+    }
   });
 }
-
-// =============================================
-// Event delegation for nav
-// =============================================
-
+var STATIC_UI_ACTIONS = {
+  loadTwinProfile,
+  loadTwinPatterns,
+  loadTwinSuggestions,
+  loadTwinGoals,
+  predictIntent,
+  consolidateMemory,
+  createTwinGoal,
+  loadVaultEntries,
+  storeVaultSecret,
+  retrieveVaultSecret,
+  loadScraperJobs,
+  scrapeUrl,
+  scheduleUrl,
+  loadFinetuneStatus,
+  loadAdapters,
+  createFtDataset,
+  addFtExample,
+  startFtJob
+};
 function initNavigation() {
-  document.addEventListener("click", e => {
+  document.addEventListener("click", (e) => {
+    const uiAction = e.target.closest("[data-ui-action]");
+    if (uiAction) {
+      const action = STATIC_UI_ACTIONS[uiAction.dataset.uiAction];
+      if (typeof action === "function") {
+        Promise.resolve(action()).catch((error) => toast("Action failed", error.message));
+      }
+      return;
+    }
     const codebaseFile = e.target.closest("[data-codebase-file]");
-    if (codebaseFile) { openCodebaseFile(codebaseFile.dataset.codebaseFile); return; }
+    if (codebaseFile) {
+      openCodebaseFile(codebaseFile.dataset.codebaseFile);
+      return;
+    }
     const codebaseApproval = e.target.closest("[data-codebase-approval]");
-    if (codebaseApproval) { resolveCodebaseApproval(codebaseApproval.dataset.codebaseApproval, codebaseApproval.dataset.approved === "true"); return; }
+    if (codebaseApproval) {
+      resolveCodebaseApproval(codebaseApproval.dataset.codebaseApproval, codebaseApproval.dataset.approved === "true");
+      return;
+    }
     const codebaseDetail = e.target.closest("[data-codebase-detail]");
-    if (codebaseDetail) { showCodebaseDetail(codebaseDetail.dataset.codebaseDetail); return; }
+    if (codebaseDetail) {
+      showCodebaseDetail(codebaseDetail.dataset.codebaseDetail);
+      return;
+    }
     const codebaseOutput = e.target.closest("[data-codebase-output]");
-    if (codebaseOutput) { showCodebaseOutput(codebaseOutput.dataset.codebaseOutput); return; }
+    if (codebaseOutput) {
+      showCodebaseOutput(codebaseOutput.dataset.codebaseOutput);
+      return;
+    }
     const sciencePrompt = e.target.closest("[data-science-prompt]");
     if (sciencePrompt) {
       const goal = qs("#scienceGoal");
@@ -8083,7 +8295,7 @@ function initNavigation() {
     }
     const scienceAction = e.target.closest("[data-science-action]");
     if (scienceAction) {
-      runScienceAction(scienceAction.dataset.scienceAction).catch(error => {
+      runScienceAction(scienceAction.dataset.scienceAction).catch((error) => {
         renderScienceSteps(["Prepare input", "Run local operation", "Verify output", "Render result"], 0, error.message);
         toast("Scientific operation failed", error.message);
       });
@@ -8101,8 +8313,8 @@ function initNavigation() {
     }
     const knowledgeTag = e.target.closest("[data-knowledge-tag]");
     if (knowledgeTag) {
-      const query = qs("#knowledgeWorkspaceQuery");
-      if (query) query.value = knowledgeTag.dataset.knowledgeTag || "";
+      const query2 = qs("#knowledgeWorkspaceQuery");
+      if (query2) query2.value = knowledgeTag.dataset.knowledgeTag || "";
       setView("knowledge");
       runKnowledgeWorkspace();
       return;
@@ -8114,13 +8326,27 @@ function initNavigation() {
       return;
     }
     const viewLink = e.target.closest("[data-view-link]");
-    if (viewLink) { setView(viewLink.dataset.viewLink); if (viewLink.dataset.scienceSection) setScienceSection(viewLink.dataset.scienceSection); return; }
+    if (viewLink) {
+      e.preventDefault();
+      setView(viewLink.dataset.viewLink);
+      if (viewLink.dataset.scienceSection) setScienceSection(viewLink.dataset.scienceSection);
+      return;
+    }
     const viewJump = e.target.closest("[data-view-jump]");
-    if (viewJump) { setView(viewJump.dataset.viewJump); return; }
+    if (viewJump) {
+      setView(viewJump.dataset.viewJump);
+      return;
+    }
     const command = e.target.closest("[data-command]");
-    if (command) { runCommand(command.dataset.command); return; }
+    if (command) {
+      runCommand(command.dataset.command);
+      return;
+    }
     const adapterButton = e.target.closest("[data-adapter-activate]");
-    if (adapterButton) { activateAdapter(adapterButton.dataset.adapterActivate); return; }
+    if (adapterButton) {
+      activateAdapter(adapterButton.dataset.adapterActivate);
+      return;
+    }
   });
   qs("#collapseSidebar")?.addEventListener("click", () => {
     const collapsed = document.body.classList.toggle("sidebar-collapsed");
@@ -8130,13 +8356,15 @@ function initNavigation() {
       button.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
       button.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
     }
-    try { localStorage.setItem("oa-sidebar-collapsed", String(collapsed)); } catch (_) {}
+    try {
+      localStorage.setItem("oa-sidebar-collapsed", String(collapsed));
+    } catch (_) {
+    }
   });
-  qsa(".nav-group-toggle").forEach(toggle => {
+  qsa(".nav-group-toggle").forEach((toggle) => {
     toggle.addEventListener("click", () => toggleNavGroup(toggle));
   });
 }
-
 async function runCommand(command) {
   if (command === "search-memory") {
     await searchChatMemory();
@@ -8148,7 +8376,6 @@ async function runCommand(command) {
   }
   toast("Command unavailable", command || "unknown");
 }
-
 function toggleNavGroup(toggle) {
   const collapsed = toggle.classList.toggle("collapsed");
   toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -8157,61 +8384,19 @@ function toggleNavGroup(toggle) {
     const isGroup = node.classList.contains("nav-group-toggle");
     const belongsToGroup = node.dataset.navParent === toggle.dataset.navGroup;
     if (isGroup && !belongsToGroup) break;
-    if (node.classList.contains("nav-link") || (isGroup && belongsToGroup)) {
+    if (node.classList.contains("nav-link") || isGroup && belongsToGroup) {
       node.classList.toggle("nav-group-hidden", collapsed);
     }
     node = node.nextElementSibling;
   }
 }
-
-// =============================================
-// Refresh helpers
-// =============================================
-
-async function refreshWorkspace() {
-  await Promise.allSettled([loadAudit(), loadConversations()]);
-}
-
-async function refreshAll() {
-  await Promise.allSettled([
-    loadDashboardTelemetry(), loadAgents(), loadProviders(), loadAudit(),
-    loadConversations(), loadWorkflows(), loadCommunicationHub(),
-    loadIntegrationStatus(), loadPersonalOsStatus(), loadCalendarEvents(), loadCalendarSyncStatus(), loadTwinSuggestions(), loadVaultEntries(),
-    loadScraperJobs(), loadFinetuneStatus(), loadModelJobs(), loadOperationalModules(),
-    loadRuntimeFabric(),
-  ]);
-}
-
-function exposeInlineHandlers() {
-  Object.assign(window, {
-    loadTwinProfile,
-    loadTwinPatterns,
-    loadTwinSuggestions,
-    loadTwinGoals,
-    predictIntent,
-    consolidateMemory,
-    createTwinGoal,
-    loadVaultEntries,
-    storeVaultSecret,
-    retrieveVaultSecret,
-    loadScraperJobs,
-    scrapeUrl,
-    scheduleUrl,
-    loadFinetuneStatus,
-    loadAdapters,
-    createFtDataset,
-    addFtExample,
-    startFtJob,
-    activateAdapter,
-  });
-}
-
-// =============================================
-// Bootstrap
-// =============================================
-
 async function init() {
-  try { document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("oa-sidebar-collapsed") === "true"); } catch (_) {}
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js?v=20260917-frontend-01").catch(() => {
+  });
+  try {
+    document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("oa-sidebar-collapsed") === "true");
+  } catch (_) {
+  }
   initTheme();
   initNavigation();
   initPalette();
@@ -8220,13 +8405,11 @@ async function init() {
   initResearch();
   initUpload();
   initKnowledgeWorkspace();
+  initPhdWorkspace();
   initSettings();
   initDeveloperConsole();
-  exposeInlineHandlers();
-
-  // Bind buttons
   qs("#projectInput")?.addEventListener("change", refreshProjectContext);
-  qs("#projectInput")?.addEventListener("keydown", event => {
+  qs("#projectInput")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       refreshProjectContext();
@@ -8235,24 +8418,28 @@ async function init() {
   qs("#sendChat")?.addEventListener("click", sendChat);
   qs("#newConversationButton")?.addEventListener("click", newConversation);
   qs("#chatAttachButton")?.addEventListener("click", () => qs("#chatAttachmentInput")?.click());
-  qs("#chatAttachmentInput")?.addEventListener("change", event => uploadChatAttachments(event.target.files));
+  qs("#chatAttachmentInput")?.addEventListener("change", (event) => uploadChatAttachments(event.target.files));
   qs("#newCodebaseProject")?.addEventListener("click", () => pickCodebaseFolder(true));
   qs("#refreshCodebase")?.addEventListener("click", loadCodebaseProjects);
   qs("#createCodebaseProject")?.addEventListener("click", createCodebaseProject);
   qs("#codebaseFolderPicker")?.addEventListener("click", () => pickCodebaseFolder(true));
-  qs("#codebaseProjectSelect")?.addEventListener("change", event => selectCodebaseProject(event.target.value));
+  qs("#codebaseProjectSelect")?.addEventListener("change", (event) => selectCodebaseProject(event.target.value));
   qs("#scanCodebase")?.addEventListener("click", scanCodebaseProject);
   qs("#newCodebaseFile")?.addEventListener("click", () => mutateCodebasePath("create_file"));
   qs("#newCodebaseFolder")?.addEventListener("click", () => mutateCodebasePath("create_directory"));
   qs("#renameCodebasePath")?.addEventListener("click", () => mutateCodebasePath("rename"));
   qs("#deleteCodebasePath")?.addEventListener("click", () => mutateCodebasePath("delete"));
   qs("#saveCodebaseFile")?.addEventListener("click", saveCodebaseFile);
-  qs("#codebaseEditor")?.addEventListener("input", () => { rememberCurrentCodebaseBuffer(); renderCodebaseTabs(); updateCodebaseLineNumbers(); });
+  qs("#codebaseEditor")?.addEventListener("input", () => {
+    rememberCurrentCodebaseBuffer();
+    renderCodebaseTabs();
+    updateCodebaseLineNumbers();
+  });
   qs("#codebaseEditor")?.addEventListener("scroll", updateCodebaseLineNumbers);
   qs("#codebaseEditor")?.addEventListener("click", updateCodebaseCursorStatus);
   qs("#codebaseEditor")?.addEventListener("keyup", updateCodebaseCursorStatus);
   qs("#codebaseEditor")?.addEventListener("select", updateCodebaseCursorStatus);
-  qs("#codebaseEditor")?.addEventListener("keydown", event => {
+  qs("#codebaseEditor")?.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       saveCodebaseFile();
@@ -8268,8 +8455,8 @@ async function init() {
   qs("#cancelCodebaseRun")?.addEventListener("click", cancelCodebaseRun);
   qs("#resumeCodebaseRun")?.addEventListener("click", resumeCodebaseRun);
   qs("#restoreCodebaseSnapshot")?.addEventListener("click", restoreCodebaseSnapshot);
-  qs("#codebaseRunSelect")?.addEventListener("change", event => event.target.value && loadCodebaseRun(event.target.value));
-  qs("#codebaseGoal")?.addEventListener("keydown", event => {
+  qs("#codebaseRunSelect")?.addEventListener("change", (event) => event.target.value && loadCodebaseRun(event.target.value));
+  qs("#codebaseGoal")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !state.codebaseRunBusy) {
       event.preventDefault();
       startCodebaseRun();
@@ -8277,37 +8464,44 @@ async function init() {
   });
   qs("#runCodebaseTests")?.addEventListener("click", runCodebaseTests);
   qs("#runCodebaseCommand")?.addEventListener("click", runCodebaseCommand);
-  qs("#codebaseCommand")?.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); runCodebaseCommand(); } });
+  qs("#codebaseCommand")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runCodebaseCommand();
+    }
+  });
   qs("#inspectCodebaseBrowser")?.addEventListener("click", inspectCodebaseBrowser);
   qs("#loadCodebaseStatus")?.addEventListener("click", loadCodebaseStatus);
   qs("#loadCodebaseDiff")?.addEventListener("click", loadCodebaseDiff);
-  qs("#codebaseCopilotFeed")?.addEventListener("click", event => {
+  qs("#codebaseCopilotFeed")?.addEventListener("click", (event) => {
     if (event.target.closest("[data-codeq-copy-prompt]")) copyCodeqPrompt();
     if (event.target.closest("[data-codeq-edit-prompt]")) editCodeqPrompt();
   });
   qs("#stopChat")?.addEventListener("click", () => stopActiveChat("Response stopped by user."));
-  qs("#testChatModel")?.addEventListener("click", testChatModel);
-  qs("#conversationSort")?.addEventListener("change", loadConversations);
   qs("#showArchivedConversations")?.addEventListener("click", () => {
     state.showArchivedConversations = !state.showArchivedConversations;
     closeConversationActionMenu();
     loadConversations();
   });
-  qs("#runConversationBulk")?.addEventListener("click", runConversationBulk);
-  qs("#compactConversation")?.addEventListener("click", compactCurrentConversation);
-  qs("#showConversationBranches")?.addEventListener("click", showCurrentConversationBranches);
-  qs("#chatInput")?.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
-  document.addEventListener("click", event => {
+  qs("#chatInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+  document.addEventListener("click", (event) => {
     const menu = qs("#conversationActionMenu");
     if (menu && !menu.hidden && !menu.contains(event.target) && !event.target.closest("[data-conversation-menu]")) closeConversationActionMenu();
   });
   window.addEventListener("resize", closeConversationActionMenu);
-  document.addEventListener("keydown", event => { if (event.key === "Escape") closeConversationActionMenu(); });
-  qs("#researchQuery")?.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startResearch(); } });
-  qs("#streamToggle")?.addEventListener("click", e => {
-    state.streamingEnabled = !state.streamingEnabled;
-    e.currentTarget.textContent = state.streamingEnabled ? "⚡ Stream" : "⚡ Batch";
-    e.currentTarget.classList.toggle("btn-primary", state.streamingEnabled);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeConversationActionMenu();
+  });
+  qs("#researchQuery")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      startResearch();
+    }
   });
   qs("#refreshAll")?.addEventListener("click", refreshAll);
   qs("#runAgent")?.addEventListener("click", () => runAgent());
@@ -8316,8 +8510,11 @@ async function init() {
   qs("#newAgentRole")?.addEventListener("click", () => openAgentRoleDialog());
   qs("#editAgentRole")?.addEventListener("click", () => {
     const selected = qs("#agentSelect")?.value || "";
-    const role = state.customAgents.find(item => item.id === selected);
-    if (!role) { toast("Built-in roles are read-only", "Create a custom role to define your own instructions."); return; }
+    const role = state.customAgents.find((item) => item.id === selected);
+    if (!role) {
+      toast("Built-in roles are read-only", "Create a custom role to define your own instructions.");
+      return;
+    }
     openAgentRoleDialog(role);
   });
   qs("#closeAgentRole")?.addEventListener("click", () => qs("#agentRoleDialog")?.close());
@@ -8327,28 +8524,35 @@ async function init() {
   qs("#createWorkspaceItem")?.addEventListener("click", createWorkspaceItem);
   qs("#workspaceSearch")?.addEventListener("input", loadWorkspaceItems);
   qs("#loadWorkspaceCanvas")?.addEventListener("click", async () => {
-    try { const d = await api(`/api/workspace/canvas?project=${encodeURIComponent(getProject())}`); setOutput("#workspaceOutput", d); } catch(e) {}
+    try {
+      const d = await api(`/api/workspace/canvas?project=${encodeURIComponent(getProject())}`);
+      setOutput("#workspaceOutput", d);
+    } catch (e) {
+    }
   });
   qs("#ingestKnowledge")?.addEventListener("click", ingestKnowledge);
   qs("#addSemanticMemory")?.addEventListener("click", async () => {
     const title = qs("#knowledgeTitle")?.value.trim();
     const content = qs("#knowledgeContent")?.value.trim();
-    if (!title || !content) { toast("Title and content required"); return; }
+    if (!title || !content) {
+      toast("Title and content required");
+      return;
+    }
     try {
       const d = await api("/api/semantic/memories", { method: "POST", body: JSON.stringify({ title, content, project: getProject(), memory_type: "semantic", tags: [] }) });
       renderKnowledgeIngest({ title: d.memory?.title || title, chunk_count: 1, source: "semantic-memory", tags: d.memory?.tags || [] }, "Semantic memory saved");
       toast("Semantic memory saved");
-    } catch(e) { toast("Memory error", e.message); }
-  });
-  qs("#searchKnowledge")?.addEventListener("click", searchKnowledge);
-  qs("#synthesizeKnowledge")?.addEventListener("click", synthesizeKnowledge);
-  qs("#runAdvancedRag")?.addEventListener("click", runAdvancedRag);
-  qs("#showKnowledgeGraph")?.addEventListener("click", async () => {
-    try { const d = await api(`/api/knowledge/graph?project=${encodeURIComponent(getProject())}`); renderKnowledgeGraph(d); } catch(e) {}
+    } catch (e) {
+      toast("Memory error", e.message);
+    }
   });
   qs("#createWorkflow")?.addEventListener("click", renderWorkflowAuthoring);
   qs("#saveWorkflow")?.addEventListener("click", createWorkflowFromEditor);
-  qs("#addWorkflowStep")?.addEventListener("click", () => { syncWorkflowDraftFields(); state.automation.draftSteps.push(newWorkflowStep()); renderWorkflowSteps(); });
+  qs("#addWorkflowStep")?.addEventListener("click", () => {
+    syncWorkflowDraftFields();
+    state.automation.draftSteps.push(newWorkflowStep());
+    renderWorkflowSteps();
+  });
   qs("#workflowTrigger")?.addEventListener("change", updateWorkflowTriggerEditor);
   qs("#automationSearch")?.addEventListener("input", renderWorkflowList);
   qs("#runSelectedWorkflow")?.addEventListener("click", () => {
@@ -8362,7 +8566,9 @@ async function init() {
       const d = await api("/api/workflows/run-due", { method: "POST", body: JSON.stringify({ project: getProject(), allow_network: Boolean(qs("#workflowNetworkApproval")?.checked) }) });
       qs("#workflowOutput").textContent = d.runs?.length ? `${d.runs.length} scheduled run(s) completed` : "No schedules were due";
       await loadWorkflowRuns();
-    } catch(e) { toast("Run due error", e.message); }
+    } catch (e) {
+      toast("Run due error", e.message);
+    }
   });
   qs("#loadRuntimeTools")?.addEventListener("click", loadRuntimeTools);
   qs("#runRuntimeBrowserTest")?.addEventListener("click", runRuntimeBrowserTest);
@@ -8371,12 +8577,21 @@ async function init() {
   qs("#dailyBrief")?.addEventListener("click", getDailyBrief);
   qs("#meetingSummary")?.addEventListener("click", async () => {
     const body = qs("#assistantBody")?.value.trim() || "Meeting";
-    try { const d = await api("/api/assistant/meeting/summary", { method: "POST", body: JSON.stringify({ transcript: body, project: getProject() }) }); setOutput("#assistantOutput", d); } catch(e) { toast("Meeting summary error", e.message); }
+    try {
+      const d = await api("/api/assistant/meeting/summary", { method: "POST", body: JSON.stringify({ transcript: body, project: getProject() }) });
+      setOutput("#assistantOutput", d);
+    } catch (e) {
+      toast("Meeting summary error", e.message);
+    }
   });
   qs("#importMessage")?.addEventListener("click", importMessage);
   qs("#loadInbox")?.addEventListener("click", loadCommunicationFeed);
   qs("#loadCalendar")?.addEventListener("click", async () => {
-    try { const d = await api(`/api/communication/calendar?project=${encodeURIComponent(getProject())}&limit=10`); setOutput("#commOutput", d); } catch(e) {}
+    try {
+      const d = await api(`/api/communication/calendar?project=${encodeURIComponent(getProject())}&limit=10`);
+      setOutput("#commOutput", d);
+    } catch (e) {
+    }
   });
   qs("#createOauthAccount")?.addEventListener("click", createOauthAccount);
   qs("#refreshOauthAccounts")?.addEventListener("click", loadCommunicationOAuth);
@@ -8402,7 +8617,11 @@ async function init() {
   qs("#identityRefresh")?.addEventListener("click", loadIdentityAdministration);
   qs("#identitySaveFederation")?.addEventListener("click", saveIdentityFederationPolicy);
   qs("#loadAuditChain")?.addEventListener("click", async () => {
-    try { const d = await api(`/api/audit?project=${encodeURIComponent(getProject())}&limit=30`); setOutput("#privacyOutput", d); } catch(e) {}
+    try {
+      const d = await api(`/api/audit?project=${encodeURIComponent(getProject())}&limit=30`);
+      setOutput("#privacyOutput", d);
+    } catch (e) {
+    }
   });
   qs("#loadDevSchema")?.addEventListener("click", loadDeveloperFeed);
   qs("#createApiKey")?.addEventListener("click", createApiKey);
@@ -8448,11 +8667,11 @@ async function init() {
   qs("#loadAdaptiveResident")?.addEventListener("click", loadAdaptiveResident);
   qs("#unloadAdaptiveResident")?.addEventListener("click", unloadAdaptiveResident);
   qs("#stopAdaptiveRuntime")?.addEventListener("click", stopAdaptiveRuntime);
-  qs("#engineRoleSelect")?.addEventListener("change", e => selectEngineRole(e.target.value));
-  qs("#engineRoleModelSelect")?.addEventListener("change", e => {
+  qs("#engineRoleSelect")?.addEventListener("change", (e) => selectEngineRole(e.target.value));
+  qs("#engineRoleModelSelect")?.addEventListener("change", (e) => {
     if (qs("#engineRoleModelCustom")) qs("#engineRoleModelCustom").value = e.target.value;
   });
-  qs("#engineRoleSummary")?.addEventListener("click", e => {
+  qs("#engineRoleSummary")?.addEventListener("click", (e) => {
     const target = e.target.closest("[data-engine-role]");
     if (target) selectEngineRole(target.dataset.engineRole);
   });
@@ -8462,7 +8681,6 @@ async function init() {
   qs("#runEngineCollaboration")?.addEventListener("click", runEngineCollaboration);
   qs("#refreshEngineRuns")?.addEventListener("click", () => loadEngineWorkspace());
   qs("#runScienceWorkflow")?.addEventListener("click", runScienceWorkflow);
-  qs("#refreshScienceStatus")?.addEventListener("click", loadScienceStatus);
   qs("#registerUltraModel")?.addEventListener("click", registerUltraModel);
   qs("#planUltraModel")?.addEventListener("click", planUltraModel);
   qs("#calibrateUltraModel")?.addEventListener("click", calibrateUltraModel);
@@ -8470,7 +8688,7 @@ async function init() {
   qs("#stopUltraModel")?.addEventListener("click", stopUltraModel);
   qs("#ultraManifestSelect")?.addEventListener("change", (event) => {
     state.ultraModel.manifestId = event.target.value || "";
-    const manifest = (state.ultraModel.manifests || []).find(item => item.id === state.ultraModel.manifestId);
+    const manifest = (state.ultraModel.manifests || []).find((item) => item.id === state.ultraModel.manifestId);
     if (manifest) {
       qs("#ultraModelName").value = manifest.name;
       qs("#ultraModelArchitecture").value = manifest.architecture;
@@ -8485,7 +8703,7 @@ async function init() {
   });
   qs("#refreshMcpRuntime")?.addEventListener("click", loadMcpRuntime);
   qs("#registerMcpServer")?.addEventListener("click", registerMcpServer);
-  qs("#mcpRuntimeFeed")?.addEventListener("click", event => {
+  qs("#mcpRuntimeFeed")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-mcp-invoke]");
     if (button) invokeMcpTool(button.dataset.mcpInvoke);
   });
@@ -8506,7 +8724,6 @@ async function init() {
   qs("#loadProviderCertification")?.addEventListener("click", () => loadProviderCertification(true));
   qs("#recordOauthCallbackDemo")?.addEventListener("click", recordOauthCallbackDemo);
   qs("#importDeveloperDocument")?.addEventListener("click", importDeveloperDocument);
-  qs("#providerSelect")?.addEventListener("change", updateProviderWarning);
   qs("#refreshCalendarEvents")?.addEventListener("click", loadCalendarEvents);
   qs("#exportCalendarIcal")?.addEventListener("click", exportIcal);
   qs("#createCalendarEventBtn")?.addEventListener("click", createCalendarEvent);
@@ -8516,70 +8733,62 @@ async function init() {
   qs("#runCalendarPull")?.addEventListener("click", () => runCalendarSync("pull"));
   qs("#runCalendarPush")?.addEventListener("click", () => runCalendarSync("push"));
   qs("#runCalendarBoth")?.addEventListener("click", () => runCalendarSync("bidirectional"));
-
-  // Theme buttons in topbar
-  qsa("[data-theme-select]").forEach(btn =>
-    btn.addEventListener("click", () => applyTheme(btn.dataset.themeSelect))
+  qsa("[data-theme-select]").forEach(
+    (btn) => btn.addEventListener("click", () => applyTheme(btn.dataset.themeSelect))
   );
-  qsa("[data-dashboard-window]").forEach(button => button.addEventListener("click", () => {
+  qsa("[data-dashboard-window]").forEach((button) => button.addEventListener("click", () => {
     state.dashboardUi.resourceWindow = Number(button.dataset.dashboardWindow) || 36;
-    qsa("[data-dashboard-window]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    qsa("[data-dashboard-window]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     renderDashboardResourceChart();
   }));
-  qsa("[data-provider-filter]").forEach(button => button.addEventListener("click", () => {
+  qsa("[data-provider-filter]").forEach((button) => button.addEventListener("click", () => {
     state.dashboardUi.providerFilter = button.dataset.providerFilter || "all";
-    qsa("[data-provider-filter]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    qsa("[data-provider-filter]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     renderDashboardSystem();
   }));
-  qsa("[data-incident-filter]").forEach(button => button.addEventListener("click", () => {
+  qsa("[data-incident-filter]").forEach((button) => button.addEventListener("click", () => {
     state.dashboardUi.incidentFilter = button.dataset.incidentFilter || "all";
-    qsa("[data-incident-filter]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    qsa("[data-incident-filter]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     renderDashboardAudit(state.auditEvents);
   }));
-  qs("#dashboardPauseTelemetry")?.addEventListener("click", event => {
+  qs("#dashboardPauseTelemetry")?.addEventListener("click", (event) => {
     state.dashboardUi.paused = !state.dashboardUi.paused;
     event.currentTarget.setAttribute("aria-pressed", String(state.dashboardUi.paused));
     event.currentTarget.textContent = state.dashboardUi.paused ? "Resume live" : "Pause live";
     event.currentTarget.setAttribute("aria-label", state.dashboardUi.paused ? "Resume dashboard live updates" : "Pause dashboard live updates");
   });
-
-  // Global search redirect to palette
-  qs("#globalSearch")?.addEventListener("keydown", e => {
+  qs("#globalSearch")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const q = e.target.value.trim();
-      if (q) { closePalette(); /* future: run semantic search */ }
+      if (q) {
+        closePalette();
+      }
     }
   });
-
-  // Initial load
-  await refreshAll();
+  setView(viewRouter.readLocation("dashboard"), { replace: true });
+  window.addEventListener("popstate", (event) => {
+    const requested = event.state?.view || new URL(window.location.href).searchParams.get("view") || "dashboard";
+    setView(requested, { fromHistory: true });
+  });
   window.setInterval(() => {
     if (!document.hidden && state.activeView === "dashboard" && !state.dashboardUi.paused) {
-      Promise.allSettled([loadDashboardTelemetry(), loadAudit()]).catch(() => {});
+      Promise.allSettled([loadDashboardTelemetry(), loadAudit()]).catch(() => {
+      });
     }
-  }, 5000);
+  }, 5e3);
   window.setInterval(() => {
     if (!document.hidden && state.activeView !== "dashboard") {
-      Promise.allSettled([loadDashboardTelemetry(), loadAudit(), loadProviders()]).catch(() => {});
+      Promise.allSettled([loadDashboardTelemetry(), loadAudit(), loadProviders()]).catch(() => {
+      });
     }
-  }, 30000);
-
-  // Restore initial view from URL params if any
-  const urlParams = new URLSearchParams(window.location.search);
-  const initView = urlParams.get("view");
-  if (initView) setView(initView);
-
-  // PWA install prompt (deferred — available after user gesture)
+  }, 3e4);
   let deferredInstall = null;
-  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); deferredInstall = e; });
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredInstall = e;
+  });
 }
-
 document.addEventListener("DOMContentLoaded", init);
-
-// =============================================
-// Scientific AI
-// =============================================
-
 async function loadScienceStatus() {
   try {
     const payload = await api("/api/science/status");
@@ -8589,29 +8798,16 @@ async function loadScienceStatus() {
       badge.textContent = payload.status === "ready" ? "Ready" : "Needs attention";
       badge.className = `badge ${payload.status === "ready" ? "badge-success" : "badge-error"}`;
     }
-    const grid = qs("#scienceWorkflowGrid");
-    if (grid) {
-      const workflows = payload.workflows || [];
-      grid.innerHTML = workflows.map(item => `<article class="metric-card"><span>${escapeHtml(item.label)}</span><strong>Local</strong></article>`).join("");
-    }
-    const capabilities = [
-      ["agents", "Scientific Agents", "Planning, tool calling, execution, analysis, and repair-ready workflows."],
-      ["computing", "Scientific Computing", "Solvers, surrogates, operator-learning interfaces, and reproducible runs."],
-      ["engineering", "Engineering Optimisation", "Design variables, constraints, objective scoring, and ranked candidates."],
-      ["multimodal", "Multimodal Science", "Text, sensor tables, images, simulation output, and evidence fusion."],
-      ["verification", "Scientific Verification", "Numeric, residual, unit, equation, and constraint checks."],
-      ["materials", "Materials Discovery", "Property prediction, candidate ranking, and next-experiment selection."],
-    ];
-    const capabilityGrid = qs("#scienceCapabilityGrid");
-    if (capabilityGrid) capabilityGrid.innerHTML = capabilities.map(([id, label, text]) => `<button class="science-capability" data-science-capability="${id}" type="button"><strong>${label}</strong><span>${text}</span></button>`).join("");
     setScienceSection(state.science.section || "agents");
   } catch (error) {
     const badge = qs("#scienceBadge");
-    if (badge) { badge.textContent = "Unavailable"; badge.className = "badge badge-error"; }
+    if (badge) {
+      badge.textContent = "Unavailable";
+      badge.className = "badge badge-error";
+    }
     console.warn("scienceStatus", error);
   }
 }
-
 async function runScienceWorkflow() {
   const goal = qs("#scienceGoal")?.value.trim() || "Plan a reproducible scientific investigation";
   const output = qs("#scienceResult");
@@ -8624,12 +8820,16 @@ async function runScienceWorkflow() {
     visibleStage = Math.min(3, visibleStage + 1);
     renderScienceSteps(stages, visibleStage);
   }, 900);
-  if (button) { button.disabled = true; button.textContent = "…"; button.setAttribute("aria-label", "Workflow running"); }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "\u2026";
+    button.setAttribute("aria-label", "Workflow running");
+  }
   if (output) output.textContent = "";
   try {
     const payload = await api("/api/science/run", {
       method: "POST",
-      body: JSON.stringify({ project: getProject(), goal }),
+      body: JSON.stringify({ project: getProject(), goal })
     });
     const run = payload.run || {};
     renderScienceSteps(stages, 4);
@@ -8642,10 +8842,13 @@ async function runScienceWorkflow() {
   } finally {
     window.clearInterval(progressTimer);
     state.science.busy = false;
-    if (button) { button.disabled = false; button.textContent = "↑"; button.setAttribute("aria-label", "Run workflow"); }
+    if (button) {
+      button.disabled = false;
+      button.textContent = "\u2191";
+      button.setAttribute("aria-label", "Run workflow");
+    }
   }
 }
-
 function renderScienceSteps(steps, completedCount, failure = "") {
   const container = qs("#scienceRunSteps");
   if (!container) return;
@@ -8653,26 +8856,28 @@ function renderScienceSteps(steps, completedCount, failure = "") {
   container.innerHTML = steps.map((step, index) => {
     let status = index < completedCount ? "complete" : index === runningIndex ? "running" : "";
     if (failure && index === Math.max(0, completedCount)) status = "failed";
-    return `<div class="science-step ${status}">${escapeHtml(step)}${failure && index === Math.max(0, completedCount) ? `: ${escapeHtml(failure)}` : ""}</div>`;
+    return `<div class="science-step ${status}">${escapeHtml2(step)}${failure && index === Math.max(0, completedCount) ? `: ${escapeHtml2(failure)}` : ""}</div>`;
   }).join("");
 }
-
 async function runScienceAction(action) {
   const steps = ["Prepare local input", "Run scientific operation", "Verify output", "Render evidence"];
   renderScienceSteps(steps, 1);
   let payload;
   if (action === "save-memory") {
     payload = await api("/api/science/memory", { method: "POST", body: JSON.stringify({
-      project: getProject(), category: qs("#scienceMemoryCategory")?.value,
-      name: qs("#scienceMemoryName")?.value, value: qs("#scienceMemoryValue")?.value,
-      unit: qs("#scienceMemoryUnit")?.value,
+      project: getProject(),
+      category: qs("#scienceMemoryCategory")?.value,
+      name: qs("#scienceMemoryName")?.value,
+      value: qs("#scienceMemoryValue")?.value,
+      unit: qs("#scienceMemoryUnit")?.value
     }) });
   } else if (action === "load-memory") {
     payload = await api(`/api/science/memory?project=${encodeURIComponent(getProject())}`);
   } else if (action === "simulate") {
     payload = await api("/api/science/simulate", { method: "POST", body: JSON.stringify({
-      project: getProject(), simulator: qs("#scienceSimulator")?.value,
-      inputs: { temperature: Number(qs("#scienceSimulationTemperature")?.value || 350), duration: Number(qs("#scienceSimulationDuration")?.value || 10), conductivity: Number(qs("#scienceSimulationConductivity")?.value || 1.5) },
+      project: getProject(),
+      simulator: qs("#scienceSimulator")?.value,
+      inputs: { temperature: Number(qs("#scienceSimulationTemperature")?.value || 350), duration: Number(qs("#scienceSimulationDuration")?.value || 10), conductivity: Number(qs("#scienceSimulationConductivity")?.value || 1.5) }
     }) });
   } else if (action === "execute-code") {
     payload = await api("/api/science/execute", { method: "POST", body: JSON.stringify({ project: getProject(), approved: true, retries: 2, code: qs("#sciencePythonCode")?.value || "" }) });
@@ -8683,21 +8888,20 @@ async function runScienceAction(action) {
     const records = await readMaterialsDataset();
     const target = qs("#scienceMaterialsTarget")?.value.trim() || "strength";
     const endpoint = action === "save-materials" ? "/api/science/materials/datasets" : "/api/science/materials/analyse";
-    const body = action === "save-materials"
-      ? { project: getProject(), name: qs("#scienceMaterialsName")?.value, target, records, source: "local-upload" }
-      : { project: getProject(), target, records, maximize: qs("#scienceMaterialsObjective")?.value !== "minimize" };
+    const body = action === "save-materials" ? { project: getProject(), name: qs("#scienceMaterialsName")?.value, target, records, source: "local-upload" } : { project: getProject(), target, records, maximize: qs("#scienceMaterialsObjective")?.value !== "minimize" };
     payload = await api(endpoint, { method: "POST", body: JSON.stringify(body) });
   } else if (action === "import-public-materials" || action === "analyse-public-materials") {
     const datasetId = qs("#scienceMaterialsCatalog")?.value || "";
     if (!datasetId) throw new Error("Choose a public materials dataset first.");
     if (!qs("#scienceMaterialsNetworkApproved")?.checked) throw new Error("Approve the one-time HTTPS dataset download first.");
     if (!qs("#scienceMaterialsLicenseAccepted")?.checked) throw new Error("Accept the selected dataset license first.");
-    const endpoint = action === "import-public-materials"
-      ? "/api/science/materials/catalog/import"
-      : "/api/science/materials/catalog/analyse";
+    const endpoint = action === "import-public-materials" ? "/api/science/materials/catalog/import" : "/api/science/materials/catalog/analyse";
     payload = await api(endpoint, { method: "POST", body: JSON.stringify({
-      project: getProject(), dataset_id: datasetId, allow_external: true,
-      license_accepted: true, seed: 31,
+      project: getProject(),
+      dataset_id: datasetId,
+      allow_external: true,
+      license_accepted: true,
+      seed: 31
     }) });
   } else if (action === "analyse-evidence") {
     payload = await analyseScienceEvidence();
@@ -8707,44 +8911,37 @@ async function runScienceAction(action) {
   renderScienceSteps(steps, 4);
   renderSciencePayload(payload);
 }
-
 async function loadPublicMaterialsCatalog() {
   const select = qs("#scienceMaterialsCatalog");
   if (!select) return;
   const payload = await api("/api/science/materials/catalog");
   const datasets = Array.isArray(payload.datasets) ? payload.datasets : [];
-  select.innerHTML = datasets.length
-    ? datasets.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)} · ${escapeHtml(item.rows)} rows</option>`).join("")
-    : `<option value="">No catalog datasets available</option>`;
+  select.innerHTML = datasets.length ? datasets.map((item) => `<option value="${escapeHtml2(item.id)}">${escapeHtml2(item.title)} \xB7 ${escapeHtml2(item.rows)} rows</option>`).join("") : `<option value="">No catalog datasets available</option>`;
   const renderSelection = () => {
-    const selected = datasets.find(item => item.id === select.value);
+    const selected = datasets.find((item) => item.id === select.value);
     const status = qs("#scienceMaterialsCatalogStatus");
     if (!status) return;
-    status.textContent = selected
-      ? `${selected.rows} rows · target ${selected.target} · ${selected.license_id} · records download only after approval; checksum ${String(selected.sha256 || "").slice(0, 12)}...`
-      : "No catalog dataset selected.";
+    status.textContent = selected ? `${selected.rows} rows \xB7 target ${selected.target} \xB7 ${selected.license_id} \xB7 records download only after approval; checksum ${String(selected.sha256 || "").slice(0, 12)}...` : "No catalog dataset selected.";
   };
   select.addEventListener("change", renderSelection);
   renderSelection();
 }
-
 async function readMaterialsDataset() {
   const file = qs("#scienceMaterialsFile")?.files?.[0];
   if (!file) throw new Error("Choose a local CSV or JSON materials dataset first.");
-  const text = await file.text();
+  const text2 = await file.text();
   if (file.name.toLowerCase().endsWith(".json")) {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(text2);
     if (!Array.isArray(parsed)) throw new Error("The materials JSON file must contain an array of records.");
     return parsed;
   }
-  return parseScienceCsv(text);
+  return parseScienceCsv(text2);
 }
-
-function parseScienceCsv(text) {
-  const lines = text.split(/\r?\n/).filter(line => line.trim());
+function parseScienceCsv(text2) {
+  const lines = text2.split(/\r?\n/).filter((line) => line.trim());
   if (lines.length < 2) throw new Error("The CSV needs a header and at least one data row.");
-  const headers = lines[0].split(",").map(value => value.trim());
-  return lines.slice(1).map(line => {
+  const headers = lines[0].split(",").map((value) => value.trim());
+  return lines.slice(1).map((line) => {
     const values = line.split(",");
     return Object.fromEntries(headers.map((header, index) => {
       const raw = (values[index] || "").trim();
@@ -8753,7 +8950,6 @@ function parseScienceCsv(text) {
     }));
   });
 }
-
 async function analyseScienceEvidence() {
   const files = Array.from(qs("#scienceEvidenceFiles")?.files || []);
   if (!files.length) throw new Error("Choose at least one local evidence file.");
@@ -8774,7 +8970,6 @@ async function analyseScienceEvidence() {
   }
   return api("/api/science/multimodal", { method: "POST", body: JSON.stringify(body) });
 }
-
 function fileBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -8783,7 +8978,6 @@ function fileBase64(file) {
     reader.readAsDataURL(file);
   });
 }
-
 function sampleScienceImage(file) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -8792,7 +8986,8 @@ function sampleScienceImage(file) {
       const width = Math.min(64, image.naturalWidth || 1);
       const height = Math.min(64, image.naturalHeight || 1);
       const canvas = document.createElement("canvas");
-      canvas.width = width; canvas.height = height;
+      canvas.width = width;
+      canvas.height = height;
       const context = canvas.getContext("2d", { willReadFrequently: true });
       context.drawImage(image, 0, 0, width, height);
       const rgba = context.getImageData(0, 0, width, height).data;
@@ -8801,11 +8996,13 @@ function sampleScienceImage(file) {
       URL.revokeObjectURL(url);
       resolve({ name: file.name, width, height, values });
     };
-    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not decode ${file.name}.`)); };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Could not decode ${file.name}.`));
+    };
     image.src = url;
   });
 }
-
 function renderSciencePayload(payload) {
   const summary = qs("#scienceResultSummary");
   const checks = qs("#scienceVerificationList");
@@ -8820,7 +9017,6 @@ function renderSciencePayload(payload) {
   if (chart) chart.classList.remove("visible");
   if (planList) planList.innerHTML = "";
   if (terminal) terminal.innerHTML = "";
-
   const analysis = payload.analysis || payload.run?.metadata?.science?.result || payload.simulation || payload.execution || payload.verification || payload.context || payload;
   const verification = payload.analysis?.verification || payload.verification?.scientific || payload.run?.metadata?.science?.verification;
   const plan = payload.run?.metadata?.science?.plan;
@@ -8828,19 +9024,18 @@ function renderSciencePayload(payload) {
   const findings = verification?.findings || [];
   const summaryValues = [
     ["Status", analysis.status || (verification?.passed ? "passed" : "complete")],
-    ["Verification", verification?.score != null ? `${Math.round(Number(verification.score) * 100)}%` : findings.length ? `${findings.filter(item => item.passed).length}/${findings.length}` : "not run"],
-    ["Execution", execution?.elapsed_ms != null ? `${Number(execution.elapsed_ms).toFixed(1)} ms` : "—"],
+    ["Verification", verification?.score != null ? `${Math.round(Number(verification.score) * 100)}%` : findings.length ? `${findings.filter((item) => item.passed).length}/${findings.length}` : "not run"],
+    ["Execution", execution?.elapsed_ms != null ? `${Number(execution.elapsed_ms).toFixed(1)} ms` : "\u2014"]
   ];
-  if (summary) summary.innerHTML = summaryValues.map(([label, value]) => `<div class="science-summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("");
-  if (checks) checks.innerHTML = findings.map(item => `<div class="science-check ${item.passed ? "pass" : "fail"}"><div><strong>${escapeHtml(item.check || "check")}</strong><div class="muted">${escapeHtml(item.message || "")}</div></div></div>`).join("");
+  if (summary) summary.innerHTML = summaryValues.map(([label2, value]) => `<div class="science-summary-item"><span>${escapeHtml2(label2)}</span><strong>${escapeHtml2(String(value))}</strong></div>`).join("");
+  if (checks) checks.innerHTML = findings.map((item) => `<div class="science-check ${item.passed ? "pass" : "fail"}"><div><strong>${escapeHtml2(item.check || "check")}</strong><div class="muted">${escapeHtml2(item.message || "")}</div></div></div>`).join("");
   if (planList && plan?.steps?.length) {
-    planList.innerHTML = `<div class="science-record-heading">Problem plan</div>${plan.steps.map((step, index) => `<div class="science-plan-row"><span>${index + 1}</span><div>${escapeHtml(step)}</div></div>`).join("")}`;
+    planList.innerHTML = `<div class="science-record-heading">Problem plan</div>${plan.steps.map((step, index) => `<div class="science-plan-row"><span>${index + 1}</span><div>${escapeHtml2(step)}</div></div>`).join("")}`;
   }
   if (terminal && execution) {
     const lifecycle = execution.lifecycle || [];
-    terminal.innerHTML = `<div class="science-record-heading">Execution terminal</div>${lifecycle.map(item => `<div class="science-terminal-row ${item.status === "complete" ? "complete" : item.status === "captured" ? "failed" : ""}"><span>${escapeHtml(item.stage || "event")}</span><div>${escapeHtml(item.message || "")}</div>${item.attempt ? `<small>Attempt ${Number(item.attempt)}</small>` : ""}</div>`).join("")}<div class="science-profile-grid"><div><span>Attempts</span><strong>${Number(execution.attempts || 0)}</strong></div><div><span>Repairs</span><strong>${Number(execution.repairs || 0)}</strong></div><div><span>Execution</span><strong>${Number(execution.elapsed_ms || 0).toFixed(1)} ms</strong></div><div><span>Peak memory</span><strong>${formatBytes(Number(execution.peak_memory_bytes || 0))}</strong></div></div>`;
+    terminal.innerHTML = `<div class="science-record-heading">Execution terminal</div>${lifecycle.map((item) => `<div class="science-terminal-row ${item.status === "complete" ? "complete" : item.status === "captured" ? "failed" : ""}"><span>${escapeHtml2(item.stage || "event")}</span><div>${escapeHtml2(item.message || "")}</div>${item.attempt ? `<small>Attempt ${Number(item.attempt)}</small>` : ""}</div>`).join("")}<div class="science-profile-grid"><div><span>Attempts</span><strong>${Number(execution.attempts || 0)}</strong></div><div><span>Repairs</span><strong>${Number(execution.repairs || 0)}</strong></div><div><span>Execution</span><strong>${Number(execution.elapsed_ms || 0).toFixed(1)} ms</strong></div><div><span>Peak memory</span><strong>${formatBytes(Number(execution.peak_memory_bytes || 0))}</strong></div></div>`;
   }
-
   const ranked = analysis.ranked_candidates || [];
   if (table && ranked.length) {
     table.innerHTML = `<table class="data-table"><thead><tr><th>Candidate</th><th>Prediction</th><th>Uncertainty</th></tr></thead><tbody>${ranked.map((item, index) => `<tr><td>${index + 1}</td><td>${Number(item.prediction).toFixed(4)}</td><td>${Number(item.uncertainty).toFixed(4)}</td></tr>`).join("")}</tbody></table>`;
@@ -8848,19 +9043,18 @@ function renderSciencePayload(payload) {
   if (analysis.chart?.length) drawScienceChart(analysis.chart);
   if (output) output.textContent = payload.run?.response || formatStructuredOutput(analysis);
 }
-
 function drawScienceChart(points) {
   const canvas = qs("#scienceResultChart");
   const context = canvas?.getContext("2d");
   if (!canvas || !context || !points.length) return;
   canvas.classList.add("visible");
   context.clearRect(0, 0, canvas.width, canvas.height);
-  const values = points.map(point => Number(point.prediction) || 0);
+  const values = points.map((point) => Number(point.prediction) || 0);
   const maximum = Math.max(...values, 1);
   const barWidth = Math.max(12, (canvas.width - 60) / points.length - 12);
   context.font = "12px system-ui";
   points.forEach((point, index) => {
-    const height = (values[index] / maximum) * 180;
+    const height = values[index] / maximum * 180;
     const x = 40 + index * (barWidth + 12);
     const y = 220 - height;
     context.fillStyle = "#19c37d";
@@ -8869,106 +9063,105 @@ function drawScienceChart(points) {
     context.fillText(String(index + 1), x + barWidth / 2 - 3, 242);
   });
 }
-
-// =============================================
-// Calendar System
-// =============================================
-
 async function loadCalendarEvents() {
   try {
     const payload = await api(`/api/calendar/events?project=${encodeURIComponent(getProject())}&limit=20`);
     const events = payload.events || [];
     const el = qs("#calendarFeed");
-    if (el) el.innerHTML = events.length
-      ? events.map(e => listItem(
-          escapeHtml(e.title),
-          `${e.starts_at?.slice(0,16).replace("T"," ")} → ${e.ends_at?.slice(0,16).replace("T"," ")} ${e.location ? "@ " + escapeHtml(e.location) : ""}`,
-          `<span class="badge">${escapeHtml(e.status)}</span>${e.rrule ? '<span class="badge" style="margin-left:4px">↻</span>' : ""}`
-        )).join("")
-      : emptyState("No calendar events");
-  } catch(e) { console.warn("calendarFeed", e); }
+    if (el) el.innerHTML = events.length ? events.map((e) => listItem(
+      escapeHtml2(e.title),
+      `${e.starts_at?.slice(0, 16).replace("T", " ")} \u2192 ${e.ends_at?.slice(0, 16).replace("T", " ")} ${e.location ? "@ " + escapeHtml2(e.location) : ""}`,
+      `<span class="badge">${escapeHtml2(e.status)}</span>${e.rrule ? '<span class="badge badge-spaced">\u21BB</span>' : ""}`
+    )).join("") : emptyState("No calendar events");
+  } catch (e) {
+    console.warn("calendarFeed", e);
+  }
 }
-
 async function createCalendarEvent() {
   const title = qs("#calEventTitle")?.value.trim();
   const startsAt = qs("#calEventStart")?.value;
   const endsAt = qs("#calEventEnd")?.value;
-  if (!title || !startsAt) { toast("Title and start time required"); return; }
+  if (!title || !startsAt) {
+    toast("Title and start time required");
+    return;
+  }
   try {
     const payload = await api("/api/calendar/events", {
       method: "POST",
       body: JSON.stringify({
-        title, starts_at: new Date(startsAt).toISOString(),
+        title,
+        starts_at: new Date(startsAt).toISOString(),
         ends_at: endsAt ? new Date(endsAt).toISOString() : new Date(startsAt).toISOString(),
         location: qs("#calEventLocation")?.value.trim() || "",
         description: qs("#calEventDesc")?.value.trim() || "",
         rrule: qs("#calEventRrule")?.value.trim() || "",
-        project: getProject(),
-      }),
+        project: getProject()
+      })
     });
     setOutput("#calendarOutput", payload);
     toast("Event created", title);
     loadCalendarEvents();
-  } catch(e) { toast("Calendar error", e.message); }
+  } catch (e) {
+    toast("Calendar error", e.message);
+  }
 }
-
 async function loadFreeSlots() {
-  const now = new Date();
-  const end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const now = /* @__PURE__ */ new Date();
+  const end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1e3);
   try {
     const payload = await api(`/api/calendar/free-slots?project=${encodeURIComponent(getProject())}&from=${encodeURIComponent(now.toISOString())}&to=${encodeURIComponent(end.toISOString())}&duration=60`);
     const slots = payload.slots || [];
     const el = qs("#calFreeSlots");
-    if (el) el.innerHTML = slots.length
-      ? `<div class="eyebrow" style="margin-bottom:6px">Free 60-min slots this week</div>` +
-        slots.slice(0,5).map(s =>
-          `<div class="list-item">${s.starts_at.slice(0,16).replace("T"," ")} – ${s.ends_at.slice(11,16)}</div>`
-        ).join("")
-      : emptyState("No free slots found");
-  } catch(e) { toast("Free slots error", e.message); }
+    if (el) el.innerHTML = slots.length ? `<div class="eyebrow eyebrow-bottom-gap">Free 60-min slots this week</div>` + slots.slice(0, 5).map(
+      (s) => `<div class="list-item">${s.starts_at.slice(0, 16).replace("T", " ")} \u2013 ${s.ends_at.slice(11, 16)}</div>`
+    ).join("") : emptyState("No free slots found");
+  } catch (e) {
+    toast("Free slots error", e.message);
+  }
 }
-
 async function exportIcal() {
   try {
     const payload = await api("/api/calendar/ical-export", {
       method: "POST",
-      body: JSON.stringify({ project: getProject() }),
+      body: JSON.stringify({ project: getProject() })
     });
     const blob = new Blob([payload.ical], { type: "text/calendar" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "openagent-calendar.ics"; a.click();
+    a.href = url;
+    a.download = "openagent-calendar.ics";
+    a.click();
     URL.revokeObjectURL(url);
-  } catch(e) { toast("Export error", e.message); }
+  } catch (e) {
+    toast("Export error", e.message);
+  }
 }
-
 async function loadCalendarSyncStatus() {
   try {
     const [statusPayload, providersPayload, conflictsPayload] = await Promise.all([
       api(`/api/calendar/status?project=${encodeURIComponent(getProject())}`),
       api(`/api/calendar/providers?project=${encodeURIComponent(getProject())}`),
-      api(`/api/calendar/conflicts?project=${encodeURIComponent(getProject())}`),
+      api(`/api/calendar/conflicts?project=${encodeURIComponent(getProject())}`)
     ]);
     state.calendarSync = {
       status: statusPayload,
       providers: providersPayload.providers || [],
-      conflicts: conflictsPayload.conflicts || [],
+      conflicts: conflictsPayload.conflicts || []
     };
     renderCalendarSyncStatus();
     return state.calendarSync;
-  } catch(e) {
+  } catch (e) {
     renderCalendarSyncStatus({ error: e.message });
     return null;
   }
 }
-
 function renderCalendarSyncStatus(error = null) {
   const cards = qs("#calendarSyncCards");
   const providerSelect = qs("#calendarProviderSelect");
   const feed = qs("#calendarSyncFeed");
   const conflictFeed = qs("#calendarConflictFeed");
   if (error?.error) {
-    if (cards) cards.innerHTML = `<article class="ops-tile ops-danger"><span>Status</span><strong>Attention</strong><p>${escapeHtml(error.error)}</p></article>`;
+    if (cards) cards.innerHTML = `<article class="ops-tile ops-danger"><span>Status</span><strong>Attention</strong><p>${escapeHtml2(error.error)}</p></article>`;
     if (feed) feed.innerHTML = emptyState("Calendar sync status is unavailable.");
     if (conflictFeed) conflictFeed.innerHTML = "";
     return;
@@ -8978,47 +9171,39 @@ function renderCalendarSyncStatus(error = null) {
   const status = state.calendarSync.status || {};
   if (providerSelect) {
     const current = providerSelect.value;
-    providerSelect.innerHTML = providers.length
-      ? providers.map(provider => `<option value="${escapeHtml(provider.provider_id)}">${escapeHtml(provider.provider)} · ${escapeHtml(provider.status || "configured")}</option>`).join("")
-      : '<option value="">No sync providers</option>';
+    providerSelect.innerHTML = providers.length ? providers.map((provider) => `<option value="${escapeHtml2(provider.provider_id)}">${escapeHtml2(provider.provider)} \xB7 ${escapeHtml2(provider.status || "configured")}</option>`).join("") : '<option value="">No sync providers</option>';
     if (current) providerSelect.value = current;
   }
   if (cards) {
     cards.innerHTML = [
       opsTile("Providers", providers.length || "0", "Manual ICS and CalDAV HTTP"),
-      opsTile("Open conflicts", conflicts.filter(item => item.status === "open").length || "0", "Manual policy available"),
+      opsTile("Open conflicts", conflicts.filter((item) => item.status === "open").length || "0", "Manual policy available"),
       opsTile("Local events", status.events ?? status.event_count ?? "0", "SQLite calendar store"),
-      opsTile("Sync tokens", providers.filter(provider => provider.sync_token).length || "0", "REPORT cursors tracked"),
+      opsTile("Sync tokens", providers.filter((provider) => provider.sync_token).length || "0", "REPORT cursors tracked")
     ].join("");
   }
   if (feed) {
-    feed.innerHTML = providers.length
-      ? providers.map(provider => {
-          const badgeClass = provider.status === "connected" ? "badge-success" : provider.status === "error" ? "badge-error" : "badge-info";
-          const details = [
-            provider.base_url || "local/manual",
-            provider.sync_token ? `sync-token ${provider.sync_token}` : "no sync-token yet",
-            provider.calendar_id || "default calendar",
-          ].join(" · ");
-          return listItem(provider.provider, details, `<span class="badge ${badgeClass}">${escapeHtml(provider.status || "configured")}</span>`);
-        }).join("")
-      : emptyState("Register a manual ICS or CalDAV HTTP provider to enable sync.");
+    feed.innerHTML = providers.length ? providers.map((provider) => {
+      const badgeClass = provider.status === "connected" ? "badge-success" : provider.status === "error" ? "badge-error" : "badge-info";
+      const details = [
+        provider.base_url || "local/manual",
+        provider.sync_token ? `sync-token ${provider.sync_token}` : "no sync-token yet",
+        provider.calendar_id || "default calendar"
+      ].join(" \xB7 ");
+      return listItem(provider.provider, details, `<span class="badge ${badgeClass}">${escapeHtml2(provider.status || "configured")}</span>`);
+    }).join("") : emptyState("Register a manual ICS or CalDAV HTTP provider to enable sync.");
   }
   if (conflictFeed) {
-    conflictFeed.innerHTML = conflicts.length
-      ? conflicts.slice(0, 6).map(conflict => listItem(
-          `Conflict ${conflict.conflict_id?.slice(0, 8) || ""}`,
-          `${conflict.status || "open"} · local ${conflict.local_event_id || "?"} · remote ${conflict.remote_uid || "?"}`,
-          `<span class="badge ${conflict.status === "resolved" ? "badge-success" : "badge-warning"}">${escapeHtml(conflict.status || "open")}</span>`
-        )).join("")
-      : `<div class="mini-status mini-status-success"><strong>No calendar conflicts</strong><p>Pull, push, and If-Match failures are recorded here when detected.</p></div>`;
+    conflictFeed.innerHTML = conflicts.length ? conflicts.slice(0, 6).map((conflict) => listItem(
+      `Conflict ${conflict.conflict_id?.slice(0, 8) || ""}`,
+      `${conflict.status || "open"} \xB7 local ${conflict.local_event_id || "?"} \xB7 remote ${conflict.remote_uid || "?"}`,
+      `<span class="badge ${conflict.status === "resolved" ? "badge-success" : "badge-warning"}">${escapeHtml2(conflict.status || "open")}</span>`
+    )).join("") : `<div class="mini-status mini-status-success"><strong>No calendar conflicts</strong><p>Pull, push, and If-Match failures are recorded here when detected.</p></div>`;
   }
 }
-
 async function refreshCalendarSync() {
   await Promise.allSettled([loadCalendarEvents(), loadCalendarSyncStatus()]);
 }
-
 async function registerCalendarProvider() {
   try {
     const config = readJsonInput("#calProviderConfig", {});
@@ -9030,26 +9215,30 @@ async function registerCalendarProvider() {
         base_url: qs("#calProviderUrl")?.value.trim() || "",
         account_ref: qs("#calProviderAccount")?.value.trim() || "",
         calendar_id: qs("#calProviderCalendarId")?.value.trim() || "",
-        config,
-      }),
+        config
+      })
     });
     setOutput("#calendarOutput", payload);
     await loadCalendarSyncStatus();
     toast("Calendar provider registered", payload.provider || payload.provider_id || "");
-  } catch(e) { toast("Calendar provider error", e.message); }
+  } catch (e) {
+    toast("Calendar provider error", e.message);
+  }
 }
-
 async function runCalendarSync(direction = "pull") {
   const providerId = qs("#calendarProviderSelect")?.value;
-  if (!providerId) { toast("Select a calendar provider first"); return; }
+  if (!providerId) {
+    toast("Select a calendar provider first");
+    return;
+  }
   try {
     const payload = await api("/api/calendar/sync", {
       method: "POST",
       body: JSON.stringify({
         provider_id: providerId,
         direction,
-        conflict_policy: qs("#calConflictPolicy")?.value || "latest_update",
-      }),
+        conflict_policy: qs("#calConflictPolicy")?.value || "latest_update"
+      })
     });
     let output = payload;
     if (payload.sync_job_id) {
@@ -9062,232 +9251,238 @@ async function runCalendarSync(direction = "pull") {
     setOutput("#calendarOutput", output);
     await refreshCalendarSync();
     toast("Calendar sync completed", `${direction}: ${payload.state || "recorded"}`);
-  } catch(e) { toast("Calendar sync error", e.message); }
+  } catch (e) {
+    toast("Calendar sync error", e.message);
+  }
 }
-
-// =============================================
-// Digital Twin
-// =============================================
-
 async function loadTwinProfile() {
   try {
     const payload = await api(`/api/twin/profile?project=${encodeURIComponent(getProject())}`);
     setOutput("#twinFeed", payload);
-  } catch(e) { toast("Twin profile error", e.message); }
+  } catch (e) {
+    toast("Twin profile error", e.message);
+  }
 }
-
 async function loadTwinPatterns() {
   try {
     const payload = await api(`/api/twin/patterns?project=${encodeURIComponent(getProject())}`);
     const el = qs("#twinFeed");
     if (!el) return;
     const patterns = payload.patterns || [];
-    el.innerHTML = patterns.length
-      ? patterns.map(p => listItem(escapeHtml(p.type), escapeHtml(p.description))).join("") +
-        `<div class="eyebrow" style="margin-top:12px">Top Topics</div>` +
-        (payload.top_topics || []).map(t =>
-          `<span class="badge" style="margin:2px">${escapeHtml(t)}</span>`
-        ).join("")
-      : emptyState("No patterns yet — interact more with OpenAgent");
-  } catch(e) { toast("Patterns error", e.message); }
+    el.innerHTML = patterns.length ? patterns.map((p) => listItem(escapeHtml2(p.type), escapeHtml2(p.description))).join("") + `<div class="eyebrow eyebrow-section-gap">Top Topics</div>` + (payload.top_topics || []).map(
+      (t) => `<span class="badge badge-topic">${escapeHtml2(t)}</span>`
+    ).join("") : emptyState("No patterns yet \u2014 interact more with OpenAgent");
+  } catch (e) {
+    toast("Patterns error", e.message);
+  }
 }
-
 async function loadTwinSuggestions() {
   try {
     const payload = await api(`/api/twin/suggestions?project=${encodeURIComponent(getProject())}`);
     const el = qs("#twinFeed");
     if (!el) return;
     const suggestions = payload.suggestions || [];
-    el.innerHTML = suggestions.length
-      ? suggestions.map(s =>
-          listItem(
-            escapeHtml(s.title),
-            escapeHtml(s.description),
-            `<span class="badge badge-${s.priority === "high" ? "accent" : "soft"}">${escapeHtml(s.priority)}</span>`
-          )
-        ).join("")
-      : emptyState("No suggestions at this time");
-  } catch(e) { toast("Suggestions error", e.message); }
+    el.innerHTML = suggestions.length ? suggestions.map(
+      (s) => listItem(
+        escapeHtml2(s.title),
+        escapeHtml2(s.description),
+        `<span class="badge badge-${s.priority === "high" ? "accent" : "soft"}">${escapeHtml2(s.priority)}</span>`
+      )
+    ).join("") : emptyState("No suggestions at this time");
+  } catch (e) {
+    toast("Suggestions error", e.message);
+  }
 }
-
 async function predictIntent() {
   const ctx = qs("#twinContext")?.value.trim();
-  if (!ctx) { toast("Enter context text first"); return; }
+  if (!ctx) {
+    toast("Enter context text first");
+    return;
+  }
   try {
     const payload = await api("/api/twin/predict", {
       method: "POST",
-      body: JSON.stringify({ context: ctx, project: getProject() }),
+      body: JSON.stringify({ context: ctx, project: getProject() })
     });
     setOutput("#twinOutput", payload);
-  } catch(e) { toast("Predict error", e.message); }
+  } catch (e) {
+    toast("Predict error", e.message);
+  }
 }
-
 async function consolidateMemory() {
   try {
     const payload = await api("/api/twin/consolidate", {
       method: "POST",
-      body: JSON.stringify({ project: getProject() }),
+      body: JSON.stringify({ project: getProject() })
     });
     setOutput("#twinOutput", payload);
     toast("Memory consolidated", `${payload.consolidated} interactions processed`);
-  } catch(e) { toast("Consolidate error", e.message); }
+  } catch (e) {
+    toast("Consolidate error", e.message);
+  }
 }
-
 async function loadTwinGoals() {
   try {
     const payload = await api(`/api/twin/goals?project=${encodeURIComponent(getProject())}`);
     const goals = payload.goals || [];
     const el = qs("#twinGoals");
-    if (el) el.innerHTML = goals.length
-      ? goals.map(g =>
-          listItem(
-            escapeHtml(g.title),
-            `${Math.round(g.progress * 100)}% — ${escapeHtml(g.status)}`,
-            `<div class="progress-bar" style="width:100%;height:4px;background:var(--line);border-radius:2px;margin-top:4px"><div style="width:${Math.round(g.progress*100)}%;height:100%;background:var(--accent);border-radius:2px"></div></div>`
-          )
-        ).join("")
-      : emptyState("No goals set");
-  } catch(e) { console.warn("goals", e); }
+    if (el) el.innerHTML = goals.length ? goals.map(
+      (g) => listItem(
+        escapeHtml2(g.title),
+        `${Math.round(g.progress * 100)}% \u2014 ${escapeHtml2(g.status)}`,
+        `<progress class="progress-bar progress-compact" max="100" value="${Math.round(g.progress * 100)}">${Math.round(g.progress * 100)}%</progress>`
+      )
+    ).join("") : emptyState("No goals set");
+  } catch (e) {
+    console.warn("goals", e);
+  }
 }
-
 async function createTwinGoal() {
   const title = qs("#twinGoalTitle")?.value.trim();
-  if (!title) { toast("Goal title required"); return; }
+  if (!title) {
+    toast("Goal title required");
+    return;
+  }
   try {
     const payload = await api("/api/twin/goals", {
       method: "POST",
       body: JSON.stringify({
         title,
         description: qs("#twinGoalDesc")?.value.trim() || "",
-        project: getProject(),
-      }),
+        project: getProject()
+      })
     });
     setOutput("#twinOutput", payload);
     toast("Goal created", title);
     loadTwinGoals();
-  } catch(e) { toast("Goal error", e.message); }
+  } catch (e) {
+    toast("Goal error", e.message);
+  }
 }
-
-// =============================================
-// Encrypted Vault
-// =============================================
-
 async function loadVaultEntries() {
   try {
     const payload = await api(`/api/vault/entries?project=${encodeURIComponent(getProject())}`);
     const entries = payload.entries || [];
     const el = qs("#vaultFeed");
-    if (el) el.innerHTML = entries.length
-      ? entries.map(e =>
-          listItem(
-            escapeHtml(e.label),
-            `${escapeHtml(e.category)} · accessed ${e.access_count} times · ${e.last_accessed ? e.last_accessed.slice(0,10) : "never"}`,
-            `<code class="badge" style="font-size:10px">${escapeHtml(e.id?.slice(0,8))}</code>`
-          )
-        ).join("")
-      : emptyState("No vault entries");
-  } catch(e) { console.warn("vaultFeed", e); }
+    if (el) el.innerHTML = entries.length ? entries.map(
+      (e) => listItem(
+        escapeHtml2(e.label),
+        `${escapeHtml2(e.category)} \xB7 accessed ${e.access_count} times \xB7 ${e.last_accessed ? e.last_accessed.slice(0, 10) : "never"}`,
+        `<code class="badge badge-code">${escapeHtml2(e.id?.slice(0, 8))}</code>`
+      )
+    ).join("") : emptyState("No vault entries");
+  } catch (e) {
+    console.warn("vaultFeed", e);
+  }
 }
-
 async function storeVaultSecret() {
-  const label = qs("#vaultLabel")?.value.trim();
+  const label2 = qs("#vaultLabel")?.value.trim();
   const secret = qs("#vaultSecret")?.value.trim();
   const passphrase = qs("#vaultPassphrase")?.value;
   const category = qs("#vaultCategory")?.value;
   const notes = qs("#vaultNotes")?.value.trim();
-  if (!label || !secret || !passphrase) { toast("Label, secret, and passphrase required"); return; }
+  if (!label2 || !secret || !passphrase) {
+    toast("Label, secret, and passphrase required");
+    return;
+  }
   try {
     const payload = await api("/api/vault/store", {
       method: "POST",
-      body: JSON.stringify({ label, secret, passphrase, category, notes, project: getProject() }),
+      body: JSON.stringify({ label: label2, secret, passphrase, category, notes, project: getProject() })
     });
-    toast("Secret stored", label);
+    toast("Secret stored", label2);
     qs("#vaultSecret").value = "";
     qs("#vaultPassphrase").value = "";
     loadVaultEntries();
-  } catch(e) { toast("Vault error", e.message); }
+  } catch (e) {
+    toast("Vault error", e.message);
+  }
 }
-
 async function retrieveVaultSecret() {
   const entryId = qs("#vaultRetrieveId")?.value.trim();
   const passphrase = qs("#vaultRetrievePass")?.value;
-  if (!entryId || !passphrase) { toast("Entry ID and passphrase required"); return; }
+  if (!entryId || !passphrase) {
+    toast("Entry ID and passphrase required");
+    return;
+  }
   try {
     const payload = await api("/api/vault/retrieve", {
       method: "POST",
-      body: JSON.stringify({ entry_id: entryId, passphrase, project: getProject() }),
+      body: JSON.stringify({ entry_id: entryId, passphrase, project: getProject() })
     });
     const el = qs("#vaultOutput");
     if (el) {
-      el.textContent = `Label: ${payload.secret?.label}\nCategory: ${payload.secret?.category}\nSecret: ${payload.secret?.secret}\nNotes: ${payload.secret?.notes}`;
-      // Auto-clear after 30 seconds
+      el.textContent = `Label: ${payload.secret?.label}
+Category: ${payload.secret?.category}
+Secret: ${payload.secret?.secret}
+Notes: ${payload.secret?.notes}`;
       setTimeout(() => {
         if (el) el.textContent = "Secret cleared from display.";
         qs("#vaultRetrievePass").value = "";
-      }, 30000);
+      }, 3e4);
     }
-  } catch(e) { toast("Vault retrieve error", e.message); }
+  } catch (e) {
+    toast("Vault retrieve error", e.message);
+  }
 }
-
-// =============================================
-// Web Scraper
-// =============================================
-
 async function loadScraperJobs() {
   try {
     const payload = await api(`/api/scraper/jobs?project=${encodeURIComponent(getProject())}`);
     const jobs = payload.jobs || [];
     const el = qs("#scraperJobs");
-    if (el) el.innerHTML = jobs.length
-      ? jobs.map(j =>
-          listItem(
-            escapeHtml(j.url.slice(0, 60) + (j.url.length > 60 ? "…" : "")),
-            `Every ${j.interval_hours}h · Next: ${j.next_run?.slice(0,16).replace("T"," ")} · ${escapeHtml(j.status)}`,
-          )
-        ).join("")
-      : emptyState("No scheduled scrape jobs");
-  } catch(e) { console.warn("scraperJobs", e); }
+    if (el) el.innerHTML = jobs.length ? jobs.map(
+      (j) => listItem(
+        escapeHtml2(j.url.slice(0, 60) + (j.url.length > 60 ? "\u2026" : "")),
+        `Every ${j.interval_hours}h \xB7 Next: ${j.next_run?.slice(0, 16).replace("T", " ")} \xB7 ${escapeHtml2(j.status)}`
+      )
+    ).join("") : emptyState("No scheduled scrape jobs");
+  } catch (e) {
+    console.warn("scraperJobs", e);
+  }
 }
-
 async function scrapeUrl() {
   const url = qs("#scraperUrl")?.value.trim();
-  if (!url) { toast("URL required"); return; }
+  if (!url) {
+    toast("URL required");
+    return;
+  }
   const ingest = qs("#scraperIngest")?.checked !== false;
   try {
     const payload = await api("/api/scraper/scrape", {
       method: "POST",
-      body: JSON.stringify({ url, ingest, project: getProject() }),
+      body: JSON.stringify({ url, ingest, allow_external: qs("#scraperAllowExternal")?.checked === true, project: getProject() })
     });
     setOutput("#scraperOutput", payload);
-    toast("Scraped", payload.title?.slice(0,40) || url);
-  } catch(e) { toast("Scrape error", e.message); }
+    toast("Scraped", payload.title?.slice(0, 40) || url);
+  } catch (e) {
+    toast("Scrape error", e.message);
+  }
 }
-
 async function scheduleUrl() {
   const url = qs("#scraperUrl")?.value.trim();
-  if (!url) { toast("URL required"); return; }
+  if (!url) {
+    toast("URL required");
+    return;
+  }
   const interval = parseFloat(qs("#scraperInterval")?.value || "24");
   try {
     const payload = await api("/api/scraper/schedule", {
       method: "POST",
-      body: JSON.stringify({ url, interval_hours: interval, project: getProject() }),
+      body: JSON.stringify({ url, interval_hours: interval, allow_external: qs("#scraperAllowExternal")?.checked === true, project: getProject() })
     });
-    toast("Scheduled", url.slice(0,40));
+    toast("Scheduled", url.slice(0, 40));
     loadScraperJobs();
-  } catch(e) { toast("Schedule error", e.message); }
+  } catch (e) {
+    toast("Schedule error", e.message);
+  }
 }
-
-// =============================================
-// Fine-Tuning
-// =============================================
-
 async function loadFinetuneStatus() {
   try {
     const [status, datasets, jobs, adapters] = await Promise.all([
       api(`/api/finetune/status?project=${encodeURIComponent(getProject())}`),
       api(`/api/finetune/datasets?project=${encodeURIComponent(getProject())}`),
       api(`/api/finetune/jobs?project=${encodeURIComponent(getProject())}`),
-      api(`/api/finetune/adapters?project=${encodeURIComponent(getProject())}`),
+      api(`/api/finetune/adapters?project=${encodeURIComponent(getProject())}`)
     ]);
     const el = qs("#fineTuneFeed");
     if (el) {
@@ -9295,100 +9490,109 @@ async function loadFinetuneStatus() {
       const js = jobs.jobs || [];
       el.innerHTML = `
         <div class="eyebrow">Datasets (${ds.length})</div>
-        ${ds.map(d => listItem(escapeHtml(d.name), `${d.num_examples} examples · ${escapeHtml(d.format)}`)).join("") || emptyState("No datasets")}
-        <div class="eyebrow" style="margin-top:12px">Jobs (${js.length})</div>
-        ${js.map(j => listItem(
-          escapeHtml(j.base_model),
-          `${escapeHtml(j.method)} · ${escapeHtml(j.status)} · ${Math.round(j.progress*100)}%`,
-          `<div class="progress-bar" style="width:100%;height:4px;background:var(--line);border-radius:2px;margin-top:4px"><div style="width:${Math.round(j.progress*100)}%;height:100%;background:var(--accent-3);border-radius:2px"></div></div>`
-        )).join("") || emptyState("No jobs")}
+        ${ds.map((d) => listItem(escapeHtml2(d.name), `${d.num_examples} examples \xB7 ${escapeHtml2(d.format)}`)).join("") || emptyState("No datasets")}
+        <div class="eyebrow eyebrow-section-gap">Jobs (${js.length})</div>
+        ${js.map((j) => listItem(
+        escapeHtml2(j.base_model),
+        `${escapeHtml2(j.method)} \xB7 ${escapeHtml2(j.status)} \xB7 ${Math.round(j.progress * 100)}%`,
+        `<progress class="progress-bar progress-compact progress-secondary" max="100" value="${Math.round(j.progress * 100)}">${Math.round(j.progress * 100)}%</progress>`
+      )).join("") || emptyState("No jobs")}
       `;
-      // Populate dataset selects
       const dsSelects = qsa("#ftExDataset, #ftJobDataset");
-      dsSelects.forEach(sel => {
+      dsSelects.forEach((sel) => {
         const current = sel.value;
-        sel.innerHTML = '<option value="">Select dataset…</option>' +
-          ds.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join("");
+        sel.innerHTML = '<option value="">Select dataset\u2026</option>' + ds.map((d) => `<option value="${escapeHtml2(d.id)}">${escapeHtml2(d.name)}</option>`).join("");
         if (current) sel.value = current;
       });
     }
     const adEl = qs("#adapterFeed");
     if (adEl) {
       const as = adapters.adapters || [];
-      adEl.innerHTML = as.length
-        ? as.map(a =>
-            listItem(
-              escapeHtml(a.name),
-              `${escapeHtml(a.base_model)} · rank ${a.rank} · score ${a.eval_score?.toFixed(2)}`,
-              `<span class="badge ${a.active ? "badge-accent" : "badge-soft"}">${a.active ? "Active" : "Inactive"}</span>` +
-              `<button class="btn btn-mini btn-soft" style="margin-left:6px" data-adapter-activate="${escapeHtml(a.id)}">Activate</button>`
-            )
-          ).join("")
-        : emptyState("No LoRA adapters");
+      adEl.innerHTML = as.length ? as.map(
+        (a) => listItem(
+          escapeHtml2(a.name),
+          `${escapeHtml2(a.base_model)} \xB7 rank ${a.rank} \xB7 score ${a.eval_score?.toFixed(2)}`,
+          `<span class="badge ${a.active ? "badge-accent" : "badge-soft"}">${a.active ? "Active" : "Inactive"}</span><button class="btn btn-mini btn-soft action-spaced" data-adapter-activate="${escapeHtml2(a.id)}">Activate</button>`
+        )
+      ).join("") : emptyState("No LoRA adapters");
     }
-  } catch(e) { console.warn("finetuneStatus", e); }
+  } catch (e) {
+    console.warn("finetuneStatus", e);
+  }
 }
-
 async function createFtDataset() {
   const name = qs("#ftDatasetName")?.value.trim();
-  if (!name) { toast("Dataset name required"); return; }
+  if (!name) {
+    toast("Dataset name required");
+    return;
+  }
   try {
     const payload = await api("/api/finetune/datasets", {
       method: "POST",
       body: JSON.stringify({
         name,
         description: qs("#ftDatasetDesc")?.value.trim() || "",
-        project: getProject(),
-      }),
+        project: getProject()
+      })
     });
     setOutput("#finetuneOutput", payload);
     toast("Dataset created", name);
     loadFinetuneStatus();
-  } catch(e) { toast("Dataset error", e.message); }
+  } catch (e) {
+    toast("Dataset error", e.message);
+  }
 }
-
 async function addFtExample() {
   const datasetId = qs("#ftExDataset")?.value;
   const userInput = qs("#ftExUser")?.value.trim();
   const assistantOutput = qs("#ftExAssistant")?.value.trim();
-  if (!datasetId || !userInput || !assistantOutput) { toast("All fields required"); return; }
+  if (!datasetId || !userInput || !assistantOutput) {
+    toast("All fields required");
+    return;
+  }
   try {
     const payload = await api("/api/finetune/examples", {
       method: "POST",
-      body: JSON.stringify({ dataset_id: datasetId, user_input: userInput, assistant_output: assistantOutput, project: getProject() }),
+      body: JSON.stringify({ dataset_id: datasetId, user_input: userInput, assistant_output: assistantOutput, project: getProject() })
     });
     toast("Example added");
     qs("#ftExUser").value = "";
     qs("#ftExAssistant").value = "";
-  } catch(e) { toast("Example error", e.message); }
+  } catch (e) {
+    toast("Example error", e.message);
+  }
 }
-
 async function startFtJob() {
   const datasetId = qs("#ftJobDataset")?.value;
   const baseModel = qs("#ftJobModel")?.value.trim();
   const templateId = qs("#ftJobTemplate")?.value;
-  if (!datasetId || !baseModel) { toast("Dataset and base model required"); return; }
+  if (!datasetId || !baseModel) {
+    toast("Dataset and base model required");
+    return;
+  }
   try {
     const payload = await api("/api/finetune/jobs", {
       method: "POST",
-      body: JSON.stringify({ dataset_id: datasetId, base_model: baseModel, template_id: templateId, project: getProject() }),
+      body: JSON.stringify({ dataset_id: datasetId, base_model: baseModel, template_id: templateId, project: getProject() })
     });
     setOutput("#finetuneOutput", payload);
     toast("Job queued", baseModel);
     loadFinetuneStatus();
-  } catch(e) { toast("Job error", e.message); }
+  } catch (e) {
+    toast("Job error", e.message);
+  }
 }
-
 async function activateAdapter(adapterId) {
   try {
     await api("/api/finetune/adapters/activate", {
       method: "POST",
-      body: JSON.stringify({ adapter_id: adapterId, project: getProject() }),
+      body: JSON.stringify({ adapter_id: adapterId, project: getProject() })
     });
     toast("Adapter activated");
     loadFinetuneStatus();
-  } catch(e) { toast("Activate error", e.message); }
+  } catch (e) {
+    toast("Activate error", e.message);
+  }
 }
-
-// Alias for the onclick button in the fine-tune view
-const loadAdapters = () => loadFinetuneStatus().catch(() => {});
+var loadAdapters = () => loadFinetuneStatus().catch(() => {
+});

@@ -123,7 +123,7 @@ The remaining work is mostly depth and deployment proof:
   credentials;
 - add real image/VLM and scientific simulator integrations where the host has
   those tools installed;
-- keep CodeQ validation honest for new framework profiles and external SDKs;
+- keep CodeQ validation evidence-based for new framework profiles and external SDKs;
 - run clean-environment packaging, installer upgrade, multi-user, accessibility,
   browser, and crash-recovery checks in the target CI matrix.
 

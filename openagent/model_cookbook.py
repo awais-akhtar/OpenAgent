@@ -13,10 +13,10 @@ import subprocess
 import time
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from .local_ai import LocalAIInfrastructure
+from .egress import EgressClient
 from .model_gateway import ModelGateway
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
@@ -33,6 +33,7 @@ class ModelCookbook:
         self.store = store
         self.gateway = gateway or ModelGateway()
         self.local_ai = LocalAIInfrastructure(store, self.gateway)
+        self.egress = EgressClient()
         self.initialize()
 
     def initialize(self) -> None:
@@ -283,7 +284,10 @@ class ModelCookbook:
             headers["Authorization"] = f"Bearer {api_key}"
         checks = []
         started = time.perf_counter()
-        models_payload = self._endpoint_json(Request(f"{endpoint}/v1/models", headers=headers), timeout=10)
+        models_payload = self._endpoint_json(
+            f"{endpoint}/v1/models", headers=headers, timeout=10,
+            approved=allow_external or loopback, allow_loopback=loopback,
+        )
         models = models_payload.get("data") if isinstance(models_payload, dict) else []
         model_ids = [str(item.get("id", "")) for item in models if isinstance(item, dict) and item.get("id")] if isinstance(models, list) else []
         checks.append({"id": "models", "passed": isinstance(models, list), "models": model_ids[:100]})
@@ -297,7 +301,8 @@ class ModelCookbook:
                 "stream": False,
             }).encode("utf-8")
             completion = self._endpoint_json(
-                Request(f"{endpoint}/v1/chat/completions", data=body, headers=headers, method="POST"), timeout=30,
+                f"{endpoint}/v1/chat/completions", headers=headers, timeout=30,
+                approved=allow_external or loopback, allow_loopback=loopback, method="POST", body=body,
             )
             choices = completion.get("choices") if isinstance(completion, dict) else None
             checks.append({"id": "chat_completions", "passed": isinstance(choices, list) and bool(choices)})
@@ -359,13 +364,19 @@ class ModelCookbook:
         ))
         return self.certification(certification_id)
 
-    @staticmethod
-    def _endpoint_json(request: Request, *, timeout: int) -> dict[str, Any]:
-        with urlopen(request, timeout=timeout) as response:
-            raw = response.read(2_000_001)
-        if len(raw) > 2_000_000:
-            raise ValueError("Model endpoint response exceeded the 2 MB certification limit.")
-        payload = json.loads(raw.decode("utf-8"))
+    def _endpoint_json(
+        self, url: str, *, headers: dict[str, str], timeout: int, approved: bool,
+        allow_loopback: bool, method: str = "GET", body: bytes | None = None,
+    ) -> dict[str, Any]:
+        response = self.egress.fetch(
+            url, approved=approved, allow_loopback=allow_loopback,
+            purpose="model endpoint certification", method=method, body=body, headers=headers,
+            timeout_seconds=timeout, max_response_bytes=2_000_000,
+            allowed_content_types={"application/json"},
+        )
+        if not 200 <= response.status < 300:
+            raise ValueError(f"Model endpoint returned HTTP {response.status}.")
+        payload = json.loads(response.body.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("Model endpoint returned a non-object JSON response.")
         return payload

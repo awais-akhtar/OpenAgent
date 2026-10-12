@@ -8,17 +8,20 @@ or an auto-routing policy allows local network providers.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+from queue import Full, Queue
 import threading
 import time
 from typing import Any, Iterator, Protocol
-from urllib.request import Request, urlopen
 
 from .core_runtime import CPU_MODEL_STACK, model_request_options, smooth_runtime_profile
+from .egress import EgressClient
 from .inference_accelerator import (
     AdaptiveCPUInferenceEngine,
     active_runtime_options,
@@ -106,6 +109,18 @@ class ProviderConfigurationError(RuntimeError):
 
 class ProviderUnavailableError(RuntimeError):
     """Raised when a selected provider cannot complete a request."""
+
+
+_external_approval: ContextVar[bool] = ContextVar("model_external_approval", default=False)
+
+
+@contextmanager
+def _approve_model_egress(approved: bool) -> Iterator[None]:
+    token = _external_approval.set(approved)
+    try:
+        yield
+    finally:
+        _external_approval.reset(token)
 
 
 class BaseProvider:
@@ -229,6 +244,7 @@ class OllamaProvider(BaseProvider):
         self.default_embedding_model = normalize_model_name(os.environ.get("OPENAGENT_OLLAMA_EMBED_MODEL", self.default_model))
         self._models_cache: list[str] = []
         self._models_cached_at = 0.0
+        self._models_cached_approval = False
         self._cache_lock = threading.RLock()
 
     def available(self) -> bool:
@@ -237,18 +253,17 @@ class OllamaProvider(BaseProvider):
     def installed_models(self) -> list[str]:
         now = time.monotonic()
         with self._cache_lock:
-            if now - self._models_cached_at <= 3.0:
+            if now - self._models_cached_at <= 3.0 and self._models_cached_approval == _external_approval.get():
                 return list(self._models_cache)
         try:
-            request = Request(f"{self.base_url}/api/tags", headers={"Accept": "application/json"})
-            with urlopen(request, timeout=0.5) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            data = get_json(f"{self.base_url}/api/tags", timeout_seconds=0.5)
             models = [str(item.get("name", "")).strip() for item in data.get("models", []) if str(item.get("name", "")).strip()]
         except Exception:
             models = []
         with self._cache_lock:
             self._models_cache = list(models)
             self._models_cached_at = now
+            self._models_cached_approval = _external_approval.get()
         return models
 
     def resolve_model(self, requested: str | None) -> str:
@@ -421,17 +436,19 @@ class LlamaCppProvider(BaseProvider):
         self.default_model = os.environ.get("OPENAGENT_LLAMACPP_MODEL", CPU_MODEL_STACK["chat"])
         self._availability_cache = False
         self._availability_cached_at = 0.0
+        self._availability_cached_approval = False
         self._cache_lock = threading.RLock()
 
     def available(self) -> bool:
         now = time.monotonic()
         with self._cache_lock:
-            if now - self._availability_cached_at <= 3.0:
+            if now - self._availability_cached_at <= 3.0 and self._availability_cached_approval == _external_approval.get():
                 return self._availability_cache
         available = local_http_available(f"{self.base_url}/v1/models")
         with self._cache_lock:
             self._availability_cache = available
             self._availability_cached_at = now
+            self._availability_cached_approval = _external_approval.get()
         return available
 
     def complete(
@@ -678,6 +695,239 @@ class OpenVINODirectProvider(BaseProvider):
                 raise ProviderUnavailableError(f"OpenVINO could not load the direct model: {exc}") from exc
 
 
+class OlmoeDirectProvider(BaseProvider):
+    """Run the independently implemented OLMoE decoder and streamed experts."""
+
+    id = "olmoe-direct"
+    label = "OLMoE Direct"
+    local = True
+    network = False
+    default_model = "allenai/OLMoE-1B-7B-0125-Instruct"
+    privacy_warning = "Runs the configured OLMoE checkpoint and expert container entirely on this machine."
+
+    def __init__(self, direct_hardware: Any = None) -> None:
+        self.direct_hardware = direct_hardware
+        self.model_path = os.environ.get("OPENAGENT_OLMOE_MODEL_DIR", "").strip()
+        self.manifest_path = os.environ.get("OPENAGENT_OLMOE_MANIFEST", "").strip()
+        self.cache_gb = max(0.25, float(os.environ.get("OPENAGENT_OLMOE_EXPERT_CACHE_GB", "4")))
+        self.context_tokens = max(1, int(os.environ.get("OPENAGENT_OLMOE_CONTEXT", "4096")))
+        self.max_output_tokens = max(1, int(os.environ.get("OPENAGENT_OLMOE_MAX_OUTPUT", "128")))
+        self.io_mode = os.environ.get("OPENAGENT_OLMOE_IO_MODE", "mmap").strip().lower()
+        if self.io_mode not in {"buffered", "mmap", "direct", "uring"}:
+            self.io_mode = "mmap"
+        self.prefetch_workers = max(1, int(os.environ.get("OPENAGENT_OLMOE_PREFETCH_WORKERS", "2")))
+        self.prefetch_depth = max(
+            self.prefetch_workers,
+            int(os.environ.get("OPENAGENT_OLMOE_PREFETCH_DEPTH", "8")),
+        )
+        self.storage_roots = _olmoe_storage_roots(os.environ.get("OPENAGENT_OLMOE_STORAGE_ROOTS", ""))
+        self.preferred_kernel = os.environ.get("OPENAGENT_OLMOE_KERNEL", "").strip() or None
+        self.accelerator_cache_gb = max(
+            0.25, float(os.environ.get("OPENAGENT_OLMOE_ACCELERATOR_CACHE_GB", "2"))
+        )
+        self._runtime: Any = None
+        self._lock = threading.RLock()
+        self._artifact_signature = None
+        self._artifact_ready = False
+
+    def available(self) -> bool:
+        root = Path(self.model_path) if self.model_path else None
+        manifest = Path(self.manifest_path) if self.manifest_path else None
+        configured = bool(
+            root and root.is_dir() and (root / "config.json").is_file()
+            and (root / "tokenizer.json").is_file() and list(root.glob("*.safetensors"))
+            and manifest and manifest.is_file()
+        )
+        if not configured:
+            return False
+        try:
+            files = [root / "config.json", manifest, *sorted(root.glob("*.safetensors"))]
+            index = root / "model.safetensors.index.json"
+            if index.is_file():
+                files.append(index)
+            signature = tuple((str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in files)
+            with self._lock:
+                if signature != self._artifact_signature:
+                    from .adaptive_engine.expert_packing import _scan_directory
+                    from .adaptive_engine.expert_runtime import SparseExpertManifest
+                    from .adaptive_engine.olmoe import OlmoeConfig, validate_olmoe_tensors, olmoe_metadata_fingerprint
+
+                    self._artifact_ready = False
+                    self._artifact_signature = signature
+                    validate_olmoe_tensors(OlmoeConfig.read(root), _scan_directory(root))
+                    parsed = SparseExpertManifest.read(manifest)
+                    if parsed.architecture != "olmoe" or parsed.fingerprint != olmoe_metadata_fingerprint(root):
+                        return False
+                    self._artifact_ready = True
+                return self._artifact_ready
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def complete(self, messages: list[dict[str, str]], *, model: str | None = None) -> ModelResult:
+        if not self.available():
+            raise ProviderUnavailableError(
+                "Configure OPENAGENT_OLMOE_MODEL_DIR and OPENAGENT_OLMOE_MANIFEST with completed local artifacts."
+            )
+        prompt = _olmoe_prompt(messages)
+        started = time.perf_counter()
+        with self._lock:
+            runtime = self._load()
+            content = runtime.generate(prompt, max_tokens=self.max_output_tokens)
+            status = runtime.status()
+        if not content.strip():
+            raise ProviderUnavailableError("OLMoE completed without producing text.")
+        return ModelResult(
+            self.id,
+            model or self.default_model,
+            content,
+            {
+                "network": False,
+                "offline": True,
+                "engine": "openagent-olmoe-streaming",
+                "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+                "runtime": status,
+            },
+        )
+
+    def _load(self):
+        if self._runtime is None:
+            from .adaptive_engine import ExpertKernelRegistry, OlmoeModel, OpenVINOExpertBackend
+
+            kernels = None
+            if self.preferred_kernel == "vulkan-wgpu":
+                from .adaptive_engine.vulkan_expert import VulkanRoutedSwiGLUBackend
+
+                backend = VulkanRoutedSwiGLUBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "torch-expert":
+                from .adaptive_engine.torch_expert import TorchExpertBackend
+
+                backend = TorchExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "native-cpu-numba":
+                from .adaptive_engine import NativeExpertBackend
+
+                backend = NativeExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "vectorized-cpu-numba":
+                from .adaptive_engine.vectorized_expert import VectorizedExpertBackend
+
+                backend = VectorizedExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "packed-int4-numba":
+                from .adaptive_engine.native_packed_expert import NativePackedExpertBackend
+
+                backend = NativePackedExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "q8_0-numba":
+                from .adaptive_engine.native_q8_0_expert import NativeQ8_0ExpertBackend
+
+                backend = NativeQ8_0ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "q4_0-numba":
+                from .adaptive_engine.native_q4_0_expert import NativeQ4_0ExpertBackend
+
+                backend = NativeQ4_0ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "q4_1-numba":
+                from .adaptive_engine.native_q4_1_expert import NativeQ4_1ExpertBackend
+
+                backend = NativeQ4_1ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "q5_0-numba":
+                from .adaptive_engine.native_q5_0_expert import NativeQ5_0ExpertBackend
+
+                backend = NativeQ5_0ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "q5_1-numba":
+                from .adaptive_engine.native_q5_1_expert import NativeQ5_1ExpertBackend
+
+                backend = NativeQ5_1ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "q8_1-numba":
+                from .adaptive_engine.native_q8_1_expert import NativeQ8_1ExpertBackend
+
+                backend = NativeQ8_1ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel in {"int2-row-numba", "int3-grouped-g64-numba"}:
+                from .adaptive_engine.native_lowbit_expert import NativeLowBitExpertBackend
+
+                backend = NativeLowBitExpertBackend(self.preferred_kernel.removesuffix("-numba"))
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "grouped-int4-numba":
+                from .adaptive_engine.native_grouped_int4_expert import NativeGroupedInt4ExpertBackend
+
+                backend = NativeGroupedInt4ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "mxfp4-e2m1-g32-ue8m0-numba":
+                from .adaptive_engine.native_mxfp4_expert import NativeMXFP4ExpertBackend
+
+                backend = NativeMXFP4ExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel == "fp8-e4m3-b128-f32-numba":
+                from .adaptive_engine.native_fp8_block_expert import NativeFP8BlockExpertBackend
+
+                backend = NativeFP8BlockExpertBackend()
+                if not backend.info().available:
+                    raise ProviderConfigurationError(backend.info().unavailable_reason)
+                kernels = ExpertKernelRegistry([backend])
+            if self.preferred_kernel and self.preferred_kernel.startswith("openvino-"):
+                if self.direct_hardware is None:
+                    raise ProviderConfigurationError(
+                        "The requested OpenVINO expert kernel needs the local direct-hardware runtime."
+                    )
+                device = self.preferred_kernel.removeprefix("openvino-").upper()
+                kernels = ExpertKernelRegistry([
+                    OpenVINOExpertBackend(
+                        self.direct_hardware,
+                        device=device,
+                        capacity_bytes=int(self.accelerator_cache_gb * 1024**3),
+                    )
+                ])
+
+            self._runtime = OlmoeModel(
+                self.model_path,
+                self.manifest_path,
+                expert_cache_bytes=int(self.cache_gb * 1024**3),
+                context_tokens=self.context_tokens,
+                io_mode=self.io_mode,
+                prefetch_workers=self.prefetch_workers,
+                prefetch_depth=self.prefetch_depth,
+                storage_roots=self.storage_roots,
+                kernels=kernels,
+                preferred_kernel=self.preferred_kernel,
+            )
+        return self._runtime
+
+
 class OpenAICompatibleProvider(BaseProvider):
     id = "openai-compatible"
     label = "OpenAI Compatible"
@@ -881,6 +1131,7 @@ class ModelGateway:
         self.providers: dict[str, ModelProvider] = {
             "local": LocalProvider(),
             "openvino-direct": OpenVINODirectProvider(direct_hardware),
+            "olmoe-direct": OlmoeDirectProvider(direct_hardware),
             "ollama": OllamaProvider(),
             "llamacpp": LlamaCppProvider(),
             "openai-compatible": OpenAICompatibleProvider(),
@@ -897,6 +1148,14 @@ class ModelGateway:
                 for provider_id, label, environment_prefix, base_url, default_model in COMPATIBLE_PROVIDER_SPECS
             }
         )
+        if os.environ.get("OPENAGENT_HF_MOE_MODEL_DIR"):
+            from .adaptive_engine.hf_moe_provider import HFMoeProvider
+
+            self.providers["hf-moe-direct"] = HFMoeProvider()
+        if os.environ.get("OPENAGENT_NATIVE_PUBLISHER_CONFIG"):
+            from .adaptive_engine.publisher_provider import NativePublisherProvider
+
+            self.providers["native-publisher"] = NativePublisherProvider()
         self.routing_policy = os.environ.get("OPENAGENT_MODEL_ROUTING", "local-first")
         self.fallback_policy = os.environ.get("OPENAGENT_MODEL_FALLBACK", "local")
         self.inference = AdaptiveCPUInferenceEngine()
@@ -923,6 +1182,8 @@ class ModelGateway:
                         "default_model_ready": any(model_name_matches(provider.default_model, name) for name in installed),
                     }
                 )
+            if provider.id == 'native-publisher':
+                spec['vision_configured'] = provider.supports_vision()
             specs.append(spec)
         return [
             {
@@ -944,10 +1205,12 @@ class ModelGateway:
             "routing_policy": self.routing_policy,
             "fallback_policy": self.fallback_policy,
             "routes": {
-                "local-first": ["openvino-direct", "ollama", "llamacpp", "local"],
-                "local-server-first": ["openvino-direct", "ollama", "llamacpp", "local"],
+                "local-first": ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
+                "local-server-first": ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
                 "offline": ["local"],
-                "cloud-allowed": [*external_providers, "openvino-direct", "ollama", "llamacpp", "local"],
+                **({"native-publisher": ["native-publisher"]}
+                   if "native-publisher" in self.providers else {}),
+                "cloud-allowed": [*external_providers, "openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
             },
             "fallbacks": {
                 "none": [],
@@ -973,6 +1236,16 @@ class ModelGateway:
             "openvino_model_dir": "OPENAGENT_OPENVINO_MODEL_DIR",
             "openvino_device": "OPENAGENT_OPENVINO_DEVICE",
             "openvino_model_id": "OPENAGENT_OPENVINO_MODEL_ID",
+            "olmoe_model_dir": "OPENAGENT_OLMOE_MODEL_DIR",
+            "olmoe_manifest": "OPENAGENT_OLMOE_MANIFEST",
+            "olmoe_expert_cache_gb": "OPENAGENT_OLMOE_EXPERT_CACHE_GB",
+            "olmoe_context": "OPENAGENT_OLMOE_CONTEXT",
+            "olmoe_io_mode": "OPENAGENT_OLMOE_IO_MODE",
+            "olmoe_prefetch_workers": "OPENAGENT_OLMOE_PREFETCH_WORKERS",
+            "olmoe_prefetch_depth": "OPENAGENT_OLMOE_PREFETCH_DEPTH",
+            "olmoe_storage_roots": "OPENAGENT_OLMOE_STORAGE_ROOTS",
+            "olmoe_kernel": "OPENAGENT_OLMOE_KERNEL",
+            "olmoe_accelerator_cache_gb": "OPENAGENT_OLMOE_ACCELERATOR_CACHE_GB",
         }
         for key, env_key in mapping.items():
             value = str(settings.get(key, "")).strip()
@@ -995,6 +1268,39 @@ class ModelGateway:
                 device=str(settings.get("openvino_device", "")).strip(),
                 model_id=str(settings.get("openvino_model_id", "")).strip(),
             )
+        olmoe = self.providers.get("olmoe-direct")
+        if isinstance(olmoe, OlmoeDirectProvider):
+            if str(settings.get("olmoe_model_dir", "")).strip():
+                olmoe.model_path = str(settings["olmoe_model_dir"]).strip()
+            if str(settings.get("olmoe_manifest", "")).strip():
+                olmoe.manifest_path = str(settings["olmoe_manifest"]).strip()
+            if str(settings.get("olmoe_expert_cache_gb", "")).strip():
+                olmoe.cache_gb = max(0.25, float(settings["olmoe_expert_cache_gb"]))
+            if str(settings.get("olmoe_context", "")).strip():
+                olmoe.context_tokens = max(1, int(settings["olmoe_context"]))
+            if str(settings.get("olmoe_io_mode", "")).strip():
+                value = str(settings["olmoe_io_mode"]).strip().lower()
+                if value not in {"buffered", "mmap", "direct", "uring"}:
+                    raise ValueError("olmoe_io_mode must be buffered, mmap, direct or uring")
+                olmoe.io_mode = value
+            if str(settings.get("olmoe_prefetch_workers", "")).strip():
+                olmoe.prefetch_workers = max(1, int(settings["olmoe_prefetch_workers"]))
+            if str(settings.get("olmoe_prefetch_depth", "")).strip():
+                olmoe.prefetch_depth = max(1, int(settings["olmoe_prefetch_depth"]))
+            if olmoe.prefetch_depth < olmoe.prefetch_workers:
+                raise ValueError("olmoe_prefetch_depth must be at least olmoe_prefetch_workers")
+            if "olmoe_storage_roots" in settings:
+                olmoe.storage_roots = _olmoe_storage_roots(str(settings.get("olmoe_storage_roots", "")))
+            if "olmoe_kernel" in settings:
+                olmoe.preferred_kernel = str(settings.get("olmoe_kernel", "")).strip() or None
+            if str(settings.get("olmoe_accelerator_cache_gb", "")).strip():
+                olmoe.accelerator_cache_gb = max(
+                    0.25, float(settings["olmoe_accelerator_cache_gb"])
+                )
+            with olmoe._lock:
+                if olmoe._runtime is not None:
+                    olmoe._runtime.close()
+                    olmoe._runtime = None
         return runtime_settings_snapshot()
 
     def discover_models(self) -> list[dict[str, Any]]:
@@ -1021,6 +1327,15 @@ class ModelGateway:
                 "device": direct_provider.device,
                 "path": direct_provider.model_path,
             })
+        olmoe_provider = self.providers.get("olmoe-direct")
+        if isinstance(olmoe_provider, OlmoeDirectProvider) and olmoe_provider.available():
+            discovered.append({
+                "provider": olmoe_provider.id,
+                "model": olmoe_provider.default_model,
+                "available": True,
+                "type": "direct-sparse-expert",
+                "path": olmoe_provider.model_path,
+            })
         # Try Ollama model list
         ollama_provider = next(
             (p for p in self.providers.values() if p.id == "ollama"), None
@@ -1028,9 +1343,7 @@ class ModelGateway:
         if ollama_provider is not None and local_http_available(f"{getattr(ollama_provider, 'base_url', 'http://127.0.0.1:11434')}/api/tags"):
             try:
                 base_url = getattr(ollama_provider, "base_url", "http://127.0.0.1:11434")
-                req = Request(f"{base_url}/api/tags", headers={"Accept": "application/json"})
-                with urlopen(req, timeout=4) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = get_json(f"{base_url}/api/tags", timeout_seconds=4)
                 for model in data.get("models", []):
                     discovered.append({
                         "provider": "ollama",
@@ -1048,9 +1361,7 @@ class ModelGateway:
         if llamacpp_provider is not None and llamacpp_provider.available():
             try:
                 base_url = getattr(llamacpp_provider, "base_url", "http://127.0.0.1:8080")
-                req = Request(f"{base_url}/v1/models", headers={"Accept": "application/json"})
-                with urlopen(req, timeout=4) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = get_json(f"{base_url}/v1/models", timeout_seconds=4)
                 for model in data.get("data", []):
                     discovered.append({
                         "provider": "llamacpp",
@@ -1102,7 +1413,7 @@ class ModelGateway:
             return ModelResult(cached.provider, cached.model, cached.content, metadata)
         fallback_used = False
         try:
-            with self.inference.activate(plan):
+            with self.inference.activate(plan), _approve_model_egress(allow_external):
                 result = provider.complete(plan.messages, model=selected_model)
             metadata = {
                 **result.metadata,
@@ -1173,16 +1484,18 @@ class ModelGateway:
         provider = self._select_vision_provider(provider_id, allow_external=allow_external)
         selected_model = self._effective_provider_model(provider, provider_id=provider_id, model=model)
         if isinstance(provider, OllamaProvider):
-            selected_model = provider.resolve_vision_model(selected_model)
+            with _approve_model_egress(allow_external):
+                selected_model = provider.resolve_vision_model(selected_model)
         started = time.perf_counter()
         try:
-            result = provider.complete_vision(
-                messages,
-                image,
-                media_type=media_type,
-                model=selected_model,
-                max_output_tokens=max_output_tokens,
-            )
+            with _approve_model_egress(allow_external):
+                result = provider.complete_vision(
+                    messages,
+                    image,
+                    media_type=media_type,
+                    model=selected_model,
+                    max_output_tokens=max_output_tokens,
+                )
         except ProviderUnavailableError:
             raise
         except Exception as exc:
@@ -1206,19 +1519,90 @@ class ModelGateway:
             },
         )
 
+    def stream_complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str = "image/png",
+        provider_id: str = "auto",
+        model: str | None = None,
+        allow_external: bool = False,
+        max_output_tokens: int | None = None,
+    ) -> Iterator[StreamChunk]:
+        """Route image streams through the admitted image-aware provider."""
+        if type(image) is not bytes or not image or len(image) > 256*1024**2:
+            raise ValueError("Vision streaming requires bounded non-empty image bytes.")
+        if type(media_type) is not str or not media_type.startswith("image/"):
+            raise ValueError("Vision streaming requires an image MIME type.")
+        if max_output_tokens is not None and (type(max_output_tokens) is not int or max_output_tokens <= 0):
+            raise ValueError("Vision streaming requires a positive output token limit.")
+        provider = self._select_vision_provider(provider_id, allow_external=allow_external)
+        selected_model = self._effective_provider_model(provider, provider_id=provider_id, model=model)
+        if isinstance(provider, OllamaProvider):
+            with _approve_model_egress(allow_external):
+                selected_model = provider.resolve_vision_model(selected_model)
+        stream = getattr(provider, 'stream_complete_vision', None)
+        started = time.perf_counter()
+        if not callable(stream):
+            result = self.complete_vision(messages, image, media_type=media_type,
+                provider_id=provider.id, model=selected_model, allow_external=allow_external,
+                max_output_tokens=max_output_tokens)
+            metadata = {**result.metadata, 'streaming_mode': 'buffered-vision'}
+            for part in chunk_text(result.content):
+                yield StreamChunk(result.provider, result.model, part, False, metadata)
+            yield StreamChunk(result.provider, result.model, '', True, metadata)
+            return
+        iterator = None
+        first_token_ms = None
+        try:
+            with _approve_model_egress(allow_external):
+                iterator = iter(stream(messages, image, media_type=media_type, model=selected_model,
+                                       max_output_tokens=max_output_tokens))
+                for chunk in iterator:
+                    if chunk.content and first_token_ms is None:
+                        first_token_ms = (time.perf_counter()-started)*1000
+                    metadata = {**chunk.metadata, 'modality': 'vision',
+                        'routing_policy': self.routing_policy,
+                        'external_approved': bool(allow_external and not provider.local),
+                        'streaming_mode': 'native-vision'}
+                    if chunk.done:
+                        metadata.update(latency_ms=round((time.perf_counter()-started)*1000, 3),
+                                        first_token_ms=None if first_token_ms is None else round(first_token_ms, 3))
+                    yield StreamChunk(chunk.provider, chunk.model, chunk.content, chunk.done, metadata)
+                    if chunk.done:
+                        return
+                raise ProviderUnavailableError('Vision stream ended without a completion event.')
+        except ProviderUnavailableError:
+            raise
+        except Exception as exc:
+            raise ProviderUnavailableError(f"Vision streaming failed through provider '{provider.id}': {exc}") from exc
+        finally:
+            close = getattr(iterator, 'close', None)
+            if callable(close):
+                close()
+
     def _select_vision_provider(self, provider_id: str, *, allow_external: bool) -> ModelProvider:
         if provider_id == "auto":
             ollama = self.providers["ollama"]
             if ollama.available():
                 return ollama
+            native = self.providers.get('native-publisher')
+            if (native is not None and native.available() and
+                    callable(getattr(native, 'supports_vision', None)) and native.supports_vision()):
+                return native
             external = self.providers["openai-compatible"]
             if allow_external and external.available():
                 return external
             raise ProviderUnavailableError(
-                "No vision provider is available. Start Ollama with a vision-capable model, or configure an "
+                "No vision provider is available. Configure native publisher vision, start Ollama with a vision-capable model, or configure an "
                 "OpenAI-compatible vision endpoint and pass allow_external=true."
             )
         provider = self.select_provider(provider_id, allow_external=allow_external)
+        if provider.id == 'native-publisher':
+            if not provider.supports_vision():
+                raise ProviderUnavailableError('Native publisher vision requires an image placeholder and vision configuration.')
+            return provider
         if provider.id not in {"ollama", "openai-compatible"}:
             raise ProviderUnavailableError(
                 f"Provider '{provider.id}' does not support native vision completion. "
@@ -1277,7 +1661,7 @@ class ModelGateway:
         final_metadata: dict[str, Any] = {}
         fallback_used = False
         try:
-            with self.inference.activate(plan):
+            with self.inference.activate(plan), _approve_model_egress(allow_external):
                 for chunk in provider.stream_complete(plan.messages, model=selected_model):
                     if chunk.content:
                         parts.append(chunk.content)
@@ -1374,7 +1758,8 @@ class ModelGateway:
         started = time.perf_counter()
         fallback_used = False
         try:
-            result = provider.embed(texts, model=model)
+            with _approve_model_egress(allow_external):
+                result = provider.embed(texts, model=model)
             metadata = dict(result.metadata)
         except Exception as exc:
             fallback = self.select_fallback(provider.id)
@@ -1472,7 +1857,7 @@ class ModelGateway:
     ) -> str | None:
         """Preserve the real model identity when Auto selects a direct graph."""
 
-        if provider_id == "auto" and provider.id == "openvino-direct":
+        if provider_id == "auto" and provider.id in {"openvino-direct", "olmoe-direct", "hf-moe-direct"}:
             requested = str(model or "").strip()
             return requested if requested == provider.default_model else None
         return model
@@ -1481,7 +1866,9 @@ class ModelGateway:
         if provider_id == "auto":
             for candidate_id in self.route_order(allow_external=allow_external):
                 provider = self.providers[candidate_id]
-                if provider.available():
+                with _approve_model_egress(allow_external):
+                    available = provider.available()
+                if available:
                     return provider
             return self.providers["local"]
 
@@ -1499,6 +1886,8 @@ class ModelGateway:
     def route_order(self, *, allow_external: bool) -> list[str]:
         policies = self.policies()["routes"]
         configured = policies.get(self.routing_policy, policies["local-first"])
+        if "hf-moe-direct" in self.providers and self.routing_policy != "local":
+            configured = ["hf-moe-direct", *configured]
         if allow_external:
             return list(configured)
         return [provider_id for provider_id in configured if self.providers[provider_id].local]
@@ -1510,6 +1899,60 @@ class ModelGateway:
         if fallback and fallback.id != failed_provider_id:
             return fallback
         return None
+
+
+def _olmoe_prompt(messages: list[dict[str, str]]) -> str:
+    """Render OLMoE-Instruct's user/assistant turn structure."""
+    parts = ["|||IP_ADDRESS|||"]
+    rendered: list[tuple[str, str]] = []
+    for message in messages:
+        role = message.get("role")
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError(f"unsupported OLMoE message role: {role}")
+        rendered.append((str(role), content))
+    if not rendered or rendered[-1][0] != "user":
+        raise ValueError("OLMoE completion requires a final user message")
+    previous = ""
+    for role, content in rendered:
+        if role == "system":
+            if previous:
+                raise ValueError("OLMoE system messages must precede conversation turns")
+            parts.append(f"<|system|>\n{content}\n")
+        elif role == "user":
+            if previous not in {"", "system", "assistant"}:
+                raise ValueError("OLMoE user and assistant messages must alternate")
+            parts.append(f"<|user|>\n{content}\n")
+        else:
+            if previous != "user":
+                raise ValueError("OLMoE user and assistant messages must alternate")
+            parts.append(f"<|assistant|>\n{content}|||IP_ADDRESS|||\n")
+        previous = role
+    parts.append("<|assistant|>\n")
+    return "".join(parts)
+
+
+def _olmoe_storage_roots(value: str) -> dict[str, Path]:
+    if not value.strip():
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("OPENAGENT_OLMOE_STORAGE_ROOTS must be a JSON object") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("OPENAGENT_OLMOE_STORAGE_ROOTS must be a JSON object")
+    roots: dict[str, Path] = {}
+    for name, raw_path in payload.items():
+        if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+            raise ValueError("OLMoE storage root names must be simple identifiers")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("OLMoE storage root paths must be non-empty strings")
+        roots[name] = Path(raw_path).expanduser().resolve(strict=True)
+        if not roots[name].is_dir():
+            raise ValueError(f"OLMoE storage root is not a directory: {roots[name]}")
+    return roots
 
 
 def chunk_text(text: str, *, size: int = 80) -> Iterator[str]:
@@ -1547,9 +1990,13 @@ def delta_content(item: dict[str, Any]) -> str:
 
 def local_http_available(url: str, *, timeout: float = 0.35) -> bool:
     try:
-        request = Request(url, headers={"Accept": "application/json"})
-        with urlopen(request, timeout=timeout):
-            return True
+        response = EgressClient().fetch(
+            url, approved=_external_approval.get(), allow_loopback=True,
+            purpose="model provider availability", timeout_seconds=timeout,
+            max_response_bytes=1024 * 1024, max_redirects=0,
+            headers={"Accept": "application/json"},
+        )
+        return 200 <= response.status < 300
     except Exception:
         return False
 
@@ -1682,6 +2129,26 @@ def local_hash_embedding(text: str, *, dimensions: int) -> list[float]:
     return [round(value / magnitude, 6) for value in values]
 
 
+def get_json(url: str, *, timeout_seconds: float) -> dict[str, Any]:
+    response = EgressClient().fetch(
+        url, approved=_external_approval.get(), allow_loopback=True,
+        purpose="model provider discovery", timeout_seconds=timeout_seconds,
+        max_response_bytes=4 * 1024 * 1024, max_redirects=0,
+        headers={"Accept": "application/json"},
+    )
+    _require_model_http_success(response.status)
+    return json.loads(response.body.decode("utf-8"))
+
+
+def _require_model_http_success(status: int) -> None:
+    if not 200 <= status < 300:
+        raise ProviderUnavailableError(f"Model provider returned HTTP {status}.")
+
+
+class _ModelStreamCancelled(Exception):
+    pass
+
+
 def post_json(
     url: str,
     payload: dict[str, Any],
@@ -1689,14 +2156,75 @@ def post_json(
     headers: dict[str, str],
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    request = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
+    response = EgressClient().fetch(
+        url, approved=_external_approval.get(), allow_loopback=True,
+        purpose="model provider completion", method="POST",
+        body=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", **headers},
-        method="POST",
+        timeout_seconds=timeout_seconds or model_timeout_seconds(),
+        max_response_bytes=32 * 1024 * 1024, max_redirects=0,
     )
-    with urlopen(request, timeout=timeout_seconds or model_timeout_seconds()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    _require_model_http_success(response.status)
+    return json.loads(response.body.decode("utf-8"))
+
+
+def _stream_model_lines(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    headers: dict[str, str],
+) -> Iterator[str]:
+    events: Queue[tuple[str | None, BaseException | None]] = Queue(maxsize=64)
+    cancelled = threading.Event()
+    approved = _external_approval.get()
+
+    def publish(line: str | None, error: BaseException | None = None) -> None:
+        while not cancelled.is_set():
+            try:
+                events.put((line, error), timeout=0.1)
+                return
+            except Full:
+                continue
+        raise _ModelStreamCancelled()
+
+    def fetch_lines() -> None:
+        try:
+            response = EgressClient().fetch(
+                url, approved=approved, allow_loopback=True,
+                purpose="model provider streaming", method="POST",
+                body=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", **headers},
+                timeout_seconds=model_timeout_seconds(),
+                max_response_bytes=32 * 1024 * 1024, max_redirects=0,
+                on_line=lambda line: publish(line),
+            )
+            _require_model_http_success(response.status)
+        except _ModelStreamCancelled:
+            return
+        except Exception as exc:
+            if not cancelled.is_set():
+                try:
+                    publish(None, exc)
+                except _ModelStreamCancelled:
+                    pass
+        finally:
+            if not cancelled.is_set():
+                try:
+                    publish(None)
+                except _ModelStreamCancelled:
+                    pass
+
+    threading.Thread(target=fetch_lines, daemon=True, name="model-provider-stream").start()
+    try:
+        while True:
+            line, error = events.get()
+            if error is not None:
+                raise error
+            if line is None:
+                break
+            yield line
+    finally:
+        cancelled.set()
 
 
 def stream_json_lines(
@@ -1705,17 +2233,10 @@ def stream_json_lines(
     *,
     headers: dict[str, str],
 ) -> Iterator[dict[str, Any]]:
-    request = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
-        method="POST",
-    )
-    with urlopen(request, timeout=model_timeout_seconds()) as response:
-        for line in response:
-            raw = line.decode("utf-8").strip()
-            if raw:
-                yield json.loads(raw)
+    for line in _stream_model_lines(url, payload, headers=headers):
+        raw = line.strip()
+        if raw:
+            yield json.loads(raw)
 
 
 def stream_sse_json(
@@ -1724,24 +2245,17 @@ def stream_sse_json(
     *,
     headers: dict[str, str],
 ) -> Iterator[dict[str, Any]]:
-    request = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
-        method="POST",
-    )
-    with urlopen(request, timeout=model_timeout_seconds()) as response:
-        for line in response:
-            raw = line.decode("utf-8").strip()
-            if not raw:
-                continue
-            if raw == "data: [DONE]":
-                yield {"done": True}
-                break
-            if raw.startswith("data: "):
-                yield json.loads(raw.removeprefix("data: "))
-            else:
-                yield json.loads(raw)
+    for line in _stream_model_lines(url, payload, headers=headers):
+        raw = line.strip()
+        if not raw:
+            continue
+        if raw == "data: [DONE]":
+            yield {"done": True}
+            break
+        if raw.startswith("data: "):
+            yield json.loads(raw.removeprefix("data: "))
+        else:
+            yield json.loads(raw)
 
 
 def model_timeout_seconds() -> float:
@@ -1779,5 +2293,15 @@ def runtime_settings_snapshot() -> dict[str, Any]:
         "openvino_model_dir": os.environ.get("OPENAGENT_OPENVINO_MODEL_DIR", ""),
         "openvino_device": os.environ.get("OPENAGENT_OPENVINO_DEVICE", "GPU"),
         "openvino_model_id": os.environ.get("OPENAGENT_OPENVINO_MODEL_ID", "openagent-direct-chat"),
+        "olmoe_model_dir": os.environ.get("OPENAGENT_OLMOE_MODEL_DIR", ""),
+        "olmoe_manifest": os.environ.get("OPENAGENT_OLMOE_MANIFEST", ""),
+        "olmoe_expert_cache_gb": os.environ.get("OPENAGENT_OLMOE_EXPERT_CACHE_GB", "4"),
+        "olmoe_context": os.environ.get("OPENAGENT_OLMOE_CONTEXT", "4096"),
+        "olmoe_io_mode": os.environ.get("OPENAGENT_OLMOE_IO_MODE", "mmap"),
+        "olmoe_prefetch_workers": os.environ.get("OPENAGENT_OLMOE_PREFETCH_WORKERS", "2"),
+        "olmoe_prefetch_depth": os.environ.get("OPENAGENT_OLMOE_PREFETCH_DEPTH", "8"),
+        "olmoe_storage_roots": os.environ.get("OPENAGENT_OLMOE_STORAGE_ROOTS", ""),
+        "olmoe_kernel": os.environ.get("OPENAGENT_OLMOE_KERNEL", ""),
+        "olmoe_accelerator_cache_gb": os.environ.get("OPENAGENT_OLMOE_ACCELERATOR_CACHE_GB", "2"),
         "privacy_boundary": "Runtime settings update only the local OpenAgent process environment.",
     }

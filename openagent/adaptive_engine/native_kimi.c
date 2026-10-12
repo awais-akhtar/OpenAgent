@@ -208,3 +208,74 @@ API int oa_kimi_route(uint64_t experts, uint64_t topk, uint64_t renorm,
     }
     return 0;
 }
+
+/* Upstream fused-layout contract: biased membership, unbiased gathered weights.
+   Group membership uses the sum of each group's two highest corrected scores. */
+API int oa_kimi_group_route(uint64_t experts, uint64_t topk, uint64_t groups,
+    uint64_t group_topk, uint64_t renorm, double scale, const float *scores,
+    const float *bias, uint64_t *ids, float *weights) {
+    uint64_t g,i,j,a,per,best;
+    float *choice,*group_score,*work;
+    uint64_t *flags;
+    double total=0;
+    int result=5;
+    if (experts<2 || experts>4096 || !topk || topk>experts || !groups || groups>experts ||
+        experts%groups || experts/groups<2 || !group_topk || group_topk>groups ||
+        topk>group_topk*(experts/groups) || renorm>1 || !isfinite(scale) || scale<=0 ||
+        !scores || !bias || !ids || !weights || !finite_buffer(scores,experts) ||
+        !finite_buffer(bias,experts)) return 1;
+    per=experts/groups;
+    work=(float *)malloc((size_t)(experts+groups)*sizeof(float));
+    flags=(uint64_t *)calloc((size_t)(experts+groups),sizeof(uint64_t));
+    if (!work || !flags) { free(work); free(flags); return 4; }
+    choice=work; group_score=choice+experts;
+    for (i=0;i<experts;++i) {
+        double v=(double)scores[i]+bias[i];
+        if (!isfinite(v) || fabs(v)>FLT_MAX) goto finish;
+        choice[i]=(float)v;
+    }
+    for (g=0;g<groups;++g) {
+        double first=-DBL_MAX,second=-DBL_MAX;
+        for (i=g*per;i<(g+1)*per;++i) {
+            double v=choice[i];
+            if (v>first) { second=first; first=v; }
+            else if (v>second) second=v;
+        }
+        if (!isfinite(first+second) || fabs(first+second)>FLT_MAX) goto finish;
+        group_score[g]=(float)(first+second);
+    }
+    for (a=0;a<group_topk;++a) {
+        double maximum=-DBL_MAX;
+        best=groups;
+        for (g=0;g<groups;++g) if (!flags[experts+g] && group_score[g]>maximum) {
+            maximum=group_score[g]; best=g;
+        }
+        if (best==groups) goto finish;
+        flags[experts+best]=1;
+        if (a+1==group_topk && group_topk<groups) for (g=0;g<groups;++g)
+            if (!flags[experts+g] && group_score[g]==group_score[best]) { result=6; goto finish; }
+    }
+    for (a=0;a<topk;++a) {
+        double maximum=-DBL_MAX;
+        best=experts;
+        for (i=0;i<experts;++i) if (flags[experts+i/per] && !flags[i] && choice[i]>maximum) {
+            maximum=choice[i]; best=i;
+        }
+        if (best==experts) goto finish;
+        flags[best]=1;
+        if (a+1==topk && topk<group_topk*per) for (i=0;i<experts;++i)
+            if (flags[experts+i/per] && !flags[i] && choice[i]==choice[best]) { result=6; goto finish; }
+    }
+    /* Expert-index accumulation matches the oracle's fused bank execution. */
+    a=0;
+    for (i=0;i<experts;++i) if (flags[i]) { ids[a]=i; weights[a]=scores[i]; total+=scores[i]; ++a; }
+    if (renorm) total+=1e-20; else total=1;
+    for (j=0;j<topk;++j) {
+        double v=weights[j]/total*scale;
+        if (!isfinite(v) || fabs(v)>FLT_MAX) goto finish;
+        weights[j]=(float)v;
+    }
+    result=0;
+finish:
+    free(work); free(flags); return result;
+}

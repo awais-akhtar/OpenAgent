@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .migrations import MigrationRunner
 from .models import AgentResponse, AuditEvent, ChatMessage, ContextEvent, utc_now
+
+
+_INITIALIZE_LOCKS_GUARD = threading.Lock()
+_INITIALIZE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _initialize_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve()).casefold()
+    with _INITIALIZE_LOCKS_GUARD:
+        return _INITIALIZE_LOCKS.setdefault(key, threading.Lock())
 
 
 class OpenAgentStore:
@@ -27,9 +39,12 @@ class OpenAgentStore:
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
     @contextmanager
@@ -38,10 +53,22 @@ class OpenAgentStore:
         try:
             yield connection
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
     def initialize(self) -> None:
+        with _initialize_lock(self.db_path):
+            connection = self.connect()
+            try:
+                MigrationRunner(connection).run()
+            finally:
+                connection.close()
+
+    def _initialize_legacy_schema(self) -> None:
+        """Retained temporarily as a readable record of the pre-registry schema."""
         with self.session() as connection:
             connection.executescript(
                 """

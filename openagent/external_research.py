@@ -9,8 +9,9 @@ import json
 import re
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
+
+from .egress import EgressClient, EgressError
 
 
 USER_AGENT = "OpenAgent/0.13 local research client"
@@ -19,8 +20,10 @@ USER_AGENT = "OpenAgent/0.13 local research client"
 class ExternalResearchCollector:
     """Collect metadata from public scholarly, code, and web indexes."""
 
-    def __init__(self, *, timeout_seconds: float = 8.0) -> None:
+    def __init__(self, *, timeout_seconds: float = 8.0, approved: bool = False) -> None:
         self.timeout_seconds = max(2.0, min(float(timeout_seconds), 20.0))
+        self.approved = bool(approved)
+        self.egress = EgressClient()
 
     def search(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:
         query = _search_terms(query)
@@ -41,7 +44,7 @@ class ExternalResearchCollector:
             for future in as_completed(futures):
                 try:
                     found.extend(future.result())
-                except (OSError, ValueError, ET.ParseError, json.JSONDecodeError):
+                except (OSError, ValueError, EgressError, ET.ParseError, json.JSONDecodeError):
                     continue
         return _deduplicate(found)[: max(1, min(limit, 40))]
 
@@ -188,9 +191,17 @@ class ExternalResearchCollector:
         return results
 
     def _read(self, url: str, *, accept: str = "application/json, application/atom+xml, text/html") -> bytes:
-        request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
-        with urlopen(request, timeout=self.timeout_seconds) as response:
-            return response.read(2_000_000)
+        response = self.egress.fetch(
+            url,
+            approved=self.approved,
+            purpose="public research source discovery",
+            headers={"User-Agent": USER_AGENT, "Accept": accept},
+            timeout_seconds=self.timeout_seconds,
+            max_response_bytes=2_000_000,
+        )
+        if response.status < 200 or response.status >= 300:
+            raise EgressError(f"Research source returned HTTP {response.status}.")
+        return response.body
 
 
 def _source(

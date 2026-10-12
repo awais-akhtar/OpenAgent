@@ -23,13 +23,13 @@ import textwrap
 import threading
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
 from uuid import uuid4
 from xml.sax.saxutils import escape as xml_escape
 import zipfile
 
 from .advanced_rag import AdvancedRAGEngine
 from .document_processing import extract_office_text, extract_pdf_text
+from .egress import EgressClient
 from .model_gateway import ModelGateway
 from .models import AuditEvent, utc_now
 from .phd_documents import render_application_docx, render_application_pdf
@@ -182,27 +182,34 @@ class _DuckDuckGoResultParser(HTMLParser):
 class AcademicSearchClient:
     """Explicit-boundary academic web search with SearxNG support."""
 
-    def search(self, query: str, *, limit: int = 6) -> list[dict[str, str]]:
+    def __init__(self, *, egress: EgressClient | None = None) -> None:
+        self.egress = egress or EgressClient()
+
+    def search(self, query: str, *, limit: int = 6, approved: bool = False) -> list[dict[str, str]]:
         query = query.strip()
         if not query:
             return []
         limit = max(1, min(int(limit), 12))
         endpoint = os.environ.get("OPENAGENT_SEARCH_ENDPOINT", "").strip()
         if endpoint:
-            results = self._search_searx(endpoint, query, limit)
+            results = self._search_searx(endpoint, query, limit, approved=approved)
         else:
-            results = self._search_duckduckgo(query, limit)
+            results = self._search_duckduckgo(query, limit, approved=approved)
         return sorted(results, key=_academic_source_rank, reverse=True)[:limit]
 
-    def _search_searx(self, endpoint: str, query: str, limit: int) -> list[dict[str, str]]:
+    def _search_searx(self, endpoint: str, query: str, limit: int, *, approved: bool) -> list[dict[str, str]]:
         if "{query}" in endpoint:
             url = endpoint.replace("{query}", quote_plus(query))
         else:
             separator = "&" if "?" in endpoint else "?"
             url = f"{endpoint}{separator}q={quote_plus(query)}&format=json"
-        request = Request(url, headers={"Accept": "application/json", "User-Agent": "OpenAgent/1.0"})
-        with urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read(2 * 1024 * 1024).decode("utf-8", errors="replace"))
+        response = self.egress.fetch(
+            url, approved=approved, purpose="PhD academic search",
+            headers={"Accept": "application/json", "User-Agent": "OpenAgent/1.0"},
+            timeout_seconds=15, max_response_bytes=2 * 1024 * 1024,
+            allowed_content_types={"application/json"},
+        )
+        payload = json.loads(response.body.decode("utf-8", errors="replace"))
         records = payload.get("results", []) if isinstance(payload, dict) else []
         return [
             {
@@ -214,13 +221,15 @@ class AcademicSearchClient:
             if isinstance(item, dict) and str(item.get("url", "")).startswith(("http://", "https://"))
         ]
 
-    def _search_duckduckgo(self, query: str, limit: int) -> list[dict[str, str]]:
-        request = Request(
-            f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
+    def _search_duckduckgo(self, query: str, limit: int, *, approved: bool) -> list[dict[str, str]]:
+        response = self.egress.fetch(
+            f"https://html.duckduckgo.com/html/?q={quote_plus(query)}", approved=approved,
+            purpose="PhD academic search",
             headers={"Accept": "text/html", "User-Agent": "OpenAgent/1.0"},
+            timeout_seconds=15, max_response_bytes=2 * 1024 * 1024,
+            allowed_content_types={"text/html", "application/xhtml+xml"},
         )
-        with urlopen(request, timeout=15) as response:
-            html = response.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
+        html = response.body.decode("utf-8", errors="replace")
         parser = _DuckDuckGoResultParser()
         parser.feed(html)
         return parser.results[:limit]
@@ -755,7 +764,12 @@ class PhDWorkspace:
         search_error = ""
         if allow_external:
             try:
-                discovered.extend(self.search_client.search(research_query, limit=max_sources))
+                if isinstance(self.search_client, AcademicSearchClient):
+                    discovered.extend(self.search_client.search(research_query, limit=max_sources, approved=True))
+                else:
+                    # Keep the long-standing custom search adapter contract.
+                    # The workspace-level approval still gates this call.
+                    discovered.extend(self.search_client.search(research_query, limit=max_sources))
             except Exception as exc:
                 search_error = str(exc)
             discovered.extend({"url": url, "title": url, "snippet": ""} for url in urls)
@@ -776,6 +790,7 @@ class PhDWorkspace:
                     respect_robots=True,
                     ingest_to_knowledge=False,
                     include_text=True,
+                    allow_external=True,
                 )
             except Exception as exc:
                 fetched = {"status": "error", "error": str(exc), "url": url}

@@ -1,5 +1,6 @@
 const { defineConfig } = require("@playwright/test");
-const port = Number(process.env.OPENAGENT_E2E_PORT || 8765);
+const port = Number(process.env.OPENAGENT_E2E_PORT || 8899);
+const python = process.env.OPENAGENT_E2E_PYTHON || "python";
 
 module.exports = defineConfig({
   testDir: "./tests/e2e",
@@ -12,9 +13,9 @@ module.exports = defineConfig({
     screenshot: "only-on-failure"
   },
   webServer: {
-    command: `python -m openagent --host 127.0.0.1 --port ${port} --data-dir .tmp-playwright`,
+    command: `"${python}" -m openagent --host 127.0.0.1 --port ${port} --data-dir .tmp-playwright`,
     url: `http://127.0.0.1:${port}/api/health`,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120000
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }]

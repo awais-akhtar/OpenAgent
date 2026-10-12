@@ -7,7 +7,10 @@ requires-python = ">=3.11"
 authors = [
   { name = "Awais Akhtar" }
 ]
-dependencies = []
+dependencies = [
+  "argon2-cffi>=23,<26",
+  "cryptography>=44,<50",
+]
 
 [project.optional-dependencies]
 voice = [
@@ -37,6 +40,36 @@ security = [
 browser = [
   "playwright>=1.48,<2",
 ]
+engine = [
+  "numpy>=1.26,<3",
+  "tokenizers>=0.21,<1",
+  "threadpoolctl>=3.6,<4",
+]
+engine-native = [
+  "numpy>=1.26,<3",
+  "numba>=0.61,<1",
+  "tokenizers>=0.21,<1",
+  "threadpoolctl>=3.6,<4",
+]
+engine-torch = [
+  "numpy>=1.26,<3",
+  "torch>=2.6,<3",
+  "tokenizers>=0.21,<1",
+  "threadpoolctl>=3.6,<4",
+]
+engine-vulkan = [
+  "numpy>=1.26,<3",
+  "wgpu>=0.32,<1",
+  "tokenizers>=0.21,<1",
+  "threadpoolctl>=3.6,<4",
+]
+engine-hf-moe = [
+  "numpy>=1.26,<3",
+  "torch>=2.6,<3",
+  "transformers>=4.57,<5",
+  "accelerate>=1.15,<2",
+  "safetensors>=0.6,<1",
+]
 office = [
   "python-docx>=1.1,<2",
   "python-pptx>=1.0,<2",
@@ -58,6 +91,8 @@ full = [
   "reportlab>=4,<5",
   "webauthn>=3,<4",
   "playwright>=1.48,<2",
+  "tokenizers>=0.21,<1",
+  "threadpoolctl>=3.6,<4",
   "python-docx>=1.1,<2",
   "python-pptx>=1.0,<2",
   "openpyxl>=3.1,<4",
@@ -71,6 +106,17 @@ openagent-hard-check = "openagent.hard_check:main"
 openagent-worker = "openagent.worker:main"
 openagent-production-proof = "openagent.production_proof:main"
 openagent-codeq = "openagent.codebase.cli:main"
+openagent-olmoe = "openagent.adaptive_engine.olmoe_cli:main"
+openagent-native-olmoe = "openagent.adaptive_engine.native_olmoe_cli:main"
+openagent-publisher-v41 = "openagent.adaptive_engine.publisher_v41_cli:main"
+openagent-publisher-k3 = "openagent.adaptive_engine.publisher_k3_cli:main"
+openagent-olmoe-serve = "openagent.adaptive_engine.olmoe_serve:main"
+openagent-hf-moe = "openagent.adaptive_engine.hf_moe_cli:main"
+openagent-checkpoint-recovery = "openagent.adaptive_engine.checkpoint_recovery:main"
+
+[tool.setuptools.package-data]
+"openagent.adaptive_engine" = ["native/*.c", "native/*.h", "native/CMakeLists.txt", "*.c", "*.h"]
+"*" = ["*.c", "*.h", "*.cu", "*.swift", "*.metal", "*.hip", "*.cpp"]
 
 [tool.setuptools.packages.find]
 include = ["openagent*"]
@@ -83,6 +129,7 @@ include = ["openagent*"]
   "web/app.js",
   "web/manifest.json",
   "web/sw.js",
+  "web/icons.svg",
 ]
 
 [build-system]

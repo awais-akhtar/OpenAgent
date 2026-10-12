@@ -5,8 +5,8 @@ OpenAgent is designed around local ownership, explicit permissions, and inspecta
 ## Current Security Posture
 
 - The development server binds to `127.0.0.1` by default.
-- No telemetry is collected.
-- External model, connector, webhook, browser, and automation boundaries require explicit configuration and approval.
+- No remote telemetry service is configured by default. Audit records and local runtime metrics are collected on the host.
+- The shared egress path requires explicit approval for public destinations. Some older network integrations have not yet been migrated; review enabled connectors and firewall policy before exposing a deployment.
 - Application data is stored in the configured local data directory, with SQLite as the default system of record.
 - Chat, agents, research, workflows, and multi-model collaboration use the shared model gateway. External providers are disabled unless the caller approves that boundary.
 - RBAC, federation policies, OIDC/JWKS validation, passkey records, device trust, audit exports, and backup manifests are local-first.
@@ -14,7 +14,9 @@ OpenAgent is designed around local ownership, explicit permissions, and inspecta
 - Webhook delivery to HTTP or HTTPS targets is blocked unless a caller explicitly passes an approval flag.
 - Secret vault records, retention policies, sharing grants, egress approvals, audit-chain seals, privacy reports, and sandbox policy profiles are stored locally.
 - Encrypted envelopes and vault records use authenticated local encryption with integrity checks. Deployments that require certified cryptographic modules or hardware-backed keys must configure and validate those providers for their environment.
-- Plugin and command execution is permission-gated, scoped, and audited; operators remain responsible for reviewing enabled permissions and third-party packages.
+- The shared process policy bounds selected local command paths. Not every legacy subprocess integration uses it yet. Operators remain responsible for reviewing enabled permissions and third-party packages.
+
+The authenticated container and Kubernetes manifests are starting points, not a certified multi-user deployment. A shared database backend, complete tenant isolation review, backup/restore drill, and provider-specific acceptance tests are still required. See [modernization status](docs/MODERNIZATION_STATUS.md).
 
 ## Reporting Issues
 

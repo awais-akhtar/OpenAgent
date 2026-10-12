@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections import deque
 import ctypes
 from dataclasses import dataclass
 import hashlib
@@ -71,13 +70,33 @@ class LLMSession:
     total_generate_ms: float = 0.0
 
 
+@dataclass
+class ExpertSession:
+    id: str
+    path: str
+    offset: int
+    size: int
+    sha256: str
+    hidden_size: int
+    intermediate_size: int
+    dtype: str
+    device: str
+    compiled: Any
+    request: Any
+    signature: str
+    loaded_at: float
+    calls: int = 0
+    total_infer_ms: float = 0.0
+    batch_size: int = 1
+
+
 class HardwareWorker:
     def __init__(self) -> None:
         import openvino as ov  # type: ignore[import-not-found]
 
         self.ov = ov
         self.core = ov.Core()
-        self.models: dict[str, GenericSession | LLMSession] = {}
+        self.models: dict[str, GenericSession | LLMSession | ExpertSession] = {}
         self.started_at = time.time()
         self.command_count = 0
 
@@ -98,6 +117,12 @@ class HardwareWorker:
             return self.load_llm(command)
         if action == "infer":
             return self.infer(command)
+        if action == "load_expert":
+            return self.load_expert(command)
+        if action == "run_expert":
+            return self.run_expert(command)
+        if action == 'run_expert_batch':
+            return self.run_expert_batch(command)
         if action == "generate":
             return self.generate(command)
         if action == "generate_stream":
@@ -251,6 +276,115 @@ class HardwareWorker:
             "execution_devices": _as_list(_safe_compiled_property(session.compiled, "EXECUTION_DEVICES", [session.device])),
             "latency_ms": round(latency_ms, 4),
             "outputs": records,
+        }
+
+    def load_expert(self, command: dict[str, Any]) -> dict[str, Any]:
+        import numpy as np
+
+        batch_size = command.get("batch_size", 1)
+        if type(batch_size) is not int or not 1 <= batch_size <= 64:
+            raise ValueError("expert batch size must be between one and 64")
+        expert_id = _safe_identifier(command.get("expert_id"), "expert_id")
+        path = Path(str(command.get("path", ""))).expanduser().resolve(strict=True)
+        if not path.is_file():
+            raise ValueError("expert path must be a local file")
+        offset = int(command.get("offset", -1))
+        size = int(command.get("size", 0))
+        hidden = int(command.get("hidden_size", 0))
+        intermediate = int(command.get("intermediate_size", 0))
+        dtype = str(command.get("dtype", ""))
+        device = _device(command.get("device", "GPU"))
+        if offset < 0 or size <= 0 or hidden <= 0 or intermediate <= 0:
+            raise ValueError("expert range and dimensions must be positive")
+        if hidden > 65536 or intermediate > 262144 or size > 2 * 1024**3:
+            raise ValueError("expert dimensions or payload exceed the worker limit")
+        if batch_size*hidden > MAX_INLINE_ELEMENTS or batch_size*intermediate > MAX_AUTO_INPUT_ELEMENTS:
+            raise MemoryError('expert batch activation extent exceeds the worker limit')
+        if offset + size > path.stat().st_size:
+            raise ValueError("expert range exceeds the local file")
+        expected = _expert_payload_size(hidden, intermediate, dtype)
+        if size != expected:
+            raise ValueError(f"expert payload size mismatch: expected {expected}, received {size}")
+        checksum = str(command.get("sha256", "")).lower().strip()
+        if checksum and (len(checksum) != 64 or any(char not in "0123456789abcdef" for char in checksum)):
+            raise ValueError("expert checksum must be a SHA-256 hexadecimal digest")
+        with path.open("rb", buffering=0) as source:
+            source.seek(offset)
+            payload = source.read(size)
+        if len(payload) != size:
+            raise OSError("expert file ended before the declared region")
+        measured = hashlib.sha256(payload).hexdigest()
+        if checksum and measured != checksum:
+            raise ValueError("expert checksum mismatch")
+        signature = hashlib.sha256(
+            f"{path}:{offset}:{size}:{measured}:{hidden}:{intermediate}:{dtype}:{device}:{batch_size}".encode("utf-8")
+        ).hexdigest()
+        existing = self.models.get(expert_id)
+        if isinstance(existing, ExpertSession) and existing.signature == signature:
+            result = self._session_status(existing)
+            result["cache_hit"] = True
+            return result
+
+        gate, up, down = _decode_expert_payload(payload, hidden, intermediate, dtype)
+        ops = self.ov.opset13
+        input_node = ops.parameter([batch_size, hidden], np.float32, name="input")
+        gate_value = ops.matmul(input_node, ops.constant(gate), False, True)
+        up_value = ops.matmul(input_node, ops.constant(up), False, True)
+        activation = ops.multiply(ops.multiply(gate_value, ops.sigmoid(gate_value)), up_value)
+        output = ops.matmul(activation, ops.constant(down), False, True)
+        model = self.ov.Model([output], [input_node], f"expert-{expert_id}")
+        config = _filter_cpu_properties(self.core, device, _device_config({}, device=device))
+        if device == "NPU" or device.startswith("NPU."):
+            config.setdefault("NPU_COMPILER_TYPE", "PLUGIN")
+        started = time.perf_counter()
+        compiled = self.core.compile_model(model, device, config)
+        compile_ms = (time.perf_counter() - started) * 1000
+        session = ExpertSession(
+            expert_id, str(path), offset, size, measured, hidden, intermediate,
+            dtype, device, compiled, compiled.create_infer_request(), signature, time.time(),
+            batch_size=batch_size,
+        )
+        self.models[expert_id] = session
+        return {
+            **self._session_status(session),
+            "cache_hit": False,
+            "compile_ms": round(compile_ms, 3),
+            "execution_devices": _as_list(_safe_compiled_property(compiled, "EXECUTION_DEVICES", [device])),
+        }
+
+    def run_expert(self, command: dict[str, Any]) -> dict[str, Any]:
+        return self._run_expert(command, batched=False)
+
+    def run_expert_batch(self, command: dict[str, Any]) -> dict[str, Any]:
+        return self._run_expert(command, batched=True)
+
+    def _run_expert(self, command: dict[str, Any], *, batched: bool) -> dict[str, Any]:
+        import numpy as np
+
+        expert_id = _safe_identifier(command.get("expert_id"), "expert_id")
+        session = self.models.get(expert_id)
+        if not isinstance(session, ExpertSession):
+            raise KeyError(f"Expert is not resident: {expert_id}")
+        inputs = np.asarray(command.get("inputs"), dtype=np.float32)
+        expected = (session.batch_size, session.hidden_size) if batched else (session.hidden_size,)
+        if (not batched and session.batch_size != 1) or inputs.shape != expected or not np.isfinite(inputs).all():
+            raise ValueError('expert inputs differ from the compiled finite batch shape')
+        started = time.perf_counter()
+        outputs = session.request.infer({'input': inputs.reshape(session.batch_size, session.hidden_size)})
+        latency_ms = (time.perf_counter() - started) * 1000
+        result = np.asarray(outputs[session.compiled.output(0)], dtype=np.float32)
+        if result.shape != (session.batch_size, session.hidden_size) or not np.isfinite(result).all():
+            raise ArithmeticError("native expert produced an invalid output")
+        session.calls += 1
+        session.total_infer_ms += latency_ms
+        return {
+            "status": "completed",
+            "expert_id": expert_id,
+            "device": session.device,
+            "execution_devices": _as_list(_safe_compiled_property(session.compiled, "EXECUTION_DEVICES", [session.device])),
+            "latency_ms": round(latency_ms, 4),
+            "output": result.tolist() if batched else result[0].tolist(),
+            'batch_size': session.batch_size,
         }
 
     def generate(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -507,7 +641,21 @@ class HardwareWorker:
         return session
 
     @staticmethod
-    def _session_status(session: GenericSession | LLMSession) -> dict[str, Any]:
+    def _session_status(session: GenericSession | LLMSession | ExpertSession) -> dict[str, Any]:
+        if isinstance(session, ExpertSession):
+            average = session.total_infer_ms / session.calls if session.calls else 0.0
+            return {
+                "status": "resident", "kind": "expert", "model_id": session.id,
+                "path": session.path, "offset": session.offset, "size": session.size,
+                "device": session.device, "dtype": session.dtype,
+                "hidden_size": session.hidden_size, "intermediate_size": session.intermediate_size,
+                "batch_size": session.batch_size,
+                "calls": session.calls, "average_infer_ms": round(average, 4),
+                "loaded_at": session.loaded_at, "configuration_fingerprint": session.signature[:16],
+                "graph_constant_bytes": 3 * session.hidden_size * session.intermediate_size * 4,
+                "memory_accounting": "FP32 graph constants; driver allocations and compilation workspace are additional",
+                "execution_evidence": {"backend": "openvino", "compiled": True, "measured": bool(session.calls)},
+            }
         if isinstance(session, GenericSession):
             average = session.total_infer_ms / session.calls if session.calls else 0.0
             return {
@@ -531,6 +679,48 @@ def _model_file(value: object) -> Path:
     if not path.is_file() or path.suffix.lower() not in {".onnx", ".xml"}:
         raise ValueError("A local ONNX or OpenVINO XML model file is required")
     return path
+
+
+def _safe_identifier(value: object, label: str) -> str:
+    identifier = str(value or "").strip()
+    if not identifier or len(identifier) > 160 or any(not (char.isalnum() or char in "._-:") for char in identifier):
+        raise ValueError(f"{label} contains unsupported characters")
+    return identifier
+
+
+def _expert_payload_size(hidden: int, intermediate: int, dtype: str) -> int:
+    width = hidden * intermediate
+    if dtype == "int8-row":
+        return 3 * width + 4 * (2 * intermediate + hidden)
+    if dtype == "float16":
+        return 3 * width * 2
+    if dtype == "float32":
+        return 3 * width * 4
+    raise ValueError("unsupported expert payload dtype")
+
+
+def _decode_expert_payload(payload: bytes, hidden: int, intermediate: int, dtype: str):
+    import numpy as np
+
+    width = hidden * intermediate
+    if dtype == "int8-row":
+        values = np.frombuffer(payload, dtype=np.int8, count=3 * width)
+        scales = np.frombuffer(payload, dtype="<f4", count=2 * intermediate + hidden, offset=3 * width)
+        if not np.isfinite(scales).all() or np.any(scales <= 0):
+            raise ValueError("row-wise INT8 scales must be finite and positive")
+        gate = values[:width].reshape(intermediate, hidden).astype(np.float32) * scales[:intermediate, None]
+        up = values[width:2 * width].reshape(intermediate, hidden).astype(np.float32) * scales[intermediate:2 * intermediate, None]
+        down = values[2 * width:].reshape(hidden, intermediate).astype(np.float32) * scales[2 * intermediate:, None]
+        return gate, up, down
+    values = np.frombuffer(payload, dtype="<f2" if dtype == "float16" else "<f4", count=3 * width)
+    if not np.isfinite(values).all():
+        raise ValueError("floating-point expert payload contains non-finite values")
+    values = values.astype(np.float32)
+    return (
+        values[:width].reshape(intermediate, hidden),
+        values[width:2 * width].reshape(intermediate, hidden),
+        values[2 * width:].reshape(hidden, intermediate),
+    )
 
 
 def _model_directory(value: object) -> Path:

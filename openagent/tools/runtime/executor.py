@@ -41,6 +41,8 @@ class ToolRuntime:
     def execute(self, request: ToolRequest) -> ToolResult:
         started_at = _now()
         started = time.monotonic()
+        context: ExecutionContext | None = None
+        future: Any = None
         try:
             registration = self.registry.get(request.tool)
         except KeyError as exc:
@@ -61,6 +63,10 @@ class ToolRuntime:
                 pool.shutdown(wait=False, cancel_futures=True)
             result = self._finish(request, started_at, started, True, "succeeded", output=self._bound(output))
         except FutureTimeout:
+            if context is not None:
+                context.cancel()
+            if future is not None:
+                future.cancel()
             result = self._finish(request, started_at, started, False, "timeout", error="tool execution exceeded its timeout")
         except ToolCancelled as exc:
             result = self._finish(request, started_at, started, False, "cancelled", error=str(exc))

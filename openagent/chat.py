@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 import re
 import secrets
+import stat
 from typing import Any, Iterator
 
 from .context import ContextEngine
@@ -128,7 +130,8 @@ class ChatService:
             self.store.list_chat_messages(str(conversation["id"]), limit=5000), None,
         )
         attachment_context = self._attachment_context(effective_attachments)
-        if attachment_context:
+        vision = self._vision_attachment(effective_attachments)
+        if attachment_context and vision is None:
             result = self._complete_with_attachments(
                 messages, attachments=effective_attachments, provider=provider, model=model, allow_external=allow_external,
             )
@@ -147,25 +150,33 @@ class ChatService:
         chunk_provider = provider
         chunk_model = model or ""
         chunk_metadata = {}
-        for chunk in self.gateway.stream_complete(
-            messages,
-            provider_id=provider,
-            model=model,
-            allow_external=allow_external,
-        ):
-            if chunk.content:
-                parts.append(chunk.content)
-            chunk_provider = chunk.provider
-            chunk_model = chunk.model
-            chunk_metadata = chunk.metadata
-            yield {
-                "type": "chunk",
-                "provider": chunk.provider,
-                "model": chunk.model,
-                "content": chunk.content,
-                "done": chunk.done,
-                "metadata": chunk.metadata,
-            }
+        if vision is not None:
+            image, media_type = vision
+            response = self.gateway.stream_complete_vision(messages, image,
+                media_type=media_type, provider_id=provider, model=model,
+                allow_external=allow_external)
+        else:
+            response = self.gateway.stream_complete(messages, provider_id=provider,
+                model=model, allow_external=allow_external)
+        try:
+            for chunk in response:
+                if chunk.content:
+                    parts.append(chunk.content)
+                chunk_provider = chunk.provider
+                chunk_model = chunk.model
+                chunk_metadata = chunk.metadata
+                yield {
+                    "type": "chunk",
+                    "provider": chunk.provider,
+                    "model": chunk.model,
+                    "content": chunk.content,
+                    "done": chunk.done,
+                    "metadata": chunk.metadata,
+                }
+        finally:
+            close = getattr(response, 'close', None)
+            if callable(close):
+                close()
 
         assistant_message = self._record_assistant_message(
             conversation,
@@ -416,7 +427,19 @@ class ChatService:
             stored_path = str((asset or {}).get("stored_path", ""))
             path = Path(stored_path) if stored_path else None
             if path and path.is_file():
-                return path.read_bytes(), str((asset or {}).get("mime_type") or item.get("mime_type") or "image/png")
+                maximum = 256*1024**2
+                with path.open('rb') as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= maximum:
+                        raise ValueError('Image attachment must be a non-empty regular file within 256 MiB.')
+                    data = source.read(before.st_size+1)
+                    after = os.fstat(source.fileno())
+                current = path.stat()
+                def stamp(info):
+                    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                if len(data) != before.st_size or stamp(before) != stamp(after) or stamp(before) != stamp(current):
+                    raise ValueError('Image attachment changed while loading.')
+                return data, str((asset or {}).get("mime_type") or item.get("mime_type") or "image/png")
         return None
 
     @staticmethod

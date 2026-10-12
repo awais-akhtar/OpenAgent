@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 
+from openagent.egress import EgressResponse
 from openagent.routes.runtime import build_http_server
 from openagent.storage import OpenAgentStore
 from openagent.ultra_model_engine import UltraModelEngine, UltraModelError, validate_trusted_nodes
@@ -154,6 +155,39 @@ class UltraModelEngineTests(unittest.TestCase):
         actions = [item["action"] for item in self.store.list_audit_events(project="test", limit=20)]
         self.assertIn("ultra_model.launch", actions)
         self.assertIn("ultra_model.stop", actions)
+
+    def test_warmup_uses_loopback_only_egress_even_for_stored_sessions(self) -> None:
+        manifest = self._manifest(params=7, bits=4)
+        binary = self.root / "llama-server.exe"
+        binary.write_bytes(b"binary")
+        with patch("openagent.ultra_model_engine.subprocess.Popen", return_value=_FakeProcess()):
+            session = self.engine.launch(
+                manifest["id"], approved=True, executable=str(binary),
+                keep_warm=False, monitor=False,
+            )["session"]
+
+        calls = []
+
+        def local_fetch(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return EgressResponse(url, 200, {"content-type": "application/json"}, b"{}")
+
+        with patch("openagent.ultra_model_engine.EgressClient.fetch", local_fetch):
+            self.assertEqual(self.engine.warmup(session["id"])["status"], "ready")
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0][1]["approved"])
+        self.assertTrue(calls[0][1]["allow_loopback"])
+        self.assertEqual(calls[0][1]["max_redirects"], 0)
+
+        with self.store.session() as connection:
+            connection.execute(
+                "UPDATE ultra_model_sessions SET host = ? WHERE id = ?",
+                ("8.8.8.8", session["id"]),
+            )
+        with patch("openagent.egress.EgressClient._open_response") as connect:
+            with self.assertRaises(UltraModelError):
+                self.engine.warmup(session["id"])
+            connect.assert_not_called()
 
     def test_output_gate_rejects_unsupported_or_invalid_citations(self) -> None:
         verified = self.engine.verify_output(

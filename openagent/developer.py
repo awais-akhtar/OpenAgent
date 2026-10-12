@@ -9,8 +9,8 @@ import re
 import secrets
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
+from .egress import EgressClient
 from .models import AuditEvent, utc_now
 from .storage import OpenAgentStore
 
@@ -26,6 +26,7 @@ class DeveloperPlatform:
     def __init__(self, store: OpenAgentStore, resolvers: dict[str, Resolver] | None = None):
         self.store = store
         self.resolvers = resolvers or {}
+        self.egress = EgressClient()
         self.initialize()
         self.seed_defaults()
 
@@ -412,14 +413,15 @@ class DeveloperPlatform:
             response = {"reason": "network approval required", "target_url": target_url}
         else:
             try:
-                request = Request(
-                    target_url,
-                    data=json.dumps({"event": event, "payload": payload}).encode("utf-8"),
+                result = self.egress.fetch(
+                    target_url, approved=allow_network, allow_loopback=True,
+                    purpose=f"developer webhook: {event}",
+                    body=json.dumps({"event": event, "payload": payload}).encode("utf-8"),
                     headers={"Content-Type": "application/json", "User-Agent": "OpenAgent-Webhook/0.6"},
                     method="POST",
+                    timeout_seconds=30, max_response_bytes=1000,
                 )
-                with urlopen(request, timeout=30) as result:
-                    response = {"http_status": result.status, "body": result.read(1000).decode("utf-8", "replace")}
+                response = {"http_status": result.status, "body": result.body.decode("utf-8", "replace")}
                 status = "delivered"
             except Exception as exc:
                 status = "failed"

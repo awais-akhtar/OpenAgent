@@ -19,12 +19,11 @@ import hashlib
 import json
 import xml.etree.ElementTree as ET
 from typing import Any
-from urllib.error import HTTPError
 from urllib.parse import urljoin
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from .calendar_system import CalendarSystem, event_to_ical, parse_ical
+from .egress import EgressClient, EgressError
 from .models import utc_now
 from .storage import OpenAgentStore
 
@@ -63,119 +62,17 @@ def _xml_local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
-def _fetch_remote_ics(provider_row: Any) -> str:
-    """Fetch the raw ICS payload for a provider row (stdlib-only, no deps)."""
-    kind = provider_row["provider"]
-    if kind == "manual":
-        config = json.loads(provider_row["config_json"] or "{}")
-        return str(config.get("ics_seed", ""))
-    if kind == "caldav_http":
-        base_url = provider_row["base_url"]
-        if not base_url:
-            raise CalendarSyncError("provider has no base_url configured")
-        with urlopen(base_url, timeout=20) as response:  # noqa: S310 - local-first, user-provided URL
-            return response.read().decode("utf-8", errors="replace")
-    raise CalendarSyncError(f"unsupported provider kind '{kind}'")
-
-
 class CalendarSyncManager:
     """Owns sync provider registration, pull/push runs, and conflict resolution."""
 
     def __init__(self, store: OpenAgentStore, calendar_system: CalendarSystem) -> None:
         self.store = store
         self.calendar_system = calendar_system
+        self.egress = EgressClient()
         self.initialize()
 
     def initialize(self) -> None:
-        with self.store.session() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS calendar_sync_providers (
-                    id TEXT PRIMARY KEY,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    owner TEXT NOT NULL DEFAULT 'local',
-                    provider TEXT NOT NULL,
-                    base_url TEXT NOT NULL DEFAULT '',
-                    account_ref TEXT NOT NULL DEFAULT '',
-                    calendar_id TEXT NOT NULL DEFAULT '',
-                    sync_token TEXT NOT NULL DEFAULT '',
-                    config_json TEXT NOT NULL DEFAULT '{}',
-                    status TEXT NOT NULL DEFAULT 'connected',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_calendar_sync_providers_project
-                    ON calendar_sync_providers(project);
-
-                CREATE INDEX IF NOT EXISTS idx_calendar_sync_providers_owner_project
-                    ON calendar_sync_providers(owner, project);
-
-                CREATE TABLE IF NOT EXISTS calendar_sync_jobs (
-                    id TEXT PRIMARY KEY,
-                    provider_id TEXT NOT NULL,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    direction TEXT NOT NULL DEFAULT 'pull',
-                    conflict_policy TEXT NOT NULL DEFAULT 'latest_update',
-                    state TEXT NOT NULL DEFAULT 'queued',
-                    pulled INTEGER NOT NULL DEFAULT 0,
-                    pushed INTEGER NOT NULL DEFAULT 0,
-                    conflicts INTEGER NOT NULL DEFAULT 0,
-                    error TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_calendar_sync_jobs_provider
-                    ON calendar_sync_jobs(provider_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS calendar_sync_uid_map (
-                    id TEXT PRIMARY KEY,
-                    provider_id TEXT NOT NULL,
-                    local_event_id TEXT NOT NULL,
-                    remote_uid TEXT NOT NULL,
-                    remote_hash TEXT NOT NULL DEFAULT '',
-                    local_hash TEXT NOT NULL DEFAULT '',
-                    remote_etag TEXT NOT NULL DEFAULT '',
-                    remote_href TEXT NOT NULL DEFAULT '',
-                    deleted_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(provider_id, remote_uid)
-                );
-
-                CREATE TABLE IF NOT EXISTS calendar_sync_conflicts (
-                    id TEXT PRIMARY KEY,
-                    provider_id TEXT NOT NULL,
-                    project TEXT NOT NULL DEFAULT 'default',
-                    local_event_id TEXT NOT NULL DEFAULT '',
-                    remote_uid TEXT NOT NULL DEFAULT '',
-                    local_payload_json TEXT NOT NULL DEFAULT '{}',
-                    remote_payload_json TEXT NOT NULL DEFAULT '{}',
-                    local_updated_at TEXT NOT NULL DEFAULT '',
-                    remote_seen_at TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'open',
-                    resolution TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    resolved_at TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_calendar_sync_conflicts_project
-                    ON calendar_sync_conflicts(project, status);
-                """
-            )
-            self._ensure_column(connection, "calendar_sync_providers", "owner", "TEXT NOT NULL DEFAULT 'local'")
-            self._ensure_column(connection, "calendar_sync_providers", "sync_token", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "calendar_sync_uid_map", "remote_etag", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "calendar_sync_uid_map", "remote_href", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "calendar_sync_uid_map", "deleted_at", "TEXT NOT NULL DEFAULT ''")
-
-    def _ensure_column(self, connection: Any, table: str, column: str, definition: str) -> None:
-        columns = {
-            row["name"]
-            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
-        }
-        if column not in columns:
-            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        self.store.initialize()
 
     # ------------------------------------------------------------------
     # Providers
@@ -282,6 +179,8 @@ class CalendarSyncManager:
         direction: str = "pull",
         conflict_policy: str = "latest_update",
         owner: str = "",
+        allow_external: bool = False,
+        allow_local_transport: bool = False,
     ) -> dict[str, Any]:
         with self.store.session() as connection:
             provider_row = self._provider_row(connection, provider_id, owner=owner)
@@ -292,10 +191,21 @@ class CalendarSyncManager:
         state = "completed"
         error = ""
         try:
+            if provider_row["provider"] == "caldav_http" and not allow_external:
+                raise CalendarSyncError("CalDAV network sync requires allow_external=true for this run")
             if direction in ("pull", "bidirectional"):
-                pulled, conflicts = self._pull(provider_row, conflict_policy)
+                pulled, conflicts = self._pull(
+                    provider_row,
+                    conflict_policy,
+                    allow_external=allow_external,
+                    allow_local_transport=allow_local_transport,
+                )
             if direction in ("push", "bidirectional"):
-                pushed = self._push(provider_row)
+                pushed = self._push(
+                    provider_row,
+                    allow_external=allow_external,
+                    allow_local_transport=allow_local_transport,
+                )
             if direction not in ("pull", "push", "bidirectional"):
                 raise CalendarSyncError(f"unsupported direction '{direction}'")
         except CalendarSyncError as exc:
@@ -353,8 +263,19 @@ class CalendarSyncManager:
                 "completed_at": row["completed_at"],
             }
 
-    def _pull(self, provider_row: Any, conflict_policy: str) -> tuple[int, int]:
-        remote_events, remote_meta = self._fetch_remote_events(provider_row)
+    def _pull(
+        self,
+        provider_row: Any,
+        conflict_policy: str,
+        *,
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> tuple[int, int]:
+        remote_events, remote_meta = self._fetch_remote_events(
+            provider_row,
+            allow_external=allow_external,
+            allow_local_transport=allow_local_transport,
+        )
         project = provider_row["project"]
         calendar_id = provider_row["calendar_id"] or ""
         pulled = 0
@@ -406,20 +327,67 @@ class CalendarSyncManager:
         pulled += deleted
         return pulled, conflicts
 
-    def _fetch_remote_events(self, provider_row: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _fetch_remote_events(
+        self,
+        provider_row: Any,
+        *,
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         kind = provider_row["provider"]
         config = json.loads(provider_row["config_json"] or "{}")
         if kind == "manual":
-            ics_text = _fetch_remote_ics(provider_row)
+            ics_text = str(config.get("ics_seed", ""))
             return parse_ical(ics_text) if ics_text else [], {}
         if kind == "caldav_http":
             if config.get("sync_method") == "report" or config.get("use_report"):
-                return self._caldav_report_events(provider_row)
-            ics_text = _fetch_remote_ics(provider_row)
+                return self._caldav_report_events(
+                    provider_row,
+                    allow_external=allow_external,
+                    allow_local_transport=allow_local_transport,
+                )
+            ics_text = self._fetch_caldav_ics(
+                provider_row,
+                allow_external=allow_external,
+                allow_local_transport=allow_local_transport,
+            )
             return parse_ical(ics_text) if ics_text else [], {}
         raise CalendarSyncError(f"unsupported provider kind '{kind}'")
 
-    def _caldav_report_events(self, provider_row: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _fetch_caldav_ics(
+        self,
+        provider_row: Any,
+        *,
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> str:
+        config = json.loads(provider_row["config_json"] or "{}")
+        base_url = str(provider_row["base_url"] or "").strip()
+        if not base_url:
+            raise CalendarSyncError("CalDAV provider has no base URL configured")
+        try:
+            response = self.egress.fetch(
+                base_url,
+                approved=allow_external,
+                allow_loopback=allow_local_transport,
+                purpose="CalDAV calendar pull",
+                headers=self._caldav_headers(config, {"Accept": "text/calendar, application/octet-stream"}),
+                timeout_seconds=float(config.get("timeout_seconds") or 20),
+                max_response_bytes=int(config.get("max_response_bytes") or 20 * 1024 * 1024),
+            )
+        except (EgressError, PermissionError) as exc:
+            raise CalendarSyncError(f"CalDAV pull blocked or failed: {exc}") from exc
+        if not 200 <= response.status < 300:
+            raise CalendarSyncError(f"CalDAV pull returned HTTP {response.status}")
+        return response.body.decode("utf-8", errors="replace")
+
+    def _caldav_report_events(
+        self,
+        provider_row: Any,
+        *,
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         config = json.loads(provider_row["config_json"] or "{}")
         collection_url = str(config.get("calendar_collection_url") or provider_row["base_url"]).rstrip("/")
         if not collection_url:
@@ -443,13 +411,23 @@ class CalendarSyncManager:
                 '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/></C:comp-filter></C:filter>'
                 "</C:calendar-query>"
             )
-        request = Request(collection_url, data=body.encode("utf-8"), method="REPORT", headers=headers)
-        timeout = int(config.get("timeout_seconds") or 20)
         try:
-            with urlopen(request, timeout=timeout) as response:  # noqa: S310 - explicit user-configured CalDAV URL
-                raw_xml = response.read().decode("utf-8", errors="replace")
-        except Exception as exc:  # noqa: BLE001 - converted into sync job failure
+            response = self.egress.fetch(
+                collection_url,
+                approved=allow_external,
+                allow_loopback=allow_local_transport,
+                purpose="CalDAV collection REPORT",
+                method="REPORT",
+                body=body.encode("utf-8"),
+                headers=headers,
+                timeout_seconds=float(config.get("timeout_seconds") or 20),
+                max_response_bytes=int(config.get("max_response_bytes") or 20 * 1024 * 1024),
+            )
+        except (EgressError, PermissionError) as exc:
             raise CalendarSyncError(f"CalDAV REPORT failed: {exc}") from exc
+        if response.status not in {200, 207}:
+            raise CalendarSyncError(f"CalDAV REPORT returned HTTP {response.status}")
+        raw_xml = response.body.decode("utf-8", errors="replace")
         events: list[dict[str, Any]] = []
         deleted_hrefs: list[str] = []
         next_sync_token = ""
@@ -667,7 +645,13 @@ class CalendarSyncManager:
     # Push: manual adapters record local mappings; CalDAV adapters must PUT successfully.
     # ------------------------------------------------------------------
 
-    def _push(self, provider_row: Any) -> int:
+    def _push(
+        self,
+        provider_row: Any,
+        *,
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> int:
         project = provider_row["project"]
         calendar_id = provider_row["calendar_id"] or ""
         local_events = self.calendar_system.list_events(project=project, calendar_id=calendar_id, limit=500)
@@ -687,7 +671,14 @@ class CalendarSyncManager:
             remote_uid = mapping["remote_uid"] if mapping is not None else f"openagent-{event['id']}@local-push"
             put_meta: dict[str, str] = {}
             if provider_row["provider"] == "caldav_http" and provider_row["base_url"]:
-                put_meta = self._put_caldav_event(provider_row, event, mapping=mapping, remote_uid=remote_uid)
+                put_meta = self._put_caldav_event(
+                    provider_row,
+                    event,
+                    mapping=mapping,
+                    remote_uid=remote_uid,
+                    allow_external=allow_external,
+                    allow_local_transport=allow_local_transport,
+                )
             with self.store.session() as connection:
                 if mapping is None:
                     connection.execute(
@@ -717,7 +708,16 @@ class CalendarSyncManager:
             pushed += 1
         return pushed
 
-    def _put_caldav_event(self, provider_row: Any, event: dict[str, Any], *, mapping: Any = None, remote_uid: str = "") -> dict[str, str]:
+    def _put_caldav_event(
+        self,
+        provider_row: Any,
+        event: dict[str, Any],
+        *,
+        mapping: Any = None,
+        remote_uid: str = "",
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> dict[str, str]:
         config = json.loads(provider_row["config_json"] or "{}")
         base_url = str(config.get("calendar_collection_url") or provider_row["base_url"]).rstrip("/")
         if not base_url:
@@ -738,26 +738,27 @@ class CalendarSyncManager:
             headers["If-Match"] = f'"{mapping["remote_etag"]}"'
         elif config.get("if_none_match", True):
             headers["If-None-Match"] = "*"
-        request = Request(
-            url,
-            data=self._caldav_ical_body(event).encode("utf-8"),
-            method="PUT",
-            headers=headers,
-        )
-        timeout = int(config.get("timeout_seconds") or 20)
         try:
-            with urlopen(request, timeout=timeout) as response:  # noqa: S310 - explicit user-configured CalDAV URL
-                status = int(getattr(response, "status", response.getcode()))
-                etag = str(response.headers.get("ETag", "")).strip().strip('"')
-        except HTTPError as exc:
-            if exc.code in {409, 412}:
-                raise CalendarSyncError(f"CalDAV ETag/update conflict for {event['id']}: HTTP {exc.code}") from exc
-            raise CalendarSyncError(f"CalDAV PUT failed for {event['id']}: HTTP {exc.code}") from exc
-        except Exception as exc:  # noqa: BLE001 - converted into sync job failure
+            response = self.egress.fetch(
+                url,
+                approved=allow_external,
+                allow_loopback=allow_local_transport,
+                purpose="CalDAV event PUT",
+                method="PUT",
+                body=self._caldav_ical_body(event).encode("utf-8"),
+                headers=headers,
+                timeout_seconds=float(config.get("timeout_seconds") or 20),
+                max_response_bytes=1024 * 1024,
+            )
+        except (EgressError, PermissionError) as exc:
             raise CalendarSyncError(f"CalDAV PUT failed for {event['id']}: {exc}") from exc
+        status = response.status
+        etag = str(response.headers.get("etag", "")).strip().strip('"')
+        if status in {409, 412}:
+            raise CalendarSyncError(f"CalDAV ETag/update conflict for {event['id']}: HTTP {status}")
         success_codes = tuple(int(code) for code in config.get("success_codes", CALDAV_SUCCESS_CODES))
         if status not in success_codes:
-            raise CalendarSyncError(f"CalDAV PUT returned HTTP {status} for {event['id']}")
+            raise CalendarSyncError(f"CalDAV PUT failed for {event['id']}: HTTP {status}")
         return {"remote_href": returned_href, "remote_etag": etag}
 
     def _caldav_headers(self, config: dict[str, Any], extra: dict[str, str] | None = None) -> dict[str, str]:
