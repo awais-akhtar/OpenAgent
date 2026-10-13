@@ -82,7 +82,7 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
                 error = str(failure) or type(failure).__name__
             self._agree(descriptor,error)
             providers = [None]*self.world_size
-            self.distributed.all_gather_object(providers,self._provider_identity,group=self.group)
+            self._collective('all_gather_object',providers,self._provider_identity,group=self.group)
             self._packed[source] = tuple(shape)
             self._pins[source] = tuple(providers)
 
@@ -182,7 +182,7 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
                         padded = torch.zeros((batch,maximum),dtype=torch.float32,device=self.device)
                         padded[:,:stop-start] = torch.tensor(local,dtype=torch.float32,device=self.device)
                         gathered = [torch.empty_like(padded) for _ in range(self.world_size)]
-                    self.distributed.all_gather(gathered,padded,group=self.group)
+                    self._collective('all_gather',gathered,padded,group=self.group)
                     with self.local_stage((descriptor,'gather-export')):
                         output = torch.cat([part[:,:right-left] for part,(left,right) in zip(gathered,extents)],dim=-1)
                         if not bool(torch.isfinite(output).all()):

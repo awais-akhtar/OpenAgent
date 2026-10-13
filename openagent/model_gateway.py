@@ -1373,6 +1373,57 @@ class ModelGateway:
                 pass
         return discovered
 
+    def score_brio(self, state: Any, options: list[str] | tuple[str, ...], *,
+                   question: str = "", model: str | None = None,
+                   normalize: str = "mean", cancelled: Any = None,
+                   cache_slot: int | None = None) -> dict[str, Any]:
+        """Route closed-set scoring only to the explicitly configured native engine."""
+        provider = self.providers.get("native-publisher")
+        if provider is None:
+            raise ProviderUnavailableError("native publisher scoring is not configured")
+        scorer = getattr(provider, "score_brio", None)
+        if not callable(scorer):
+            raise ProviderUnavailableError("native publisher does not expose closed-set scoring")
+        return scorer(state, options, question=question, model=model,
+                      normalize=normalize, cancelled=cancelled, cache_slot=cache_slot)
+
+    def score_brio_questions(self, state: Any, questions: list[dict[str, Any]], *,
+                             model: str | None = None, normalize: str = "mean",
+                             cancelled: Any = None, option_limit: int = 64,
+                             cache_slot: int | None = None,
+                             jev_model_alias: bool = False) -> dict[str, Any]:
+        provider = self.providers.get("native-publisher")
+        scorer = getattr(provider, "score_brio_questions", None)
+        if not callable(scorer):
+            raise ProviderUnavailableError("native publisher batch scoring is not configured")
+        return scorer(state, questions, model=model, normalize=normalize, cancelled=cancelled,
+                      option_limit=option_limit, cache_slot=cache_slot,
+                      jev_model_alias=jev_model_alias)
+
+    def score_brio_schema(self, state: Any, schema: dict[str, Any], *, task: str = "",
+                          model: str | None = None, normalize: str = "mean",
+                          cancelled: Any = None, cache_slot: int | None = None) -> dict[str, Any]:
+        provider = self.providers.get("native-publisher")
+        scorer = getattr(provider, "score_brio_schema", None)
+        if not callable(scorer):
+            raise ProviderUnavailableError("native publisher schema scoring is not configured")
+        return scorer(state, schema, task=task, model=model,
+                      normalize=normalize, cancelled=cancelled, cache_slot=cache_slot)
+
+    @staticmethod
+    def serialize_jev_state(value: Any) -> str:
+        if type(value) is str:
+            return value
+        if type(value) in (dict, list):
+            try:
+                rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError) as error:
+                raise ProviderConfigurationError("Jev state/instructions must be JSON-serializable") from error
+            if len(rendered.encode("utf-8")) > 1024**2:
+                raise ProviderConfigurationError("serialized Jev text exceeds the 1 MiB limit")
+            return rendered
+        raise ProviderConfigurationError("Jev state/instructions must be text, object or array")
+
     def complete(
         self,
         messages: list[dict[str, str]],
@@ -2197,6 +2248,7 @@ def _stream_model_lines(
                 timeout_seconds=model_timeout_seconds(),
                 max_response_bytes=32 * 1024 * 1024, max_redirects=0,
                 on_line=lambda line: publish(line),
+                cancelled=cancelled.is_set,
             )
             _require_model_http_success(response.status)
         except _ModelStreamCancelled:

@@ -38,6 +38,37 @@ class _BoundedWriter:
         if self.size+len(value)>self.limit: raise MemoryError('compound cache component exceeds transport admission')
         _write(self.output,value);self.size+=len(value);return len(value)
 
+class _CancellableReader:
+    """Expose a component frame while retaining the group cancel boundary."""
+    def __init__(self, stream, boundary):
+        self._stream = stream
+        self._boundary = boundary
+
+    def read(self, size=-1):
+        self._boundary()
+        value = self._stream.read(size)
+        self._boundary()
+        return value
+
+    def readinto(self, buffer):
+        self._boundary()
+        count = self._stream.readinto(buffer)
+        self._boundary()
+        return count
+
+    def seek(self, *args):
+        self._boundary()
+        return self._stream.seek(*args)
+
+    def tell(self):
+        self._boundary()
+        return self._stream.tell()
+
+    def __getattr__(self, name):
+        # Preserve narrowly required binary-stream attributes (for example
+        # ``fileno``) without bypassing the read/seek/tell guards above.
+        return getattr(self._stream, name)
+
 def write_components(output,components,*,identity,max_bytes,cancelled=None):
     """Spool component frames on disk, admitting their aggregate before publication."""
     if type(max_bytes) is not int or max_bytes<128 or not 1<=len(components)<=64:
@@ -73,8 +104,11 @@ def restore_components(source,components,*,identity,max_bytes,cancelled=None,val
         if cancelled is not None and cancelled(): raise InterruptedError('compound cache recovery cancelled')
     boundary();prefix=_read(source,12);length=struct.unpack('<I',prefix[8:])[0]
     if prefix[:8]!=_MAGIC or not 0<length<=min(65536,max_bytes-44): raise ValueError('invalid compound cache header')
-    raw=_read(source,length);header=json.loads(raw,object_pairs_hook=_pairs)
-    if type(header) is not dict or set(header)!={'identity','lengths'} or header['identity']!=identity:
+    raw=_read(source,length);header=json.loads(
+        raw, object_pairs_hook=_pairs,
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    if (type(header) is not dict or set(header) != {'identity','lengths'} or
+            type(header['identity']) is not type(identity) or header['identity'] != identity):
         raise ValueError('compound cache execution identity differs')
     lengths=header['lengths']
     if type(lengths) is not list or len(lengths)!=len(components) or any(type(v) is not int or v<=0 for v in lengths):
@@ -87,14 +121,15 @@ def restore_components(source,components,*,identity,max_bytes,cancelled=None,val
             while size:
                 boundary();chunk=_read(source,min(size,1024**2));digest.update(chunk);_write(stream,chunk);size-=len(chunk)
             stream.seek(0)
-        if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
+        if (not hmac.compare_digest(digest.digest(), _read(source, 32)) or
+                _read(source, 1) != b''):
             raise ValueError('compound cache checksum or EOF differs')
         receipts=[]
         try:
             for component in components: boundary();receipts.append(component.snapshot())
             try:
                 for component,stream,size in zip(components,frames,lengths):
-                    boundary();component.restore_cache(stream,max_bytes=size)
+                    boundary();component.restore_cache(_CancellableReader(stream,boundary),max_bytes=size)
                 if validate is not None: validate()
                 boundary()
             except BaseException as error:

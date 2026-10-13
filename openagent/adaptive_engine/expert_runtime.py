@@ -409,6 +409,8 @@ class SparseExpertRuntime:
         }
         self._lock = threading.Lock()
         self._adaptive_pins: set[str] = set()
+        self._closed = False
+        self._closing = False
 
     @staticmethod
     def _check_contract(layer, kernels, preferred, fallback, *, batch=False):
@@ -425,7 +427,13 @@ class SparseExpertRuntime:
     def key(layer_id: str, expert_id: str) -> str:
         return f"{layer_id}/{expert_id}"
 
+    def _check_open(self) -> None:
+        with self._lock:
+            if self._closed or self._closing:
+                raise RuntimeError('sparse expert runtime is closed')
+
     def execute(self, layer_id: str, hidden, routes: Sequence[tuple[str, float]]):
+        self._check_open()
         layer = self.layers.get(layer_id)
         if layer is None:
             raise KeyError(layer_id)
@@ -466,6 +474,7 @@ class SparseExpertRuntime:
         return output
 
     def execute_batch(self, layer_id: str, hidden_batch, route_batch: Sequence[Sequence[tuple[str, float]]]):
+        self._check_open()
         if len(hidden_batch) != len(route_batch):
             raise ValueError("hidden and route batches must have equal length")
         layer = self.layers.get(layer_id)
@@ -514,6 +523,7 @@ class SparseExpertRuntime:
         return output
 
     def pin_hot(self, layer_id: str, *, limit: int, load: bool = False) -> list[str]:
+        self._check_open()
         if layer_id not in self.layers:
             raise KeyError(layer_id)
         selected = self.predictor.hot(layer_id, limit=limit)
@@ -523,6 +533,7 @@ class SparseExpertRuntime:
 
     def rebalance_hot(self, *, budget_bytes: int, load: bool = False) -> list[str]:
         """Promote the most frequently useful experts per resident byte."""
+        self._check_open()
         if budget_bytes < 0 or budget_bytes > self.store.capacity_bytes:
             raise ValueError("hot-set budget must fit the expert cache")
         candidates: list[tuple[float, str, int]] = []
@@ -542,6 +553,7 @@ class SparseExpertRuntime:
         return selected
 
     def save_route_profile(self, path: str | Path) -> Path:
+        self._check_open()
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".tmp")
@@ -556,6 +568,7 @@ class SparseExpertRuntime:
         return destination
 
     def load_route_profile(self, path: str | Path, *, max_bytes=16*1024*1024) -> None:
+        self._check_open()
         if type(max_bytes) is not int or max_bytes <= 0:
             raise ValueError('positive route profile byte limit required')
         try:
@@ -594,12 +607,24 @@ class SparseExpertRuntime:
         with self._lock:
             layer_stats = {key: dict(value) for key, value in self._stats["layers"].items()}
             compute = {key: value for key, value in self._stats.items() if key != "layers"}
+            closed = self._closed
+            closing = self._closing
+        if closed or closing:
+            return {
+                "model_id": self.manifest.model_id,
+                "closed": closed,
+                "closing": closing,
+                "architecture": self.manifest.architecture,
+                "compute": {**compute, "layers": layer_stats},
+                "preferred_kernel": self.preferred_kernel,
+            }
         store = self.store.status()
         from .expert_store import DEFAULT_EXPERT_KERNELS
 
         registry = self.kernels or DEFAULT_EXPERT_KERNELS
         return {
             "model_id": self.manifest.model_id,
+            "closed": False,
             "architecture": self.manifest.architecture,
             "compute": {
                 **compute,
@@ -630,9 +655,30 @@ class SparseExpertRuntime:
         }
 
     def close(self) -> None:
-        self.store.close()
-        if self.kernels is not None:
-            self.kernels.close()
+        with self._lock:
+            if self._closed:
+                return
+            if self._closing:
+                raise RuntimeError('sparse expert runtime cleanup is already active')
+            self._closing = True
+            errors = []
+        try:
+            try:
+                self.store.close()
+            except BaseException as error:
+                errors.append(error)
+            if self.kernels is not None:
+                try:
+                    self.kernels.close()
+                except BaseException as error:
+                    errors.append(error)
+            if errors:
+                raise RuntimeError('sparse expert runtime cleanup remains incomplete') from errors[0]
+        finally:
+            with self._lock:
+                if not errors:
+                    self._closed = True
+                self._closing = False
 
     def __enter__(self) -> "SparseExpertRuntime":
         return self

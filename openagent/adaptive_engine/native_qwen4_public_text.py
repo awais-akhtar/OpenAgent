@@ -72,7 +72,13 @@ class NativeQwen4PublicTextDecoder:
     @property
     def identity(self):return self.execution.identity
     @identity.setter
-    def identity(self,value):self.execution.identity=value
+    def identity(self,value):
+        self._check()
+        # The dispatcher digest binds the registered model and physical cache
+        # schema. A caller override could make foreign continuation state
+        # appear to belong to this Qwen4 adapter.
+        if value!=self.execution.identity:
+            raise ValueError('native Qwen4 public identity is derived from the admitted model and cannot be overridden')
     @property
     def position(self):return self.execution.position
 

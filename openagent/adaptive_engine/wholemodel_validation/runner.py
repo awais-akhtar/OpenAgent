@@ -53,8 +53,10 @@ def pinned_artifacts(spec, root):
     root = _path(root).resolve(strict=True)
     rows = spec['artifacts']
     if (not isinstance(rows, list) or not rows or
-            any(not isinstance(r, dict) for r in rows) or
-            not {'source', 'config', 'weights', 'tokenizer'} <= {r['kind'] for r in rows}):
+            any(not isinstance(r, dict) or
+                not {'kind', 'path', 'sha256'} <= set(r) for r in rows) or
+            not {'source', 'config', 'weights', 'tokenizer'} <=
+            {r.get('kind') for r in rows if isinstance(r, dict)}):
         raise ValueError('source/config/weights/tokenizer pins required')
     observed = []
     entries = set()

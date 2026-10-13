@@ -3,7 +3,7 @@ import importlib
 import struct
 import numpy as np
 
-_MODULES = {'int4-row':'packed_expert','int4-grouped':'grouped_int4_expert',
+_MODULES = {'int4-row':'packed_expert','int4-grouped-g64':'grouped_int4_expert',
     'q4_0':'q4_0_expert','q4_1':'q4_1_expert','q5_0':'q5_0_expert','q5_1':'q5_1_expert',
     'q8_0':'q8_0_expert','q8_1':'q8_1_expert'}
 FORMATS = frozenset(_MODULES)|{'float32','float16','int8-row','mxfp4-e2m1-g32-ue8m0',
@@ -11,8 +11,11 @@ FORMATS = frozenset(_MODULES)|{'float32','float16','int8-row','mxfp4-e2m1-g32-ue
 
 
 def decode_device_expert(payload,*,hidden,intermediate,dtype,max_bytes,lattice_contract=None,iq3_grid=None):
-    if dtype not in FORMATS or any(type(value) is not int or value<=0 for value in (hidden,intermediate,max_bytes)):
+    if (not isinstance(payload, (bytes, bytearray, memoryview)) or
+            dtype not in FORMATS or
+            any(type(value) is not int or value<=0 for value in (hidden,intermediate,max_bytes))):
         raise ValueError('explicit supported device expert format/geometry/budget required')
+    payload = memoryview(payload).cast('B')
     shapes = ((intermediate,hidden),(intermediate,hidden),(hidden,intermediate))
     if 24*hidden*intermediate+len(payload)>max_bytes:
         raise MemoryError('device expert host decode exceeds admission')
@@ -108,6 +111,33 @@ def decode_device_expert(payload,*,hidden,intermediate,dtype,max_bytes,lattice_c
         from .fp8_block_expert import payload_size,matrix_payload_size,decode_code
         if len(payload)!=payload_size(hidden,intermediate):
             raise ValueError('FP8 selected expert extent mismatch')
+        # Validate the complete persisted representation before allocating any
+        # decoded matrix.  Besides making admission atomic with respect to bad
+        # late matrices, this checks each block scale once (rather than once
+        # per weight) and enforces the canonical zero-scale/all-zero-tile rule.
+        cursor = 0
+        for rows,cols in shapes:
+            groups = (cols+127)//128
+            scale_rows = (rows+127)//128
+            scale_base = cursor+rows*cols
+            for block_row in range(scale_rows):
+                row_end = min(rows,(block_row+1)*128)
+                for block_col in range(groups):
+                    scale = struct.unpack_from('<f',payload,
+                        scale_base+4*(block_row*groups+block_col))[0]
+                    if not np.isfinite(scale) or scale<0:
+                        raise ValueError('invalid FP8 selected expert scale')
+                    if scale == 0:
+                        col_start = block_col*128
+                        col_end = min(cols,col_start+128)
+                        for row in range(block_row*128,row_end):
+                            start = cursor+row*cols+col_start
+                            if any(int(code)&127 for code in payload[start:start+col_end-col_start]):
+                                raise ValueError('nonzero FP8 code with zero selected expert scale')
+            for index in range(rows*cols):
+                if not np.isfinite(decode_code(int(payload[cursor+index]))):
+                    raise ValueError('nonfinite FP8 selected expert code')
+            cursor += matrix_payload_size(rows,cols)
         matrices,cursor = [],0
         for rows,cols in shapes:
             value = np.empty((rows,cols),np.float32)
@@ -116,9 +146,8 @@ def decode_device_expert(payload,*,hidden,intermediate,dtype,max_bytes,lattice_c
                 for column in range(cols):
                     offset = cursor+rows*cols+4*((row//128)*groups+column//128)
                     scale = struct.unpack_from('<f',payload,offset)[0]
-                    if not np.isfinite(scale) or scale<=0:
-                        raise ValueError('invalid FP8 selected expert scale')
-                    value[row,column] = decode_code(int(payload[cursor+row*cols+column]))*scale
+                    code = int(payload[cursor+row*cols+column])
+                    value[row,column] = decode_code(code)*scale
             cursor += matrix_payload_size(rows,cols)
             matrices.append(value)
     if len(matrices)!=3 or any(value.shape!=shape or value.dtype!=np.float32 or not np.isfinite(value).all()

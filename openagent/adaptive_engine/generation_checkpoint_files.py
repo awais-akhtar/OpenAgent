@@ -127,9 +127,12 @@ class AtomicGenerationCheckpoint:
                 with stream:
                     reader=_StableReader(stream,path,_stamp(info))
                     if receipt is not None:
-                        if (type(receipt) is not dict or receipt.get('bytes')!=info.st_size
-                                or receipt.get('path')!=str(path) or type(receipt.get('sha256')) is not str
-                                or len(receipt['sha256'])!=64):
+                        digest = receipt.get('sha256') if type(receipt) is dict else None
+                        if (type(receipt) is not dict or type(receipt.get('bytes')) is not int
+                                or receipt.get('bytes')!=info.st_size
+                                or receipt.get('path')!=str(path) or type(digest) is not str
+                                or len(digest)!=64
+                                or any(value not in '0123456789abcdef' for value in digest)):
                             raise ValueError('exact published generation receipt required')
                     descriptor,temporary=tempfile.mkstemp(prefix='.generation-read-',dir=path.parent)
                     try:captured=os.fdopen(descriptor,'wb')

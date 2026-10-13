@@ -64,10 +64,15 @@ class PublisherTensorReader:
 
     def read(self,binding):
         self._check()
-        if type(binding) is not TensorSlice or type(binding.shape) is not tuple or any(type(v) is not int or v<=0 for v in binding.shape) or type(binding.element_offset) is not int or binding.element_offset<0:
+        if (type(binding) is not TensorSlice or type(binding.source) is not str or
+                binding.source not in self.snapshot.tensors or type(binding.shape) is not tuple or
+                any(type(v) is not int or v<=0 for v in binding.shape) or
+                type(binding.element_offset) is not int or binding.element_offset<0):
             raise ValueError('positive explicit contiguous tensor slice required')
         record=self.snapshot.tensors[binding.source];count=math.prod(binding.shape)
         if binding.element_offset+count>math.prod(record.shape): raise ValueError('slice exceeds original tensor')
+        if record.dtype=='F8_E8M0' and binding.source not in self.scale_names.values():
+            raise ValueError('F8_E8M0 is admitted only for an explicit FP8 scale tensor')
         width={'F32':4,'F16':2,'BF16':2,'F8_E4M3':1,'F8_E8M0':1}.get(record.dtype)
         if width is None: raise ValueError('unadmitted publisher source encoding')
         if count*128>self.max_bytes: raise MemoryError('publisher tensor conversion exceeds work admission')
@@ -96,11 +101,32 @@ class PublisherTensorReader:
         if not np.isfinite(value).all(): raise ValueError('nonfinite publisher tensor conversion')
         return np.frombuffer(value.tobytes(),np.float32).reshape(binding.shape)
 
+    def _admit_matrix_slice(self, binding):
+        """Keep streamed projection slices aligned to the source matrix.
+
+        A flat byte range can be numerically readable while still changing
+        row geometry at a packed-format boundary.  Projection consumers must
+        therefore bind the declared columns and start on a complete source
+        row; scale lookup and packing order then remain unambiguous.
+        """
+        if type(binding) is not TensorSlice or len(binding.shape) != 2:
+            raise ValueError('two-dimensional projection slice required')
+        record = self.snapshot.tensors.get(binding.source)
+        if record is None or len(record.shape) != 2:
+            raise ValueError('projection source must be a two-dimensional tensor')
+        rows, columns = record.shape
+        if binding.shape[1] != columns or binding.shape[0] <= 0:
+            raise ValueError('projection slice columns differ from source geometry')
+        if binding.element_offset % columns or binding.element_offset + math.prod(binding.shape) > rows * columns:
+            raise ValueError('projection slice must cover complete aligned source rows')
+        return rows, columns
+
     def linear(self,ops,binding,inputs,*,bias=None,row_block=128,cancelled=None):
         """Native products over decoded row blocks; no resident matrix copy."""
         self._check()
-        if type(binding) is not TensorSlice or len(binding.shape)!=2 or type(row_block) is not int or row_block<=0:
-            raise ValueError('explicit matrix binding and positive row block required')
+        self._admit_matrix_slice(binding)
+        if type(row_block) is not int or row_block<=0:
+            raise ValueError('positive row block required')
         x=np.asarray(inputs)
         rows,columns=binding.shape
         if x.dtype!=np.float32 or x.ndim<2 or x.shape[-1]!=columns:

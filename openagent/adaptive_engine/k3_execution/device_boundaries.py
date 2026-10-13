@@ -8,8 +8,14 @@ class K3DeviceBoundaries:
             raise ValueError('explicit Torch pin and device operation budget required')
         from .device_policy import admit_device
         self.torch,self.device,self.max_bytes = torch,admit_device(torch,device),max_bytes
+        from .precision import check_precision
+        check_precision(torch,self.device)
 
     def _admit(self,*values,extra=0):
+        # Re-check per operation because callers may enter an autocast context
+        # after this owner has been constructed.
+        from .precision import check_precision
+        check_precision(self.torch,self.device)
         if any(value.dtype!=self.torch.float32 or value.device!=self.device or not value.numel() for value in values):
             raise ValueError('nonempty matching FP32 device boundary tensors required')
         if sum(value.numel()*16 for value in values)+extra>self.max_bytes:

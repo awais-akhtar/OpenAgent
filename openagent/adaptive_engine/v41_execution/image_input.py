@@ -14,6 +14,52 @@ class PublisherImageInput:
     n_vit_h: int
     n_vit_w: int
     types: object
+    downsample_ratio: int = 1
+
+    @property
+    def positions(self):
+        """Expanded token positions owned by this immutable image span."""
+        return tuple(range(self.start, self.start + int(np.asarray(self.types).size)))
+
+    def __post_init__(self):
+        if type(self.start) is not int or self.start < 0:
+            raise ValueError('nonnegative image span start required')
+        if any(type(value) is not int or value <= 0
+               for value in (self.n_vit_h, self.n_vit_w)):
+            raise ValueError('positive image patch grid required')
+        if type(self.downsample_ratio) is not int or self.downsample_ratio <= 0:
+            raise ValueError('positive image aligner ratio required')
+        patches = np.asarray(self.patches)
+        types = np.asarray(self.types)
+        aligned_h = math.ceil(self.n_vit_h/self.downsample_ratio)
+        aligned_w = math.ceil(self.n_vit_w/self.downsample_ratio)
+        expected = np.empty(aligned_h*(aligned_w+1)+2, dtype=np.int64)
+        expected[0], expected[-1] = 0, 3
+        expected[1:-1].reshape(aligned_h, aligned_w+1)[:, :-1] = 1
+        expected[1:-1].reshape(aligned_h, aligned_w+1)[:, -1] = 2
+        if (patches.ndim != 2 or patches.dtype.kind != 'f' or
+                patches.shape[0] != self.n_vit_h * self.n_vit_w or
+                patches.shape[1] <= 0 or not np.isfinite(patches).all() or
+                types.ndim != 1 or types.dtype.kind not in 'iu' or
+                not np.array_equal(types, expected) or
+                np.any((types < 0) | (types > 3)) or
+                int(types[0]) != 0 or int(types[-1]) != 3 or
+                np.any(types[1:-1] == 0) or np.any(types[1:-1] == 3)):
+            raise ValueError('complete finite image span tensors required')
+        # The token span describes the aligner's output grid, while patches
+        # retain the pre-aligner vision grid. Keep these geometries distinct.
+        # For ratio r, one language token represents an r×r patch group.
+        # ``types`` was produced by the processor and its dimensions are
+        # validated again by the vision consumer before dispatch.
+        # Own the published buffers.  A caller can otherwise retain an
+        # immutable view, re-enable writability on its original array, and
+        # mutate the span after admission.
+        patches = np.array(patches, dtype=patches.dtype, order='C', copy=True)
+        types = np.array(types, dtype=types.dtype, order='C', copy=True)
+        patches.flags.writeable = False
+        types.flags.writeable = False
+        object.__setattr__(self, 'patches', patches)
+        object.__setattr__(self, 'types', types)
 
 
 class PublisherImageProcessor:
@@ -44,9 +90,12 @@ class PublisherImageProcessor:
         if w*h < self.min_pixels:
             scale = math.sqrt(self.min_pixels/(w*h))
             w, h = int(w*scale), int(h*scale)
+        # Patches retain the processor grid; language tokens follow the
+        # downsampled aligner grid.
         p, r = self.patch, self.downsample
         target_w, target_h = math.ceil(w/p)*p, math.ceil(h/p)*p
-        rows, columns = math.ceil(target_h/(p*r)), math.ceil(target_w/(p*r))
+        input_rows, input_columns = math.ceil(target_h/p), math.ceil(target_w/p)
+        rows, columns = math.ceil(input_rows/r), math.ceil(input_columns/r)
         if rows*(columns+1)+2 > self.max_tokens:
             aspect = h/w
             cells_w = (math.sqrt(1+4*(self.max_tokens-2)/aspect)-1)/2
@@ -58,7 +107,8 @@ class PublisherImageProcessor:
             else:
                 scale = min(math.floor(cells_w)*p*r/w, math.floor(cells_h)*p*r/h)
                 target_h, target_w = math.floor(h*scale/p)*p, math.floor(w*scale/p)*p
-            rows, columns = math.ceil(target_h/(p*r)), math.ceil(target_w/(p*r))
+            input_rows, input_columns = math.ceil(target_h/p), math.ceil(target_w/p)
+            rows, columns = math.ceil(input_rows/r), math.ceil(input_columns/r)
         if min(target_h, target_w) <= 0 or rows*(columns+1)+2 > self.max_tokens:
             raise ValueError('no valid admitted image grid')
         return target_h, target_w, rows, columns
@@ -85,10 +135,8 @@ class PublisherImageProcessor:
             encoded = source
         else:
             path = Path(source).resolve(strict=True)
-            if not path.is_file() or path.stat().st_size > self.max_bytes:
-                raise MemoryError('local image file exceeds admission')
-            with path.open('rb') as stream:
-                encoded = stream.read(self.max_bytes+1)
+            from ..publisher_media_files import read_regular
+            encoded = read_regular(path, max_bytes=self.max_bytes)
         if not decoded and (not encoded or len(encoded) > self.max_bytes):
             raise MemoryError('image bytes exceed admission')
         with (opened_source if decoded else Image.open(io.BytesIO(encoded))) as opened:
@@ -112,19 +160,27 @@ class PublisherImageProcessor:
                     raise ValueError('invalid publisher image activation cast')
                 p = self.patch
                 vh, vw = h//p, w//p
+                aligned_h, aligned_w = math.ceil(vh/self.downsample), math.ceil(vw/self.downsample)
+                if (vh <= 0 or vw <= 0 or
+                        aligned_h*(aligned_w+1)+2 > self.max_tokens):
+                    raise ValueError('prepared image patch grid exceeds token admission')
                 chw = rounded.reshape(h, w, 3).transpose(2, 0, 1)
                 patches = np.ascontiguousarray(chw.reshape(3, vh, p, vw, p)
                     .transpose(1, 3, 0, 2, 4).reshape(vh*vw, 3*p*p))
             finally:
                 resized.close()
                 image.close()
-        kinds = np.empty(rows*(columns+1)+2, dtype=np.int64)
+        # The language stream represents aligned output cells, not raw vision
+        # patches. This allows non-unit aligner ratios without mismatching
+        # image slots to projected embeddings.
+        aligned_h, aligned_w = math.ceil(vh/self.downsample), math.ceil(vw/self.downsample)
+        kinds = np.empty(aligned_h*(aligned_w+1)+2, dtype=np.int64)
         kinds[0], kinds[-1] = 0, 3
-        grid = kinds[1:-1].reshape(rows, columns+1)
+        grid = kinds[1:-1].reshape(aligned_h, aligned_w+1)
         grid[:, :-1], grid[:, -1] = 1, 2
         patches.flags.writeable = False
         kinds.flags.writeable = False
-        return PublisherImageInput(start, patches, vh, vw, kinds)
+        return PublisherImageInput(start, patches, vh, vw, kinds, self.downsample)
 
     def expand(self, tokens, images, *, image_token_id):
         if type(image_token_id) is not int or image_token_id < 0:
@@ -149,4 +205,27 @@ class PublisherImageProcessor:
             prepared.append(image)
             result.extend([image_token_id]*len(image.types))
             types.extend(int(t) for t in image.types)
+        # Reconcile the expanded stream with the immutable span inventory
+        # before handing either representation to a backend.  This keeps
+        # caller ordering authoritative and prevents a later consumer from
+        # silently pairing a span with a different placeholder range.
+        if len(result) != len(types):
+            raise ValueError('expanded image token/type stream is inconsistent')
+        cursor = -1
+        for span in prepared:
+            width = int(np.asarray(span.types).size)
+            if span.start <= cursor or span.start + width > len(result):
+                raise ValueError('expanded image spans are not ordered')
+            if any(result[pos] != image_token_id
+                   for pos in range(span.start, span.start + width)):
+                raise ValueError('expanded image span lost its placeholder range')
+            if tuple(types[span.start:span.start+width]) != tuple(int(v) for v in span.types):
+                raise ValueError('expanded image types differ from prepared span')
+            cursor = span.start + width - 1
+        if sum(1 for kind in types if kind >= 0) != sum(
+                int(np.asarray(span.types).size) for span in prepared):
+            raise ValueError('expanded image span coverage is incomplete')
+        if any(token == image_token_id and types[index] < 0
+               for index, token in enumerate(result)):
+            raise ValueError('unexpanded image placeholder remains in text range')
         return result, types, tuple(prepared)

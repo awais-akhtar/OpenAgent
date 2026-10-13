@@ -151,7 +151,10 @@ class EgressClient:
         allow_loopback: bool = False,
         max_redirects: int = 4,
         on_line: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> EgressResponse:
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError("egress cancellation must be callable")
         timeout = min(120.0, max(0.25, float(timeout_seconds)))
         byte_limit = min(100 * 1024 * 1024, max(1, int(max_response_bytes)))
         current = str(url).strip()
@@ -167,6 +170,7 @@ class EgressClient:
                     timeout=timeout,
                     max_bytes=byte_limit,
                     on_line=on_line,
+                    cancelled=cancelled,
                     allowed_content_types=allowed_content_types,
                 )
             except (EgressError, PermissionError):
@@ -293,6 +297,7 @@ class EgressClient:
         timeout: float,
         max_bytes: int,
         on_line: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
         allowed_content_types: set[str] | None = None,
     ) -> EgressResponse:
         connection, raw = self._open_response(
@@ -320,6 +325,8 @@ class EgressClient:
                 pending = ""
                 total = 0
                 while True:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("outbound streaming request cancelled")
                     chunk = raw.readline(64 * 1024)
                     if not chunk:
                         break
@@ -329,6 +336,8 @@ class EgressClient:
                     chunks.append(chunk)
                     pending += decoder.decode(chunk)
                     while "\n" in pending:
+                        if cancelled is not None and cancelled():
+                            raise InterruptedError("outbound streaming request cancelled")
                         line, pending = pending.split("\n", 1)
                         on_line(line.rstrip("\r"))
                 pending += decoder.decode(b"", final=True)

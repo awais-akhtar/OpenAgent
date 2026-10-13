@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import math
 import os
 from queue import Empty, Queue
 import subprocess
@@ -41,9 +42,11 @@ class DirectHardwareClient:
         self._stderr: deque[str] = deque(maxlen=80)
         self._request_lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
+        self._process_lock = threading.RLock()
         self._stdout_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._started_at = 0.0
+        self._closed = False
 
     @property
     def accelerator_python(self) -> str:
@@ -63,8 +66,11 @@ class DirectHardwareClient:
                 "transport": "inherited-jsonl-pipes",
             }
         return {
-            "status": "running" if running else ("available" if self.available() else "unavailable"),
+            "status": ("closed" if self._closed else
+                        "running" if running else
+                        ("available" if self.available() else "unavailable")),
             "running": running,
+            "closed": self._closed,
             "pid": process.pid if running and process else None,
             "accelerator_python": self.accelerator_python,
             "uptime_seconds": round(time.time() - self._started_at, 3) if running else 0.0,
@@ -81,9 +87,14 @@ class DirectHardwareClient:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         **payload: Any,
     ) -> dict[str, Any]:
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or
+                not math.isfinite(timeout) or timeout < 0):
+            raise ValueError('finite nonnegative device request timeout required')
         request_id = uuid4().hex
         command = {**payload, "action": action, "request_id": request_id}
         with self._request_lock:
+            if self._closed:
+                raise DirectHardwareError("The native accelerator client is closed.")
             self._ensure_started()
             process = self._process
             if process is None or process.stdin is None:
@@ -308,6 +319,9 @@ class DirectHardwareClient:
 
     def close(self) -> None:
         with self._request_lock:
+            if self._closed:
+                return
+            self._closed = True
             process = self._process
             if not process or process.poll() is not None:
                 self._clear_process()
@@ -355,8 +369,15 @@ class DirectHardwareClient:
             self._stderr_thread = threading.Thread(
                 target=self._read_stderr, args=(process,), name="openagent-accelerator-errors", daemon=True,
             )
-            self._stdout_thread.start()
-            self._stderr_thread.start()
+            try:
+                self._stdout_thread.start()
+                self._stderr_thread.start()
+            except BaseException as failure:
+                try:
+                    self._terminate()
+                except BaseException as cleanup:
+                    failure.add_note("accelerator worker startup cleanup retained: " + repr(cleanup))
+                raise
 
     def _read_stdout(self, process: subprocess.Popen[str]) -> None:
         stream = process.stdout
@@ -382,17 +403,22 @@ class DirectHardwareClient:
                 self._stderr.append(clean[:1000])
 
     def _terminate(self) -> None:
-        process = self._process
-        if process and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        self._clear_process()
+        with self._process_lock:
+            process = self._process
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            self._clear_process()
 
     def _clear_process(self) -> None:
+        with self._process_lock:
+            self._clear_process_unlocked()
+
+    def _clear_process_unlocked(self) -> None:
         process = self._process
         threads = (self._stdout_thread, self._stderr_thread)
         for thread in threads:

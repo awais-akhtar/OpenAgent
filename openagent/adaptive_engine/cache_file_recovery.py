@@ -24,25 +24,45 @@ class _DigestWriter:
 
     def write(self, data):
         count=self.stream.write(data)
-        if type(count) is int and 0<count<=len(data):
-            self.digest.update(memoryview(data).cast('B')[:count])
+        if type(count) is not int or count != len(data):
+            raise OSError('cache publication writer made short or invalid progress')
+        self.digest.update(memoryview(data).cast('B'))
         return count
 
 
 class _StableReader:
-    def __init__(self, stream, path, stamp):
-        self.stream,self.path,self.stamp=stream,path,stamp
+    def __init__(self, stream, path, stamp, cancelled=None):
+        self.stream,self.path,self.stamp,self.cancelled=stream,path,stamp,cancelled
 
     def read(self, count):
+        if self.cancelled is not None and self.cancelled():
+            raise InterruptedError('service cache restoration cancelled')
         if type(count) is not int or count < 0 or count > 1024*1024:
             raise ValueError('bounded cache read required')
         value=self.stream.read(count)
+        if type(value) is not bytes or len(value) > count:
+            raise ValueError('cache reader returned invalid bounded bytes')
         if value==b'':
             _path(self.path)
             if (_stamp(os.fstat(self.stream.fileno()))!=self.stamp or
                     _stamp(self.path.stat())!=self.stamp):
                 raise ValueError('service cache file changed during restoration')
         return value
+
+    def require_complete(self):
+        """Require the codec to consume the exact admitted immutable frame."""
+        if self.cancelled is not None and self.cancelled():
+            raise InterruptedError('service cache restoration cancelled')
+        position = self.stream.tell()
+        if type(position) is not int or position < 0:
+            raise ValueError('service cache reader position is invalid')
+        if position != self.stamp[2]:
+            raise ValueError('service cache restore did not consume the complete frame')
+        _path(self.path)
+        current = _stamp(os.fstat(self.stream.fileno()))
+        on_disk = _stamp(self.path.stat())
+        if current != self.stamp or on_disk != self.stamp:
+            raise ValueError('service cache file changed during restoration')
 
 
 def save_service_cache(service, session_id, destination, *, max_bytes):
@@ -61,6 +81,8 @@ def save_service_cache(service, session_id, destination, *, max_bytes):
         with output:
             writer=_DigestWriter(output)
             size=service.write_session_cache(session_id,writer,max_bytes=max_bytes)
+            if type(size) is not int or not 88 <= size <= max_bytes:
+                raise ValueError('service cache writer returned an invalid frame extent')
             output.flush()
             os.fsync(output.fileno())
             if os.fstat(output.fileno()).st_size!=size:
@@ -82,9 +104,11 @@ def save_service_cache(service, session_id, destination, *, max_bytes):
             pass
 
 
-def load_service_cache(service, session_id, source, *, max_bytes,history_receipt=None):
+def load_service_cache(service, session_id, source, *, max_bytes,history_receipt=None,cancelled=None):
     """Admit regular-file extent and detect replacement before state commit."""
     _limit(max_bytes)
+    if cancelled is not None and not callable(cancelled):
+        raise TypeError('cache restoration cancellation must be callable')
     path=_path(source)
     descriptor=os.open(path,os.O_RDONLY|getattr(os,'O_BINARY',0)|
                        getattr(os,'O_NONBLOCK',0)|getattr(os,'O_NOFOLLOW',0))
@@ -100,8 +124,11 @@ def load_service_cache(service, session_id, source, *, max_bytes,history_receipt
         raise
     with stream:
         options={} if history_receipt is None else dict(history_receipt=history_receipt)
-        return service.restore_session_cache(session_id,
-            _StableReader(stream,path,_stamp(info)),max_bytes=max_bytes,**options)
+        reader = _StableReader(stream, path, _stamp(info), cancelled)
+        result = service.restore_session_cache(session_id, reader,
+            max_bytes=max_bytes, **options)
+        reader.require_complete()
+        return result
 
 
 class _ExecutorCacheAdapter:
@@ -141,12 +168,12 @@ def save_executor_cache(executor, destination, *, max_bytes):
                               max_bytes=max_bytes)
 
 
-def load_executor_cache(executor, source, *, max_bytes):
+def load_executor_cache(executor, source, *, max_bytes, cancelled=None):
     """Load a bounded stable regular file through the executor's own codec."""
     if not callable(getattr(executor, 'restore_cache', None)):
         raise ValueError('complete executor cache restore required')
     return load_service_cache(_ExecutorCacheAdapter(executor), None, source,
-                              max_bytes=max_bytes)
+                              max_bytes=max_bytes, cancelled=cancelled)
 
 
 def verify_service_cache_file(source, *, receipt, max_bytes):

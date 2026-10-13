@@ -79,7 +79,9 @@ class K3MmapExpertProvider:
 
     @contextmanager
     def lease(self, layer, expert):
-        if type(layer) is not int or type(expert) is not int or (layer, expert) not in self._groups:
+        if (type(layer) is not int or isinstance(layer, bool) or
+                type(expert) is not int or isinstance(expert, bool) or
+                (layer, expert) not in self._groups):
             raise ValueError("unknown exact K3 layer/expert selection")
         if not self._lock.acquire(blocking=False):
             raise RuntimeError("provider already has an active lease")

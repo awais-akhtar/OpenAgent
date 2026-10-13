@@ -99,7 +99,8 @@ def restore_device_cache(model,source,*,max_bytes):
             if not 0<length<=min(65536,max_bytes-44):
                 raise ValueError('invalid Qwen4 cache header extent')
             encoded = _read(source,length)
-            header = json.loads(encoded,object_pairs_hook=_pairs)
+            header = json.loads(encoded, object_pairs_hook=_pairs,
+                                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
             if type(header) is not dict or set(header)!={'identity','batch','position','banks','lexical','position_axes'}:
                 raise ValueError('invalid Qwen4 cache fields')
             batch,position = header['batch'],header['position']

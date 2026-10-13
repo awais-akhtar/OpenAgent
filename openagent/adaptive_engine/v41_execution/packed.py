@@ -75,14 +75,20 @@ class V41PackedExperts:
         if selected_bytes>max_expert_bytes: raise MemoryError('selected packed expert exceeds budget')
         self.identity='v41-packed-regions:'+digest.hexdigest()
         self._lock=threading.Lock()
+        self._closed=False
 
     @contextmanager
     def lease(self,layer,expert):
-        if type(layer) is not int or type(expert) is not int or (layer,expert,'gate.codes') not in self._records:
+        if (type(layer) is not int or isinstance(layer, bool) or
+                type(expert) is not int or isinstance(expert, bool)):
             raise ValueError('unknown packed expert')
         if not self._lock.acquire(blocking=False): raise RuntimeError('expert provider lease already active')
         tables={}
         try:
+            if self._closed:
+                raise RuntimeError('packed expert provider is closed')
+            if (layer,expert,'gate.codes') not in self._records:
+                raise ValueError('unknown packed expert')
             with ExitStack() as stack:
                 try:
                     for name in ('gate.codes','gate.scales','up.codes','up.scales','down.codes','down.scales'):
@@ -93,5 +99,18 @@ class V41PackedExperts:
                         tables[name]=np.frombuffer(payload,dtype=np.uint8).reshape(self._shapes[key])
                     yield tables
                 finally: tables.clear()
+        finally:
+            self._lock.release()
+
+    def close(self):
+        """Close this binding owner without closing the caller-owned store."""
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError('cannot close packed experts during an active lease')
+        try:
+            if self._closed:
+                return
+            self._closed=True
+            self._records.clear()
+            self._shapes.clear()
         finally:
             self._lock.release()

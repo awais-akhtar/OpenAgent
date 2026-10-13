@@ -312,7 +312,9 @@ class TorchMixtralDecoder:
         with self._lock:
             self._check()
             entry = self._snapshots.get(getattr(handle,'handle',None))
-            if entry is None or type(handle) is not TorchMixtralSnapshot or entry[0]!=handle:
+            # Snapshot handles are capabilities, not value objects: a caller
+            # must present the exact issued instance, not a copied dataclass.
+            if entry is None or type(handle) is not TorchMixtralSnapshot or entry[0] is not handle:
                 raise ValueError('owned Mixtral device snapshot required')
             _,banks,mask,size = entry
             if self.weight_bytes+self._snapshot_bytes+3*size+self._expert_bytes>self.max_bytes:
@@ -329,7 +331,7 @@ class TorchMixtralDecoder:
         with self._lock:
             self._check()
             entry = self._snapshots.get(getattr(handle,'handle',None))
-            if entry is None or entry[0]!=handle:
+            if entry is None or type(handle) is not TorchMixtralSnapshot or entry[0] is not handle:
                 raise ValueError('owned Mixtral device snapshot required')
             self._snapshot_bytes -= entry[3]
             del self._snapshots[handle.handle]

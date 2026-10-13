@@ -13,6 +13,21 @@ from .native_qwen4_ranges import NativeQwen4Range, qwen4_tensor_inventory
 from .native_qwen4_edge import NativeQwen4Edge
 
 
+class _QwenRangeSession(_RangeSession):
+    """Retry-safe Qwen4 session close for repeated native destroy callbacks."""
+    def __init__(self, engine, model):
+        super().__init__(engine, model)
+        self.closed = False
+
+    def close(self):
+        with self.engine.lock:
+            if self.closed:
+                return
+            self.model.close()
+            self.engine.sessions.discard(self)
+            self.closed = True
+
+
 class _QwenEngine:
     def __init__(self, template, library, session_limit):
         self.template,self.library,self.session_limit = template,library,session_limit
@@ -28,12 +43,14 @@ class _QwenEngine:
             model = NativeQwen4Range(t._source_config,t.weights,begin=t.layer_begin,end=t.layer_end,
                 library=self.library,max_bytes=budget,max_snapshots=1,expert_provider=t._expert_provider,
                 ple_provider=t._ple_provider)
-            session = _RangeSession(self,model)
+            session = _QwenRangeSession(self,model)
             self.sessions.add(session)
             return session
 
     def close(self):
         with self.lock:
+            if self.closed:
+                return
             if self.sessions:
                 raise RuntimeError('close Qwen4 sessions before their engine')
             self.template.close()

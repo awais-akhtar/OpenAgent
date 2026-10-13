@@ -7,7 +7,7 @@ import hashlib
 import math
 import threading
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import numpy as np
 from .publisher_arithmetic import NativePublisherV41Arithmetic
 from .publisher_cache import PackedPublisherRow, _FP4, _FP8, _FORMATS, packed_nbytes
@@ -17,11 +17,19 @@ class DevicePublisherV41Arithmetic(NativePublisherV41Arithmetic):
     @contextmanager
     def cancellation_scope(self,cancel):
         with super().cancellation_scope(cancel):
-            provider=self.fp4_provider
-            if provider is None:
+            providers = []
+            seen = set()
+            for provider in (self.fp8_provider, self.fp4_provider):
+                if provider is not None and id(provider) not in seen:
+                    seen.add(id(provider))
+                    providers.append(provider)
+            if not providers:
                 yield self
             else:
-                with provider.cancellation_scope(cancel):yield self
+                with ExitStack() as scopes:
+                    for provider in providers:
+                        scopes.enter_context(provider.cancellation_scope(cancel))
+                    yield self
 
     def __init__(self,payload,*,device,torch_version,max_bytes,tokenizer=None,
                  compressed_ids=None,projection_backend=None,fp4_provider=None):
@@ -49,6 +57,7 @@ class DevicePublisherV41Arithmetic(NativePublisherV41Arithmetic):
                     or projection_backend.shape(name) != self.rules[name].shape):
                 raise ValueError('omitted V4.1 matrix requires its exact projection owner')
         self.fp4_provider = fp4_provider
+        self.fp8_provider = payload.fp8_provider
         self._map,self._hash_metadata = None,{}
         eg = payload.profile.engram
         if eg.layers:
@@ -317,6 +326,11 @@ class DevicePublisherV41Arithmetic(NativePublisherV41Arithmetic):
         return result if fp32 else self.cast(result)
 
     def packed_matvec(self,packed,scales,x,*,rows,cols,encoding):
+        with self._lock:
+            self._ensure_open()
+            return self._packed_matvec_open(packed,scales,x,rows=rows,cols=cols,encoding=encoding)
+
+    def _packed_matvec_open(self,packed,scales,x,*,rows,cols,encoding):
         if (type(rows) is not int or type(cols) is not int or rows<=0 or cols<=0 or cols%32
                 or np.asarray(packed).dtype!=np.uint8 or np.asarray(scales).dtype!=np.uint8
                 or np.asarray(x).shape!=(cols,)):
@@ -347,6 +361,7 @@ class DevicePublisherV41Arithmetic(NativePublisherV41Arithmetic):
             return self._host(matrix@self._tensor(x))
 
     def bf16_matvec(self,weight,value):
+        self._ensure_open()
         weight,value=np.asarray(weight),np.asarray(value)
         if weight.ndim!=2 or value.shape!=(weight.shape[1],):
             raise ValueError('complete BF16 matrix and vector geometry required')
@@ -470,5 +485,7 @@ class DevicePublisherV41Arithmetic(NativePublisherV41Arithmetic):
 
     def close(self):
         with self._lock:
+            if getattr(self,'_borrowers',0):
+                raise RuntimeError('publisher execution still borrows device arithmetic')
             self._closed = True
             self._map,self._hash_metadata = None,{}

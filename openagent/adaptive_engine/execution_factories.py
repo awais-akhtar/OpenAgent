@@ -1,9 +1,139 @@
 """Explicit construction of native sessions from admitted local payloads."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from contextlib import contextmanager
 from pathlib import Path
 
 from .execution_service import ExecutionLimits, NativeExecutionService
+
+
+def compose_public_publisher_service(backing_service, *, runtime_library, family, config,
+        model_directory, checkpoint_identity, executor_bytes, max_resource_bytes,
+        max_work_bytes, max_snapshot_bytes, max_batch_rows=32, max_sessions=1,
+        max_snapshots_per_session=4):
+    """Own concrete K3/V4.1 factories through the public native dispatcher.
+
+    Ownership of backing_service transfers to the result. Each live public
+    conversation constructs an independent embedding/head owner and a complete
+    state owner, so a budgeted backing factory needs two slots per conversation.
+    """
+    from .publisher_public_adapters import NativePublisherPublicAdapters
+    from .segment_edge_runtime import SegmentEdgeExecution, SegmentRange
+    if type(backing_service) is not NativeExecutionService:
+        raise TypeError('concrete publisher execution service required')
+    if (type(max_sessions) is not int or max_sessions<=0 or
+            type(max_snapshots_per_session) is not int or not 1<=max_snapshots_per_session<=62):
+        raise ValueError('bounded explicit public publisher session and snapshot counts required')
+    if backing_service._sessions or backing_service._opening or backing_service._closed:
+        raise ValueError('fresh empty backing publisher service required for ownership transfer')
+    slots=getattr(backing_service.factory,'count_limit',None)
+    if slots is not None and slots<2*max_sessions:
+        raise MemoryError('backing publisher factory must reserve both Edge and session slots')
+    if any(type(value) is not int or value<=0 for value in
+           (executor_bytes,max_resource_bytes,max_work_bytes,max_snapshot_bytes)):
+        raise ValueError('positive complete public publisher resource budgets required')
+    if 3*executor_bytes*max_sessions>max_resource_bytes:
+        raise MemoryError('all public engine, Edge and session reservations must fit aggregate admission')
+    owner=None
+    pending={}
+    def cleanup():
+        for key,execution in tuple(pending.items()):
+            execution.close()
+            del pending[key]
+        if owner is not None:
+            owner.retry_cleanup()
+            if owner.objects:
+                raise RuntimeError('public publisher resources still borrow the backing service')
+            owner.resource_ledger.close()
+        backing_service.close()
+    try:
+        owner=NativePublisherPublicAdapters(runtime_library,backing_service,family=family,config=config,
+            model_directory=model_directory,checkpoint_identity=checkpoint_identity,
+            executor_bytes=executor_bytes,max_resource_bytes=max_resource_bytes,
+            max_snapshot_bytes=max_snapshot_bytes,max_work_bytes=max_work_bytes,max_batch_rows=max_batch_rows)
+        if (backing_service.limits.vocabulary!=owner.vocabulary or
+                backing_service.limits.context!=owner.context):
+            raise ValueError('backing service limits differ from original publisher geometry')
+        owner=owner.register()
+        limits=replace(backing_service.limits,max_sessions=max_sessions,
+            max_snapshots_per_session=max_snapshots_per_session,
+            prefill_chunk_tokens=min(backing_service.limits.prefill_chunk_tokens,max_batch_rows))
+        def construct():
+            if pending or owner.pending:
+                raise RuntimeError('public publisher construction cleanup is pending')
+            execution=None
+            try:
+                execution=SegmentEdgeExecution(runtime_library,
+                    edge_adapter=owner.edge_id.decode(),model_directory=str(owner.root),
+                    checkpoint_identity=owner.identity,
+                    ranges=(SegmentRange(owner.segment_id.decode(),str(owner.root),0,owner.layers),),
+                    context_tokens=owner.context,native_memory_bytes=executor_bytes,
+                    max_transfer_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,
+                    max_snapshots=max_snapshots_per_session+2)
+                return execution
+            except BaseException as primary:
+                if execution is not None:
+                    try:
+                        execution.close()
+                    except BaseException as failure:
+                        pending[id(execution)]=execution
+                        primary.add_note('public publisher executor cleanup retained: '+repr(failure))
+                raise
+        result=NativeExecutionService(construct,limits,factory_cleanup=cleanup)
+        result.public_adapters=owner
+        result.resource_ledger=owner.resource_ledger
+        return result
+    except BaseException as primary:
+        try:
+            cleanup()
+        except BaseException as failure:
+            primary.cleanup=cleanup
+            primary.add_note('public publisher ownership transfer cleanup retained: '+repr(failure))
+        raise
+
+
+def create_public_k3_execution_service(payload, libraries, *, runtime_library,
+        model_directory, checkpoint_identity, runtime_max_bytes, max_resource_bytes,
+        max_work_bytes, max_snapshot_bytes, max_batch_rows=32, max_sessions=1,
+        max_snapshots_per_session=4, **options):
+    """Construct original native K3, then serve its complete public range."""
+    if any(options.get(name) is not None for name in ('arithmetic','fla_policy')):
+        raise ValueError('the public native K3 factory requires its counted CPU arithmetic')
+    backing=create_k3_execution_service(payload,libraries,runtime_max_bytes=runtime_max_bytes,
+        max_sessions=2*max_sessions,**options)
+    return compose_public_publisher_service(backing,runtime_library=runtime_library,family='kimi-k3',
+        config=payload.config,model_directory=model_directory,checkpoint_identity=checkpoint_identity,
+        executor_bytes=runtime_max_bytes,max_resource_bytes=max_resource_bytes,
+        max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
+        max_sessions=max_sessions,max_snapshots_per_session=max_snapshots_per_session)
+
+
+def create_public_publisher_v41_execution_service(payload, arithmetic_factory, *, library,
+        runtime_library, model_directory, checkpoint_identity, runtime_max_bytes,
+        executor_bytes, max_resource_bytes, max_work_bytes, max_snapshot_bytes,
+        max_batch_rows=32, max_sessions=1, max_snapshots_per_session=4, **options):
+    """Compose the concrete publisher V4.1 arithmetic factory through public ABI."""
+    backing=create_publisher_v41_execution_service(payload,arithmetic_factory,
+        library=library,runtime_max_bytes=runtime_max_bytes,max_sessions=2*max_sessions,**options)
+    return compose_public_publisher_service(backing,runtime_library=runtime_library,family='deepseek-v41',
+        config=payload.profile,model_directory=model_directory,checkpoint_identity=checkpoint_identity,
+        executor_bytes=executor_bytes,max_resource_bytes=max_resource_bytes,
+        max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
+        max_sessions=max_sessions,max_snapshots_per_session=max_snapshots_per_session)
+
+
+def open_public_publisher_v41_service(directory, *, runtime_library, executor_bytes,
+        max_resource_bytes, max_work_bytes, max_snapshot_bytes, max_batch_rows=32,
+        max_snapshots_per_session=4, **options):
+    """Load the original complete native V4.1 source and own its public ABI."""
+    if options.get('device') is not None:
+        raise ValueError('native public V4.1 composition requires its original CPU arithmetic owner')
+    backing=open_publisher_v41_service(directory,**options)
+    payload=backing.publisher_payload
+    return compose_public_publisher_service(backing,runtime_library=runtime_library,family='deepseek-v41',
+        config=payload.profile,model_directory=directory,checkpoint_identity=payload.config_sha256,
+        executor_bytes=executor_bytes,max_resource_bytes=max_resource_bytes,
+        max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
+        max_snapshots_per_session=max_snapshots_per_session)
 
 
 @dataclass(frozen=True)
@@ -50,9 +180,17 @@ def create_k3_batch_execution(payload, libraries, *, runtime_max_bytes,
         require_publisher_exact=require_publisher_exact,exact_evidence=exact_evidence,
         native_projections=native_projections,native_projection_work_bytes=native_projection_work_bytes,
         max_total_model_bytes=max_total_model_bytes)
-    return K3BatchExecution(service.factory, max_sessions=max_sessions,
-        max_model_bytes=max_total_model_bytes, max_batch_bytes=max_batch_bytes,
-        max_snapshot_bytes=max_snapshot_bytes)
+    try:
+        return K3BatchExecution(service.factory, max_sessions=max_sessions,
+            max_model_bytes=max_total_model_bytes, max_batch_bytes=max_batch_bytes,
+            max_snapshot_bytes=max_snapshot_bytes, owner_service=service)
+    except BaseException as primary:
+        try:
+            service.close()
+        except BaseException as cleanup:
+            primary.cleanup = service.close
+            primary.add_note('K3 batch service cleanup retained: '+repr(cleanup))
+        raise
 
 
 def create_segment_edge_execution_service(
@@ -280,6 +418,14 @@ def create_v41_execution_service(config, tensors, *, libraries, engram, compress
 class _OwnedPublisherExecutor:
     """Keep factory-created arithmetic alive and close both owned resources."""
     def __init__(self, model, arithmetic, projection_resources=None):
+        for name, resource in (('model', model), ('arithmetic', arithmetic)):
+            if resource is None or not callable(getattr(resource, 'close', None)):
+                raise ValueError('owned publisher '+name+' must provide close')
+            budget = getattr(resource, 'max_bytes', None)
+            if type(budget) is not int or budget < 0:
+                raise ValueError('owned publisher '+name+' must declare max_bytes')
+        if projection_resources is not None and not callable(getattr(projection_resources, 'close', None)):
+            raise ValueError('owned publisher projection resources must provide close')
         self.model, self.arithmetic = model, arithmetic
         self._model_closed = False
         self._arithmetic_closed = False
@@ -288,6 +434,22 @@ class _OwnedPublisherExecutor:
 
     def __getattr__(self, name):
         return getattr(self.model, name)
+
+    @property
+    def declared_executor_bytes(self):
+        total=self.model.max_bytes+self.arithmetic.max_bytes
+        seen=set()
+        if self.projection_resources is not None:
+            for method,_,_ in self.projection_resources._callbacks:
+                owner=getattr(method,'__self__',None)
+                if owner is None or id(owner) in seen:
+                    continue
+                seen.add(id(owner))
+                amount=getattr(owner,'max_bytes',0)
+                if type(amount) is not int or amount<0:
+                    raise ValueError('invalid declared publisher projection ownership budget')
+                total+=amount
+        return total
 
     @contextmanager
     def cancellation_scope(self, cancel):
@@ -1541,6 +1703,7 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
     try:
         service=NativeExecutionService(create_executor, limits, factory_cleanup=cleanup)
         service.resource_ledger=ledger
+        service.publisher_payload=payload
         return service
     except BaseException as error:
         try:

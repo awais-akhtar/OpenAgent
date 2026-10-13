@@ -95,8 +95,13 @@ class InklingMultimodalDecoder:
                 self.identity='openagent-inkling-conditional-mtp-v1:'+hashlib.sha256((self.identity+self.mtp.identity).encode()).hexdigest()
                 self.continuation=GroupedContinuation((self.session,self.mtp),identity=self.identity,max_snapshots=max_snapshots)
             else: self.continuation=self.session
-        except BaseException:
-            self.close()
+        except BaseException as primary:
+            try: self.close()
+            except BaseException as failure:
+                # Preserve the construction error while exporting a retryable
+                # handle for any owner whose interrupted close did not finish.
+                primary.cleanup=self.close
+                primary.add_note('Inkling conditional construction cleanup remains pending: '+repr(failure))
             raise
 
     @property
@@ -174,16 +179,38 @@ class InklingMultimodalDecoder:
             if self._busy: raise RuntimeError('Inkling inference owns native resources')
             errors=[]
             if self.mtp is not None:
-                self.mtp.close();self.mtp=None
-            for owner in (self.session if self.session is not None else self.text,self.media):
-                if owner is not None:
-                    try: owner.close()
+                try:
+                    self.mtp.close();self.mtp=None
+                except BaseException as error: errors.append(error)
+            # These owners are independent: a failed MTP/text close must not
+            # strand the media tower (or vice versa). Keep failed references so
+            # callers can retry cleanup after the underlying operation settles.
+            session=self.session;text_owner_failed=self.mtp is not None
+            if self.mtp is None:
+                text_owner=session if session is not None else self.text
+                if text_owner is not None:
+                    try:
+                        text_owner.close()
+                        if session is not None: self.session=None
+                        else: self.text=None
+                    except BaseException as error:
+                        errors.append(error);text_owner_failed=True
+            if self.media is not None:
+                try:
+                    self.media.close();self.media=None
+                except BaseException as error: errors.append(error)
+            # Providers are borrowed by text/MTP execution. Do not retire them
+            # until every dependent owner has released its callback references.
+            if not text_owner_failed:
+                if self._own_expert_provider and self._expert_provider is not None:
+                    try:
+                        self._expert_provider.close();self._expert_provider=None
+                    except BaseException as error: errors.append(error)
+                if self._own_projection_provider and self._projection_provider is not None:
+                    try:
+                        self._projection_provider.close();self._projection_provider=None
                     except BaseException as error: errors.append(error)
             if errors: raise RuntimeError('Inkling cleanup remains pending') from errors[0]
-            if self._own_expert_provider and self._expert_provider is not None:
-                self._expert_provider.close();self._expert_provider=None
-            if self._own_projection_provider and self._projection_provider is not None:
-                self._projection_provider.close();self._projection_provider=None
             self.auxiliary={};self._closed=True
 
 __all__=['InklingMultimodalDecoder']

@@ -62,7 +62,8 @@ class Qwen35MultimodalDecoder(Qwen4MultimodalDecoder):
             raise ValueError('original device projection bank requires explicit Qwen3.5 device text arithmetic')
         self.auxiliary={}
         text,vision,audio,auxiliary=partition_weights(tensors,self.components)
-        if audio:raise ValueError('Qwen3.5 publisher does not own an audio tower')
+        if audio:
+            raise ValueError('Qwen3.5 publisher explicitly rejects audio tensors: this wrapper has no admitted audio tower')
         c=dict(self.components.text_config)
         if context_tokens is not None:
             if type(context_tokens) is not int or not 1<=context_tokens<=c['max_position_embeddings']:

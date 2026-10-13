@@ -12,6 +12,7 @@ from .glm5_publisher_experts import Glm5PublisherExperts
 from .native_glm5_next import NativeGlm5NextTextDecoder
 from .native_checkpoint import _pairs,_finish_decoder
 from .session_recovery import _path
+from .publisher_media_files import read_regular
 
 def _canonical(name):
     for prefix in ('model.language_model.','language_model.','model.'):
@@ -43,10 +44,13 @@ def admit_publisher_glm5_inventory(inventory,components):
         if name in scales:continue
         if record.dtype not in ('F32','F16','BF16','F8_E4M3'):
             raise ValueError('unsupported original GLM component source dtype: '+name)
-        if name.startswith('model.visual.'):
-            if visual.get(name)!=record.shape:
+        media_name = name
+        if media_name.startswith('model.language_model.visual.'):
+            media_name = 'model.visual.' + media_name[len('model.language_model.visual.'):]
+        if media_name.startswith('model.visual.'):
+            if visual.get(media_name)!=record.shape:
                 raise ValueError('original GLM media tensor geometry differs: '+name)
-            seen_visual.add(name);owned.add(name);continue
+            seen_visual.add(media_name);owned.add(name);continue
         if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
             owned.add(name);continue
         canonical=_canonical(name)
@@ -107,7 +111,7 @@ def load_publisher_glm5_text_decoder(directory,*,library,expert_library,context_
         max_weight_bytes,max_bytes,max_expert_bytes,max_conversion_bytes,cancel=None,text_device=None,max_snapshots=4,max_projection_bytes=0):
     root=_path(directory).resolve(strict=True)
     inventory=snapshot(root,max_metadata_bytes=min(max_weight_bytes,256*1024**2),max_tensors=1000000,max_shards=4096)
-    with (root/'config.json').open('rb') as stream: raw=stream.read(1024**2+1)
+    raw=read_regular(root/'config.json',max_bytes=1024**2)
     if len(raw)>1024**2 or hashlib.sha256(raw).hexdigest()!=inventory.config_sha256:
         raise ValueError('GLM config changed after checkpoint planning')
     original=json.loads(raw,object_pairs_hook=_pairs)

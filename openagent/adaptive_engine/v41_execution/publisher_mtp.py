@@ -12,11 +12,30 @@ These source paths do not establish numerical parity.
 import copy
 import math
 import threading
+from functools import wraps
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import numpy as np
-
 from .auxiliary_attention import attention_rows
+from .owner_scope import arithmetic_scope
+
+
+def _exclusive(operation):
+    @wraps(operation)
+    def owned(self, *args, **kwargs):
+        with self._lock:
+            if getattr(self, '_busy', False) or getattr(self, '_cache_transport', False):
+                raise RuntimeError('MTP transaction owns continuation state')
+            self._busy = True
+            try:
+                scope=(arithmetic_scope(self.provider) if operation.__name__ in
+                       ('seed_window','attention','forward_spec') else nullcontext())
+                with scope:
+                    return operation(self, *args, **kwargs)
+            finally:
+                self._busy = False
+    return owned
 
 
 @dataclass(frozen=True)
@@ -78,20 +97,43 @@ class PublisherV41MTP:
         self.windows = [np.zeros((c['sliding_window'], c['head_dim']), np.float32) for _ in range(self.stages)]
         self.position = None
         self._lock = threading.RLock()
+        self._busy = False
         self._cache_transport = False
+        self._quarantined = False
+        self._closed = False
 
     def _check_transport(self):
-        if self._cache_transport:
-            raise RuntimeError('MTP cache transport is active')
+        if self._closed:
+            raise RuntimeError('MTP owner is closed')
+        ensure = getattr(self.provider, '_ensure_open', None)
+        if callable(ensure):
+            ensure()
+        if self._cache_transport or self._quarantined:
+            raise RuntimeError('MTP owner is active or requires recovery')
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            if self._busy or self._cache_transport:
+                raise RuntimeError('cannot close an active MTP owner')
+            self._closed = True
+            self.windows = []
+            self.position = None
 
     def write_cache(self, output, *, max_bytes):
         from .mtp_cache import transport_mtp_cache
+        with self._lock:
+            self._check_transport()
         return transport_mtp_cache(self, output, max_bytes=max_bytes)
 
     def restore_cache(self, source, *, max_bytes):
         from .mtp_cache import transport_mtp_cache
+        with self._lock:
+            self._check_transport()
         return transport_mtp_cache(self, source, max_bytes=max_bytes, restoring=True)
 
+    @_exclusive
     def snapshot(self):
         with self._lock:
             self._check_transport()
@@ -102,6 +144,7 @@ class PublisherV41MTP:
                 tuple(w.astype('<f4', copy=False).tobytes() for w in self.windows),
                 copy.deepcopy(self.rng.bit_generator.state))
 
+    @_exclusive
     def restore(self, snapshot):
         with self._lock:
             self._check_transport()
@@ -118,7 +161,6 @@ class PublisherV41MTP:
                 raise MemoryError('MTP snapshot restore exceeds workspace admission')
             restored = []
             for raw in snapshot.windows:
-                self._cancelled()
                 if type(raw) is not bytes or len(raw) != math.prod(shape)*4:
                     raise ValueError('invalid MTP snapshot window extent')
                 bank = self._array(np.frombuffer(raw, dtype='<f4'), shape)
@@ -131,18 +173,24 @@ class PublisherV41MTP:
             old_rng = copy.deepcopy(self.rng.bit_generator.state)
             try:
                 self.rng.bit_generator.state = copy.deepcopy(snapshot.rng_state)
-                self._cancelled()
-            except BaseException:
-                self.rng.bit_generator.state = old_rng
+            except BaseException as primary:
+                try:
+                    self.rng.bit_generator.state = old_rng
+                except BaseException as rollback:
+                    self._quarantined = True
+                    primary.add_note('MTP restore RNG rollback failed: '+repr(rollback))
                 raise
             self.windows, self.position = restored, snapshot.position
 
+    @_exclusive
     def reset(self):
         with self._lock:
             self._check_transport()
+            self._quarantined = True
             for window in self.windows:
                 window.fill(0)
             self.position = None
+            self._quarantined = False
 
     @staticmethod
     def _array(value, shape):
@@ -193,6 +241,7 @@ class PublisherV41MTP:
                 'fp8-e4m3-g32-ue8m0'), (hd,)))
         return np.stack(result)
 
+    @_exclusive
     def seed_window(self, main_hidden, *, start_pos):
         """Seed occupied draft windows from an absolute-position prefix tail.
 
@@ -232,7 +281,22 @@ class PublisherV41MTP:
             self._cancelled()
             self.windows, self.position = staged, start_pos+len(rows)
 
+    @_exclusive
     def attention(self, stage, x, start_pos, main_x):
+        self._check_transport()
+        if type(stage) is not int or not 0<=stage<self.stages:
+            raise ValueError('valid MTP attention stage required')
+        retained=sum(window.nbytes for window in self.windows)
+        if retained+self.windows[stage].nbytes>self.max_bytes:
+            raise MemoryError('MTP attention rollback exceeds workspace admission')
+        saved=self.windows[stage].copy()
+        try:
+            return self._attention_locked(stage,x,start_pos,main_x,rollback_bytes=saved.nbytes)
+        except BaseException:
+            self.windows[stage]=saved
+            raise
+
+    def _attention_locked(self, stage, x, start_pos, main_x, *, rollback_bytes=0):
         """One-session DSpark attention; drafts attend bidirectionally to all draft KV.
 
         The block callback calls this exactly once per stage, including prefill.
@@ -261,7 +325,7 @@ class PublisherV41MTP:
         draft_kv = kv(x, positions)
         self.windows[stage][start_pos % win] = main_kv[0]
         banks = (self.windows[stage][:min(win, start_pos+1)], draft_kv)
-        retained = sum(window.nbytes for window in self.windows)+q.nbytes+draft_kv.nbytes+main_kv.nbytes
+        retained = sum(window.nbytes for window in self.windows)+q.nbytes+draft_kv.nbytes+main_kv.nbytes+rollback_bytes
         attention = getattr(self.provider,'attention_rows',None) or attention_rows
         out = self._cast(attention(q, banks, banks,
             sink=self._tensor(p+'attn_sink', (heads,)),
@@ -280,6 +344,7 @@ class PublisherV41MTP:
             out = self._cast(np.einsum('sgd,grd->sgr', out, weight)).reshape(len(x), groups*rank)
         return self._linear(p+'wo_b', out, self.h)
 
+    @_exclusive
     def forward_spec(self, input_id, main_hidden, start_pos=0, *, temperature=1.0):
         with self._lock:
             self._check_transport()
@@ -326,9 +391,9 @@ class PublisherV41MTP:
             for stage in range(self.stages):
                 self._cancelled()
                 if start_pos == 0:
-                    self.attention(stage, x, 0, main_x)
+                    self._attention_locked(stage, x, 0, main_x)
                 else:
-                    x, pre = self.block(stage, x, start_pos, pre, main_x, self.attention)
+                    x, pre = self.block(stage, x, start_pos, pre, main_x, self._attention_locked)
                     x = self._array(x, (self.size, self.hc, self.h))
                     pre = self._array(pre, (self.size, self.hc))
             self._cancelled()
@@ -367,7 +432,11 @@ class PublisherV41MTP:
             confidence = self._linear(last+'confidence_head.proj', features, 1)
             self._cancelled()
             return output, logits, confidence[:, 0]
-        except BaseException:
+        except BaseException as primary:
             self.windows, self.position = saved, old_pos
-            self.rng.bit_generator.state = rng_state
+            try:
+                self.rng.bit_generator.state = rng_state
+            except BaseException as rollback:
+                self._quarantined = True
+                primary.add_note('MTP proposal RNG rollback failed: '+repr(rollback))
             raise

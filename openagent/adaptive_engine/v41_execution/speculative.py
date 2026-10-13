@@ -8,6 +8,28 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def _stop_prefixes(value, vocabulary):
+    if value is None:
+        return ()
+    if type(value) not in (tuple, list) or len(value) > 64:
+        raise ValueError('bounded stop-prefix inventory required')
+    result = []
+    for prefix in value:
+        if (type(prefix) not in (tuple, list) or not prefix or len(prefix) > 128 or
+                any(type(token) is not int or not 0 <= token < vocabulary
+                    for token in prefix)):
+            raise ValueError('finite valid stop-token prefixes required')
+        result.append(tuple(prefix))
+    if len(set(result)) != len(result):
+        raise ValueError('duplicate stop-token prefix')
+    return tuple(result)
+
+
+def _matches_stop_prefix(history, prefixes):
+    return any(len(history) >= len(prefix) and
+               tuple(history[-len(prefix):]) == prefix for prefix in prefixes)
+
+
 @dataclass(frozen=True)
 class DraftProposal:
     tokens: tuple
@@ -31,6 +53,9 @@ class SpeculativeSnapshot:
     rng_state: dict
     policy: tuple
     proposal_temperature: object = None
+    stopped: bool = False
+    proposal_rng_state: object = None
+    stop_prefixes: tuple = ()
 
 
 class AutoregressiveDraftProposer:
@@ -52,7 +77,13 @@ class AutoregressiveDraftProposer:
         self.history, self.logits = (), None
         self._lock = threading.RLock()
         self._pending_release = []
+
         self._failed=False
+        self._closed=False
+
+    def _check_open(self):
+        if self._closed:
+            raise RuntimeError('draft proposer is closed')
 
     def release_snapshot(self, state):
         release = getattr(self.model, 'release_snapshot', None)
@@ -61,6 +92,7 @@ class AutoregressiveDraftProposer:
 
     def retry_cleanup(self):
         with self._lock:
+            self._check_open()
             pending,self._pending_release = self._pending_release,[]
             errors = []
             for state in pending:
@@ -72,8 +104,19 @@ class AutoregressiveDraftProposer:
             if errors:
                 raise RuntimeError('draft snapshot cleanup remains pending') from errors[0]
 
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self.retry_cleanup()
+            close = getattr(self.model, 'close', None)
+            if callable(close):
+                close()
+            self._closed = True
+
     def snapshot(self):
         with self._lock:
+            self._check_open()
             if self._failed:raise RuntimeError('draft owner requires reset or successful restore')
             if self._pending_release:raise RuntimeError('draft snapshot cleanup remains pending')
             if 16*self.vocabulary+128*len(self.history)>self.max_bytes:
@@ -90,6 +133,7 @@ class AutoregressiveDraftProposer:
 
     def reset(self):
         with self._lock:
+            self._check_open()
             self.retry_cleanup()
             self.model.reset()
             self.history, self.logits = (), None
@@ -97,6 +141,7 @@ class AutoregressiveDraftProposer:
 
     def restore(self, state):
         with self._lock:
+            self._check_open()
             model_state, history, logits, rng_state = state
             if (type(history) is not tuple or len(history)>self.context or
                     any(type(token) is not int or not 0<=token<self.vocabulary for token in history) or
@@ -132,6 +177,7 @@ class AutoregressiveDraftProposer:
 
     def __call__(self, history, count):
         with self._lock:
+            self._check_open()
             if self._failed:raise RuntimeError('draft owner requires reset or successful restore')
             if self._pending_release:
                 raise RuntimeError('draft snapshot cleanup pending')
@@ -220,17 +266,32 @@ class SpeculativeDecoder:
         if 8*vocabulary*(3*draft_length+4) > max_bytes:
             raise MemoryError('speculative distribution workspace exceeds budget')
         has_snapshot = callable(getattr(proposer, 'snapshot', None))
-        if has_snapshot != callable(getattr(proposer, 'restore', None)):
-            raise ValueError('proposer snapshot and restore must be paired')
+        has_restore = callable(getattr(proposer, 'restore', None))
+        if not has_snapshot or not has_restore:
+            raise ValueError(
+                'transactional speculative execution requires a snapshot-capable '
+                'proposer with paired restore; unsnapshotted proposal state cannot '
+                'be rolled back after rejection, cancellation, or target failure')
         self.target, self.proposer = target, proposer
         self.vocabulary, self.context = vocabulary, context
         self.temperature, self.draft_length = float(temperature), draft_length
+        self.max_bytes = max_bytes
         self.rng = np.random.default_rng() if rng is None else rng
         self.history, self.next_logits = (), None
         self._lock = threading.RLock()
         self._busy = False
         self._quarantined = False
         self._pending_release = []
+        self._stopped = False
+        self._stop_prefixes = ()
+        self._closed = False
+        self._closing = False
+
+    def _check_open(self):
+        if self._closed:
+            raise RuntimeError('speculative decoder is closed')
+        if self._closing:
+            raise RuntimeError('speculative decoder is closing')
 
     def _release_states(self, target=None, draft=None, *, primary=None):
         errors = []
@@ -252,6 +313,7 @@ class SpeculativeDecoder:
 
     def retry_cleanup(self):
         with self._lock:
+            self._check_open()
             if self._busy:
                 raise RuntimeError('cannot retry active speculative cleanup')
             pending,self._pending_release = self._pending_release,[]
@@ -268,29 +330,65 @@ class SpeculativeDecoder:
             if callable(retry):
                 retry()
 
+    def close(self):
+        """Close target and proposer resources with retryable failure semantics."""
+        with self._lock:
+            if self._closed:
+                return
+            if self._busy:
+                raise RuntimeError('cannot close active speculative generation')
+            errors = []
+            try:
+                try:
+                    self.retry_cleanup()
+                except BaseException as error:
+                    errors.append(error)
+                self._closing = True
+                for owner in (self.proposer, self.target):
+                    close = getattr(owner, 'close', None)
+                    if callable(close):
+                        try:
+                            close()
+                        except BaseException as error:
+                            errors.append(error)
+                if errors:
+                    raise RuntimeError('speculative decoder cleanup remains pending') from errors[0]
+                self._closed = True
+            finally:
+                self._closing = False
+
     def release_snapshot(self, snapshot):
         with self._lock:
+            self._check_open()
             if type(snapshot) is not SpeculativeSnapshot or self._busy:
                 raise ValueError('idle speculative snapshot required')
             self._release_states(snapshot.target,snapshot.draft)
 
     def write_cache(self, output, *, max_bytes):
         from .speculative_cache import transport_speculative_cache
+        with self._lock:
+            self._check_open()
         return transport_speculative_cache(self, output, max_bytes=max_bytes)
 
     def restore_cache(self, source, *, max_bytes):
         from .speculative_cache import transport_speculative_cache
+        with self._lock:
+            self._check_open()
         return transport_speculative_cache(self, source, max_bytes=max_bytes, restoring=True)
 
     def save_cache(self, destination, *, max_bytes):
         from ..cache_file_recovery import save_executor_cache
+        with self._lock:
+            self._check_open()
         return save_executor_cache(self, destination, max_bytes=max_bytes)
 
-    def load_cache(self, source, *, max_bytes):
+    def load_cache(self, source, *, max_bytes, cancelled=None):
         from ..cache_file_recovery import load_executor_cache
-        return load_executor_cache(self, source, max_bytes=max_bytes)
+        with self._lock:
+            self._check_open()
+        return load_executor_cache(self, source, max_bytes=max_bytes, cancelled=cancelled)
 
-    def _rollback(self, target, draft, rng_state, failure):
+    def _rollback(self, target, draft, rng_state, failure, proposal_rng_state=None):
         """Try every independent owner even if an earlier restore fails."""
         errors = []
         actions = [('target', lambda: self.target.restore(target)),
@@ -298,6 +396,13 @@ class SpeculativeDecoder:
                                                         'state', copy.deepcopy(rng_state)))]
         if draft is not None:
             actions.append(('draft', lambda: self.proposer.restore(draft)))
+        proposal_rng = getattr(self.proposer, 'rng', None)
+        if proposal_rng is not None and hasattr(proposal_rng, 'bit_generator'):
+            proposal_state = proposal_rng_state
+            if proposal_state is not None:
+                actions.append(('proposal random generator',
+                                lambda: setattr(proposal_rng.bit_generator,
+                                                'state', copy.deepcopy(proposal_state))))
         for name, action in actions:
             try:
                 action()
@@ -310,6 +415,7 @@ class SpeculativeDecoder:
 
     def snapshot(self):
         with self._lock:
+            self._check_open()
             if self._busy or self._quarantined or self.next_logits is None:
                 raise RuntimeError('idle prefilled generation required for snapshot')
             self._busy = True
@@ -317,11 +423,15 @@ class SpeculativeDecoder:
             try:
                 target = self.target.snapshot()
                 draft = self.proposer.snapshot() if callable(getattr(self.proposer, 'snapshot', None)) else None
+                proposal_rng = getattr(self.proposer, 'rng', None)
+                proposal_rng_state = (copy.deepcopy(proposal_rng.bit_generator.state)
+                    if proposal_rng is not None and hasattr(proposal_rng, 'bit_generator') else None)
                 return SpeculativeSnapshot(target, draft,
                     self.history, self.next_logits.astype('<f8', copy=False).tobytes(),
                     copy.deepcopy(self.rng.bit_generator.state),
                     (self.vocabulary, self.context, self.temperature, self.draft_length),
-                    getattr(self.proposer, 'temperature', None))
+                    getattr(self.proposer, 'temperature', None), self._stopped,
+                    proposal_rng_state, self._stop_prefixes)
             except BaseException:
                 self._release_states(target,draft,primary=sys.exc_info()[1])
                 raise
@@ -330,6 +440,7 @@ class SpeculativeDecoder:
 
     def restore(self, snapshot):
         with self._lock:
+            self._check_open()
             if self._busy or self._quarantined:
                 raise RuntimeError('cannot restore active generation')
             if (type(snapshot) is not SpeculativeSnapshot or snapshot.policy !=
@@ -341,6 +452,22 @@ class SpeculativeDecoder:
                 raise ValueError('generation snapshot policy or extent mismatch')
             if snapshot.proposal_temperature != getattr(self.proposer, 'temperature', None):
                 raise ValueError('generation snapshot proposal temperature mismatch')
+            if type(snapshot.stopped) is not bool:
+                raise ValueError('explicit saved speculative stop boundary required')
+            if (type(snapshot.stop_prefixes) is not tuple or len(snapshot.stop_prefixes) > 64 or
+                    any(type(prefix) is not tuple or not prefix or len(prefix) > 128 or
+                        any(type(token) is not int or not 0 <= token < self.vocabulary
+                            for token in prefix) for prefix in snapshot.stop_prefixes) or
+                    len(set(snapshot.stop_prefixes)) != len(snapshot.stop_prefixes)):
+                raise ValueError('saved speculative stop-prefix policy differs')
+            proposal_rng = getattr(self.proposer, 'rng', None)
+            if snapshot.proposal_rng_state is not None:
+                if proposal_rng is None or not hasattr(proposal_rng, 'bit_generator'):
+                    raise ValueError('saved proposal RNG has no owned proposer RNG')
+                expected = proposal_rng.bit_generator.state.get('bit_generator')
+                if (type(snapshot.proposal_rng_state) is not dict or
+                        snapshot.proposal_rng_state.get('bit_generator') != expected):
+                    raise ValueError('saved proposal RNG identity differs from proposer')
             logits = np.frombuffer(snapshot.logits, dtype='<f8').copy()
             if not np.isfinite(logits).all():
                 raise ValueError('invalid saved generation logits')
@@ -353,16 +480,22 @@ class SpeculativeDecoder:
                 old_target = self.target.snapshot()
                 old_draft = self.proposer.snapshot() if has_draft else None
                 old_rng = copy.deepcopy(self.rng.bit_generator.state)
+                old_proposal_rng = (copy.deepcopy(proposal_rng.bit_generator.state)
+                    if proposal_rng is not None and hasattr(proposal_rng, 'bit_generator') else None)
                 try:
                     self.rng.bit_generator.state = copy.deepcopy(snapshot.rng_state)
                     self.target.restore(snapshot.target)
                     if has_draft:
                         self.proposer.restore(snapshot.draft)
+                    if snapshot.proposal_rng_state is not None:
+                        proposal_rng.bit_generator.state = copy.deepcopy(snapshot.proposal_rng_state)
                     self._check_target_state(snapshot.history, logits)
                 except BaseException as failure:
-                    self._rollback(old_target, old_draft, old_rng, failure)
+                    self._rollback(old_target, old_draft, old_rng, failure, old_proposal_rng)
                     raise
                 self.history, self.next_logits = snapshot.history, logits
+                self._stopped = snapshot.stopped
+                self._stop_prefixes = snapshot.stop_prefixes
             finally:
                 try:
                     self._release_states(old_target,old_draft,primary=sys.exc_info()[1])
@@ -380,25 +513,37 @@ class SpeculativeDecoder:
             if observed.shape != (self.vocabulary,) or not np.array_equal(observed, logits):
                 raise ValueError('speculative verifier logits differ from target evidence')
 
-    def generate(self, max_new_tokens, *, stop_tokens=(), cancelled=None):
+    def generate(self, max_new_tokens, *, stop_tokens=(), stop_prefixes=(), cancelled=None):
         """Yield committed steps; cancellation is checked between transactions."""
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError('positive generation limit required')
         if cancelled is not None and not callable(cancelled):
             raise ValueError('cancellation predicate must be callable')
+        if (type(stop_tokens) not in (tuple, list, set, frozenset) or
+                len(stop_tokens) > self.vocabulary):
+            raise ValueError('bounded explicit stop-token inventory required')
+        if any(type(t) is not int or not 0 <= t < self.vocabulary for t in stop_tokens):
+            raise ValueError('invalid stop token')
         stops = frozenset(stop_tokens)
+        prefixes = _stop_prefixes(stop_prefixes, self.vocabulary)
         emitted = 0
         while emitted < max_new_tokens:
-            if cancelled is not None and cancelled():
-                return
+            # Cancellation between yielded transactions is still a cancelled
+            # generation, not a successful short stream.  Raise the same
+            # domain exception used inside step() so direct iterator consumers
+            # cannot mistake a partial result for completion.
+            self._cancelled(cancelled)
             with self._lock:
+                if self._stopped:
+                    return
                 remaining = self.context-len(self.history)
             if remaining <= 0:
                 return
-            result = self.step(max_tokens=min(max_new_tokens-emitted, remaining), stop_tokens=stops,cancelled=cancelled)
+            result = self.step(max_tokens=min(max_new_tokens-emitted, remaining),
+                               stop_tokens=stops, stop_prefixes=prefixes, cancelled=cancelled)
             emitted += len(result.tokens)
             yield result
-            if result.tokens[-1] in stops:
+            if self._stopped or result.tokens[-1] in stops:
                 return
 
     def _logits(self, output, count):
@@ -421,6 +566,7 @@ class SpeculativeDecoder:
 
     def prefill(self, tokens, *,cancelled=None,**forward_options):
         with self._lock,self._cancel_scope(cancelled):
+            self._check_open()
             self._cancelled(cancelled)
             if self._busy or self._quarantined or self.history:
                 raise RuntimeError('prefill requires an idle empty session')
@@ -435,6 +581,8 @@ class SpeculativeDecoder:
                 logits = self._logits(self.target.forward(list(ids), **forward_options), len(ids))
                 self._cancelled(cancelled)
                 self.history, self.next_logits = ids, logits[-1].copy()
+                self._stopped = False
+                self._stop_prefixes = ()
             except BaseException as failure:
                 if saved is not None:
                     try:
@@ -449,8 +597,9 @@ class SpeculativeDecoder:
                 finally:
                     self._busy = False
 
-    def step(self, *, max_tokens=None, stop_tokens=(),cancelled=None):
+    def step(self, *, max_tokens=None, stop_tokens=(), stop_prefixes=(), cancelled=None):
         with self._lock,self._cancel_scope(cancelled):
+            self._check_open()
             self._cancelled(cancelled)
             if self._busy or self._quarantined or self.next_logits is None:
                 raise RuntimeError('idle prefilled session required')
@@ -459,9 +608,17 @@ class SpeculativeDecoder:
             if type(limit) is not int or limit <= 0 or remaining <= 0:
                 raise ValueError('positive generation budget and remaining context required')
             limit = min(limit, remaining)
-            stops = frozenset(stop_tokens)
-            if any(type(t) is not int or not 0 <= t < self.vocabulary for t in stops):
+            if (type(stop_tokens) not in (tuple, list, set, frozenset) or
+                    len(stop_tokens) > self.vocabulary):
+                raise ValueError('bounded explicit stop-token inventory required')
+            if any(type(t) is not int or not 0 <= t < self.vocabulary for t in stop_tokens):
                 raise ValueError('invalid stop token')
+            stops = frozenset(stop_tokens)
+            prefixes = _stop_prefixes(stop_prefixes, self.vocabulary)
+            old_stop_prefixes = self._stop_prefixes
+            if self._stopped:
+                raise RuntimeError('generation is already at a stop boundary')
+            self._stop_prefixes = prefixes
             self._busy = True
             saved,draft_state = None,None
             try:
@@ -469,8 +626,15 @@ class SpeculativeDecoder:
                 rng_state = copy.deepcopy(self.rng.bit_generator.state)
                 draft_state = (self.proposer.snapshot() if
                     callable(getattr(self.proposer, 'snapshot', None)) else None)
-            except BaseException:
-                self._release_states(saved,draft_state,primary=sys.exc_info()[1])
+                proposal_rng = getattr(self.proposer, 'rng', None)
+                proposal_rng_state = (copy.deepcopy(proposal_rng.bit_generator.state)
+                    if proposal_rng is not None and hasattr(proposal_rng, 'bit_generator') else None)
+            except BaseException as failure:
+                # Stop-prefix policy is part of the decoder boundary. Snapshot
+                # acquisition can fail before the main transaction handler is
+                # entered, so restore that policy here as well.
+                self._stop_prefixes = old_stop_prefixes
+                self._release_states(saved,draft_state,primary=failure)
                 raise
             finally:
                 self._busy = False
@@ -481,9 +645,9 @@ class SpeculativeDecoder:
                 if type(proposal) is not DraftProposal:
                     raise ValueError('DraftProposal required')
                 ids = proposal.tokens
-                if (type(ids) is not tuple or len(ids) > min(self.draft_length, limit) or
+                if (type(ids) is not tuple or not ids or len(ids) > min(self.draft_length, limit) or
                         any(type(t) is not int or not 0 <= t < self.vocabulary for t in ids)):
-                    raise ValueError('invalid proposed token inventory')
+                    raise ValueError('nonempty valid proposed token inventory required')
                 q = np.asarray(proposal.probabilities, dtype=np.float64)
                 if (q.shape != (len(ids), self.vocabulary) or not np.isfinite(q).all() or
                         np.any(q < 0) or (len(ids) and
@@ -514,10 +678,11 @@ class SpeculativeDecoder:
                         break
                     output.append(token)
                     accepted += 1
-                    if token in stops:
+                    if token in stops or _matches_stop_prefix(self.history + tuple(output), prefixes):
                         break
                 if (not rejected and len(output) == len(ids) and len(output) < limit and
-                        (not output or output[-1] not in stops)):
+                        (not output or output[-1] not in stops) and
+                        not _matches_stop_prefix(self.history + tuple(output), prefixes)):
                     p = self._probabilities(rows[-1] if ids else self.next_logits)
                     output.append(self._sample(p))
                 # Keep verified cache pages when the entire proposal was accepted.
@@ -528,7 +693,15 @@ class SpeculativeDecoder:
                     else:
                         committed = rows
                 else:
+                    # The target proposal path is discarded on rejection or
+                    # an early stop.  The proposer has also consumed the
+                    # complete speculative draft, so it must be returned to
+                    # the same pre-proposal boundary; otherwise its retained
+                    # suffix can be mistaken for the committed history on the
+                    # next transaction.
                     self.target.restore(saved)
+                    if draft_state is not None:
+                        self.proposer.restore(draft_state)
                     committed = self._logits(self.target.forward(output), len(output))
                 emitted = tuple(output)
                 new_history = self.history+emitted
@@ -536,9 +709,16 @@ class SpeculativeDecoder:
                 result = SpeculativeStep(emitted, accepted, len(ids), rejected)
                 self._cancelled(cancelled)
                 self.history, self.next_logits = new_history, new_logits
+                self._stopped = bool(emitted and
+                                     (emitted[-1] in stops or
+                                      _matches_stop_prefix(self.history, prefixes)))
                 return result
             except BaseException as failure:
-                self._rollback(saved, draft_state, rng_state, failure)
+                self._rollback(saved, draft_state, rng_state, failure, proposal_rng_state)
+                # Stop policy is part of the transactional continuation state;
+                # a failed step must not leave the next retry governed by the
+                # caller's uncommitted policy.
+                self._stop_prefixes = old_stop_prefixes
                 raise
             finally:
                 try:
@@ -548,6 +728,7 @@ class SpeculativeDecoder:
 
     def reset(self):
         with self._lock:
+            self._check_open()
             if self._busy:
                 raise RuntimeError('cannot reset an active generation step')
             self.retry_cleanup()
@@ -562,6 +743,8 @@ class SpeculativeDecoder:
                 elif recovering and callable(getattr(self.proposer, 'snapshot', None)):
                     raise RuntimeError('stateful proposer requires reset to recover generation')
                 self.history, self.next_logits = (), None
+                self._stopped = False
+                self._stop_prefixes = ()
                 self._quarantined = False
             finally:
                 self._busy = False

@@ -85,6 +85,12 @@ def preprocess_images(images, *, max_bytes=256 * 1024 * 1024, cancelled=None):
     if decoded_bytes+2 * allocated+len(images)*128 > max_bytes:
         raise ValueError("patch concatenation budget exceeded")
     boundary()
-    result=np.concatenate(batches),np.asarray(grids,dtype=np.int64)
+    pixels=np.concatenate(batches)
+    grid=np.asarray(grids,dtype=np.int64)
+    # Admission and execution share one immutable media receipt; callers must
+    # not mutate patch bytes or geometry after the source contract is bound.
+    pixels.flags.writeable=False
+    grid.flags.writeable=False
+    result=pixels,grid
     boundary()
     return result

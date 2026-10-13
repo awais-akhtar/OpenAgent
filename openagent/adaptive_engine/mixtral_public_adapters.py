@@ -217,12 +217,28 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
                 max_weight_bytes=self.staging_bytes,max_bytes=budget,
                 expert_provider=self.expert_provider)
             engine = _RangeEngine(template,self.max_sessions)
-            c = template.config
-            record = _SegmentCaps(version=1,flags=(1<<8)|2|4|8,
-                engine=self.segment_id,schema=self.wire_schema,numeric=self.numeric_class,
-                dtype=1,width=c['hidden_size'],rows=self.rows,context=template.capacity,
-                layers=c['num_hidden_layers'])
-            C.memmove(caps,C.byref(record),C.sizeof(record))
+            try:
+                c = template.config
+                record = _SegmentCaps(version=1,flags=(1<<8)|2|4|8,
+                    engine=self.segment_id,schema=self.wire_schema,numeric=self.numeric_class,
+                    dtype=1,width=c['hidden_size'],rows=self.rows,context=template.capacity,
+                    layers=c['num_hidden_layers'])
+                C.memmove(caps,C.byref(record),C.sizeof(record))
+            except BaseException as error:
+                # Until _publish adopts the engine, construction owns the
+                # template. If capability serialization fails, do not leave
+                # its mapped weights/expert leases live.
+                try:
+                    engine.close()
+                except BaseException as cleanup:
+                    # Preserve a retry handle even though no public numeric
+                    # resource id was assigned yet.
+                    with self.lock:
+                        orphan = -id(engine)
+                        self.objects[orphan] = ('engine',engine)
+                        self.pending[orphan] = cleanup
+                    error.add_note('Mixtral range construction cleanup pending: '+str(cleanup))
+                raise
             self._publish(engine,'engine',output)
 
         def create(engine_id,output,raw_options):

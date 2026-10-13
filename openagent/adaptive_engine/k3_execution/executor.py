@@ -347,6 +347,7 @@ class K3Execution:
         self._lock = threading.RLock()
         self._busy, self._closed = False, False
         self._raw_libraries = []
+        self._pending_kda_cleanup = []
         self._release = weakref.finalize(self, _release_libraries, self._raw_libraries)
         self._kda = {}
         for i, kind in enumerate(config.layer_types):
@@ -440,6 +441,10 @@ class K3Execution:
             # Stop at a failed child release. Its library and borrowed provider
             # remain reachable for retry and cannot be unloaded underneath it.
             if self._fla_policy is not None:
+                while self._pending_kda_cleanup:
+                    mixer = self._pending_kda_cleanup[0]
+                    mixer.close()
+                    self._pending_kda_cleanup.pop(0)
                 while self._kda:
                     index=next(reversed(self._kda))
                     self._kda[index].close();del self._kda[index]
@@ -452,6 +457,38 @@ class K3Execution:
             self._mla, self._kda, self._weights, self._vision = {}, {}, {}, None
             self._comparison_observations=None
             self._expert_provider = None;self._resources_released=True
+
+    def _retire_fla_mixers(self, mixers, *, primary=None):
+        """Close detached transactional FLA state, retaining failures for close().
+
+        FLA forks share immutable modules but own recurrent/convolution cache
+        tensors. Replacing a committed state must release the previous caches;
+        failed speculative states must not be left to nondeterministic GC.
+        """
+        if self._fla_policy is None:
+            return
+        errors = []
+        for mixer in mixers:
+            try:
+                mixer.close()
+            except BaseException as error:
+                errors.append((mixer, error))
+        for mixer, error in errors:
+            if not any(mixer is pending for pending in self._pending_kda_cleanup):
+                self._pending_kda_cleanup.append(mixer)
+            self._closed = True
+            message = 'K3 FLA mixer cleanup retained for executor close retry: ' + repr(error)
+            if primary is not None:
+                primary.add_note(message)
+
+    def _commit_kda_state(self, staged):
+        previous = tuple(self._kda.values())
+        self._kda = staged
+        self._retire_fla_mixers(previous)
+
+    def _discard_kda_state(self, staged, primary):
+        if self._fla_policy is not None:
+            self._retire_fla_mixers(tuple(staged.values()), primary=primary)
 
     def _admit(self, n):
         c = self.config
@@ -963,7 +1000,7 @@ class K3Execution:
         result = self._linear_sequence(p+'routed_expert_up_proj.weight', routed)
         return self._add(result, self._mlp_sequence(values, p+'shared_experts.')) if c.shared else result
 
-    def _prefill_layers(self, embedded, positions, mla, kda):
+    def _prefill_layers(self, embedded, positions, mla, kda, *, return_hidden=False):
         """Layer-major prompt transaction with explicitly selected attention.
 
         FLA handles the prompt chunk in one recurrence call. Selected FA2 uses
@@ -1016,7 +1053,7 @@ class K3Execution:
         x = residual(x, 'language_model.model.output_attn_res')
         x = rows(lambda row: self._norm(row, 'language_model.model.norm.weight'), x)
         self._check_cancelled()
-        return self._linear_sequence('language_model.lm_head.weight', x)
+        return x if return_hidden else self._linear_sequence('language_model.lm_head.weight', x)
 
     def _mla_sequence(self, values, p, cache, positions):
         """Append a staged prompt chunk and apply bottom-right causal FA2."""
@@ -1078,38 +1115,64 @@ class K3Execution:
                    for i, kind in enumerate(c.layer_types) if kind == "mla"}
             staged = {i: m.fork() if self._fla_policy is not None else copy.copy(m)
                       for i, m in self._kda.items()}
-            for m in staged.values():
-                m.reset()
-            self._mla, self._kda, self._position = mla, staged, 0
+            try:
+                for m in staged.values():
+                    m.reset()
+            except BaseException as primary:
+                self._discard_kda_state(staged, primary)
+                raise
+            self._mla, self._position = mla, 0
+            self._commit_kda_state(staged)
             self._exact_media_case=None
             self._comparison_observations=None
 
     def snapshot(self):
         with self._operation():
-            self._admit(0)
-            return K3Snapshot(self._identity, self._position,
-                              tuple((i, pages.snapshot()) for i, pages in self._mla.items()),
-                              tuple((i, m.snapshot()) for i, m in self._kda.items()),
-                              None if self._exact_evidence is None else self._exact_evidence.identity,
-                              self._exact_media_case)
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self, *, cancelled=None):
+        self._admit(0)
+        mla, kda = [], []
+        for i, pages in self._mla.items():
+            if cancelled is not None:
+                cancelled()
+            mla.append((i, pages.snapshot()))
+        for i, mixer in self._kda.items():
+            if cancelled is not None:
+                cancelled()
+            kda.append((i, mixer.snapshot()))
+        if cancelled is not None:
+            cancelled()
+        return K3Snapshot(self._identity, self._position,
+                          tuple(mla), tuple(kda),
+                          None if self._exact_evidence is None else self._exact_evidence.identity,
+                          self._exact_media_case)
 
     def restore(self, snapshot):
         with self._operation():
-            if type(snapshot) is not K3Snapshot or snapshot.identity != self._identity:
-                raise ValueError("foreign K3 snapshot")
-            if type(snapshot.position) is not int or not 0 <= snapshot.position <= self.config.capacity:
-                raise ValueError("invalid snapshot position")
-            expected=None if self._exact_evidence is None else self._exact_evidence.identity
-            if snapshot.exact_evidence!=expected or (expected is None and snapshot.media_case is not None):
-                raise ValueError('snapshot exact evidence or media policy differs')
-            if self._exact_evidence is not None:self._exact_evidence.admit_snapshot(snapshot.media_case,snapshot.position)
-            self._admit(max(0, snapshot.position - self._position))
-            mla, kda = {}, {}
+            return self._restore_locked(snapshot)
+
+    def _restore_locked(self, snapshot, *, cancelled=None):
+        if type(snapshot) is not K3Snapshot or snapshot.identity != self._identity:
+            raise ValueError("foreign K3 snapshot")
+        if type(snapshot.position) is not int or not 0 <= snapshot.position <= self.config.capacity:
+            raise ValueError("invalid snapshot position")
+        expected=None if self._exact_evidence is None else self._exact_evidence.identity
+        if snapshot.exact_evidence!=expected or (expected is None and snapshot.media_case is not None):
+            raise ValueError('snapshot exact evidence or media policy differs')
+        if self._exact_evidence is not None:self._exact_evidence.admit_snapshot(snapshot.media_case,snapshot.position)
+        self._admit(max(0, snapshot.position - self._position))
+        mla, kda = {}, {}
+        try:
             for i, pages in snapshot.mla:
+                if cancelled is not None:
+                    cancelled()
                 if i not in self._mla or i in mla:
                     raise ValueError("invalid MLA snapshot inventory")
                 mla[i] = self._mla[i].from_snapshot(pages, snapshot.position)
             for i, item in snapshot.kda:
+                if cancelled is not None:
+                    cancelled()
                 if i not in self._kda or i in kda:
                     raise ValueError("invalid KDA snapshot inventory")
                 if self._fla_policy is not None:
@@ -1117,8 +1180,10 @@ class K3Execution:
                     if type(item) is not FLAMixerSnapshot or item.position != snapshot.position:
                         raise ValueError('invalid FLA snapshot position or layout')
                     m = self._kda[i].fork()
-                    m.restore(item)
+                    # Retain ownership before restore: restore may fail after
+                    # allocating detached device copies.
                     kda[i] = m
+                    m.restore(item)
                     continue
                 if type(item) is not tuple or len(item) != 3:
                     raise ValueError('invalid native KDA snapshot layout')
@@ -1134,13 +1199,19 @@ class K3Execution:
                 kda[i] = m
             if set(mla) != set(self._mla) or set(kda) != set(self._kda):
                 raise ValueError("incomplete snapshot")
-            self._mla, self._kda, self._position = mla, kda, snapshot.position
-            self._exact_media_case=snapshot.media_case
-            self._comparison_observations=None
+            if cancelled is not None:
+                cancelled()
+        except BaseException as primary:
+            self._discard_kda_state(kda, primary)
+            raise
+        self._mla, self._position = mla, snapshot.position
+        self._commit_kda_state(kda)
+        self._exact_media_case=snapshot.media_case
+        self._comparison_observations=None
 
     def forward(self, token_ids, *, position_ids=None, projected_media=None,
                 media_token_id=None, pixel_values=None, grid_thws=None, images=None,
-                attention_mask=None, media_items=None):
+                attention_mask=None, media_items=None, _inputs_embeds=None, _return_hidden=False):
         """Return [expanded_tokens,vocab] logits, atomically updating caches.
 
         Pixels use MoonViT processor patch layout and expand media placeholders.
@@ -1150,15 +1221,16 @@ class K3Execution:
         This is causal padding, not an arbitrary pairwise attention matrix.
         """
         with self._operation():
+            if type(_return_hidden) is not bool:
+                raise ValueError('explicit hidden output policy required')
+            if _inputs_embeds is not None and any(value is not None for value in
+                    (projected_media,media_token_id,pixel_values,grid_thws,images,attention_mask,media_items)):
+                raise ValueError('public hidden input requires already occupied text rows')
             self._comparison_observations=None
             c = self.config
             if isinstance(token_ids,(tuple,list,range)) and not 1<=len(token_ids)<=4096:
                 raise ValueError('bounded original token sequence required before conversion')
             ids = np.asarray(token_ids)
-            if self._exact_evidence is not None:
-                self._exact_evidence.admit_call(position=self._position,tokens=ids.size,
-                    has_media=any(value is not None for value in (projected_media,pixel_values,images,media_items)),
-                    media_case=self._exact_media_case)
             if ids.ndim != 1 or ids.dtype.kind not in "iu" or not 1 <= len(ids) <= 4096:
                 raise ValueError("one-dimensional integer token IDs required")
             ids = ids.copy()
@@ -1172,16 +1244,26 @@ class K3Execution:
                 occupied = np.array(mask, dtype=bool, copy=True)
                 if position_ids is not None:
                     positions = np.asarray(position_ids)
-                    if positions.shape == ids.shape and pixel_values is None and images is None and media_items is None:
+                    if positions.shape == ids.shape:
+                        # Positions are supplied for the original padded
+                        # prompt.  Media expansion happens below, so retain
+                        # the occupied placeholder positions here and expand
+                        # each placeholder span after its temporal/spatial
+                        # length is known.
                         position_ids = np.array(positions[occupied], copy=True)
                 ids = ids[occupied]
                 if not len(ids):
                     if any(value is not None for value in
                            (projected_media, pixel_values, grid_thws, images, media_items)):
                         raise ValueError('fully padded input cannot supply media')
-                    return np.empty((0, c.vocab), np.float32)
+                    return np.empty((0, c.hidden if _return_hidden else c.vocab), np.float32)
             if np.any(ids >= c.vocab) or np.any(ids < 0):
                 raise ValueError('occupied token IDs must belong to the vocabulary')
+            has_media_input = any(value is not None for value in
+                                  (projected_media, pixel_values, images, media_items))
+            if self._exact_evidence is not None and not has_media_input:
+                self._exact_evidence.admit_call(position=self._position, tokens=len(ids),
+                    has_media=False, media_case=self._exact_media_case)
             if media_token_id is not None and (type(media_token_id) is not int or not 0 <= media_token_id < c.vocab):
                 raise ValueError("invalid media placeholder ID")
             count = int(np.count_nonzero(ids == media_token_id)) if media_token_id is not None else 0
@@ -1244,8 +1326,36 @@ class K3Execution:
             if self._position + n > c.capacity:
                 raise ValueError("K3 cache capacity exceeded")
             self._admit(n)
-            if isinstance(position_ids,(tuple,list,range)) and len(position_ids)!=n:
-                raise ValueError('expanded rotary position extent differs before conversion')
+            if position_ids is not None:
+                original_positions = np.asarray(position_ids)
+                if original_positions.shape != (len(ids),) or original_positions.dtype.kind not in 'iu':
+                    raise ValueError('occupied rotary positions must match original token extent')
+                if pixel_values is not None:
+                    if np.any(original_positions < 0) or np.any(original_positions >= c.capacity):
+                        raise ValueError('original media-placeholder positions exceed context capacity')
+                    expanded_positions = []
+                    media_index = 0
+                    position_offset = 0
+                    for token, value in zip(ids, original_positions):
+                        if token == media_token_id:
+                            length = int(lengths[media_index])
+                            start = int(value) + position_offset
+                            expanded_positions.extend(range(start, start+length))
+                            position_offset += length - 1
+                            media_index += 1
+                        else:
+                            expanded_positions.append(int(value) + position_offset)
+                    if media_index != len(lengths) or len(expanded_positions) != n:
+                        raise ValueError('media-expanded rotary positions do not match tensor expansion')
+                    # Expansion can exceed a narrow caller dtype (notably
+                    # uint8/int8); casting first could wrap a high position
+                    # back into the legal range. Validate Python integers and
+                    # retain a wide signed representation before admission.
+                    if any(value < 0 or value >= c.capacity for value in expanded_positions):
+                        raise ValueError('media-expanded rotary positions exceed context capacity')
+                    position_ids = np.asarray(expanded_positions, dtype=np.int64)
+                elif len(original_positions) != n:
+                    raise ValueError('expanded rotary position extent differs before conversion')
             pos = np.arange(self._position, self._position + n) if position_ids is None else np.array(position_ids, copy=True)
             if pos.shape != (n,) or pos.dtype.kind not in "iu" or np.any(pos < 0) or np.any(pos >= c.capacity):
                 raise ValueError("invalid rotary positions")
@@ -1254,11 +1364,19 @@ class K3Execution:
             features = (self._vision.encode(pixel_values, grid_thws, max_bytes=self.max_bytes - self._admit(n)-media_retained)
                         if pixel_values is not None else None)
             embedding_name='language_model.model.embed_tokens.weight'
-            if type(self._weights[embedding_name]) is _ProjectionReference:
+            if _inputs_embeds is not None:
+                source=np.asarray(_inputs_embeds)
+                if source.shape!=(n,c.hidden) or source.dtype!=np.float32 or not np.isfinite(source).all():
+                    raise ValueError('complete finite public K3 embedding rows required')
+                if self._admit(n)+source.nbytes*3>self.max_bytes:
+                    raise MemoryError('public K3 input copies exceed admission')
+                embedded=np.array(source,order='C',copy=True)
+            elif type(self._weights[embedding_name]) is _ProjectionReference:
                 embedded=self._arithmetic._projection_backend.gather_rows(embedding_name,ids)
-            else:embedded = self._weights[embedding_name][ids].copy()
+            else:
+                embedded=self._weights[embedding_name][ids].copy()
             if self._arithmetic is not None:
-                embedded = self._arithmetic.cast(embedded)
+                embedded=self._arithmetic.cast(embedded)
             if features is not None:
                 rows, feature_index = [], 0
                 for token, row in zip(ids, embedded):
@@ -1282,37 +1400,84 @@ class K3Execution:
             kda = {i: m.fork() if self._fla_policy is not None else copy.copy(m)
                    for i, m in self._kda.items()}
             if n > 1 and self._fla_policy is not None and self._arithmetic is not None:
-                logits = self._prefill_layers(embedded, pos, mla, kda)
-                self._check_cancelled()
-                self._mla, self._kda, self._position = mla, kda, self._position+n
+                try:
+                    logits = self._prefill_layers(embedded, pos, mla, kda, return_hidden=_return_hidden)
+                    self._check_cancelled()
+                except BaseException as primary:
+                    self._discard_kda_state(kda, primary)
+                    raise
+                self._mla, self._position = mla, self._position+n
+                self._commit_kda_state(kda)
                 self._exact_media_case=selected_case
                 return logits
-            logits = np.empty((n, c.vocab), np.float32)
-            for t, x in enumerate(embedded):
+            logits = np.empty((n, c.hidden if _return_hidden else c.vocab), np.float32)
+            try:
+                for t, x in enumerate(embedded):
+                    self._check_cancelled()
+                    blocks = []
+                    for i, kind in enumerate(c.layer_types):
+                        p = f"language_model.model.layers.{i}."
+                        prefix = x
+                        mixed_input = self._residual(prefix, blocks, p + "self_attention_res") if blocks else prefix
+                        if i % c.residual_block == 0:
+                            blocks.append(prefix)
+                            prefix = None
+                        mixed_input = self._norm(mixed_input, p + "input_layernorm.weight")
+                        a = p + "self_attn."
+                        mixed = (self._mla_forward(mixed_input, a, mla[i], self._position + t, int(pos[t]))
+                                 if kind == "mla" else self._kda_forward(mixed_input, a, kda[i]))
+                        prefix = mixed if prefix is None else self._add(prefix, mixed)
+                        ff = self._norm(self._residual(prefix, blocks, p + "mlp_res"), p + "post_attention_layernorm.weight")
+                        out = self._mlp(ff, p + "mlp.") if i < c.dense_prefix else self._moe(ff, p + "block_sparse_moe.")
+                        x = self._add(prefix, out)
+                    x = self._residual(x, blocks, "language_model.model.output_attn_res")
+                    x = self._norm(x, "language_model.model.norm.weight")
+                    logits[t] = x if _return_hidden else self._linear("language_model.lm_head.weight", x)
                 self._check_cancelled()
-                blocks = []
-                for i, kind in enumerate(c.layer_types):
-                    p = f"language_model.model.layers.{i}."
-                    prefix = x
-                    mixed_input = self._residual(prefix, blocks, p + "self_attention_res") if blocks else prefix
-                    if i % c.residual_block == 0:
-                        blocks.append(prefix)
-                        prefix = None
-                    mixed_input = self._norm(mixed_input, p + "input_layernorm.weight")
-                    a = p + "self_attn."
-                    mixed = (self._mla_forward(mixed_input, a, mla[i], self._position + t, int(pos[t]))
-                             if kind == "mla" else self._kda_forward(mixed_input, a, kda[i]))
-                    prefix = mixed if prefix is None else self._add(prefix, mixed)
-                    ff = self._norm(self._residual(prefix, blocks, p + "mlp_res"), p + "post_attention_layernorm.weight")
-                    out = self._mlp(ff, p + "mlp.") if i < c.dense_prefix else self._moe(ff, p + "block_sparse_moe.")
-                    x = self._add(prefix, out)
-                x = self._residual(x, blocks, "language_model.model.output_attn_res")
-                x = self._norm(x, "language_model.model.norm.weight")
-                logits[t] = self._linear("language_model.lm_head.weight", x)
-            self._check_cancelled()
-            self._mla, self._kda, self._position = mla, kda, self._position + n
+            except BaseException as primary:
+                self._discard_kda_state(kda, primary)
+                raise
+            self._mla, self._position = mla, self._position + n
+            self._commit_kda_state(kda)
             self._exact_media_case=selected_case
             return logits
+
+    def forward_hidden(self, token_ids, inputs_embeds):
+        """Execute the complete residual/KDA/MLA range before the vocabulary Edge."""
+        return self.forward(token_ids,_inputs_embeds=inputs_embeds,_return_hidden=True)
+
+    def embedding_rows(self, token_ids):
+        with self._operation():
+            c=self.config
+            ids=np.asarray(token_ids)
+            if (ids.ndim!=1 or ids.dtype.kind not in 'iu' or not 0<len(ids)<=4096 or
+                    np.any(ids<0) or np.any(ids>=c.vocab)):
+                raise ValueError('occupied K3 vocabulary token rows required')
+            if self._admit(0)+len(ids)*c.hidden*16>self.max_bytes:
+                raise MemoryError('public K3 embedding rows exceed admission')
+            self._check_cancelled()
+            name='language_model.model.embed_tokens.weight'
+            if type(self._weights[name]) is _ProjectionReference:
+                rows=self._arithmetic._projection_backend.gather_rows(name,ids)
+            else:
+                rows=np.array(self._weights[name][ids],dtype=np.float32,order='C',copy=True)
+            result=rows if self._arithmetic is None else self._arithmetic.cast(rows)
+            self._check_cancelled()
+            return result
+
+    def head_rows(self, hidden):
+        with self._operation():
+            source=np.asarray(hidden)
+            c=self.config
+            if (source.ndim!=2 or source.shape[1]!=c.hidden or not 0<len(source)<=4096 or
+                    source.dtype!=np.float32 or not np.isfinite(source).all()):
+                raise ValueError('finite normalized public K3 hidden rows required')
+            if self._admit(0)+source.nbytes*3+len(source)*c.vocab*8>self.max_bytes:
+                raise MemoryError('public K3 vocabulary Edge exceeds admission')
+            self._check_cancelled()
+            output=self._linear_sequence('language_model.lm_head.weight',source)
+            self._check_cancelled()
+            return output
 
     def encode_media(self, pixel_values, grid_thws):
         """Encode processor patches through MoonViT and patchmergerv2, no cache mutation."""

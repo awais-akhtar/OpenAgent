@@ -144,7 +144,8 @@ def restore_qwen4_cache(model, source, *, max_bytes):
                 values=np.frombuffer(data,dtype=dtype);_validate(model,name,values)
                 flat[start:start+size]=values
             arrays[name]=array
-        if not hmac.compare_digest(bytes(_read(source,32)),digest.digest()) or source.read(1)!=b'':
+        if (not hmac.compare_digest(bytes(_read(source, 32)), digest.digest()) or
+                _read(source, 1) != b''):
             raise ValueError('Qwen4 continuation checksum or EOF differs')
         cache=[None]*model.config.num_hidden_layers;ple=[None]*len(cache)
         if batch:

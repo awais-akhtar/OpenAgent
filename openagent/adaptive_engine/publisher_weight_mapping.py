@@ -15,7 +15,17 @@ class WeightBinding:
 def qwen4_ple_bindings(snapshot,config):
     result={};parts=config.get('split_ngram_parts',512)
     if type(parts) is not int or parts<=0: raise ValueError('positive publisher PLE shard count required')
-    for one_based in config.get('ple_layer_ids',()):
+    layer_ids=config.get('ple_layer_ids',())
+    if (type(layer_ids) not in (tuple,list) or
+            any(type(value) is not int or value <= 0 for value in layer_ids) or
+            len(set(layer_ids)) != len(layer_ids)):
+        raise ValueError('unique positive publisher PLE layer inventory required')
+    layer_count = config.get('num_hidden_layers', config.get('num_layers'))
+    if layer_count is not None and (type(layer_count) is not int or layer_count <= 0):
+        raise ValueError('positive publisher layer count required for PLE admission')
+    if layer_count is not None and any(value > layer_count for value in layer_ids):
+        raise ValueError('publisher PLE layer inventory exceeds model depth')
+    for one_based in layer_ids:
         layer=one_based-1
         candidates=(f'model.layers.{layer}.ple.ple_embedding.ngram_embedding.',
                     f'model.language_model.layers.{layer}.ple.ple_embedding.ngram_embedding.')

@@ -110,6 +110,13 @@ def _load_v41_checkpoint(model,source,*,max_payload_bytes):
     if not path.is_file() or path.drive.startswith('\\\\'):
         raise ValueError('existing local checkpoint file required')
     with path.open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        identity = (before.st_dev, before.st_ino, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns)
+        if (not os.path.isfile(path) or
+                (lambda info: (info.st_dev, info.st_ino, info.st_size,
+                               info.st_mtime_ns, info.st_ctime_ns))(path.stat()) != identity):
+            raise ValueError('V4.1 checkpoint changed during opening')
         def read_exact(count):
             data=stream.read(count)
             if len(data)!=count: raise ValueError('truncated V4.1 checkpoint')
@@ -162,8 +169,19 @@ def _load_v41_checkpoint(model,source,*,max_payload_bytes):
                 elif record['kind']=='f32': rows.append(np.frombuffer(data,dtype='<f4').astype(np.float32).tobytes())
                 else: rows.append(data)
             records[record['name']]=tuple(rows)
-        if read_exact(32)!=digest.digest() or stream.read(1):
+        checksum = read_exact(32)
+        model._check_cancelled()
+        trailing = stream.read(1)
+        if checksum != digest.digest() or trailing:
             raise ValueError('checkpoint hash mismatch or trailing bytes')
+        current = os.fstat(stream.fileno())
+        ondisk = path.stat()
+        current_stamp = (current.st_dev, current.st_ino, current.st_size,
+                         current.st_mtime_ns, current.st_ctime_ns)
+        disk_stamp = (ondisk.st_dev, ondisk.st_ino, ondisk.st_size,
+                      ondisk.st_mtime_ns, ondisk.st_ctime_ns)
+        if current_stamp != identity or disk_stamp != identity:
+            raise ValueError('V4.1 checkpoint changed during restoration')
     tokens=records['tokens']
     model._validate(tokens)
     local=[]

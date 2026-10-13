@@ -9,6 +9,7 @@ import weakref
 import numpy as np
 
 from .independent_inkling import IndependentInklingDecoder, GLOBAL_NAMES, ALL_LAYER_NAMES, logits_selection
+from .native_library_identity import NativeLibraryIdentity, release_finalizer
 
 
 class Tensor(C.Structure):
@@ -62,14 +63,22 @@ class NativeInklingDecoder(IndependentInklingDecoder):
                               8*sum(self._state_size(g) for g in self.geometry))
         self._closed = False
         self._library_release = None
+        self._library_identity = NativeLibraryIdentity.read(
+            library._name if isinstance(library, C.CDLL) else library)
         self.library = library if isinstance(library, C.CDLL) else C.CDLL(
-            str(Path(library).resolve(strict=True)))
+            str(self._library_identity.path))
         if not isinstance(library, C.CDLL):
             self._library_release = weakref.finalize(self, _release_library, self.library._handle)
         try:
+            self._library_identity.assert_unchanged()
             self._bind_native()
-        except BaseException:
-            self.close()
+            self._library_identity.assert_unchanged()
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                primary.cleanup = self.close
+                primary.add_note('Inkling native construction cleanup retained: '+repr(cleanup))
             raise
 
     def _bind_native(self):
@@ -106,6 +115,7 @@ class NativeInklingDecoder(IndependentInklingDecoder):
     def _check_open(self):
         if self._closed or self._executing:
             raise RuntimeError('native Inkling decoder is closed')
+        self._library_identity.assert_unchanged()
 
     def reset(self):
         with self._lock:
@@ -126,13 +136,10 @@ class NativeInklingDecoder(IndependentInklingDecoder):
     def close(self):
         with self._lock:
             if self._executing: raise RuntimeError('Inkling native callback owns resources')
-            if self._closed:
-                return
             self._closed = True
             self._cache, self.position = None, 0
             self.weights = MappingProxyType({})
-            if self._library_release is not None:
-                self._library_release()
+            release_finalizer(self, '_library_release')
             self.library = None
             self._callback=self._expert_provider=None
 

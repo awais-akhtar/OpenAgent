@@ -2,13 +2,14 @@
 
 This stores packed cache bytes and FP32 pending pairs, not provider weights.
 SHA-256 detects corruption, not malicious replacement. Recovery calls public restore
-only after the entire file is admitted, decoded and checked. Concurrent forward
-calls are not excluded: callers must serialize recovery with their own work.
+only after the entire file is admitted, decoded and checked. Direct codec calls
+hold the executor lock and reject callback reentry throughout file processing.
 No private executor schema or pickle deserialization is used.
 Byte budgets account for payload buffers, not Python object overhead; separate
 row/token and metadata limits bound the decoded inventory.
 """
 from dataclasses import asdict
+from functools import wraps
 import hashlib
 import hmac
 import json
@@ -47,6 +48,40 @@ def _model(model):
     return model.profile
 
 
+def _checkpoint_operation(function):
+    @wraps(function)
+    def locked(model, *args, **kwargs):
+        _model(model)
+        with model._lock:
+            if model._busy or model._closed:
+                raise RuntimeError('executor unavailable for publisher checkpoint')
+            model._busy = True
+            try:
+                model._cancel_rows()
+                return function(model, *args, **kwargs)
+            finally:
+                model._busy = False
+    return locked
+
+
+class _CancelledReader:
+    """Keep both verification passes and small metadata reads cancellable."""
+    def __init__(self, stream, cancel):
+        self._stream, self._cancel = stream, cancel
+
+    def read(self, count=-1):
+        if type(count) is not int or count < -1 or count > _CHUNK_BYTES:
+            raise ValueError('bounded publisher checkpoint read required')
+        self._cancel()
+        value = self._stream.read(count)
+        if type(value) is not bytes or (count >= 0 and len(value) > count):
+            raise ValueError('publisher checkpoint reader returned invalid bytes')
+        return value
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def _profile_identity(profile):
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(sort_keys=True, separators=(',', ':'),
@@ -70,17 +105,21 @@ def _header_bytes(identity, profile_identity, position, records, maximum):
 
 
 def _read_exact(stream, count):
-    data = stream.read(count)
-    if len(data) != count:
-        raise ValueError('truncated publisher checkpoint')
-    return data
+    result = bytearray()
+    while len(result) < count:
+        requested = min(count-len(result), _CHUNK_BYTES)
+        data = stream.read(requested)
+        if type(data) is not bytes or not data or len(data) > requested:
+            raise ValueError('truncated or oversized publisher checkpoint read')
+        result.extend(data)
+    return bytes(result)
 
 
 def _write_all(output, data):
     view = memoryview(data).cast('B')
     while view:
         written = output.write(view)
-        if written is None or not 0 < written <= len(view):
+        if type(written) is not int or not 0 < written <= len(view):
             raise OSError('publisher checkpoint write made no progress')
         view = view[written:]
 
@@ -259,6 +298,7 @@ def _chunks(snapshot, records, profile):
                     yield memoryview(part).cast('B')
 
 
+@_checkpoint_operation
 def save_publisher_v41_checkpoint(model, destination, *, max_payload_bytes):
     """Atomically replace a local file with one committed public snapshot.
 
@@ -277,7 +317,7 @@ def save_publisher_v41_checkpoint(model, destination, *, max_payload_bytes):
     header = _header_bytes(model.identity, profile_identity, position, records, header_limit)
     _admit_save(model, records, size, len(header))
     del header, records
-    snapshot = model.snapshot()
+    snapshot = model._snapshot_locked()
     if type(snapshot) is not PublisherV41Snapshot or snapshot.identity != model.identity:
         raise ValueError('publisher snapshot identity mismatch')
     records, size = _layout(profile, len(snapshot.tokens), maximum)
@@ -391,6 +431,7 @@ def _read_state(stream, digest, records):
     return tuple(tuple(kind) for kind in state)
 
 
+@_checkpoint_operation
 def load_publisher_v41_checkpoint(model, source, *, max_payload_bytes):
     """Validate a bounded file completely, then commit via public restore.
 
@@ -418,6 +459,7 @@ def load_publisher_v41_checkpoint(model, source, *, max_payload_bytes):
         os.close(descriptor)
         raise
     with stream:
+        stream = _CancelledReader(stream, model._cancel_rows)
         def read_exact(count):
             return _read_exact(stream, count)
 
@@ -472,4 +514,5 @@ def load_publisher_v41_checkpoint(model, source, *, max_payload_bytes):
             raise ValueError('publisher checkpoint changed during recovery')
     _admit_restore(model, profile, records, expected_size, header_size)
     staged = PublisherV41Snapshot(identity, tokens, state, token_types)
-    model.restore(staged)
+    model._cancel_rows()
+    model._restore_locked(staged, cancelled=model._cancel_rows)

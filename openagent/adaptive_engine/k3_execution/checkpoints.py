@@ -204,12 +204,11 @@ def save_k3_checkpoint(model, destination, *, max_payload_bytes,
     maximum, header_limit, array_limit, chunk = _limits(
         max_payload_bytes, max_header_bytes, max_arrays, chunk_bytes)
     path = _path(destination, existing=False)
-    with model._lock:
-        _model(model)
-        records, size = _layout(model, model.position, maximum, array_limit)
+    with model._operation():
+        records, size = _layout(model, model._position, maximum, array_limit)
         if model._admit(0)+2*min(chunk,maximum)>model.max_bytes:
             raise MemoryError('K3 snapshot write staging exceeds model admission')
-        snapshot = model.snapshot()
+        snapshot = model._snapshot_locked(cancelled=model._check_cancelled)
         arrays = _arrays(model, snapshot, records)
         format_version = 3 if model._exact_evidence is not None else 2 if model._fla_policy is not None else 1
         metadata=dict(version=format_version, identity=snapshot.identity,
@@ -325,8 +324,7 @@ def load_k3_checkpoint(model, source, *, max_payload_bytes,
     maximum, header_limit, array_limit, chunk = _limits(
         max_payload_bytes, max_header_bytes, max_arrays, chunk_bytes)
     path = _path(source, existing=True)
-    with model._lock:
-        _model(model)
+    with model._operation():
         descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0)
                              | getattr(os, 'O_NONBLOCK', 0)|getattr(os,'O_NOFOLLOW',0))
         try:
@@ -343,6 +341,7 @@ def load_k3_checkpoint(model, source, *, max_payload_bytes,
             raise
         with stream:
             def read_exact(size):
+                model._check_cancelled()
                 data = stream.read(size)
                 if len(data) != size:
                     raise ValueError('truncated K3 checkpoint')
@@ -404,7 +403,9 @@ def load_k3_checkpoint(model, source, *, max_payload_bytes,
                     raise ValueError('nonfinite K3 checkpoint array')
                 arrays[record['name']] = array
             checksum = read_exact(32)
-            if not hmac.compare_digest(checksum, digest.digest()) or stream.read(1):
+            model._check_cancelled()
+            trailing = stream.read(1)
+            if not hmac.compare_digest(checksum, digest.digest()) or trailing:
                 raise ValueError('K3 checkpoint checksum/trailing data mismatch')
             if _stamp(os.fstat(stream.fileno()))!=_stamp(info) or _stamp(_safe_path(path).stat())!=_stamp(info):
                 raise ValueError('K3 checkpoint changed during restoration')
@@ -412,5 +413,6 @@ def load_k3_checkpoint(model, source, *, max_payload_bytes,
             snapshot = _snapshot(model, header['position'], arrays,
                 header.get('exact_evidence'),header.get('media_case'))
             _arrays(model, snapshot, records)
-            model.restore(snapshot)
+            model._check_cancelled()
+            model._restore_locked(snapshot, cancelled=model._check_cancelled)
             return snapshot.position

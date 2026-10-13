@@ -112,12 +112,15 @@ def _destinations(rule, expert_format):
 
 
 def load_k3_projection_shard(checkpoint, runtime_name, *, rank, world_size,
-                             max_weight_bytes, max_chunk_bytes=1024**2):
+                             max_weight_bytes, max_chunk_bytes=1024**2,
+                             bank_format='dense'):
     """Load one admitted output-row shard under its exact executor spelling."""
     from dataclasses import replace
     from ..tensor_parallel import load_projection_shard
     if checkpoint.report.family != 'kimi_k3' or type(runtime_name) is not str:
         raise ValueError('exact K3 checkpoint and runtime projection name required')
+    if type(bank_format) is not str or bank_format not in ('dense', 'bf16', 'fp8', 'fp4'):
+        raise ValueError('explicit K3 projection bank format required')
     allowed = {'q_proj','k_proj','v_proj','q_a_proj','q_b_proj','kv_a_proj_with_mqa','kv_b_proj',
                'o_proj','f_a_proj','f_b_proj','b_proj','g_proj','gate_proj','up_proj','down_proj',
                'w1','w2','w3','lm_head'}
@@ -133,7 +136,8 @@ def load_k3_projection_shard(checkpoint, runtime_name, *, rank, world_size,
     if len(matches)!=1 or len(matches[0].shape)!=2:
         raise ValueError('one exact publisher contract for the runtime projection required')
     shard = load_projection_shard(checkpoint,matches[0].target,rank=rank,world_size=world_size,
-        max_weight_bytes=max_weight_bytes,max_chunk_bytes=max_chunk_bytes)
+        max_weight_bytes=max_weight_bytes,max_chunk_bytes=max_chunk_bytes,
+        bank_format=bank_format)
     return replace(shard,name=runtime_name)
 
 

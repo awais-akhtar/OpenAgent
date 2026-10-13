@@ -44,9 +44,23 @@ def _valid(raw, offset, rows, cols):
     for index in range(rows * cols):
         if (int(raw[offset+index]) & 127) == 127:
             return False
-    for index in range(((rows+127)//128) * ((cols+127)//128)):
-        if not math.isfinite(_scale(raw, offset + rows*cols + index*4)):
-            return False
+    scale_rows, scale_cols = (rows+127)//128, (cols+127)//128
+    for scale_row in range(scale_rows):
+        for scale_col in range(scale_cols):
+            scale = _scale(raw, offset + rows*cols +
+                           4*(scale_row*scale_cols+scale_col))
+            if not math.isfinite(scale) or scale < 0:
+                return False
+            # The persisted FP8 contract permits a zero scale only for an
+            # all-zero tile. Otherwise the payload has multiple encodings for
+            # arbitrary weights and disagrees with the bounded device decoder.
+            if scale == 0:
+                row_end = min(rows, (scale_row+1)*128)
+                col_end = min(cols, (scale_col+1)*128)
+                for row in range(scale_row*128, row_end):
+                    for col in range(scale_col*128, col_end):
+                        if int(raw[offset+row*cols+col]) & 127:
+                            return False
     return True
 
 

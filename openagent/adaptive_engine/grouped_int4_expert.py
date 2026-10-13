@@ -200,7 +200,11 @@ class GroupedInt4ExpertBackend:
             evidence=(KernelEvidence("implementation", "Independent grouped INT4 byte reductions"),))
 
     def _check_available(self):
-        pass
+        if (type(self.group_size) is not int or self.group_size <= 0 or
+                type(self.max_scratch_bytes) is not int or self.max_scratch_bytes <= 0):
+            raise RuntimeError("grouped INT4 backend admission state is invalid")
+        if self.group_size != 64 and self.group_size % 8:
+            raise RuntimeError("grouped INT4 group size must be byte aligned")
 
     def _run(self, payload, x, h, i, weight, activation, output):
         return _scalar_expert(payload, x, h, i, self.group_size, weight, activation, output)

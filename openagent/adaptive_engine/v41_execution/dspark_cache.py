@@ -8,6 +8,7 @@ import tempfile
 import numpy as np
 
 from .mtp_cache import _read, _write, _unique, _budget
+from ..checkpoint_stream import CheckpointStream
 
 _PREFIX = struct.Struct('<8sI')
 _MAGIC = b'OADSP001'
@@ -16,6 +17,7 @@ _MAGIC = b'OADSP001'
 def transport_backbone_cache(backbone, stream, *, max_bytes, restoring=False):
     _budget(max_bytes)
     model = backbone.model
+    stream = CheckpointStream(stream, model._cancel_rows)
     with backbone._lock, model._lock:
         backbone._check_transport()
         if model._busy or model._closed:
@@ -75,23 +77,35 @@ def transport_backbone_cache(backbone, stream, *, max_bytes, restoring=False):
                         logits = np.frombuffer(raw_logits, dtype='<f4').copy() if count else None
                         if logits is not None and not np.isfinite(logits).all():
                             raise ValueError('nonfinite DSpark saved logits')
-                        if not hmac.compare_digest(_read(stream, 32), digest.digest()) or stream.read(1) != b'':
+                        if (not hmac.compare_digest(_read(stream, 32), digest.digest()) or
+                                _read(stream, 1) != b''):
                             raise ValueError('DSpark cache checksum or trailing bytes mismatch')
                     finally:
                         model._busy = False
                     old = model.snapshot()
                     packed.seek(0)
+                    primary_failure = None
                     try:
                         model.restore_cache(packed, max_bytes=header['packed_bytes'])
                         if model.length != count:
                             raise ValueError('DSpark evidence differs from packed target position')
                     except BaseException as failure:
+                        primary_failure = failure
                         try:
                             model.restore(old)
                         except BaseException as rollback:
                             backbone._quarantined = True
                             failure.add_note('DSpark target recovery rollback failed: '+str(rollback))
                         raise
+                    finally:
+                        try:
+                            model.release_snapshot(old)
+                        except BaseException as cleanup:
+                            backbone._quarantined = True
+                            if primary_failure is not None:
+                                primary_failure.add_note('DSpark recovery rollback snapshot cleanup failed: '+str(cleanup))
+                            else:
+                                raise RuntimeError('DSpark recovery rollback snapshot cleanup failed') from cleanup
                     backbone.hidden, backbone.logits = tuple(hidden), logits
                     return count
                 packed_bytes = model.write_cache(packed, max_bytes=max_bytes)

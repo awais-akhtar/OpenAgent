@@ -72,6 +72,12 @@ class K3MediaAdapter(FreshOwner):
         self.factory=factory;self._metadata=copy.deepcopy(metadata);self.reader=cache_reader;self.max_bytes=max_bytes
         self.observations=copy.deepcopy(observations)
         self._metadata['execution_scope']='processor-media-expanded-prefix'
+        # The current executor/cache readers expose values but do not emit a
+        # source-bound placement receipt for each media, prefill, decode and
+        # restore operation. Keep that absence explicit in adapter metadata so
+        # a caller cannot mistake device policy/configuration for observed
+        # placement evidence.
+        self._metadata['operation_placement_schema']=None
 
     def metadata(self):return copy.deepcopy(self._metadata)
 
@@ -221,6 +227,9 @@ def run_media_comparison(candidate,oracle,case,*,offline_root,artifact_pins,cach
     metas=[adapter_metadata(candidate,spec),adapter_metadata(oracle,spec,oracle=True)]
     if any(meta.get('cache_projection') is not None for meta in metas):
         raise ValueError('media comparison requires complete physical caches without projected substitutes')
+    placement_operations=('media.encode','media.prefill','continuation.decode','continuation.restore')
+    if any(meta.get('operation_placement_schema')!=placement_operations for meta in metas):
+        raise ValueError('K3 media comparison is restricted: source-bound per-operation placement observations are unavailable')
     if any(metas[0][key]!=metas[1][key] for key in
            ('model_type','config_sha256','weights_sha256','tokenizer_sha256','num_layers')):
         raise ValueError('candidate and oracle checkpoint identities must agree')

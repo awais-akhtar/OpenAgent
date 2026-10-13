@@ -127,22 +127,31 @@ class _DynamicMHC:
         self.residual = np.asarray(tuple(embedding)*owner.config.streams,dtype=np.float32)
         self.previous = owner._weights['initial.mix']
         self.depth = 0
+        self._closed = False
+
+    def _ensure_open(self):
+        if self._closed:
+            raise RuntimeError('dynamic mHC state is closed')
 
     def replace_residual(self, residual):
+        self._ensure_open()
         if residual.shape != self.residual.shape:
             raise ValueError('dynamic mHC residual extent mismatch')
         self.residual = residual
 
     def mix(self):
+        self._ensure_open()
         c = self.owner.config
         return self.owner._kernel(13,self.residual,self.previous,a=c.streams,b=c.hidden,n=c.hidden)
 
     def predict(self, weight, bias, *, epsilon, sweeps):
+        self._ensure_open()
         c = self.owner.config
         return self.owner._kernel(12,self.residual,weight,bias,a=c.streams,b=c.hidden,
                                   c=sweeps,p=epsilon,n=c.streams*(c.streams+2))
 
     def commit(self, coefficients, block_output, *, expected_depth):
+        self._ensure_open()
         c = self.owner.config
         if expected_depth != self.depth or self.depth >= 2*c.layers:
             raise ValueError('dynamic mHC depth mismatch')
@@ -153,6 +162,7 @@ class _DynamicMHC:
         self.depth += 1
 
     def head(self, final_mix, norm, weight, bias, vocab, *, epsilon):
+        self._ensure_open()
         c = self.owner.config
         mixed = self.owner._kernel(13,self.residual,final_mix,a=c.streams,b=c.hidden,n=c.hidden)
         normalized = self.owner._kernel(1,mixed,norm,p=epsilon)
@@ -160,8 +170,13 @@ class _DynamicMHC:
         return self.owner._kernel(2,projected,bias)
 
     def close(self):
-        # No library handle or persistent native allocation belongs to this state.
-        pass
+        # No library handle or persistent native allocation belongs to this
+        # state, but callers still need a deterministic close boundary so a
+        # failed/interrupted transaction cannot reuse its mutable buffers.
+        if not self._closed:
+            self._closed = True
+            self.residual = np.empty(0, dtype=np.float32)
+            self.previous = np.empty(0, dtype=np.float32)
 
 
 class V41Execution:
@@ -297,6 +312,13 @@ class V41Execution:
         self._lock = threading.RLock()
         self._active = False
         self._closed = False
+        # Cleanup is retained as an ordered, retryable ledger.  A failed
+        # native release must not make the executor appear closed while
+        # leaving the remaining owners unreachable.
+        self._close_callbacks = [model.close for model in self._engram]
+        self._close_callbacks.extend((self._quant.close, self._finalizer))
+        if self._packed is not None:
+            self._close_callbacks.append(self._packed._release)
         self._admit(1)
 
     @property
@@ -380,7 +402,7 @@ class V41Execution:
         if set(tables) != expected:
             raise ValueError('complete selected packed expert required')
         for name,(rows,cols) in shapes.items():
-            for suffix,shape in (('codes',(rows,cols//2)),('scales',(rows,cols//32)):
+            for suffix,shape in (('codes',(rows,cols//2)),('scales',(rows,cols//32))):
                 array=tables[name+'.'+suffix]
                 if (type(array) is not np.ndarray or array.dtype!=np.uint8 or array.shape!=shape
                     or not array.flags.c_contiguous or array.flags.writeable):
@@ -623,12 +645,18 @@ class V41Execution:
     def close(self):
         with self._lock:
             if self._active: raise RuntimeError('cannot close active execution')
-            if not self._closed:
-                self._closed=True
-                errors=[]
-                callbacks=[model.close for model in self._engram]+[self._quant.close,self._finalizer]
-                if self._packed is not None: callbacks.append(self._packed._release)
-                for callback in callbacks:
-                    try: callback()
-                    except BaseException as error: errors.append(error)
-                if errors: raise RuntimeError('one or more native resources failed to close') from errors[0]
+            if self._closed:
+                return
+            errors=[]
+            pending=[]
+            for callback in self._close_callbacks:
+                try:
+                    callback()
+                except BaseException as error:
+                    errors.append(error)
+                    pending.append(callback)
+            self._close_callbacks = pending
+            if errors:
+                raise RuntimeError('one or more native resources failed to close') from errors[0]
+            self._closed=True
+            self._close_callbacks.clear()

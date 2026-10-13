@@ -103,6 +103,9 @@ class ExecutionState:
     @classmethod
     def restore(cls, owner, tokens, snapshot):
         c = owner.config
+        if (type(tokens) is not tuple or len(tokens) > c.capacity or
+                any(type(token) is not int or not 0 <= token < c.vocabulary for token in tokens)):
+            raise ValueError('cache restore token history differs from admitted vocabulary/context')
         if (type(snapshot) is not V41CacheSnapshot or type(snapshot.layers) is not tuple or
             type(snapshot.engram) is not tuple or len(snapshot.layers)!=c.layers or len(snapshot.engram)!=c.layers):
             raise ValueError('cache snapshot layer inventory mismatch')

@@ -49,7 +49,8 @@ def recover_batch_cache(batch,source,*,max_bytes):
         length = struct.unpack('<I',prefix[8:])[0]
         if not 0<length<=min(65536,max_bytes-44):
             raise ValueError('invalid batch recovery header extent')
-        header = json.loads(stream.read(length),object_pairs_hook=_pairs)
+        header = json.loads(stream.read(length), object_pairs_hook=_pairs,
+                            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
         if (type(header) is not dict or set(header)!={'version','sizes'} or
                 type(header['version']) is not int or header['version']!=1):
             raise ValueError('invalid batch recovery header')

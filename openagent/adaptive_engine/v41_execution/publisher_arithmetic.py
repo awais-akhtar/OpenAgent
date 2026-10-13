@@ -17,9 +17,20 @@ import numpy as np
 from ..native_mxfp4 import NativeMXFP4
 from .execution import V41Execution
 from .fp8_projection import NativeFP8Projection
+from ..native_library_identity import release_finalizer
 
 
 class NativePublisherV41Arithmetic:
+    @contextmanager
+    def execution_scope(self):
+        with self._lock:
+            self._borrowers=getattr(self,'_borrowers',0)+1
+            try:
+                self._ensure_open()
+                yield self
+            finally:
+                self._borrowers-=1
+
     @contextmanager
     def cancellation_scope(self, cancel):
         """Bind cancellation to borrowed provider work on the calling thread."""
@@ -378,15 +389,20 @@ class NativePublisherV41Arithmetic:
     def close(self):
         # Caller retains ownership of loader providers and their checkpoint.
         with self._lock:
+            if getattr(self,'_borrowers',0):
+                raise RuntimeError('publisher execution still borrows arithmetic resources')
             self._closed=True
             if self._fp4 is not None:
-                self._fp4.close() if hasattr(self._fp4,'close') else self._fp4._release()
+                if hasattr(self._fp4,'close'):
+                    self._fp4.close()
+                else:
+                    release_finalizer(self._fp4,'_release')
                 self._fp4=None
             if self._fp8 is not None:
                 self._fp8.close()
                 self._fp8=None
             if self._release is not None:
-                self._release()
+                release_finalizer(self,'_release')
                 self._release=None
 
     def check_cancelled(self):

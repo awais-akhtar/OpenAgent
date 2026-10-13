@@ -126,7 +126,9 @@ class Q8_1ExpertBackend:
         )
 
     def _check_available(self):
-        pass
+        if (type(self.max_scratch_bytes) is not int or self.max_scratch_bytes <= 0 or
+                BLOCK_WIDTH != 32 or BLOCK_BYTES != 36):
+            raise RuntimeError("Q8_1 backend admission state is invalid")
 
     def _run_expert(self, payload, *arguments):
         return _kernel(payload, *arguments)

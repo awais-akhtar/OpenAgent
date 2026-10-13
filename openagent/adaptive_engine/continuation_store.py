@@ -273,8 +273,21 @@ class DurableContinuationStore:
                 self._remove(path,record);raise FileNotFoundError('continuation expired')
             cache=self.root/record['cache']
             verify_service_cache_file(cache,receipt=record,max_bytes=self.cache_limit)
-            service.load_session_cache(session_id,cache,max_bytes=self.cache_limit,
+            loaded = service.load_session_cache(session_id,cache,max_bytes=self.cache_limit,
                 history_receipt=(record['tokens'],record['history_sha256']))
+            try:
+                if loaded is not None and loaded != session_id:
+                    raise ValueError('continuation cache loaded into a foreign session')
+                history = service.history(session_id)
+                digest = hashlib.sha256(json.dumps(list(history),separators=(',',':')).encode()).hexdigest()
+                if len(history) != record['tokens'] or digest != record['history_sha256']:
+                    raise ValueError('continuation restore history differs from catalog')
+            except BaseException as error:
+                try:
+                    service.close_session(session_id)
+                except BaseException as cleanup:
+                    error.add_note('continuation mismatch cleanup pending: '+str(cleanup))
+                raise
             return session_id
 
     def delete(self,key):

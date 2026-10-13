@@ -181,7 +181,8 @@ class NativeServiceBatch:
             if not 0<length<=min(65536,max_bytes-44):
                 raise ValueError('invalid batch cache header extent')
             encoded = _read(source,length)
-            header = json.loads(encoded,object_pairs_hook=_pairs)
+            header = json.loads(encoded, object_pairs_hook=_pairs,
+                                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
             if type(header) is not dict or set(header)!={'version','sizes'} or type(header['version']) is not int or header['version']!=1:
                 raise ValueError('invalid batch cache header')
             sizes = header['sizes']

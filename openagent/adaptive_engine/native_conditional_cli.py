@@ -8,6 +8,7 @@ import os
 
 from .native_family_cli import _Cancellation,_pairs
 from .execution_service import ExecutionCancelled,_admit_checkpoint_publication
+from .closed_set_scoring import ClosedSetScoringMixin
 from .session_recovery import _path
 from .native_library_identity import _stamp
 from .publisher_media_files import read_regular
@@ -50,6 +51,7 @@ def parser():
     result.add_argument('--image-token-id',required=True,type=int)
     result.add_argument('--include-vision',action='store_true')
     result.add_argument('--stop-token-id',type=int,action='append',default=[])
+    result.add_argument('--stop-prefix',type=str,action='append',default=[])
     result.add_argument('--temperature',type=float,default=0.0)
     result.add_argument('--top-k',type=int,default=0)
     result.add_argument('--top-p',type=float,default=1.0)
@@ -64,7 +66,7 @@ def parser():
     result.add_argument('--cache-mib',type=int)
     return result
 
-class PublisherSession:
+class PublisherSession(ClosedSetScoringMixin):
     def __init__(self,args,*,cancelled=None):
         self._lock=threading.RLock();self._closed=False
         self.service=self.processor=self.tokenizer=self.session_id=None
@@ -295,8 +297,23 @@ class PublisherSession:
             def event(value):
                 if emit is not None and value.get('event')=='generation.token':
                     emit(dict(event='tokens',token_ids=[value['token_id']]))
+            prefixes=[]
+            for raw_prefix in getattr(args,'stop_prefix',()):
+                try:
+                    parts=raw_prefix.split(',')
+                    if not raw_prefix or any(not value.strip() for value in parts):
+                        raise ValueError('stop prefixes require comma-separated token IDs')
+                    prefix=tuple(int(value.strip()) for value in parts)
+                except (TypeError, ValueError) as error:
+                    raise ValueError('stop prefixes require comma-separated token IDs') from error
+                if (not prefix or len(prefix)>128 or
+                        any(token<0 or token>=self.vocabulary for token in prefix)):
+                    raise ValueError('invalid conditional stop prefix')
+                prefixes.append(prefix)
+            if len(prefixes)>64 or len(set(prefixes))!=len(prefixes):
+                raise ValueError('bounded unique conditional stop-prefix inventory required')
             result=self.service.generate(self.session_id,tokens,max_new_tokens=args.max_tokens,
-                stop_ids=(*self.stops,*args.stop_token_id),cancel=_Cancellation(cancelled),
+                stop_ids=(*self.stops,*args.stop_token_id),stop_prefixes=prefixes,cancel=_Cancellation(cancelled),
                 on_event=event,sampling=sampling,media=media or None,checkpoint_sink=checkpoint_sink,
                 max_checkpoint_bytes=max_checkpoint_bytes,application_identity=self.checkpoint_identity)
             cache=None

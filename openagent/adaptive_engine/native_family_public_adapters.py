@@ -59,10 +59,13 @@ class NativeFamilyPublicAdapters:
         self.rows=max_batch_rows
         try:
             from .native_library_identity import NativeLibraryIdentity
+            decoder._library_identity.assert_unchanged()
             runtime_identity=NativeLibraryIdentity.read(runtime_library)
             self.native=_Functions(runtime_library)
             runtime_identity.assert_unchanged()
             kernel_identity=NativeLibraryIdentity.read(decoder.library._name)
+            if kernel_identity.sha256 != decoder._library_identity.sha256:
+                raise ValueError('public family kernel differs from the admitted decoder library')
             library=kernel_identity.path;digest=hashlib.sha256()
             digest.update(bytes.fromhex(kernel_identity.sha256))
             self.kernel=C.CDLL(str(library));release=_ctypes.FreeLibrary if os.name=='nt' else _ctypes.dlclose

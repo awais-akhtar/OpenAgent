@@ -44,7 +44,7 @@ class BF16TensorParallelProjections(TensorParallelProjections):
             except Exception as failure:error=str(failure) or type(failure).__name__
             self._agree(descriptor,error)
             identities=[None]*self.world_size
-            self.distributed.all_gather_object(identities,self._provider_identity,group=self.group)
+            self._collective('all_gather_object',identities,self._provider_identity,group=self.group)
             self._sources[source]=shape;self._pins[source]=tuple(identities)
 
     def handles(self,source):return not self._closed and source in self._sources
@@ -101,7 +101,7 @@ class BF16TensorParallelProjections(TensorParallelProjections):
                         padded=torch.zeros((batch,maximum),dtype=torch.float32,device=self.device)
                         padded[:,:stop-start]=torch.tensor(local,device=self.device,dtype=torch.float32)
                         gathered=[torch.empty_like(padded) for _ in range(self.world_size)]
-                    self.distributed.all_gather(gathered,padded,group=self.group)
+                    self._collective('all_gather',gathered,padded,group=self.group)
                     with self.local_stage((descriptor,'export-row-gather')):
                         output=torch.cat([part[:,:right-left] for part,(left,right) in zip(gathered,extents)],dim=-1)
                         if not bool(torch.isfinite(output).all()):raise ArithmeticError('nonfinite BF16 assembled collective')

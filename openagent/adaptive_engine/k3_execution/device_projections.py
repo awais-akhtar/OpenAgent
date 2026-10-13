@@ -18,6 +18,8 @@ class K3DeviceProjections:
             raise ValueError('explicit Torch pin and resident projection budget required')
         from .device_policy import admit_device
         target = admit_device(torch,device)
+        from .precision import check_precision
+        check_precision(torch,target)
         supplied = dict(tensors)
         routers = frozenset(router_names)
         if not supplied or not routers.issubset(supplied) or any(type(name) is not str or not name for name in supplied):
@@ -57,6 +59,10 @@ class K3DeviceProjections:
         with self._lock:
             if self._closed:
                 raise RuntimeError('K3 device projection owner closed')
+            # Admission at construction is not enough: ambient autocast or
+            # TF32 policy can change between sessions on the same process.
+            from .precision import check_precision
+            check_precision(self.torch,self.device)
             weight = self._weights[name]
             torch = self.torch
             if value.ndim not in (1,2,3) or value.shape[-1]!=weight.shape[1] or value.device!=self.device or value.dtype!=torch.float32:

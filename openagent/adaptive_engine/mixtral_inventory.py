@@ -1,5 +1,4 @@
 """Exact whole-inventory admission for selected Mixtral checkpoint loading."""
-from .native_mixtral_decoder import configuration, GLOBAL_NAMES, LAYER_NAMES
 from types import MappingProxyType
 
 
@@ -28,6 +27,7 @@ MIXTRAL_PUBLISHER_VARIANTS=MappingProxyType({
 
 def publisher_contract(config,*,repository,revision):
     """Admit an explicitly selected original publisher configuration offline."""
+    from .native_mixtral_decoder import configuration
     variant=MIXTRAL_PUBLISHER_VARIANTS.get(repository)
     if variant is None or revision!=variant['revision']:
         raise ValueError('explicit pinned original Mixtral publisher variant required')
@@ -42,6 +42,7 @@ def publisher_contract(config,*,repository,revision):
 
 
 def admit_mixtral_inventory(config, inventory, *, context_tokens=None):
+    from .native_mixtral_decoder import configuration, GLOBAL_NAMES, LAYER_NAMES
     settings, capacity = configuration(config, context_tokens)
     h,m,e,d = (settings[name] for name in
                ('hidden_size','intermediate_size','num_local_experts','head_dim'))

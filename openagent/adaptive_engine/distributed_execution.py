@@ -6,6 +6,7 @@ Collective failure poisons the coordinator: all ranks must then be restarted.
 """
 import threading
 import json
+import shutil
 from dataclasses import asdict
 import hashlib
 import struct
@@ -111,8 +112,17 @@ class DistributedExecutionService:
                         if any(value is not None for value in callback_errors):
                             raise RuntimeError('distributed root event handler failed: '+
                                                next(value for value in callback_errors if value is not None))
-                        requested = bool(self.rank == 0 and self._active_cancel is not None and
-                                         self._active_cancel.is_set())
+                        requested, cancellation_error = False, None
+                        try:
+                            requested = bool(self.rank == 0 and self._active_cancel is not None and
+                                             self._active_cancel.is_set())
+                        except BaseException as failure:
+                            cancellation_error = (str(failure) or type(failure).__name__)[:1024]
+                        cancellation_errors = [None]*self.world_size
+                        self.distributed.all_gather_object(cancellation_errors,cancellation_error,group=self.group)
+                        if any(value is not None for value in cancellation_errors):
+                            raise RuntimeError('distributed cancellation owner failed: '+
+                                               next(value for value in cancellation_errors if value is not None))
                         flag = torch.tensor([int(requested)],dtype=torch.int64,device='cpu')
                         self.distributed.all_reduce(flag,op=self.distributed.ReduceOp.MAX,group=self.group)
                         if int(flag.item()):
@@ -157,7 +167,8 @@ class DistributedExecutionService:
                         sampling = None if policy is None else SamplingPolicy(**policy)
                         options=dict(max_new_tokens=command['maximum'],cancel=latch,on_event=boundary,
                             checkpoint_sink=sink,max_checkpoint_bytes=command.get('checkpoint_max_bytes',0),
-                            application_identity=command.get('application_identity',''))
+                            application_identity=command.get('application_identity',''),
+                            stop_prefixes=command.get('stop_prefixes',()))
                         if recovered is None:
                             result = self.service.generate(session, command['tokens'],
                                 stop_ids=command['stops'],sampling=sampling,**options)
@@ -187,7 +198,8 @@ class DistributedExecutionService:
                     source = Path(command['directory'])/receipt['filename']
                     verify_service_cache_file(source,receipt=receipt,max_bytes=command['max_bytes'])
                     model = self.service._session(session).model
-                    if getattr(model,'identity',None) != receipt['identity']:
+                    if (getattr(model,'identity',None) != receipt['identity'] or
+                            getattr(model,'identity',None) != command['manifest']['model_identity']):
                         raise ValueError('distributed rank cache identity differs from executor')
                     restore_rollback = self.service.snapshot(session)
                     self.service.load_session_cache(session,source,max_bytes=command['max_bytes'])
@@ -210,6 +222,8 @@ class DistributedExecutionService:
                     if owner != command['session']:
                         raise ValueError('distributed snapshot belongs to a different session')
                     if action == 'restore':
+                        prior_generation_boundary=self._generation_boundaries.get(command['session'])
+                        restore_rollback=self.service.snapshot(session)
                         self.service.restore(session, snapshot)
                         self._generation_boundaries.pop(command['session'],None)
                         summary = ('restore', command['snapshot'], _history_digest(snapshot.token_ids),
@@ -226,29 +240,58 @@ class DistributedExecutionService:
                                        if value[0] != command['session']}
                     summary = ('close_session', command['session'])
         except ExecutionCancelled:
-            status = self.service.status(self._sessions[command['session']])
-            if status.closed or status.pending_cleanup_count:
-                error = 'cancelled executor is quarantined or has pending cleanup'
-            else:
-                summary = ('cancelled',command['session'],status.context_tokens)
-        except Exception as failure:
+            try:
+                status = self.service.status(self._sessions[command['session']])
+                if status.closed or status.pending_cleanup_count:
+                    error = 'cancelled executor is quarantined or has pending cleanup'
+                else:
+                    summary = ('cancelled',command['session'],status.context_tokens)
+            except BaseException as failure:
+                error = (str(failure) or type(failure).__name__)[:4096]
+        except BaseException as failure:
             error = (str(failure) or type(failure).__name__)[:4096]
         records = [None]*self.world_size
         self.distributed.all_gather_object(records,
             (summary, error, result if command.get('action')=='save_cache' else None),group=self.group)
+        malformed = [rank for rank,record in enumerate(records)
+                     if (type(record) is not tuple or len(record) != 3 or
+                         (record[0] is not None and type(record[0]) is not tuple) or
+                         (record[1] is not None and type(record[1]) is not str) or
+                         (command.get('action') == 'save_cache' and
+                          (record[2] is not None and type(record[2]) is not dict)))]
+        if malformed:
+            for rank in malformed:
+                records[rank] = (None, 'malformed collective result record', None)
         failures = [f'rank {rank}: {record[1]}' for rank, record in enumerate(records)
                     if record[1] is not None]
         mismatch = any(record[0] != records[0][0] for record in records)
-        if command.get('action') in ('load_cache','restore_generation'):
+        # Opening is a distributed transaction too: if only a subset of ranks
+        # successfully created its local executor session, those sessions must
+        # not remain reachable after the coordinator is poisoned.  Best-effort
+        # local rollback is itself rank-agreed so every participant reaches the
+        # same failure boundary before the caller restarts the group.
+        if command.get('action') == 'open' and (failures or mismatch):
+            cleanup_error = None
+            handle = command.get('session')
+            try:
+                if type(handle) is int and handle in self._sessions:
+                    self.service.close_session(self._sessions[handle])
+                    del self._sessions[handle]
+            except BaseException as failure:
+                cleanup_error = (str(failure) or type(failure).__name__)[:4096]
+            cleanups = [None]*self.world_size
+            self.distributed.all_gather_object(cleanups,cleanup_error,group=self.group)
+            failures.extend(f'rank {rank} open rollback: {failure}'
+                            for rank,failure in enumerate(cleanups) if failure is not None)
+        if command.get('action') in ('load_cache','restore_generation','restore'):
             cleanup_error = None
             try:
                 if restore_rollback is not None:
                     if failures or mismatch:
                         self.service.restore(self._sessions[command['session']],restore_rollback)
-                        if command.get('action')=='restore_generation':
-                            self._generation_boundaries.pop(command['session'],None)
-                            if prior_generation_boundary is not None:
-                                self._generation_boundaries[command['session']]=prior_generation_boundary
+                        self._generation_boundaries.pop(command['session'],None)
+                        if prior_generation_boundary is not None:
+                            self._generation_boundaries[command['session']]=prior_generation_boundary
                     self.service.release_snapshot(self._sessions[command['session']],restore_rollback)
             except BaseException as failure:
                 cleanup_error = (str(failure) or type(failure).__name__)[:4096]
@@ -264,8 +307,12 @@ class DistributedExecutionService:
             self._generation_boundaries.pop(command['session'],None)
         self._sequence += 1
         if command.get('action')=='save_cache':
+            identities = {record[2]['identity'] for record in records}
+            if len(identities) != 1:
+                raise RuntimeError('distributed cache model identities differ across ranks')
             result = dict(version=1,world_size=self.world_size,context_tokens=summary[2],
-                          history_sha256=summary[3],ranks=[record[2] for record in records])
+                          history_sha256=summary[3],model_identity=next(iter(identities)),
+                          ranks=[record[2] for record in records])
         if summary is not None and summary[0]=='cancelled' and self.rank==0:
             raise ExecutionCancelled('distributed generation cancelled; all ranks rolled back')
         return result
@@ -303,7 +350,7 @@ class DistributedExecutionService:
             self._next_id += 1
         return self._request('open', session=handle)
 
-    def generate(self, session, tokens, *, max_new_tokens, stop_ids=(), sampling=None,
+    def generate(self, session, tokens, *, max_new_tokens, stop_ids=(), stop_prefixes=(), sampling=None,
                  cancel=None, on_event=None, checkpoint_directory=None,checkpoint_max_bytes=0,
                  application_identity=''):
         from .sampling import SamplingPolicy
@@ -319,31 +366,44 @@ class DistributedExecutionService:
                 any(type(value) is not int or value < 0 for value in tokens) or
                 type(stop_ids) not in (list, tuple) or
                 any(type(value) is not int or value < 0 for value in stop_ids) or
+                type(stop_prefixes) not in (list, tuple) or len(stop_prefixes)>64 or
+                any(type(prefix) not in (list, tuple) or not prefix or len(prefix)>128 or
+                    any(type(value) is not int or value < 0 for value in prefix)
+                    for prefix in stop_prefixes) or
+                len({tuple(prefix) for prefix in stop_prefixes}) != len(stop_prefixes) or
                 type(max_new_tokens) is not int or max_new_tokens <= 0):
             raise ValueError('bounded token sequence, stop inventory and positive generation limit required')
-        if (len(tokens)+len(stop_ids)+max_new_tokens)*32+512 > self.max_control_bytes:
+        if (len(tokens)+len(stop_ids)+sum(len(prefix) for prefix in stop_prefixes)+max_new_tokens)*32+512 > self.max_control_bytes:
             raise MemoryError('distributed token command exceeds control message budget')
         limits = self.service.limits
         if sampling is not None and (sampling.seed.bit_length()>128 or sampling.top_k>limits.vocabulary):
             raise ValueError('distributed sampling seed or top-k exceeds admission')
         status = self.service.status(self._sessions[session])
-        if (any(value >= limits.vocabulary for value in (*tokens, *stop_ids)) or
+        if (any(value >= limits.vocabulary for value in (*tokens, *stop_ids, *(token for prefix in stop_prefixes for token in prefix))) or
                 max_new_tokens > limits.max_new_tokens or
                 status.context_tokens+len(tokens)+max_new_tokens > limits.context):
             raise ValueError('distributed request exceeds vocabulary, context or generation admission')
         destination=self._generation_destination(checkpoint_directory,checkpoint_max_bytes,application_identity)
-        return self._request('generate', session=session, tokens=list(tokens),
-                             local_cancel=cancel,
-                             local_on_event=on_event,
-                             maximum=max_new_tokens, stops=list(stop_ids),
-                             sampling=None if sampling is None else asdict(sampling),
-                             checkpoint_directory=destination,checkpoint_max_bytes=checkpoint_max_bytes,
-                             application_identity=application_identity)
+        try:
+            return self._request('generate', session=session, tokens=list(tokens),
+                                 local_cancel=cancel,
+                                 local_on_event=on_event,
+                                 maximum=max_new_tokens, stops=list(stop_ids),
+                                 stop_prefixes=[list(prefix) for prefix in stop_prefixes],
+                                 sampling=None if sampling is None else asdict(sampling),
+                                 checkpoint_directory=destination,checkpoint_max_bytes=checkpoint_max_bytes,
+                                 application_identity=application_identity)
+        except BaseException:
+            if destination is not None:
+                shutil.rmtree(destination, ignore_errors=True)
+            raise
 
     def _generation_destination(self,directory,max_bytes,application_identity):
         from .session_recovery import _path
         if self.rank!=0:raise RuntimeError('only root may issue distributed generation requests')
-        if type(application_identity) is not str or len(application_identity)>8192:
+        if (type(application_identity) is not str or len(application_identity)>8192 or
+                '\x00' in application_identity or
+                (directory is not None and not application_identity)):
             raise ValueError('bounded generation application identity required')
         if directory is None:
             if type(max_bytes) is not int or max_bytes!=0:
@@ -365,10 +425,12 @@ class DistributedExecutionService:
             raise ValueError('known distributed session required')
         if type(max_rank_bytes) is not int or not 128<=max_rank_bytes<=2**63-1:
             raise ValueError('explicit per-rank generation recovery budget required')
-        if type(application_identity) is not str or len(application_identity)>8192:
+        if (type(application_identity) is not str or not 0<len(application_identity)<=8192
+                or '\x00' in application_identity):
             raise ValueError('bounded generation application identity required')
         path,manifest=admit_manifest(manifest_path,world_size=self.world_size,
-            max_rank_bytes=max_rank_bytes,context=self.service.limits.context)
+            max_rank_bytes=max_rank_bytes,context=self.service.limits.context,
+            application_identity=application_identity)
         return self._request('restore_generation',session=session,directory=str(path.parent),manifest=manifest,
             recovery_max_bytes=max_rank_bytes,application_identity=application_identity)
 
@@ -390,6 +452,9 @@ class DistributedExecutionService:
         if cancel is not None and not callable(getattr(cancel,'is_set',None)):
             raise ValueError('cancellation must provide is_set')
         if on_event is not None and not callable(on_event):raise TypeError('callable generation event handler required')
+        if (type(application_identity) is not str or not 0<len(application_identity)<=8192
+                or '\x00' in application_identity):
+            raise ValueError('bounded generation application identity required')
         if manifest_path is None:
             if type(max_rank_bytes) is not int or max_rank_bytes!=0 or session not in self._generation_boundaries:
                 raise ValueError('owned restored generation boundary required without an input manifest')
@@ -398,15 +463,21 @@ class DistributedExecutionService:
             if type(max_rank_bytes) is not int or not 128<=max_rank_bytes<=2**63-1:
                 raise ValueError('explicit per-rank generation recovery budget required')
             path,manifest=admit_manifest(manifest_path,world_size=self.world_size,
-                max_rank_bytes=max_rank_bytes,context=self.service.limits.context)
+                max_rank_bytes=max_rank_bytes,context=self.service.limits.context,
+                application_identity=application_identity)
             directory=str(path.parent);occupied=manifest['context_tokens']
         if occupied+max_new_tokens>self.service.limits.context:
             raise ValueError('recovered generation exceeds context admission')
         destination=self._generation_destination(checkpoint_directory,checkpoint_max_bytes,application_identity)
-        return self._request('resume_generation',session=session,directory=directory,manifest=manifest,
-            recovery_max_bytes=max_rank_bytes,maximum=max_new_tokens,local_cancel=cancel,local_on_event=on_event,
-            checkpoint_directory=destination,checkpoint_max_bytes=checkpoint_max_bytes,
-            application_identity=application_identity)
+        try:
+            return self._request('resume_generation',session=session,directory=directory,manifest=manifest,
+                recovery_max_bytes=max_rank_bytes,maximum=max_new_tokens,local_cancel=cancel,local_on_event=on_event,
+                checkpoint_directory=destination,checkpoint_max_bytes=checkpoint_max_bytes,
+                application_identity=application_identity)
+        except BaseException:
+            if destination is not None:
+                shutil.rmtree(destination, ignore_errors=True)
+            raise
 
     def reset_session(self, session):
         if session not in self._sessions:
@@ -445,7 +516,14 @@ class DistributedExecutionService:
         root.mkdir(parents=True,exist_ok=True)
         generation = root/('generation-'+uuid4().hex)
         generation.mkdir()
-        manifest = self._request('save_cache',session=session,directory=str(generation),max_bytes=max_rank_bytes)
+        try:
+            manifest = self._request('save_cache',session=session,directory=str(generation),max_bytes=max_rank_bytes)
+        except BaseException:
+            # No rank set can be committed after a failed collective request;
+            # remove only this fresh reservation while preserving unrelated
+            # generations under the caller-owned root.
+            shutil.rmtree(generation, ignore_errors=True)
+            raise
         encoded = json.dumps(manifest,sort_keys=True,separators=(',', ':'),allow_nan=False).encode('utf-8')
         if len(encoded)>65536:
             raise MemoryError('distributed cache manifest exceeds admission')
@@ -488,12 +566,14 @@ class DistributedExecutionService:
         path, encoded = read_manifest(manifest_path)
         manifest = json.loads(encoded,object_pairs_hook=_pairs,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-        if type(manifest) is not dict or set(manifest)!={'version','world_size','context_tokens','history_sha256','ranks'}:
+        if type(manifest) is not dict or set(manifest)!={'version','world_size','context_tokens','history_sha256','model_identity','ranks'}:
             raise ValueError('invalid distributed cache manifest fields')
         if (type(manifest['version']) is not int or manifest['version']!=1 or
                 type(manifest['world_size']) is not int or manifest['world_size']!=self.world_size or
                 type(manifest['context_tokens']) is not int or
                 not 0<=manifest['context_tokens']<=self.service.limits.context or
+                type(manifest['model_identity']) is not str or
+                not 0<len(manifest['model_identity'])<=4096 or
                 type(manifest['ranks']) is not list or len(manifest['ranks'])!=self.world_size):
             raise ValueError('distributed cache geometry differs')
         def digest(value):
@@ -508,6 +588,9 @@ class DistributedExecutionService:
                     not digest(receipt['sha256']) or type(receipt['identity']) is not str or
                     not 0<len(receipt['identity'])<=4096):
                 raise ValueError('invalid distributed rank cache receipt')
+        current_identity = self.service.status(session).identity
+        if manifest['model_identity'] != current_identity:
+            raise ValueError('distributed cache model identity differs from target session')
         return self._request('load_cache',session=session,directory=str(path.parent),
                              manifest=manifest,max_bytes=max_rank_bytes)
 
@@ -522,7 +605,7 @@ class DistributedExecutionService:
             raise ValueError('owned distributed session snapshot required')
 
     def close_session(self, session):
-        if session not in self._sessions:
+        if type(session) is not int or session not in self._sessions:
             raise ValueError('unknown distributed session')
         self._request('close_session', session=session)
 

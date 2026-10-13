@@ -238,6 +238,16 @@ class SegmentRange:
     begin: int
     end: int
 
+    def __post_init__(self):
+        _identifier(self.adapter)
+        if (not isinstance(self.model_directory, (str, Path)) or not str(self.model_directory)
+                or "\0" in str(self.model_directory)):
+            raise ValueError("segment model directory must be a bounded nonempty path")
+        _integer(self.begin, "layer_begin", minimum=0)
+        _integer(self.end, "layer_end", minimum=1)
+        if self.end <= self.begin:
+            raise ValueError("segment range must be nonempty and ordered")
+
 
 @dataclass(frozen=True)
 class SegmentEdgeSnapshot:
@@ -258,6 +268,8 @@ class _StateFile:
         self.file.close()
 
     def capture(self, native, session):
+        if self.size or self.digest is not None:
+            raise RuntimeError("native snapshot storage has already been captured")
         errors = []
         checksum = hashlib.sha256()
 
@@ -355,6 +367,7 @@ class SegmentEdgeExecution:
         self._native = _Functions(library)
         self._lock = self._native.lock
         self._closed = False
+        self._close_complete = False
         self._quarantined = False
         self._edge = _PTR()
         self._segments = []
@@ -501,9 +514,16 @@ class SegmentEdgeExecution:
             raise errors[0]
 
     def _cleanup_pending(self):
+        errors = []
         for state in tuple(self._pending):
-            state.close()
-            self._pending.remove(state)
+            try:
+                state.close()
+            except BaseException as error:
+                errors.append(error)
+            else:
+                self._pending.remove(state)
+        if errors:
+            raise errors[0]
 
     def _restore_files(self, files):
         try:
@@ -532,19 +552,31 @@ class SegmentEdgeExecution:
             self._states[handle] = files
             return handle
 
+    def _snapshot_files(self, snapshot):
+        """Return state only for the exact handle issued by this executor.
+
+        ``SegmentEdgeSnapshot`` is a frozen dataclass, but its public fields can
+        still be copied into a newly constructed value.  Dataclass equality is
+        therefore not sufficient to establish ownership of the native cache
+        files kept in ``_states``.
+        """
+        if type(snapshot) is not SegmentEdgeSnapshot:
+            raise ValueError("snapshot is foreign or released")
+        for issued, files in self._states.items():
+            if issued is snapshot:
+                return files
+        raise ValueError("snapshot is foreign or released")
+
     def restore(self, snapshot):
         with self._lock:
             self._check()
-            if type(snapshot) is not SegmentEdgeSnapshot or snapshot not in self._states:
-                raise ValueError("snapshot is foreign or released")
-            self._restore_files(self._states[snapshot])
+            files = self._snapshot_files(snapshot)
+            self._restore_files(files)
             self._position = snapshot.position
 
     def release_snapshot(self, snapshot):
         with self._lock:
-            files = self._states.get(snapshot)
-            if files is None:
-                raise ValueError("snapshot is foreign or released")
+            files = self._snapshot_files(snapshot)
             self._dispose(files)
             del self._states[snapshot]
 
@@ -806,14 +838,24 @@ class SegmentEdgeExecution:
         with self._lock:
             if getattr(self,'_cache_transport',False):
                 raise RuntimeError('cannot close Segment/Edge during cache transport')
+            if self._close_complete:
+                return
             self._closed = True
-            for _, session, _ in reversed(self._segments):
-                if session:
-                    self._native.segment_session_destroy(session)
-                    session.value = None
             errors = []
-            for engine, _, _ in reversed(self._segments):
+            failed_sessions = set()
+            for index, (_, session, _) in reversed(tuple(enumerate(self._segments))):
+                if session:
+                    try:
+                        self._native.segment_session_destroy(session)
+                    except BaseException as error:
+                        errors.append(error)
+                        failed_sessions.add(index)
+                    else:
+                        session.value = None
+            for index, (engine, _, _) in reversed(tuple(enumerate(self._segments))):
                 if engine:
+                    if index in failed_sessions:
+                        continue
                     try:
                         self._native.call("segment_engine_close", engine)
                     except BaseException as error:
@@ -821,8 +863,12 @@ class SegmentEdgeExecution:
                     else:
                         engine.value = None
             if self._edge:
-                self._native.edge_engine_close(self._edge)
-                self._edge.value = None
+                try:
+                    self._native.edge_engine_close(self._edge)
+                except BaseException as error:
+                    errors.append(error)
+                else:
+                    self._edge.value = None
             inventories = list(self._states.values())
             if self._initial is not None:
                 inventories.append(self._initial)
@@ -838,6 +884,7 @@ class SegmentEdgeExecution:
             self._states.clear()
             self._initial = None
             self._native.close()
+            self._close_complete = True
             with _FAILED_LOCK:
                 _FAILED_OWNERS.discard(self)
 

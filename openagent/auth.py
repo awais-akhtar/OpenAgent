@@ -848,6 +848,12 @@ class AuthManager:
 # ----------------------------------------------------------------------
 
 PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
+    ("/v1/brio", "local_ai:read", "local_ai:admin"),
+    ("/v1/systemone", "local_ai:read", "local_ai:admin"),
+    ("/v1/chat/completions", "local_ai:read", "local_ai:admin"),
+    ("/v1/completions", "local_ai:read", "local_ai:admin"),
+    ("/v1/messages", "local_ai:read", "local_ai:admin"),
+    ("/v1/models", "local_ai:read", "local_ai:admin"),
     ("/api/chat/", "chat:read", "chat:write"),
     ("/api/conversations", "chat:read", "chat:write"),
     ("/api/conversation/", "chat:read", "chat:write"),
@@ -885,6 +891,12 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/settings/", "settings:read", "settings:write"),
     ("/api/phd/", "phd:read", "phd:write"),
     ("/api/codebase/", "codebase:read", "codebase:write"),
+    ("/v1/brio", "local_ai:read", "local_ai:admin"),
+    ("/v1/systemone", "local_ai:read", "local_ai:admin"),
+    ("/v1/chat/completions", "local_ai:read", "local_ai:admin"),
+    ("/v1/completions", "local_ai:read", "local_ai:admin"),
+    ("/v1/messages", "local_ai:read", "local_ai:admin"),
+    ("/v1/models", "local_ai:read", "local_ai:admin"),
 )
 
 

@@ -6,10 +6,12 @@ Provider uses loader target names: tensor(name), linear(name, row), cast(row).
 Linear excludes bias; cast owns the activation dtype boundary. No builds occur.
 """
 import math
+import threading
 
 import numpy as np
 
 from .auxiliary_attention import attention_rows
+from .owner_scope import owned_auxiliary
 
 
 class PublisherV41Vision:
@@ -36,9 +38,25 @@ class PublisherV41Vision:
         if type(max_bytes) is not int or max_bytes <= 0:
             raise ValueError('positive vision workspace budget required')
         self.hidden, self.max_bytes = hidden_size, max_bytes
+        self._lock = threading.RLock()
+        self._busy = False
+        self._closed = False
         self.theta = self.config.get('rope_theta', 10000.0)
         if not math.isfinite(self.theta) or self.theta <= 0:
             raise ValueError('positive rotary theta required')
+
+    def _check_open(self):
+        if self._closed:
+            raise RuntimeError('publisher vision owner is closed')
+        ensure = getattr(self.provider, '_ensure_open', None)
+        if callable(ensure):
+            ensure()
+
+    def close(self):
+        with self._lock:
+            if self._busy:
+                raise RuntimeError('cannot close an active publisher vision owner')
+            self._closed = True
 
     @staticmethod
     def _array(value, shape):
@@ -64,7 +82,9 @@ class PublisherV41Vision:
         return self._cast(x / np.sqrt(np.mean(x*x, axis=-1, keepdims=True)+1e-6)
                           * self._tensor(name+'.weight', (self.width,)))
 
+    @owned_auxiliary
     def encode_image(self, patches, n_h, n_w, *, workspace_bytes=None):
+        self._check_open()
         budget = self.max_bytes if workspace_bytes is None else workspace_bytes
         if type(budget) is not int or not 0 < budget <= self.max_bytes:
             raise ValueError('positive admitted vision workspace required')
@@ -110,13 +130,16 @@ class PublisherV41Vision:
                           dtype=np.float32, count=x.size).reshape(x.shape)
         return self._linear('aligner.w2', self._cast(0.5*x*(1+erf)), self.hidden, True)
 
+    @owned_auxiliary
     def merge_image_embeddings(self, embeddings, images, *, start_pos=0):
+        self._check_open()
         if start_pos != 0:
             raise ValueError('image spans require single-chunk initial prefill')
         observed = np.asarray(embeddings)
         if (observed.ndim != 3 or observed.dtype.kind != 'f' or
                 not all(observed.shape) or observed.shape[-1] != self.hidden or
-                len(images) != observed.shape[0]):
+                type(images) not in (tuple, list) or len(images) != observed.shape[0] or
+                len(images) > 4096):
             raise ValueError('batch language embeddings and image inventory mismatch')
         retained = observed.size*12+observed.shape[1]*16
         if retained >= self.max_bytes:
@@ -126,15 +149,36 @@ class PublisherV41Vision:
             if not np.isfinite(row).all():
                 raise ValueError('nonfinite language embedding during image insertion')
         for batch, sample in enumerate(images):
+            if type(sample) not in (tuple, list) or len(sample) > 4096:
+                raise ValueError('bounded image span inventory required')
             occupied = np.zeros(h.shape[1], dtype=bool)
+            previous_end = 0
             for img in sample or ():
-                types = np.asarray(img.types)
-                start = img.start
-                if (types.ndim != 1 or types.dtype.kind not in 'iu' or
+                try:
+                    types = np.array(img.types, copy=True)
+                    types.flags.writeable = False
+                    start = img.start
+                    patches, n_vit_h, n_vit_w = img.patches, img.n_vit_h, img.n_vit_w
+                except AttributeError as error:
+                    raise ValueError('complete V4.1 image span record required') from error
+                if (any(type(value) is not int or value <= 0
+                        for value in (n_vit_h, n_vit_w)) or
+                        types.ndim != 1 or types.dtype.kind not in 'iu' or
+                        not types.size or int(types[0]) != 0 or int(types[-1]) != 3 or
+                        not np.any(types == 1) or
                         np.any((types < 0) | (types > 3)) or type(start) is not int or
-                        start < 0 or start+types.size > h.shape[1] or occupied[start:start+types.size].any()):
+                        start < previous_end or start+types.size > h.shape[1] or
+                        occupied[start:start+types.size].any()):
                     raise ValueError('invalid or overlapping image span')
-                rows = self.encode_image(img.patches, img.n_vit_h, img.n_vit_w,
+                ratio = self.config['downsample_ratio']
+                aligned_h, aligned_w = math.ceil(n_vit_h/ratio), math.ceil(n_vit_w/ratio)
+                expected = np.empty(aligned_h*(aligned_w+1)+2, dtype=np.int64)
+                expected[0], expected[-1] = 0, 3
+                expected[1:-1].reshape(aligned_h, aligned_w+1)[:, :-1] = 1
+                expected[1:-1].reshape(aligned_h, aligned_w+1)[:, -1] = 2
+                if not np.array_equal(types, expected):
+                    raise ValueError('image span types do not match aligned patch-grid geometry')
+                rows = self.encode_image(patches, n_vit_h, n_vit_w,
                                          workspace_bytes=self.max_bytes-retained)
                 if np.count_nonzero(types == 1) != len(rows):
                     raise ValueError('image slots differ from aligned patch grid')
@@ -143,5 +187,6 @@ class PublisherV41Vision:
                 for kind, name in ((0, 'image_start'), (2, 'image_newline'), (3, 'image_end')):
                     span[types == kind] = self._cast(self._tensor(name, (self.hidden,)))
                 occupied[start:start+types.size] = True
+                previous_end = start + types.size
                 del rows
         return h

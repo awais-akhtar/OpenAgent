@@ -10,6 +10,7 @@ import weakref
 import numpy as np
 
 from .independent_glm5_next import IndependentGlm5NextTextDecoder
+from .native_library_identity import NativeLibraryIdentity, release_finalizer
 
 
 class Buffer(C.Structure):
@@ -38,13 +39,20 @@ class NativeGlm5NextTextDecoder(IndependentGlm5NextTextDecoder):
             self._resident_bytes+=expert_provider.max_bytes
         self._lock = threading.RLock()
         self._closed = False
-        self.library = C.CDLL(str(Path(library).resolve(strict=True)))
+        self._library_identity = NativeLibraryIdentity.read(library)
+        self.library = C.CDLL(str(self._library_identity.path))
         release = _ctypes.FreeLibrary if os.name == 'nt' else _ctypes.dlclose
         self._release = weakref.finalize(self,release,self.library._handle)
         try:
+            self._library_identity.assert_unchanged()
             self._bind_native(max_tokens)
-        except BaseException:
-            self.close()
+            self._library_identity.assert_unchanged()
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                primary.cleanup = self.close
+                primary.add_note('GLM native construction cleanup retained: '+repr(cleanup))
             raise
 
     def _bind_native(self,max_tokens):
@@ -138,21 +146,20 @@ class NativeGlm5NextTextDecoder(IndependentGlm5NextTextDecoder):
     def _check_open(self):
         if self._closed or self._executing:
             raise RuntimeError('native GLM5-next decoder is closed or executing')
+        self._library_identity.assert_unchanged()
 
     def close(self):
         with self._lock:
             if self._executing: raise RuntimeError('GLM native callback owns resources')
             if not self._closed:
                 self._closed = True
-                try:
-                    super().reset()
-                    self._weight_buffers = None
-                    self._embedding = self._norm = self._head = Buffer()
-                    self.weights = {}
-                    self._expert_provider=None;self._expert_callback=None
-                finally:
-                    self.library = None
-                    self._release()
+                super().reset()
+                self._weight_buffers = None
+                self._embedding = self._norm = self._head = Buffer()
+                self.weights = {}
+                self._expert_provider=None;self._expert_callback=None
+            release_finalizer(self, '_release')
+            self.library = None
 
     @property
     def cache(self):

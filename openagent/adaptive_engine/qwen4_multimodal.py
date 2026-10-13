@@ -42,7 +42,7 @@ class Qwen4MultimodalDecoder:
             raise ValueError('explicit aggregate media/text budget required')
         self.config=self.components.original_config
         self.max_bytes=max_bytes;self._lock=threading.RLock();self._busy=False;self._closed=False
-        self._owner=uuid4().hex;self._snapshots={};self.max_snapshots=max_snapshots
+        self._owner=uuid4().hex;self._snapshots={};self._orphaned_snapshots=[];self.max_snapshots=max_snapshots
         self.rope_delta=0;self.text=self.vision=None
         self._native_store_runtime=self._native_experts=self._native_ple=None
         if type(native_composition) is not bool:raise ValueError('boolean complete native composition policy required')
@@ -248,9 +248,18 @@ class Qwen4MultimodalDecoder:
             self._check()
             if len(self._snapshots)>=self.max_snapshots:
                 raise MemoryError('media snapshot inventory exhausted')
-            inner=self.text.snapshot();receipt=Qwen4MediaSnapshot(self._owner,uuid4().hex,self.identity,self.position)
-            self._snapshots[receipt.key]=(receipt,inner,self.rope_delta)
-            return receipt
+            inner=self.text.snapshot()
+            try:
+                receipt=Qwen4MediaSnapshot(self._owner,uuid4().hex,self.identity,self.position)
+                self._snapshots[receipt.key]=(receipt,inner,self.rope_delta)
+                return receipt
+            except BaseException as primary:
+                try:
+                    self.text.release_snapshot(inner)
+                except BaseException as cleanup:
+                    self._orphaned_snapshots.append(inner)
+                    primary.add_note('unpublished media snapshot cleanup retained for close: '+repr(cleanup))
+                raise
 
     def _snapshot(self,receipt):
         if type(receipt) is not Qwen4MediaSnapshot or receipt.owner!=self._owner or receipt.identity!=self.identity:
@@ -322,9 +331,16 @@ class Qwen4MultimodalDecoder:
             if self._closed: return
             if self._busy: raise RuntimeError('media execution owns resources')
             errors=[]
+            for snapshot in tuple(self._orphaned_snapshots):
+                try:
+                    self.text.release_snapshot(snapshot)
+                    self._orphaned_snapshots.remove(snapshot)
+                except BaseException as error: errors.append(error)
             for owner in (self.text,self.vision):
                 if owner is not None:
-                    try: owner.close()
+                    try:
+                        owner.close()
+                        if owner is self.text:self._orphaned_snapshots.clear()
                     except BaseException as error: errors.append(error)
             if errors: raise RuntimeError('media component cleanup remains pending') from errors[0]
             for name in ('_native_ple','_native_experts','_native_store_runtime'):

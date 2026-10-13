@@ -145,6 +145,7 @@ class SegmentBridge:
             raise SegmentABIError(BAD_VERSION)
         self._objects = {}
         self._active = set()
+        self._quarantined = set()
         self._cancelled = None
         self._closed = False
 
@@ -202,19 +203,32 @@ class SegmentBridge:
                 session.close()
                 raise
 
-    def _record(self, handle):
+    def _record(self, handle, *, allow_quarantined=False):
         _uint(handle, 'handle', 1)
         if handle not in self._objects:
             raise SegmentABIError(BAD_HANDLE)
+        if handle in self._quarantined and not allow_quarantined:
+            raise SegmentABIError(CALLBACK_ERROR)
         return self._objects[handle]
 
     def _dispatch(self, backend, errors, context, op, rows, src, size, dst, capacity, written):
         written[0] = 0
         try:
+            # Native callbacks may provide malformed pointers even when the
+            # byte counts look valid. Reject those records before ctypes reads
+            # or writes through them; an escaping access violation cannot be
+            # converted into an ABI status by Python.
+            if size and not src:
+                raise ValueError('nonzero input requires a source buffer')
+            if capacity and not dst:
+                raise ValueError('nonzero output capacity requires a destination buffer')
             if op == CLOSE:
                 backend.close()
                 return OK
             if op in (FORWARD, HEAD, EMBED):
+                if (self._cancelled is not None and
+                        (self._cancelled() if callable(self._cancelled) else self._cancelled.is_set())):
+                    raise InterruptedError('native ABI operation cancelled before dispatch')
                 width = backend._engine.config.hidden_size if op == FORWARD else backend.config.hidden_size
                 out_width = backend.config.vocab_size if op == HEAD else width
                 expected = rows * (8 if op == EMBED else width * 4)
@@ -231,6 +245,9 @@ class SegmentBridge:
                         result = backend.forward(hidden, cancelled=self._cancelled)
                     else:
                         result = backend.final_head(hidden)
+                if (self._cancelled is not None and
+                        (self._cancelled() if callable(self._cancelled) else self._cancelled.is_set())):
+                    raise InterruptedError('native ABI operation cancelled after dispatch')
                 data = result.astype('<f4', copy=False).tobytes(order='C')
             elif op == RESET:
                 if rows or size or capacity:
@@ -275,12 +292,27 @@ class SegmentBridge:
             raise ValueError('operation exceeds uint32')
         if not isinstance(data, bytes):
             raise TypeError('data must be bytes')
+        if (cancelled is not None and not callable(cancelled) and
+                not callable(getattr(cancelled, 'is_set', None))):
+            raise TypeError('ABI cancellation owner required')
+        if cancelled is not None and operation not in (FORWARD, EMBED, HEAD):
+            raise ValueError('cancellation is supported only for execution operations')
         if len(data) > self.max_bytes or capacity > self.max_bytes:
             raise SegmentABIError(LIMIT)
         with self.lock:
             record = self._record(handle)
             if self._active:
                 raise SegmentABIError(BUSY)
+            # A cancelled session forward is a failed transaction, not a
+            # partially committed continuation. Capture only when a
+            # cancellation owner was supplied; non-cancellable ABI calls keep
+            # their historical low-overhead path.
+            rollback = None
+            if (cancelled is not None and operation == FORWARD and
+                    isinstance(record[0], self.session_types)):
+                output = _BoundedOutput(self.max_bytes)
+                self._write_snapshot(record[0], output)
+                rollback = output.getvalue()
             src = C.create_string_buffer(data) if data else None
             dst = C.create_string_buffer(capacity) if capacity else None
             written = U64()
@@ -290,24 +322,39 @@ class SegmentBridge:
             try:
                 status = self.lib.oa_segment_call(handle, operation, rows, src,
                     len(data), dst, capacity, C.byref(written))
+                if status == CANCELLED and rollback is not None:
+                    try:
+                        self._restore_snapshot(record[0], io.BytesIO(rollback))
+                    except BaseException as rollback_error:
+                        # Do not permit continuation from state whose rollback
+                        # could not be established. Release remains available
+                        # so callers can still clean up the native handle.
+                        self._quarantined.add(handle)
+                        raise SegmentABIError(CALLBACK_ERROR) from rollback_error
                 self._status(status, record[2][0] if record[2] else None)
+                if written.value > capacity:
+                    raise SegmentABIError(LIMIT)
                 return dst.raw[:written.value] if dst else b''
             finally:
                 self._active.remove(handle)
                 self._cancelled = None
                 record[2].clear()
 
-    def embeddings(self, edge, token_ids):
+    def embeddings(self, edge, token_ids, *, cancelled=None):
         ids = np.asarray(token_ids)
         if ids.ndim != 1 or ids.size == 0 or ids.dtype.kind not in 'iu':
             raise ValueError('expected integer token vector')
+        if (cancelled is not None and not callable(cancelled) and
+                not callable(getattr(cancelled, 'is_set', None))):
+            raise TypeError('embedding cancellation owner required')
         if ids.dtype.kind == 'u' and np.any(ids > np.iinfo(np.int64).max):
             raise ValueError('token exceeds int64')
         with self.lock:
             width = self._record(edge)[0].config.hidden_size
             if ids.size * max(8, width * 4) > self.max_bytes:
                 raise SegmentABIError(LIMIT)
-            data = self.call(edge, EMBED, ids.astype('<i8').tobytes(), rows=len(ids), capacity=len(ids)*width*4)
+            data = self.call(edge, EMBED, ids.astype('<i8').tobytes(), rows=len(ids),
+                capacity=len(ids)*width*4, cancelled=cancelled)
             return np.frombuffer(data, '<f4').astype(np.float32).reshape(len(ids), width)
 
     def hidden(self, handle, value, *, final_head=False, cancelled=None):
@@ -338,7 +385,7 @@ class SegmentBridge:
 
     def release(self, handle):
         with self.lock:
-            record = self._record(handle)
+            record = self._record(handle, allow_quarantined=True)
             if self._active:
                 raise SegmentABIError(BUSY)
             record[2].clear()
@@ -346,6 +393,7 @@ class SegmentBridge:
             try:
                 self._status(self.lib.oa_segment_release(handle), record[2][0] if record[2] else None)
                 del self._objects[handle]
+                self._quarantined.discard(handle)
                 with _locks_guard:
                     _backends.discard(id(record[0]))
                     if not self._objects:

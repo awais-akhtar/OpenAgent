@@ -7,7 +7,8 @@ import math
 import threading
 import time
 
-from .execution_service import ExecutionCancelled, NativeExecutionService
+from .execution_service import (ExecutionCancelled, NativeExecutionService,
+                                 _admit_stop_prefixes)
 from .sampling import SamplingPolicy
 
 
@@ -57,6 +58,7 @@ class _Request:
     session_id: str
     prompt: tuple
     stops: tuple
+    stop_prefixes: tuple
     count: int
     priority: int
     deadline: float | None
@@ -69,7 +71,7 @@ class _Request:
 
     @property
     def stored_tokens(self):
-        return len(self.prompt) + len(self.stops)
+        return len(self.prompt) + len(self.stops) + sum(len(p) for p in self.stop_prefixes)
 
     @property
     def reservation(self):
@@ -131,13 +133,26 @@ class NativeExecutionQueue:
                 else:
                     with self._condition:
                         self._stopping=self._finished=True
-                    if self._own_service and not self._service_released:
-                        self.service.close();self._service_released=True
+                    self._release_owned_service()
             try:cleanup_startup()
             except BaseException as cleanup:
                 primary.cleanup=cleanup_startup
                 primary.add_note('execution queue startup cleanup retained: '+repr(cleanup))
             raise
+
+    def _release_owned_service(self):
+        if not self._own_service or self._service_released:
+            return
+        with self._cleanup_lock:
+            if self._service_released:
+                return
+            try:
+                self.service.close()
+            except BaseException as error:
+                self._cleanup_error = error
+                raise
+            self._service_released = True
+            self._cleanup_error = None
 
     def _wake(self):
         with self._condition:
@@ -152,7 +167,7 @@ class NativeExecutionQueue:
             raise ValueError('invalid/beyond-budget vocabulary token inventory')
         return result
 
-    def submit(self, session_id, prompt_ids, *, max_new_tokens=None, stop_ids=(),
+    def submit(self, session_id, prompt_ids, *, max_new_tokens=None, stop_ids=(), stop_prefixes=(),
                priority=0, deadline=None, cancel=None, on_event=None, sampling=None):
         """Admit a request and return GenerationFuture; deadlines use monotonic time."""
         try:
@@ -194,6 +209,7 @@ class NativeExecutionQueue:
             base = len(self.service.history(session_id)) if cached_base is None else cached_base
             prompt = self._tokens(prompt_ids, min(limits.context - base - count, self.max_pending_tokens))
             stops = self._tokens(stop_ids, min(limits.vocabulary, self.max_pending_tokens - len(prompt)), empty=True)
+            prefixes = _admit_stop_prefixes(stop_prefixes, limits.vocabulary)
             future = GenerationFuture(self._wake)
             cancellation = _Cancellation(future.cancel_event, cancel, deadline)
             while True:
@@ -216,14 +232,15 @@ class NativeExecutionQueue:
                         continue
                     if self._pending_count >= self.max_requests:
                         raise MemoryError('generation request queue is full')
-                    if len(prompt) + len(stops) > self.max_pending_tokens - self._stored_tokens:
+                    prefix_tokens = sum(len(p) for p in prefixes)
+                    if len(prompt) + len(stops) + prefix_tokens > self.max_pending_tokens - self._stored_tokens:
                         raise MemoryError('queued token storage exceeds admission')
                     committed = max(base, self._committed.get(session_id, 0))
                     reservation = len(prompt) + count
                     if committed + self._reserved.get(session_id, 0) + reservation > limits.context:
                         raise MemoryError('queued session continuations exceed context capacity')
                     self._sequence += 1
-                    request = _Request(self._sequence, session_id, prompt, stops, count, priority,
+                    request = _Request(self._sequence, session_id, prompt, stops, prefixes, count, priority,
                                        deadline, time.monotonic(), future, cancellation, on_event, sampling)
                     self._sessions.setdefault(session_id, deque()).append(request)
                     self._committed[session_id] = committed
@@ -345,6 +362,7 @@ class NativeExecutionQueue:
                         raise reason[1]
                     result = self.service.generate(request.session_id, request.prompt,
                         max_new_tokens=request.count, stop_ids=request.stops,
+                        stop_prefixes=request.stop_prefixes,
                         cancel=request.cancel, on_event=request.on_event, sampling=request.sampling)
                 except BaseException as caught:
                     error = caught
@@ -383,9 +401,7 @@ class NativeExecutionQueue:
             for request in stranded:
                 self._complete(request, error=ExecutionQueueClosed('generation worker stopped'))
             try:
-                if self._own_service:
-                    self.service.close()
-                    self._service_released = True
+                self._release_owned_service()
             except BaseException as error:
                 with self._condition:
                     self._cleanup_error = error
@@ -429,15 +445,10 @@ class NativeExecutionQueue:
             if self._worker.is_alive() or self._monitor.is_alive():
                 raise TimeoutError('native execution queue shutdown is still finishing')
             if self._own_service and not self._service_released:
-                with self._cleanup_lock:
-                    if not self._service_released:
-                        try:
-                            self.service.close()
-                        except BaseException as error:
-                            self._cleanup_error = error
-                        else:
-                            self._service_released = True
-                            self._cleanup_error = None
+                try:
+                    self._release_owned_service()
+                except BaseException:
+                    pass
             if self._cleanup_error is not None:
                 raise RuntimeError('owned execution service cleanup failed') from self._cleanup_error
 

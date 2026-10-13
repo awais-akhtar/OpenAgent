@@ -36,10 +36,22 @@ class DSparkBackbone:
         self._lock = threading.RLock()
         self._cache_transport = False
         self._quarantined = False
+        self._closed = False
 
     def _check_transport(self):
+        if self._closed:
+            raise RuntimeError('DSpark evidence owner is closed')
         if self._cache_transport or self._quarantined:
             raise RuntimeError('DSpark evidence owner is unavailable')
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            if self._cache_transport:
+                raise RuntimeError('cannot close active DSpark cache transport')
+            self._closed = True
+            self.hidden, self.logits = (), None
 
     @contextmanager
     def cancellation_scope(self,cancel):
@@ -62,7 +74,11 @@ class DSparkBackbone:
     def history(self):
         with self._lock:
             self._check_transport()
-            return self.model.snapshot().tokens
+            snapshot = self.model.snapshot()
+            try:
+                return snapshot.tokens
+            finally:
+                self.model.release_snapshot(snapshot)
 
     def forward(self, tokens, *, images=None, vision=None, token_types=None):
         with self._lock:
@@ -72,6 +88,7 @@ class DSparkBackbone:
             if 4*(len(self.hidden)+3*len(ids))*width+8*self.model.profile.vocabulary > self.max_bytes:
                 raise MemoryError('DSpark retained hidden state exceeds admission budget')
             old = self.model.snapshot()
+            primary_failure = None
             try:
                 logits, hidden = self.model.forward(list(ids), target_layers=self.layers,
                     images=images, vision=vision, token_types=token_types)
@@ -83,12 +100,22 @@ class DSparkBackbone:
                 next_logits = logits[-1].copy() if ids else self.logits
                 next_hidden = self.hidden+rows
             except BaseException as failure:
+                primary_failure = failure
                 try:
                     self.model.restore(old)
                 except BaseException as rollback:
                     self._quarantined = True
                     failure.add_note('DSpark evidence forward rollback failed: '+str(rollback))
                 raise
+            finally:
+                try:
+                    self.model.release_snapshot(old)
+                except BaseException as cleanup:
+                    self._quarantined = True
+                    if primary_failure is not None:
+                        primary_failure.add_note('DSpark evidence snapshot cleanup failed: '+str(cleanup))
+                    else:
+                        raise RuntimeError('DSpark evidence snapshot cleanup failed') from cleanup
             self.hidden, self.logits = next_hidden, next_logits
             return logits
 
@@ -98,6 +125,13 @@ class DSparkBackbone:
             return DSparkBackboneSnapshot(self.model.snapshot(), self.hidden,
                 b'' if self.logits is None else np.asarray(self.logits, dtype='<f4').tobytes(),
                 self.layers)
+
+    def release_snapshot(self, snapshot):
+        """Release the native target snapshot retained by a backbone snapshot."""
+        with self._lock:
+            if type(snapshot) is not DSparkBackboneSnapshot:
+                raise ValueError('DSpark backbone snapshot required')
+            self.model.release_snapshot(snapshot.backbone)
 
     def restore(self, snapshot):
         with self._lock:
@@ -123,6 +157,7 @@ class DSparkBackbone:
 
     def reset(self):
         with self._lock:
+            self._check_transport()
             if self._cache_transport:
                 raise RuntimeError('DSpark cache transport is active')
             self._quarantined = True
@@ -163,27 +198,42 @@ class DSparkProposer:
         self.rng = np.random.default_rng() if rng is None else rng
         self._lock = threading.RLock()
         self._quarantined = False
+        self._closed = False
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            if self._quarantined:
+                raise RuntimeError('cannot close quarantined DSpark proposer')
+            self.draft.close()
+            self._closed = True
 
     def snapshot(self):
         with self._lock:
-            if self._quarantined:
+            if self._closed or self._quarantined:
                 raise RuntimeError('DSpark proposer rollback requires recovery')
             return self.draft.snapshot(), copy.deepcopy(self.rng.bit_generator.state)
 
     def reset(self):
         with self._lock:
+            if self._closed:
+                raise RuntimeError('DSpark proposer is closed')
             self._quarantined = True
             self.draft.reset()
             self._quarantined = False
 
     def restore(self, state):
         with self._lock:
+            if self._closed:
+                raise RuntimeError('DSpark proposer is closed')
             draft_state, rng_state = state
             old_rng = copy.deepcopy(self.rng.bit_generator.state)
             try:
                 self.rng.bit_generator.state = copy.deepcopy(rng_state)
                 self.draft.restore(draft_state)
             except BaseException as failure:
+                self._quarantined = True
                 try:self.rng.bit_generator.state = old_rng
                 except BaseException as rollback:
                     self._quarantined = True
@@ -205,7 +255,7 @@ class DSparkProposer:
 
     def __call__(self, history, count):
         with self._lock, self.backbone._lock:
-            if self._quarantined:
+            if self._closed or self._quarantined:
                 raise RuntimeError('DSpark proposer rollback requires recovery')
             if (type(count) is not int or count <= 0 or history != self.backbone.history or
                     not history or self.backbone.logits is None):

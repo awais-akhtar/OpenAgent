@@ -10,6 +10,7 @@ from .execution_service import ExecutionCancelled,_admit_checkpoint_publication
 from .session_recovery import _path
 from .native_library_identity import _stamp
 from .publisher_media_files import read_regular
+from .closed_set_scoring import ClosedSetScoringMixin
 
 _REGISTRY = {}
 _LOCK = threading.RLock()
@@ -49,6 +50,7 @@ def parser():
     result.add_argument('--max-tokens',type=int,default=128)
     result.add_argument('--token-ids',required=True)
     result.add_argument('--stop-token-id',type=int,action='append',default=[])
+    result.add_argument('--stop-prefix',type=str,action='append',default=[])
     result.add_argument('--expert-manifest',type=Path)
     result.add_argument('--expert-kernel')
     result.add_argument('--expert-cache-mib',type=int)
@@ -217,7 +219,7 @@ class _FlatOwner:
             max_snapshots_per_session=options.get('max_snapshots_per_session',4))
 
 
-class PublisherSession:
+class PublisherSession(ClosedSetScoringMixin):
     """Gateway-compatible owned service; public registry owners stay pinned."""
     def __init__(self,args,*,cancelled=None):
         self.service,self.session_id,self.tokenizer = None,None,None
@@ -543,6 +545,21 @@ class PublisherSession:
             stops = tuple(self.stops)+tuple(args.stop_token_id)
             if any(type(token) is not int or not 0<=token<self.vocabulary for token in stops):
                 raise ValueError('invalid native stop token ID')
+            prefixes=[]
+            for raw_prefix in getattr(args,'stop_prefix',()):
+                try:
+                    parts=raw_prefix.split(',')
+                    if not raw_prefix or any(not value.strip() for value in parts):
+                        raise ValueError('stop prefixes require comma-separated token IDs')
+                    prefix=tuple(int(value.strip()) for value in parts)
+                except (TypeError, ValueError) as error:
+                    raise ValueError('stop prefixes require comma-separated token IDs') from error
+                if (not prefix or len(prefix)>128 or
+                        any(token<0 or token>=self.vocabulary for token in prefix)):
+                    raise ValueError('invalid native stop prefix')
+                prefixes.append(prefix)
+            if len(prefixes)>64 or len(set(prefixes))!=len(prefixes):
+                raise ValueError('bounded unique native stop-prefix inventory required')
             from .sampling import SamplingPolicy
             sampling = SamplingPolicy(temperature=args.temperature,top_k=args.top_k,
                 top_p=args.top_p,min_p=args.min_p,repetition_penalty=args.repetition_penalty,
@@ -561,7 +578,7 @@ class PublisherSession:
                 if emit is not None and value.get('event')=='generation.token':
                     emit(dict(event='tokens',token_ids=[value['token_id']]))
             result = self.service.generate(self.session_id,tokens,max_new_tokens=args.max_tokens,
-                stop_ids=stops,cancel=_Cancellation(cancelled),on_event=event,sampling=sampling,
+                stop_ids=stops,stop_prefixes=prefixes,cancel=_Cancellation(cancelled),on_event=event,sampling=sampling,
                 checkpoint_sink=checkpoint_sink,max_checkpoint_bytes=max_checkpoint_bytes,
                 application_identity=self.checkpoint_identity)
             generated = list(result.token_ids)

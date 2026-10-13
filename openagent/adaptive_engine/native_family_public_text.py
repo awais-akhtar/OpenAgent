@@ -84,7 +84,13 @@ class NativeFamilyPublicTextDecoder:
     @property
     def identity(self):return self.execution.identity
     @identity.setter
-    def identity(self,value):self.execution.identity=value
+    def identity(self,value):
+        self._check()
+        # Segment/Edge snapshots bind to this digest.  Allowing a caller to
+        # replace it after construction could make a cache from another model
+        # appear compatible with this adapter's physical state.
+        if value!=self.execution.identity:
+            raise ValueError('native public ABI identity is derived from the admitted model and cannot be overridden')
     @property
     def position(self):return self.execution.position
 

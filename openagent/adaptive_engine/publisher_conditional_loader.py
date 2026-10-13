@@ -11,6 +11,7 @@ from .publisher_checkpoint.storage import snapshot
 from .publisher_family_contracts import component_contract
 from .publisher_tensor_reader import PublisherTensorReader,TensorSlice
 from .publisher_weight_mapping import expert_bindings,qwen4_ple_bindings,WeightBinding,materialize
+from .publisher_media_files import read_regular
 
 def load_publisher_conditional_decoder(directory,*,family,library,text_library,
         max_weight_bytes,max_bytes,context_tokens,max_conversion_bytes,
@@ -18,6 +19,35 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
         mtp_max_bytes=0,mtp_work_bytes=0,max_expert_bytes=0,text_device=None,max_projection_bytes=0,
         segment_runtime_library=None,segment_work_bytes=0,segment_layer_span=0,native_composition=False,
         native_store_runtime_library=None,native_expert_max_bytes=0,native_ple_max_bytes=0):
+    for name, value in (
+            ('max_weight_bytes', max_weight_bytes), ('max_bytes', max_bytes),
+            ('context_tokens', context_tokens), ('max_conversion_bytes', max_conversion_bytes),
+            ('max_ple_bytes', max_ple_bytes), ('max_snapshots', max_snapshots),
+            ('max_expert_bytes', max_expert_bytes), ('max_projection_bytes', max_projection_bytes),
+            ('segment_work_bytes', segment_work_bytes), ('native_expert_max_bytes', native_expert_max_bytes),
+            ('native_ple_max_bytes', native_ple_max_bytes)):
+        if type(value) is not int or value < 0:
+            raise ValueError('explicit nonnegative publisher admission required: '+name)
+    if max_weight_bytes == 0 or max_bytes == 0 or max_conversion_bytes == 0:
+        raise ValueError('positive publisher memory and conversion admissions required')
+    if max_snapshots == 0 or max_snapshots > 64:
+        raise ValueError('positive publisher snapshot admission required')
+    if context_tokens == 0 or context_tokens > 2**31:
+        raise ValueError('positive bounded publisher context admission required')
+    if any(value > 2**63-1 for value in (max_weight_bytes, max_bytes, max_conversion_bytes,
+                                         max_ple_bytes, max_expert_bytes, max_projection_bytes,
+                                         segment_work_bytes, native_expert_max_bytes,
+                                         native_ple_max_bytes)):
+        raise ValueError('publisher admission exceeds signed size bounds')
+    if type(family) is not str or family not in ('qwen3_5_moe', 'qwen4_exp', 'glm5_next', 'inkling_mm_model'):
+        raise ValueError('explicit publisher family identity required')
+    if arithmetic not in ('fp32', 'bf16', 'fp8'):
+        raise ValueError('unsupported publisher arithmetic policy')
+    if arithmetic == 'fp8' and text_device is None:
+        raise ValueError('FP8 publisher execution requires an explicit device arithmetic owner')
+    if family == 'glm5_next' and (native_expert_max_bytes or native_ple_max_bytes or
+                                  native_composition):
+        raise ValueError('GLM5-next loader does not accept conditional Qwen native-store options')
     root=_path(directory).resolve(strict=True)
     if any(type(value) is not int or value<0 for value in (mtp_max_bytes,mtp_work_bytes)):
         raise ValueError('explicit nonnegative MTP component admissions required')
@@ -34,7 +64,7 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
         raise ValueError('native layer partitions require a supported publisher Segment runtime')
     inventory=snapshot(root,max_metadata_bytes=min(max_weight_bytes,256*1024**2),
         max_tensors=1000000,max_shards=4096)
-    with (root/'config.json').open('rb') as stream: raw=stream.read(1024**2+1)
+    raw=read_regular(root/'config.json',max_bytes=1024**2)
     if len(raw)>1024**2 or hashlib.sha256(raw).hexdigest()!=inventory.config_sha256:
         raise ValueError('publisher config changed after checkpoint planning')
     config=json.loads(raw,object_pairs_hook=_pairs,
@@ -196,8 +226,15 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
                 name=binding.destination
                 if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
                     continue  # Explicitly retained auxiliary namespace, never a text weight.
-                if name.startswith(('model.visual.','model.vision_tower.','model.audio_tower.')):
+                if name.startswith(('model.visual.','model.vision_tower.',
+                                    'model.video_tower.','model.audio_tower.',
+                                    'model.language_model.visual.',
+                                    'model.language_model.vision_tower.',
+                                    'model.language_model.video_tower.',
+                                    'model.language_model.audio_tower.')):
                     short=name
+                    if short.startswith('model.language_model.'):
+                        short='model.'+short[len('model.language_model.'):]
                     if short in seen_visual or visual_shapes.get(short)!=binding.shape:
                         raise ValueError(f'{family} whole media inventory differs: '+name)
                     seen_visual.add(short)

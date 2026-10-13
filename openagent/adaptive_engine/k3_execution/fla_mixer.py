@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from importlib.metadata import version
 from threading import RLock
+from contextlib import contextmanager
 import hashlib
 import json
 import copy
@@ -115,8 +116,20 @@ class FLAK3Mixer:
         if self._closed:
             raise RuntimeError('FLA mixer is closed')
 
+    @contextmanager
+    def _operation(self):
+        with self._lock:
+            self._open()
+            if getattr(self, '_busy', False):
+                raise RuntimeError('reentrant K3 mixer operation')
+            self._busy = True
+            try:
+                yield
+            finally:
+                self._busy = False
+
     def forward(self, q, k, v, gate_logits, beta_logits, output_gate, *, cancel=None):
-        with self._lock, self._torch.inference_mode():
+        with self._operation(), self._torch.inference_mode():
             self._open()
             check_precision(self._torch, self.device)
             torch = self._torch
@@ -147,6 +160,10 @@ class FLAK3Mixer:
                                   cache=cache, output_final_state=True)
                 filtered.append(y.reshape(expected))
                 history.append(state)
+                # FLA kernels cannot be interrupted once dispatched. Poll
+                # between the three independent convolution calls so a
+                # cancelled request does not continue into later kernels.
+                check()
             initial = None if self._state is None else self._state.clone()
             kwargs = dict(q=filtered[0], k=filtered[1], v=filtered[2],
                 g=gate_logits.to(torch.bfloat16), beta=beta_logits.float(),
@@ -158,6 +175,7 @@ class FLAK3Mixer:
                 result, recurrent = self._recurrent(**kwargs)
             else:
                 result, recurrent = self._chunk(**kwargs, safe_gate=self.lower_bound is not None)
+            check()
             result = self._norm(result, output_gate.to(torch.bfloat16))
             if (not bool(torch.isfinite(result).all()) or recurrent is None
                     or not bool(torch.isfinite(recurrent).all())):
@@ -168,17 +186,18 @@ class FLAK3Mixer:
             return result
 
     def snapshot(self):
-        with self._lock:
+        with self._operation():
             self._open()
             return FLAMixerSnapshot(self.identity, self.position,
                 None if self._state is None else self._state.clone(),
                 tuple(None if x is None else x.clone() for x in self._history))
 
     def fork(self):
-        with self._lock:
+        with self._operation():
             self._open()
             result = copy.copy(self)
             result._lock = RLock()
+            result._busy = False
             result._state = None if self._state is None else self._state.clone()
             result._history = tuple(None if x is None else x.clone() for x in self._history)
             # Modules and immutable parameter tensors are shared; mutable
@@ -186,12 +205,12 @@ class FLAK3Mixer:
             return result
 
     def reset(self):
-        with self._lock:
+        with self._operation():
             self._open()
             self._state, self._history, self.position = None, (None, None, None), 0
 
     def restore(self, snapshot):
-        with self._lock, self._torch.inference_mode():
+        with self._operation(), self._torch.inference_mode():
             self._open()
             if (type(snapshot) is not FLAMixerSnapshot or snapshot.identity != self.identity
                     or type(snapshot.position) is not int
@@ -201,7 +220,7 @@ class FLAK3Mixer:
             if snapshot.position == 0:
                 if snapshot.recurrent is not None or any(x is not None for x in snapshot.convolution):
                     raise ValueError('empty FLA snapshot contains occupied state')
-                self.reset()
+                self._state, self._history, self.position = None, (None, None, None), 0
                 return
             torch = self._torch
             expected = ((1, self.heads, self.channels, self.channels),
@@ -220,6 +239,8 @@ class FLAK3Mixer:
 
     def close(self):
         with self._lock:
+            if getattr(self, '_busy', False):
+                raise RuntimeError('cannot close an active K3 mixer')
             self._state, self._history, self._conv = None, (), []
             self._norm = self._a = self._dt = None
             self._closed = True

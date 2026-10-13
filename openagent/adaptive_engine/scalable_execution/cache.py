@@ -12,7 +12,7 @@ import struct
 import threading
 import uuid
 
-from .resources import LeasePool, check_cancel, positive
+from .resources import Budget, LeasePool, check_cancel, positive
 from ..session_recovery import _path
 from ..native_library_identity import _stamp
 from ..directory_ownership import DirectoryOwnership
@@ -55,6 +55,8 @@ class DurablePagedCache:
         self.max_prefixes = positive(max_prefixes, "max_prefixes")
         self.journal_records = positive(journal_records, "journal_records")
         positive(sqlite_cache_bytes, "sqlite_cache_bytes")
+        if not isinstance(read_budget, Budget):
+            raise TypeError("durable cache requires an explicit read Budget")
         self.read_budget = read_budget
         self._pool = LeasePool(read_budget)
         if 2 * self.page_tokens * geometry.bytes_per_token > read_budget.capacity_bytes:
@@ -380,6 +382,37 @@ class DurablePagedCache:
             self._gc()
             self._journal("release-prefix", prefix_id, 0, {})
 
+    def evict_prefixes(self, owner, *, max_count, protected=()):
+        """Evict only caller-owned, unprotected immutable prefixes.
+
+        Eviction is explicit and deterministic: protected checkpoints and all
+        live sessions remain untouched, while SQLite reference triggers retain
+        pages still shared by other prefixes or sessions.  The caller controls
+        fairness by supplying the same bounded candidate order on every pass;
+        this method never guesses which live continuation is safe to discard.
+        """
+        if (not isinstance(owner, str) or not owner or type(max_count) is not int
+                or max_count < 0):
+            raise ValueError("bounded cache eviction owner and count required")
+        protected = tuple(protected)
+        if (any(type(value) is not str or not value for value in protected) or
+                len(set(protected)) != len(protected)):
+            raise ValueError("unique protected prefix identities required")
+        with self._write():
+            rows = self._db.execute(
+                "SELECT id FROM prefixes WHERE owner=? ORDER BY id", (owner,)).fetchall()
+            candidates = [row[0] for row in rows if row[0] not in protected]
+            selected = candidates[:max_count]
+            if selected:
+                marks = ",".join("?" for _ in selected)
+                self._db.execute(
+                    f"DELETE FROM prefixes WHERE owner=? AND id IN ({marks})",
+                    (owner, *selected))
+                self._gc()
+                self._journal("evict-prefixes", owner, 0,
+                              {"prefixes": selected, "protected": list(protected)})
+            return tuple(selected)
+
     def release_session(self, session_id, owner):
         with self._write():
             row = self._session(session_id, owner)
@@ -640,7 +673,8 @@ class CacheTransaction:
         if tokens != self._expected[self._consumed:self._consumed + len(tokens)]:
             raise ValueError("cache append differs from admitted token sequence")
         with memoryview(payload) as view:
-            if not view.c_contiguous:
+            if (not view.c_contiguous or view.format not in ('B', 'b', 'c') or
+                    view.itemsize != 1):
                 raise ValueError("cache page must be contiguous")
             cache.geometry.admit_cache_payload(len(tokens), view.nbytes)
             if view.nbytes > cache.capacity_bytes - cache._used():

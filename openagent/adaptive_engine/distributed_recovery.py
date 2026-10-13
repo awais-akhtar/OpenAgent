@@ -42,11 +42,12 @@ class RankRecoveryCheckpoint:
             raise ValueError('distributed recovery manifest differs from operator pin')
         value=json.loads(raw,object_pairs_hook=_pairs,
             parse_constant=lambda text: (_ for _ in ()).throw(ValueError(text)))
-        if (type(value) is not dict or set(value)!={'version','world_size','context_tokens','history_sha256','ranks'}
+        if (type(value) is not dict or set(value)!={'version','world_size','context_tokens','history_sha256','model_identity','ranks'}
                 or type(value['version']) is not int or value['version']!=1
                 or type(value['world_size']) is not int or value['world_size']!=world_size
                 or type(value['context_tokens']) is not int or not 0<=value['context_tokens']<=2**63-1
-                or not _pin(value['history_sha256']) or type(value['ranks']) is not list
+                or not _pin(value['history_sha256']) or type(value['model_identity']) is not str
+                or not 0<len(value['model_identity'])<=4096 or type(value['ranks']) is not list
                 or len(value['ranks'])!=world_size):
             raise ValueError('committed distributed rank geometry differs')
         names=set()
@@ -79,7 +80,8 @@ class RankGenerationRecoveryCheckpoint(RankRecoveryCheckpoint):
                 type(self.application_identity) is not str or len(self.application_identity)>8192):
             raise ValueError('explicit named, pinned distributed generation checkpoint required')
         path,value=admit_manifest(self.manifest_path,world_size=world_size,
-            max_rank_bytes=self.max_rank_bytes,context=2**63-1)
+            max_rank_bytes=self.max_rank_bytes,context=2**63-1,
+            application_identity=self.application_identity)
         _,raw=read_manifest(path)
         if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),self.manifest_sha256):
             raise ValueError('distributed generation manifest differs from operator pin')
@@ -100,19 +102,31 @@ class _RecoveryDriver:
         # Workers enter serve() before root broadcasts any restore commands.
         # No application request is dispatched until every restore succeeds.
         restored={}
-        for checkpoint in self.checkpoints:
-            path,before=checkpoint.admit(self.world_size)
-            session=coordinator.open_session()
-            if type(checkpoint) is RankGenerationRecoveryCheckpoint:
-                coordinator.restore_generation_checkpoint(session,path,max_rank_bytes=checkpoint.max_rank_bytes,
-                    application_identity=checkpoint.application_identity)
-            else:
-                coordinator.load_session_cache(session,path,max_rank_bytes=checkpoint.max_rank_bytes)
-            _,after=checkpoint.admit(self.world_size)
-            if before!=after:
-                raise ValueError('committed manifest changed while replacement ranks restored')
-            restored[checkpoint.key]=session
-        return self.driver(coordinator,MappingProxyType(restored),self.attempt)
+        opened=[]
+        try:
+            for checkpoint in self.checkpoints:
+                path,before=checkpoint.admit(self.world_size)
+                session=coordinator.open_session()
+                if session is None or any(session is prior for prior in opened):
+                    raise RuntimeError('replacement coordinator returned a foreign or reused session handle')
+                opened.append(session)
+                if type(checkpoint) is RankGenerationRecoveryCheckpoint:
+                    coordinator.restore_generation_checkpoint(session,path,max_rank_bytes=checkpoint.max_rank_bytes,
+                        application_identity=checkpoint.application_identity)
+                else:
+                    coordinator.load_session_cache(session,path,max_rank_bytes=checkpoint.max_rank_bytes)
+                _,after=checkpoint.admit(self.world_size)
+                if before!=after:
+                    raise ValueError('committed manifest changed while replacement ranks restored')
+                restored[checkpoint.key]=session
+            return self.driver(coordinator,MappingProxyType(restored),self.attempt)
+        except BaseException as primary:
+            for session in reversed(tuple(opened)):
+                try:
+                    coordinator.close_session(session)
+                except BaseException as cleanup:
+                    primary.add_note('replacement recovery session cleanup retained: '+repr(cleanup))
+            raise
 
 
 def launch_recovered_distributed_execution(service_factory,root_driver,*,checkpoints,

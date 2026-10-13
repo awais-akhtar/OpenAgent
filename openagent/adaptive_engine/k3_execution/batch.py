@@ -35,13 +35,16 @@ class K3BatchExecution:
     published_checkpoint_supported = False
 
     def __init__(self, factory, *, max_sessions, max_model_bytes,
-                 max_batch_bytes, max_snapshot_bytes):
+                 max_batch_bytes, max_snapshot_bytes, owner_service=None):
         if not callable(factory):
             raise ValueError('fresh K3 executor factory required')
         for value in (max_sessions, max_model_bytes, max_batch_bytes, max_snapshot_bytes):
             if type(value) is not int or value <= 0:
                 raise ValueError('positive batch, model and snapshot admission limits required')
         self.factory, self.max_sessions = factory, max_sessions
+        if owner_service is not None and not callable(getattr(owner_service, 'close', None)):
+            raise ValueError('batch owner service must expose close')
+        self._owner_service = owner_service
         self.max_model_bytes, self.max_batch_bytes = max_model_bytes, max_batch_bytes
         self.max_snapshot_bytes = max_snapshot_bytes
         self._owner = uuid4().hex
@@ -120,6 +123,12 @@ class K3BatchExecution:
                 return value.nbytes
             if isinstance(value, bytes):
                 return len(value)
+            if type(value).__module__.split('.')[0]=='torch':
+                elements=value.numel()
+                width=value.element_size()
+                if type(elements) is not int or elements<0 or type(width) is not int or width<=0:
+                    raise ValueError('invalid physical device snapshot extent')
+                return elements*width
             if isinstance(value, (tuple, list)):
                 return sum(charge(item) for item in value)
             if hasattr(value, '__dataclass_fields__'):
@@ -142,12 +151,24 @@ class K3BatchExecution:
         if estimate > self.max_snapshot_bytes:
             raise MemoryError('batch transaction snapshots exceed admission')
         snapshots, charged = [], 0
-        for model in models:
-            state = model.snapshot()
-            charged += self._snapshot_bytes(state)
-            if charged > self.max_snapshot_bytes:
-                raise MemoryError('actual batch snapshots exceed admission')
-            snapshots.append(state)
+        try:
+            for model in models:
+                state = model.snapshot()
+                snapshots.append(state)
+                charged += self._snapshot_bytes(state)
+                if charged > self.max_snapshot_bytes:
+                    raise MemoryError('actual batch snapshots exceed admission')
+        except BaseException as primary:
+            cleanup_errors = []
+            for model, state in reversed(tuple(zip(models, snapshots))):
+                try:
+                    model.release_snapshot(state)
+                except BaseException as cleanup:
+                    cleanup_errors.append(cleanup)
+            if cleanup_errors:
+                primary.add_note('partial K3 batch snapshot cleanup failed: '+
+                                 '; '.join(str(error) for error in cleanup_errors))
+            raise
         return tuple(snapshots)
 
     def _restore_all(self, models, snapshots, failure):
@@ -161,8 +182,23 @@ class K3BatchExecution:
             self._closed = True
             failure.add_note('batch rollback failed; all slots quarantined: '+'; '.join(errors))
 
+    def _release_captured(self, models, snapshots, primary=None):
+        errors=[]
+        for model, snapshot in reversed(tuple(zip(models, snapshots))):
+            try:
+                model.release_snapshot(snapshot)
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            self._closed=True
+            message='batch transaction snapshot cleanup failed: '+'; '.join(str(error) for error in errors)
+            if primary is not None:
+                primary.add_note(message)
+            else:
+                raise RuntimeError(message) from errors[0]
+
     def forward(self, session_ids, token_ids, *, attention_mask=None,
-                position_ids=None, cancelled=None):
+                position_ids=None, cancelled=None, media=None):
         """Return occupied logits per row, ignoring left/right/interior padding.
 
         Position IDs, when supplied, match the physical padded input shape and
@@ -170,6 +206,8 @@ class K3BatchExecution:
         This text-batch entry point does not invent media expansion positions.
         """
         with self._operation():
+            if media is not None:
+                raise ValueError('K3 batch execution is text-only; media expansion requires an individual K3Execution slot')
             if cancelled is not None and not callable(cancelled):
                 raise ValueError('cancellation must be callable')
             ids, models = self._selected(session_ids)
@@ -190,6 +228,8 @@ class K3BatchExecution:
                     raise ValueError('binary padding mask must match the physical batch shape')
                 mask = np.array(observed, dtype=bool, copy=True)
             counts = mask.sum(axis=1)
+            if np.any(counts <= 0):
+                raise ValueError('every selected K3 batch slot requires an occupied token')
             output_charge = int(counts.sum())*models[0].config.vocab*4
             if input_charge+output_charge > self.max_batch_bytes:
                 raise MemoryError('occupied batch logits exceed output admission')
@@ -209,8 +249,14 @@ class K3BatchExecution:
                     selected = positions[index, mask[index]]
                     if np.any(selected < 0) or np.any(selected >= model.config.capacity):
                         raise ValueError('occupied rotary position outside context capacity')
+                    expected = np.arange(model.position,
+                                         model.position + int(counts[index]),
+                                         dtype=selected.dtype)
+                    if not np.array_equal(selected, expected):
+                        raise ValueError('occupied rotary positions must extend the slot cache contiguously')
             saved = self._capture(models)
             logits, indices, lengths = [], [], []
+            primary = None
             try:
                 for index, model in enumerate(models):
                     if cancelled is not None and cancelled():
@@ -226,7 +272,12 @@ class K3BatchExecution:
                             result.shape != (int(counts[index]), model.config.vocab) or
                             not np.isfinite(result).all()):
                         raise ArithmeticError('invalid occupied K3 batch logits')
-                    logits.append(result)
+                    # Do not publish a backend-owned view: another slot
+                    # dispatch or recurrent update must not be able to mutate
+                    # a completed batch result after the transaction commits.
+                    detached = np.array(result, dtype=np.float32, order='C', copy=True)
+                    detached.flags.writeable = False
+                    logits.append(detached)
                     indices.append(tuple(int(v) for v in np.flatnonzero(mask[index])))
                     lengths.append(model.position)
                 if cancelled is not None and cancelled():
@@ -234,8 +285,11 @@ class K3BatchExecution:
                     raise ExecutionCancelled('K3 batch cancelled before commit')
                 return K3BatchResult(ids, tuple(logits), tuple(indices), tuple(lengths))
             except BaseException as failure:
+                primary = failure
                 self._restore_all(models, saved, failure)
                 raise
+            finally:
+                self._release_captured(models, saved, primary)
 
     def snapshot(self, session_ids):
         with self._operation():
@@ -255,23 +309,31 @@ class K3BatchExecution:
             if sum(self._snapshot_bytes(state) for state in targets) > self.max_snapshot_bytes:
                 raise MemoryError('batch restore snapshot exceeds admission')
             saved = self._capture(models)
+            primary = None
             try:
                 for model, target in zip(models, targets):
                     model.restore(target)
             except BaseException as failure:
+                primary = failure
                 self._restore_all(models, saved, failure)
                 raise
+            finally:
+                self._release_captured(models, saved, primary)
 
     def reset(self, session_ids):
         with self._operation():
             _, models = self._selected(session_ids)
             saved = self._capture(models)
+            primary = None
             try:
                 for model in models:
                     model.reset()
             except BaseException as failure:
+                primary = failure
                 self._restore_all(models, saved, failure)
                 raise
+            finally:
+                self._release_captured(models, saved, primary)
 
     def close_session(self, session_id):
         with self._operation():
@@ -301,11 +363,20 @@ class K3BatchExecution:
                     errors.append(str(error))
                 else:
                     self._pending.remove(model)
-            cleanup = getattr(self.factory, 'retry_cleanup', None)
-            if callable(cleanup):
+            # Do not tear down the shared service while a failed slot still
+            # owns native state.  A later close retry must release slots first
+            # and only then destroy the service they borrow.
+            if self._owner_service is not None and not self._models and not errors:
                 try:
-                    cleanup()
+                    self._owner_service.close()
                 except BaseException as error:
                     errors.append(str(error))
+            elif self._owner_service is None and not self._models and not errors:
+                cleanup = getattr(self.factory, 'retry_cleanup', None)
+                if callable(cleanup):
+                    try:
+                        cleanup()
+                    except BaseException as error:
+                        errors.append(str(error))
             if errors:
                 raise RuntimeError('K3 batch cleanup remains pending: '+'; '.join(errors))

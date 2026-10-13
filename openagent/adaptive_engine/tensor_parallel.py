@@ -21,6 +21,37 @@ class ProjectionShard:
     start: int
     stop: int
     weights: object
+    bank_format: str = 'dense'
+    source_dtype: str = 'F32'
+    execution_dtype: str = 'F32'
+
+    def __post_init__(self):
+        if (type(self.name) is not str or not self.name or
+                type(self.shape) is not tuple or len(self.shape) != 2 or
+                any(type(value) is not int or value <= 0 for value in self.shape) or
+                type(self.axis) is not int or self.axis not in (0, 1) or
+                type(self.start) is not int or type(self.stop) is not int or
+                not 0 <= self.start <= self.stop <= self.shape[self.axis]):
+            raise ValueError('explicit projection shard geometry required')
+        if (type(self.bank_format) is not str or
+                self.bank_format not in ('dense', 'bf16', 'fp8', 'fp4')):
+            raise ValueError('explicit projection shard bank format required')
+        if (type(self.source_dtype) is not str or not self.source_dtype or
+                type(self.execution_dtype) is not str or not self.execution_dtype):
+            raise ValueError('explicit source and execution dtypes required')
+        if self.execution_dtype.upper() not in ('F32', 'FP32', 'BF16', 'BFLOAT16'):
+            raise ValueError('unsupported projection execution dtype')
+        source_upper = self.source_dtype.upper()
+        if (self.bank_format == 'bf16' and source_upper not in ('BF16', 'BFloat16'.upper()) or
+                self.bank_format == 'fp8' and not source_upper.startswith('FP8') or
+                self.bank_format == 'fp4' and source_upper not in ('FP4', 'MXFP4')):
+            raise ValueError('projection bank format and source dtype differ')
+        expected = list(self.shape)
+        expected[self.axis] = self.stop - self.start
+        weights = np.asarray(self.weights)
+        if (weights.dtype != np.float32 or weights.shape != tuple(expected) or
+                not np.isfinite(weights).all()):
+            raise ValueError('finite exact-shape FP32 projection shard required')
 
 
 def shard_bounds(extent, rank, world_size, *, allow_empty=False):
@@ -34,7 +65,7 @@ def shard_bounds(extent, rank, world_size, *, allow_empty=False):
 
 def load_projection_shard(checkpoint, target, *, rank, world_size,
                           max_weight_bytes, max_chunk_bytes=1024**2, axis=0,
-                          cancelled=None):
+                          cancelled=None, bank_format='dense'):
     """Stream only into a rank-local output-row bank, without a full bank copy.
 
     Conversion currently reads the tensor sequentially on every rank. Storage
@@ -44,6 +75,8 @@ def load_projection_shard(checkpoint, target, *, rank, world_size,
     if (type(max_weight_bytes) is not int or max_weight_bytes <= 0 or
             type(max_chunk_bytes) is not int or max_chunk_bytes <= 0):
         raise ValueError('positive shard and conversion budgets required')
+    if type(bank_format) is not str or bank_format not in ('dense', 'bf16', 'fp8', 'fp4'):
+        raise ValueError('explicit projection shard bank format required')
     rules = [r for r in checkpoint.report.contracts if r.target == target]
     if len(rules) != 1 or len(rules[0].shape) != 2:
         raise ValueError('one exact checkpoint matrix target required')
@@ -52,7 +85,10 @@ def load_projection_shard(checkpoint, target, *, rank, world_size,
     if cancelled is not None and not callable(cancelled):
         raise TypeError('callable shard cancellation required')
     rows, cols = rules[0].shape
-    start, stop = shard_bounds((rows, cols)[axis], rank, world_size)
+    # Empty local partitions are admitted for uneven expert/projection banks;
+    # collective assembly still uses the same deterministic half-open bounds.
+    start, stop = shard_bounds((rows, cols)[axis], rank, world_size,
+                               allow_empty=True)
     count = (stop-start)*(cols if axis == 0 else rows)
     if count*4+max_chunk_bytes*8 > max_weight_bytes:
         raise MemoryError('rank-local weight and conversion buffers exceed admission')
@@ -95,7 +131,9 @@ def load_projection_shard(checkpoint, target, *, rank, world_size,
         raise InterruptedError('checkpoint shard loading cancelled')
     shape = (stop-start, cols) if axis == 0 else (rows, stop-start)
     local = np.frombuffer(local.tobytes(), dtype=np.float32).reshape(shape)
-    return ProjectionShard(rules[0].sources[0], (rows, cols), axis, start, stop, local)
+    source_dtype = getattr(rules[0], 'dtype', 'F32')
+    return ProjectionShard(rules[0].sources[0], (rows, cols), axis, start, stop, local,
+                            bank_format, source_dtype, 'F32')
 
 
 class TensorParallelProjections:
@@ -103,7 +141,7 @@ class TensorParallelProjections:
     boundary_observation_supported=True
 
     def __init__(self, *, group, device, torch_version, max_bytes,
-                 dtype='float32'):
+                 dtype='float32', bank_format='dense'):
         import torch
         import torch.distributed as distributed
         if str(torch.__version__) != torch_version:
@@ -114,6 +152,9 @@ class TensorParallelProjections:
             raise ValueError('positive rank-local buffer budget required')
         if dtype not in ('float32', 'bfloat16'):
             raise ValueError('explicit float32 or bfloat16 projection policy required')
+        if (type(bank_format) is not str or
+                bank_format not in ('dense', 'bf16', 'fp8', 'fp4')):
+            raise ValueError('explicit distributed projection bank format required')
         self.torch, self.distributed, self.group = torch, distributed, group
         self.device = torch.device(device)
         backend = str(distributed.get_backend(group)).lower()
@@ -130,11 +171,13 @@ class TensorParallelProjections:
             torch.cuda.set_device(self.device)
         self.rank = distributed.get_rank(group)
         self.world_size = distributed.get_world_size(group)
-        self.dtype_name, self.max_bytes = dtype, max_bytes
+        self.dtype_name, self.bank_format, self.max_bytes = dtype, bank_format, max_bytes
         self.dtype = getattr(torch, dtype)
         self._shards, self._pins = {}, {}
         self._lock = threading.RLock()
         self._closed = False
+        self._poisoned = False
+        self._active_stages = 0
         self._resident_bytes = 0
         self._cancellation = threading.local()
         self._observations=threading.local()
@@ -192,20 +235,43 @@ class TensorParallelProjections:
 
     @property
     def identity(self):
-        payload = (self.world_size, self.dtype_name, self.backend, self.torch_version,
+        payload = (self.world_size, self.dtype_name, self.bank_format, self.backend, self.torch_version,
                    self.device.type, 'fp32-partial-sum-row-gather-precision-v2',
                    tuple((name, self._pins[name]) for name in sorted(self._pins)))
         return hashlib.sha256(repr(payload).encode('utf-8')).hexdigest()
 
     def _agree(self, descriptor, error=None):
         records = [None]*self.world_size
-        self.distributed.all_gather_object(records, (descriptor, error), group=self.group)
+        try:
+            self.distributed.all_gather_object(records, (descriptor, error), group=self.group)
+        except BaseException:
+            # A failed control collective leaves rank consensus unknown. Never
+            # allow this bank to be reused as though its sequence were intact.
+            self._poisoned=True;self._closed=True
+            raise
         errors = [f'rank {rank}: {value[1]}' for rank, value in enumerate(records)
                   if value[1] is not None]
         if errors:
+            # Preserve cooperative cancellation as cancellation after every
+            # rank has reached the same stage boundary. Reporting it as an
+            # admission ValueError makes serving owners misclassify a stopped
+            # request and can leave cancellation-specific cleanup unrun.
+            failures = [value[1] for value in records if value[1] is not None]
+            if failures and all(value.startswith('InterruptedError:') for value in failures):
+                raise InterruptedError('distributed projection stage cancelled: '+'; '.join(errors))
             raise ValueError('distributed admission failed: '+'; '.join(errors))
         if any(value[0] != descriptor for value in records):
             raise ValueError('rank projection schedules or policies differ')
+
+    def _collective(self, operation, *args, **kwargs):
+        """Run a transport collective and quarantine this bank on failure."""
+        if self._closed or self._poisoned:
+            raise RuntimeError('distributed projection bank is closed or rank state is uncertain')
+        try:
+            return getattr(self.distributed,operation)(*args,**kwargs)
+        except BaseException:
+            self._poisoned=True;self._closed=True
+            raise
 
     @contextmanager
     def local_stage(self, descriptor):
@@ -215,14 +281,31 @@ class TensorParallelProjections:
         any rank. Every peer reaches this control boundary before proceeding.
         Process loss or transport failure still requires group restart.
         """
+        with self._lock:
+            if self._closed or self._poisoned:
+                raise RuntimeError('distributed projection bank is closed')
+            self._active_stages += 1
         error = None
         try:
-            self._check_stage_cancelled()
-            yield
-            self._check_stage_cancelled()
-        except Exception as failure:
-            error = str(failure) or type(failure).__name__
-        self._agree(descriptor,error)
+            try:
+                self._check_stage_cancelled()
+                yield
+                self._check_stage_cancelled()
+            except BaseException as failure:
+                # A rank-local interruption (including KeyboardInterrupt) must
+                # still join the stage agreement. Letting it escape here can
+                # strand peers in the control collective that closes this
+                # local staging boundary.
+                message = str(failure) or type(failure).__name__
+                error = (type(failure).__name__+': '+message
+                         if isinstance(failure, InterruptedError) else message)
+            try:self._agree(descriptor,error)
+            except BaseException:
+                self._poisoned=True;self._closed=True
+                raise
+        finally:
+            with self._lock:
+                self._active_stages -= 1
 
     def register(self, shard):
         with self._lock:
@@ -235,9 +318,11 @@ class TensorParallelProjections:
                         shard.name in self._shards or type(shard.shape) is not tuple or
                         len(shard.shape) != 2 or
                         any(type(v) is not int or v <= 0 for v in shard.shape) or
-                        type(shard.axis) is not int or shard.axis not in (0, 1)):
+                        type(shard.axis) is not int or shard.axis not in (0, 1) or
+                        shard.bank_format != self.bank_format):
                     raise ValueError('unique named matrix and partition axis required')
-                expected = shard_bounds(shard.shape[shard.axis], self.rank, self.world_size)
+                expected = shard_bounds(shard.shape[shard.axis], self.rank, self.world_size,
+                                        allow_empty=True)
                 if (shard.start, shard.stop) != expected:
                     raise ValueError('shard does not match the rank partition')
                 shape = list(shard.shape)
@@ -251,15 +336,18 @@ class TensorParallelProjections:
                 weights = np.array(observed, dtype=np.float32, order='C', copy=True)
                 weights.flags.writeable = False
                 descriptor = (shard.name, shard.shape, shard.axis, self.dtype_name,
-                              self.backend, self.torch_version, self.device.type)
+                              self.bank_format, shard.source_dtype, shard.execution_dtype,
+                              self.backend, self.torch_version,
+                              self.device.type)
             except Exception as failure:
                 error = str(failure)
             self._agree(descriptor, error)
             pins = [None]*self.world_size
-            self.distributed.all_gather_object(pins,
+            self._collective('all_gather_object',pins,
                 hashlib.sha256(weights.tobytes()).hexdigest(), group=self.group)
             self._shards[shard.name] = ProjectionShard(shard.name, shard.shape,
-                shard.axis, shard.start, shard.stop, weights)
+                shard.axis, shard.start, shard.stop, weights, self.bank_format,
+                shard.source_dtype, shard.execution_dtype)
             self._pins[shard.name] = (descriptor, tuple(pins))
             self._resident_bytes += weights.nbytes
 
@@ -316,17 +404,17 @@ class TensorParallelProjections:
                         padded[..., :shard.stop-shard.start] = output
                         gathered = [torch.empty_like(padded) for _ in range(self.world_size)]
                 if shard.axis == 1:
-                    self.distributed.all_reduce(output, group=self.group)
+                    self._collective('all_reduce',output, group=self.group)
                 else:
-                    self.distributed.all_gather(gathered, padded, group=self.group)
+                    self._collective('all_gather',gathered, padded, group=self.group)
                     with self.local_stage((descriptor,'row-assembly')):
                         output = torch.cat([part[..., :shard_bounds(shard.shape[0], rank,
-                            self.world_size)[1]-shard_bounds(shard.shape[0], rank,
-                            self.world_size)[0]] for rank, part in enumerate(gathered)], dim=-1)
+                            self.world_size, allow_empty=True)[1]-shard_bounds(shard.shape[0], rank,
+                            self.world_size, allow_empty=True)[0]] for rank, part in enumerate(gathered)], dim=-1)
                 with self.local_stage((descriptor,'finite-boundary')):
                     finite = torch.isfinite(output).all().to(torch.int32)
-                self.distributed.all_reduce(finite, op=self.distributed.ReduceOp.MIN,
-                                            group=self.group)
+                self._collective('all_reduce',finite, op=self.distributed.ReduceOp.MIN,
+                                 group=self.group)
                 if not bool(finite.item()):
                     raise ValueError('nonfinite distributed projection result')
                 with self.local_stage((descriptor,'host-export')):
@@ -390,26 +478,29 @@ class TensorParallelProjections:
                         padded[:, :last-first] = output
                         gathered = [torch.empty_like(padded) for _ in range(self.world_size)]
                 if shard.axis == 1:
-                    self.distributed.all_reduce(output, group=self.group)
+                    self._collective('all_reduce',output, group=self.group)
                 else:
-                    self.distributed.all_gather(gathered, padded, group=self.group)
+                    self._collective('all_gather',gathered, padded, group=self.group)
                     with self.local_stage((descriptor,'grouped-row-assembly')):
                         output = torch.cat([part[:, :shard_bounds(rows, rank,
-                            self.world_size)[1]-shard_bounds(rows, rank,
-                            self.world_size)[0]] for rank, part in enumerate(gathered)], dim=-1)
+                            self.world_size, allow_empty=True)[1]-shard_bounds(rows, rank,
+                            self.world_size, allow_empty=True)[0]] for rank, part in enumerate(gathered)], dim=-1)
                 with self.local_stage((descriptor,'grouped-finite-boundary')):
                     finite = torch.isfinite(output).all().to(torch.int32)
-                self.distributed.all_reduce(finite, op=self.distributed.ReduceOp.MIN,
-                                            group=self.group)
+                self._collective('all_reduce',finite, op=self.distributed.ReduceOp.MIN,
+                                 group=self.group)
                 if not bool(finite.item()):
                     raise ValueError('nonfinite distributed grouped projection result')
-                shape = (*vector.shape[:-2], groups, rows//groups)
+                shape = ((groups, rows//groups) if vector.ndim == 2 else
+                         (*vector.shape[:-2], groups, rows//groups))
                 with self.local_stage((descriptor,'grouped-host-export')):
                     result = output.reshape(shape).cpu().numpy().copy()
                 return result
 
     def close(self):
         with self._lock:
+            if self._active_stages:
+                raise RuntimeError('cannot close an active distributed projection stage')
             self._closed = True
             self._shards.clear()
             self._pins.clear()

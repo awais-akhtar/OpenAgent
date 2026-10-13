@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 import copy
+import math
 import sys
 import threading
 import time
@@ -70,6 +71,13 @@ class OlmoeChatDecoder:
         self._turn_boundary: list[int] = []
 
     def generate(self, messages, *, max_tokens, on_token, cancelled):
+        if (not isinstance(messages, (tuple, list)) or not messages or
+                any(not isinstance(message, ChatMessage) for message in messages)):
+            raise ValueError('nonempty validated chat message sequence required')
+        if type(max_tokens) is not int or max_tokens <= 0:
+            raise ValueError('positive generation limit required')
+        if not callable(on_token) or not callable(cancelled):
+            raise TypeError('stream callback and cancellation predicate required')
         if self.model.position:
             prompt = _render_new_turn(messages[-1])
         else:
@@ -165,6 +173,7 @@ class _Request:
     priority: int
     deadline: float | None
     max_tokens: int
+    stop_prefixes: tuple[str, ...]
     sequence: int
     created: float
     events: deque[ServiceEvent] = field(default_factory=deque)
@@ -244,15 +253,16 @@ class OlmoeService:
         session_capacity_chars: int = 1024 * 1024,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if queue_capacity <= 0:
+        if type(queue_capacity) is not int or queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
-        if microbatch_size <= 0:
+        if type(microbatch_size) is not int or microbatch_size <= 0:
             raise ValueError("microbatch_size must be positive")
-        if session_state_capacity_bytes < 0:
+        if type(session_state_capacity_bytes) is not int or session_state_capacity_bytes < 0:
             raise ValueError("session_state_capacity_bytes cannot be negative")
-        if event_capacity < 8:
+        if type(event_capacity) is not int or event_capacity < 8:
             raise ValueError("event_capacity must be at least 8")
-        if session_capacity <= 0 or session_capacity_chars <= 0:
+        if (type(session_capacity) is not int or type(session_capacity_chars) is not int or
+                session_capacity <= 0 or session_capacity_chars <= 0):
             raise ValueError("session capacities must be positive")
         if not isinstance(decoder, StreamingDecoder):
             raise TypeError("decoder does not implement the streaming decoder contract")
@@ -305,19 +315,30 @@ class OlmoeService:
         deadline: float | None = None,
         timeout: float | None = None,
         max_tokens: int = 64,
+        stop_prefixes: Sequence[str] = (),
     ) -> RequestHandle:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must contain text")
         if len(prompt) > self._session_capacity_chars:
             raise ValueError("prompt exceeds session character capacity")
-        if max_tokens <= 0:
+        if type(max_tokens) is not int or max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if (not isinstance(stop_prefixes, (tuple, list)) or
+                any(type(prefix) is not str or not prefix or len(prefix) > 4096
+                    for prefix in stop_prefixes)):
+            raise ValueError("stop_prefixes must contain bounded nonempty strings")
+        normalized_stop_prefixes = tuple(dict.fromkeys(stop_prefixes))
         if timeout is not None:
-            if timeout <= 0:
+            if (type(timeout) not in (int, float) or isinstance(timeout, bool) or
+                    not math.isfinite(timeout) or timeout <= 0):
                 raise ValueError("timeout must be positive")
             if deadline is not None:
                 raise ValueError("use deadline or timeout, not both")
             deadline = self._clock() + timeout
+        if deadline is not None and (
+                type(deadline) not in (int, float) or isinstance(deadline, bool) or
+                not math.isfinite(deadline)):
+            raise ValueError("deadline must be a finite timestamp")
         sid = session_id or uuid.uuid4().hex
         rid = request_id or uuid.uuid4().hex
         now = self._clock()
@@ -336,6 +357,7 @@ class OlmoeService:
                 priority=int(priority),
                 deadline=deadline,
                 max_tokens=max_tokens,
+                stop_prefixes=normalized_stop_prefixes,
                 sequence=self._sequence,
                 created=now,
             )
@@ -535,23 +557,47 @@ class OlmoeService:
         messages = history + (ChatMessage("user", request.prompt),)
         chunks: list[str] = []
         output_chars = 0
+        stopped_by_prefix = False
+        pending_prefix = ""
+        max_prefix_chars = max((len(prefix) for prefix in request.stop_prefixes), default=0)
 
         def cancelled() -> bool:
             return request.cancel_requested.is_set() or (
                 request.deadline is not None and request.deadline <= self._clock()
             )
 
-        def on_token(token: str) -> None:
+        def publish(text: str) -> None:
             nonlocal output_chars
-            if cancelled():
+            if not text:
                 return
-            text = str(token)
             output_chars += len(text)
             if output_chars > self._session_capacity_chars:
                 raise ServiceRequestError(request.request_id, "resource_limit", "output exceeds character capacity")
             chunks.append(text)
             self._increment("tokens")
             self._emit(request, "token", text=text)
+
+        def on_token(token: str) -> None:
+            nonlocal stopped_by_prefix, pending_prefix
+            if cancelled():
+                return
+            text = str(token)
+            if stopped_by_prefix:
+                return
+            candidate = pending_prefix + text
+            matched = next((prefix for prefix in request.stop_prefixes
+                            if candidate.endswith(prefix)), None)
+            if matched is not None:
+                publish(candidate[:-len(matched)])
+                pending_prefix = ""
+                stopped_by_prefix = True
+                return
+            if max_prefix_chars:
+                hold = min(max_prefix_chars - 1, len(candidate))
+                publish(candidate[:-hold] if hold else candidate)
+                pending_prefix = candidate[-hold:] if hold else ""
+            else:
+                publish(text)
 
         try:
             if sum(len(message.content) for message in messages) > self._session_capacity_chars:
@@ -576,9 +622,12 @@ class OlmoeService:
                         on_token(returned)
                 else:
                     for chunk in returned:
-                        if cancelled():
+                        if cancelled() or stopped_by_prefix:
                             break
                         on_token(str(chunk))
+            if not stopped_by_prefix:
+                publish(pending_prefix)
+                pending_prefix = ""
             if request.cancel_requested.is_set():
                 raise RequestCancelledError(request.request_id, "cancelled", "request was cancelled")
             if request.deadline is not None and request.deadline <= self._clock():
@@ -649,7 +698,19 @@ class OlmoeService:
         )
         with request.event_condition:
             if len(request.events) >= self._event_capacity:
-                request.events.popleft()
+                # A bounded consumer queue may discard intermediate token
+                # events, but it must never discard the terminal boundary.
+                # Otherwise a slow consumer can observe ``done`` without the
+                # completion/failure event that explains how the request ended.
+                if kind in self.TERMINAL_EVENTS:
+                    for index, queued in enumerate(request.events):
+                        if queued.kind not in self.TERMINAL_EVENTS:
+                            del request.events[index]
+                            break
+                    else:
+                        request.events.popleft()
+                else:
+                    request.events.popleft()
             request.events.append(item)
             request.event_condition.notify_all()
 

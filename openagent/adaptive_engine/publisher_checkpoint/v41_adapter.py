@@ -49,19 +49,22 @@ def _shard_rule(rule):
 
 def load_v41_projection_shard(checkpoint, source_name, *, rank, world_size,
                               max_weight_bytes, max_chunk_bytes=1024**2, axis=0,
-                              cancelled=None):
+                              cancelled=None, bank_format='dense'):
     """Convert one exact source-name projection to an owned output-row shard."""
     from dataclasses import replace
     from ..tensor_parallel import load_projection_shard
     if checkpoint.report.family != 'deepseek_v41' or type(source_name) is not str:
         raise ValueError('exact V4.1 checkpoint and source name required')
+    if type(bank_format) is not str or bank_format not in ('dense', 'bf16', 'fp8', 'fp4'):
+        raise ValueError('explicit V4.1 projection bank format required')
     matches = [rule for rule in checkpoint._select(None)
                if rule.sources[0] == source_name and _shard_rule(rule)]
     if len(matches) != 1:
         raise ValueError('one admitted V4.1 projection contract required')
     shard = load_projection_shard(checkpoint, matches[0].target, rank=rank,
         world_size=world_size, max_weight_bytes=max_weight_bytes,
-        max_chunk_bytes=max_chunk_bytes, axis=axis, cancelled=cancelled)
+        max_chunk_bytes=max_chunk_bytes, axis=axis, cancelled=cancelled,
+        bank_format=bank_format)
     return replace(shard, name=source_name)
 
 

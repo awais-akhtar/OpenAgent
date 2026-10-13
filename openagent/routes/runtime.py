@@ -1016,6 +1016,19 @@ def build_http_server(
                 return
             if not self._enforce_auth_gate(parsed.path, "GET"):
                 return
+            if parsed.path == "/metrics":
+                metrics_route = handle_inference_get(
+                    parsed.path, parsed.query, inference_route_dependencies(self.read_json))
+                if metrics_route is None or not isinstance(metrics_route.payload, dict) or "_prometheus" not in metrics_route.payload:
+                    self.send_json({"error": "metrics unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                body = str(metrics_route.payload["_prometheus"]).encode("utf-8")
+                self.send_response(metrics_route.status)
+                self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             core_route = handle_core_get(parsed.path, parsed.query, core_route_dependencies(self.read_json))
             if core_route is not None:
                 self.send_json(core_route.payload, status=core_route.status)
@@ -3934,8 +3947,21 @@ def build_http_server(
                 return header[7:].strip()
             return ""
 
+        def _route_credential(self, path: str) -> str:
+            """Resolve credentials without broadening x-api-key to other APIs."""
+            token = self._bearer_token()
+            if path == "/v1/messages" and not token:
+                return self.headers.get("x-api-key", "").strip()
+            return token
+
         def _require_auth(self) -> dict[str, object] | None:
-            user = auth.resolve_bearer(self._bearer_token())
+            # Anthropic clients send their credential in x-api-key rather than
+            # Authorization: Bearer.  Reuse the same locally-issued token and
+            # scope validation, but only for the Anthropic-compatible route;
+            # never let an arbitrary x-api-key header authorize other APIs.
+            path = urlparse(self.path).path
+            token = self._route_credential(path)
+            user = auth.resolve_bearer(token)
             if user is None:
                 self.send_json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
                 return None
@@ -3991,7 +4017,7 @@ def build_http_server(
             scope = required_scope_for_path(path, method)
             if scope is None:
                 return True
-            user = auth.resolve_bearer(self._bearer_token())
+            user = auth.resolve_bearer(self._route_credential(path))
             if user is None:
                 self.send_json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
                 return False
@@ -4120,6 +4146,12 @@ def build_http_server(
             compatible. A caller can still request the old raw shape with
             X-Response-Envelope: legacy or ?envelope=legacy for diagnostics.
             """
+            # Compatibility API routes own their wire envelopes (including
+            # OpenAI and Anthropic error objects); wrapping them in the
+            # OpenAgent migration envelope would silently break clients.
+            path = urlparse(self.path).path
+            if path.startswith("/v1/"):
+                return True
             header = self.headers.get("X-Response-Envelope", "").strip().lower()
             if header in {"legacy", "raw", "off", "0", "false"}:
                 return True
@@ -4144,18 +4176,52 @@ def build_http_server(
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
             self.end_headers()
+            terminal = False
+            close_events = getattr(events, "close", None)
             try:
                 for event in events:
                     body = f"data: {json.dumps(event, sort_keys=True)}\n\n".encode("utf-8")
                     self.wfile.write(body)
                     self.wfile.flush()
+                    if isinstance(event, dict) and (
+                        event.get("type") in {"done", "error", "terminal"}
+                        or event.get("done") is True
+                    ):
+                        terminal = True
+                if not terminal:
+                    body = b'data: {"type":"done","done":true}\n\n'
+                    self.wfile.write(body)
+                    self.wfile.flush()
             except (ProviderConfigurationError, ValueError) as exc:
-                body = f"data: {json.dumps({'type': 'error', 'error': str(exc)}, sort_keys=True)}\n\n"
+                terminal = True
+                body = f"data: {json.dumps({'type': 'error', 'error': str(exc), 'done': True}, sort_keys=True)}\n\n"
                 self.wfile.write(body.encode("utf-8"))
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 return
+            except Exception:
+                HTTP_LOG.exception("event stream producer failed")
+                terminal = True
+                body = b'data: {"type":"error","error":"stream failed","done":true}\n\n'
+                try:
+                    self.wfile.write(body)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+            finally:
+                # A generator-backed provider owns native/session resources
+                # until its iterator is closed.  Closing here is required on
+                # disconnect and on producer failure; otherwise the worker can
+                # outlive the HTTP request and retain the stream ownership
+                # lock until its next cancellation checkpoint.
+                if callable(close_events):
+                    try:
+                        close_events()
+                    except Exception:
+                        HTTP_LOG.exception("event stream producer cleanup failed")
 
         def log_message(self, format: str, *args: object) -> None:
             return

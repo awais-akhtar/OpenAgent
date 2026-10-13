@@ -3,11 +3,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .storage import positive
+from ..publisher_source_pins import K3_REVISION, V41_REVISION
 
-K3_REVISION = "f831ab66814297da540d832a5235f8e904f29d06"
 K3_SOURCE = f"https://huggingface.co/moonshotai/Kimi-K3/blob/{K3_REVISION}/modeling_kimi_linear.py"
 K3_INDEX = f"https://huggingface.co/moonshotai/Kimi-K3/blob/{K3_REVISION}/model.safetensors.index.json"
-V41_REVISION = "2cba9e42aa026125f3ed06c6d98c1db82f7ca027"
 V41_SOURCE = f"https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/{V41_REVISION}/inference/model.py"
 V41_CONVERT = f"https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/{V41_REVISION}/model.safetensors.index.json"
 MX_SOURCE = "https://github.com/vllm-project/compressed-tensors/tree/main/src/compressed_tensors/compressors/mxfp4"

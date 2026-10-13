@@ -1,4 +1,4 @@
-"""Complete service generation boundaries, without prefix replay."""
+"""Complete service generation boundaries, including prefix-stop replay."""
 from dataclasses import dataclass,asdict
 import hashlib
 import hmac
@@ -26,13 +26,31 @@ class ServiceGenerationBoundary:
     stops:tuple
     stopped:bool=False
     application_identity:str=''
+    stop_prefixes:tuple=()
 
     @property
     def position(self):return len(self.tokens)
 
     @classmethod
-    def capture(cls,session,tokens,logits,sampler,stops,limits,stopped=False,application_identity=''):
-        if (len(tokens)*128+len(stops)*128+limits.vocabulary*32+1024**2>limits.max_checkpoint_buffer_bytes):
+    def capture(cls,session,tokens,logits,sampler,stops,limits,stopped=False,application_identity='',stop_prefixes=()):
+        if (type(tokens) not in (tuple, list) or not tokens or len(tokens) > limits.context or
+                any(type(token) is not int or not 0 <= token < limits.vocabulary for token in tokens) or
+                type(stops) not in (tuple, list, frozenset) or
+                any(type(token) is not int or not 0 <= token < limits.vocabulary for token in stops)):
+            raise ValueError('complete bounded generation token inventory required')
+        if (type(stop_prefixes) not in (tuple, list) or len(stop_prefixes) > 64 or
+                any(type(prefix) not in (tuple, list) or not prefix or len(prefix) > 128 or
+                    any(type(token) is not int or not 0 <= token < limits.vocabulary
+                        for token in prefix) for prefix in stop_prefixes) or
+                len({tuple(prefix) for prefix in stop_prefixes}) != len(stop_prefixes)):
+            raise ValueError('complete bounded stop-prefix inventory required')
+        if type(stopped) is not bool:
+            raise ValueError('explicit generation stop-state required')
+        if (type(application_identity) is not str or
+                not 0 < len(application_identity) <= 8192 or '\x00' in application_identity):
+            raise ValueError('bounded generation application identity required')
+        if (len(tokens)*128+len(stops)*128+sum(len(prefix)*16 for prefix in stop_prefixes)+
+                limits.vocabulary*32+1024**2>limits.max_checkpoint_buffer_bytes):
             raise MemoryError('generation boundary construction exceeds scheduler host reservation')
         row=np.asarray(logits)
         if row.shape!=(limits.vocabulary,) or row.dtype not in (np.dtype('float32'),np.dtype('float64')) or not np.isfinite(row).all():
@@ -41,7 +59,9 @@ class ServiceGenerationBoundary:
         if type(identity) is not str or not identity:raise ValueError('explicit generation execution identity required')
         dtype='<f4' if row.dtype.itemsize==4 else '<f8'
         return cls(identity,tuple(tokens),row.astype(dtype,copy=False).tobytes(),dtype,limits.vocabulary,
-            limits.context,None if sampler is None else sampler.policy,b'' if sampler is None else sampler.snapshot(),tuple(sorted(stops)),stopped,application_identity)
+            limits.context,None if sampler is None else sampler.policy,
+            b'' if sampler is None else sampler.snapshot(),tuple(sorted(stops)),stopped,
+            application_identity,tuple(tuple(prefix) for prefix in stop_prefixes))
 
     def admit(self,limits,max_bytes):
         if (type(max_bytes) is not int or max_bytes<=0 or type(self.identity) is not str or not 0<len(self.identity)<=8192
@@ -54,9 +74,21 @@ class ServiceGenerationBoundary:
             if type(tokens) is not tuple or len(tokens)>self.context or any(type(t) is not int or not 0<=t<self.vocabulary for t in tokens):
                 raise ValueError('bounded exact generation token history required')
         if not self.tokens or len(set(self.stops))!=len(self.stops):raise ValueError('occupied unique-stop boundary required')
-        if type(self.stopped) is not bool or (self.stopped and self.tokens[-1] not in self.stops):
+        if (type(self.stop_prefixes) is not tuple or len(self.stop_prefixes)>64 or
+                any(type(prefix) is not tuple or not prefix or len(prefix)>128 or
+                    any(type(t) is not int or not 0 <= t < self.vocabulary for t in prefix)
+                    for prefix in self.stop_prefixes) or
+                len(set(self.stop_prefixes)) != len(self.stop_prefixes)):
+            raise ValueError('bounded stop-prefix boundary required')
+        prefix_stopped = any(len(self.tokens) >= len(prefix) and
+                             tuple(self.tokens[-len(prefix):]) == prefix
+                             for prefix in self.stop_prefixes)
+        if (type(self.stopped) is not bool or
+                (self.stopped and self.tokens[-1] not in self.stops and not prefix_stopped)):
             raise ValueError('generation stopping boundary differs')
-        if type(self.application_identity) is not str or len(self.application_identity)>8192:
+        if (type(self.application_identity) is not str or
+                not 0 < len(self.application_identity) <= 8192 or
+                '\x00' in self.application_identity):
             raise ValueError('bounded generation application identity required')
         if not np.isfinite(self.row()).all():raise ValueError('nonfinite checkpoint next logits')
         if self.policy is None:
@@ -65,7 +97,8 @@ class ServiceGenerationBoundary:
             if type(self.policy) is not SamplingPolicy:raise ValueError('exact sampling policy required')
             owner=TokenSampler(self.policy,max_buffer_bytes=limits.max_sampling_buffer_bytes,max_history_tokens=limits.context)
             owner.restore(self.sampler)
-        host=len(self.logits)*3+len(self.sampler)*4+(len(self.tokens)+len(self.stops))*128+1024**2
+        host=(len(self.logits)*3+len(self.sampler)*4+(len(self.tokens)+len(self.stops))*128+
+              sum(len(prefix)*16 for prefix in self.stop_prefixes)+1024**2)
         if host>min(max_bytes,limits.max_checkpoint_buffer_bytes):
             raise MemoryError('generation boundary host staging exceeds admission')
 
@@ -79,6 +112,7 @@ def write_boundary(model,boundary,output,*,limits,max_bytes):
     metadata=dict(version=1,identity=boundary.identity,tokens=list(boundary.tokens),dtype=boundary.dtype,
         vocabulary=boundary.vocabulary,context=boundary.context,policy=None if boundary.policy is None else asdict(boundary.policy),
         sampler=boundary.sampler.hex(),stops=list(boundary.stops),stopped=boundary.stopped,
+        stop_prefixes=[list(prefix) for prefix in boundary.stop_prefixes],
         application_identity=boundary.application_identity)
     encoded=json.dumps(metadata,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
     if len(encoded)*16+len(boundary.logits)*3+65536>limits.max_checkpoint_buffer_bytes:
@@ -113,15 +147,18 @@ def read_boundary(source,*,limits,max_bytes):
         raise MemoryError('generation metadata parsing exceeds scheduler host reservation')
     encoded=_read(source,header_bytes);header=json.loads(encoded,object_pairs_hook=_pairs,
         parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-    fields={'version','identity','tokens','dtype','vocabulary','context','policy','sampler','stops','stopped','application_identity'}
+    fields={'version','identity','tokens','dtype','vocabulary','context','policy','sampler','stops','stopped','application_identity','stop_prefixes'}
     if type(header) is not dict or set(header)!=fields or type(header['version']) is not int or header['version']!=1:
         raise ValueError('generation recovery metadata differs')
-    if type(header['tokens']) is not list or type(header['stops']) is not list or type(header['sampler']) is not str:
+    if (type(header['tokens']) is not list or type(header['stops']) is not list or
+            type(header['stop_prefixes']) is not list or type(header['sampler']) is not str):
         raise ValueError('generation recovery inventories differ')
     policy=None if header['policy'] is None else SamplingPolicy(**header['policy'])
     logits=_read(source,logit_bytes)
     boundary=ServiceGenerationBoundary(header['identity'],tuple(header['tokens']),bytes(logits),header['dtype'],
-        header['vocabulary'],header['context'],policy,bytes.fromhex(header['sampler']),tuple(header['stops']),header['stopped'],header['application_identity'])
+        header['vocabulary'],header['context'],policy,bytes.fromhex(header['sampler']),tuple(header['stops']),
+        header['stopped'],header['application_identity'],
+        tuple(tuple(prefix) for prefix in header['stop_prefixes']))
     boundary.admit(limits,max_bytes);cache=tempfile.TemporaryFile('w+b')
     try:
         digest=hashlib.sha256(prefix+encoded+logits);remaining=cache_bytes

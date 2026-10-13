@@ -12,6 +12,7 @@ import stat
 from pathlib import Path
 import tempfile
 import uuid
+import shutil
 
 from .generation_checkpoint_files import AtomicGenerationCheckpoint
 from .session_recovery import _path
@@ -24,8 +25,11 @@ def signature(boundary):
         sampler_sha256=hashlib.sha256(boundary.sampler).hexdigest(),
         policy=None if boundary.policy is None else asdict(boundary.policy),
         stops=list(boundary.stops),stopped=boundary.stopped,
+        stop_prefixes=[list(prefix) for prefix in getattr(boundary, 'stop_prefixes', ())],
         vocabulary=boundary.vocabulary,context=boundary.context,
-        application_identity=boundary.application_identity)
+        application_identity=boundary.application_identity,
+        rng=getattr(boundary,'rng',None),
+        proposal_rng=getattr(boundary,'proposal_rng',None))
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),
         allow_nan=False).encode()).hexdigest()
 
@@ -88,6 +92,17 @@ class CollectiveGenerationSink:
         self.coordinator=coordinator;self.directory=_path(directory)
         self.max_rank_bytes=max_rank_bytes;self.index=0
 
+    @staticmethod
+    def _quarantine_uncommitted(path, *, manifest_written=False):
+        """Remove only a just-created boundary without a committed pointer."""
+        path=_path(path)
+        try:
+            if path.is_dir() and (manifest_written or not (path/'manifest.json').exists()):
+                shutil.rmtree(path)
+        except BaseException as error:
+            return error
+        return None
+
     def __call__(self,boundary,write_frame):
         owner=self.coordinator;receipt=None;error=None;logical=None
         # A sink is recreated for each request. Its local index cannot name an
@@ -121,15 +136,52 @@ class CollectiveGenerationSink:
             error=(str(failure) or type(failure).__name__)[:4096]
         records=[None]*owner.world_size
         owner.distributed.all_gather_object(records,(logical,error,receipt),group=owner.group)
+        def valid_record(rank, row):
+            if type(row) is not tuple or len(row) != 3:
+                return False
+            observed, failure, item = row
+            if failure is not None and type(failure) is not str:
+                return False
+            if failure is not None:
+                return True
+            if (type(observed) is not str or len(observed) != 64 or
+                    any(char not in '0123456789abcdef' for char in observed) or
+                    type(item) is not dict or
+                    set(item) != {'bytes', 'sha256', 'execution_identity'} or
+                    type(item['bytes']) is not int or
+                    not 128 <= item['bytes'] <= self.max_rank_bytes or
+                    type(item['sha256']) is not str or len(item['sha256']) != 64 or
+                    any(char not in '0123456789abcdef' for char in item['sha256']) or
+                    type(item['execution_identity']) is not str or
+                    not 0 < len(item['execution_identity']) <= 8192):
+                return False
+            return True
+        malformed = [rank for rank, row in enumerate(records)
+                     if not valid_record(rank, row)]
+        for rank in malformed:
+            records[rank] = (None, 'malformed generation publication record', None)
         failures=[f'rank {rank}: {row[1]}' for rank,row in enumerate(records) if row[1] is not None]
-        if failures or any(row[0]!=records[0][0] for row in records):
+        if (failures or records[0][0] is None or
+                any(row[0] != records[0][0] for row in records)):
+            cleanup_error=None
+            if owner.rank==0:
+                cleanup_error=self._quarantine_uncommitted(directory)
+            cleanup=[None]*owner.world_size
+            owner.distributed.all_gather_object(cleanup,
+                None if cleanup_error is None else str(cleanup_error)[:4096],group=owner.group)
+            if any(value is not None for value in cleanup):
+                failures.append('uncommitted boundary cleanup failed: '+
+                    next(value for value in cleanup if value is not None))
             raise RuntimeError('distributed generation capture failed: '+
                 ('; '.join(failures) if failures else 'logical generation boundaries differ'))
         error=None
         if owner.rank==0:
             try:
+                if any(row[2] is None for row in records):
+                    raise ValueError('complete rank generation receipts required')
                 manifest=dict(version=1,kind='generation',world_size=owner.world_size,
                     boundary_sha256=logical,context_tokens=boundary.position,
+                    application_identity=boundary.application_identity,
                     ranks=[dict(rank=rank,filename=f'rank-{rank}.generation',
                         bytes=row[2]['bytes'],sha256=row[2]['sha256'],
                         identity=row[2]['execution_identity']) for rank,row in enumerate(records)])
@@ -145,12 +197,21 @@ class CollectiveGenerationSink:
         errors=[None]*owner.world_size
         owner.distributed.all_gather_object(errors,error,group=owner.group)
         if any(value is not None for value in errors):
+            cleanup_error=None
+            if owner.rank==0:
+                cleanup_error=self._quarantine_uncommitted(directory,manifest_written=True)
+            cleanup=[None]*owner.world_size
+            owner.distributed.all_gather_object(cleanup,
+                None if cleanup_error is None else str(cleanup_error)[:4096],group=owner.group)
+            if any(value is not None for value in cleanup):
+                errors.append('uncommitted boundary cleanup failed: '+
+                    next(value for value in cleanup if value is not None))
             raise RuntimeError('distributed generation manifest publication failed: '+
                 next(value for value in errors if value is not None))
         self.index+=1
 
 
-def admit_manifest(path,*,world_size,max_rank_bytes,context):
+def admit_manifest(path,*,world_size,max_rank_bytes,context,application_identity=None):
     if (type(world_size) is not int or not 1<=world_size<=64 or
             type(max_rank_bytes) is not int or not 128<=max_rank_bytes<=2**63-1 or
             type(context) is not int or not 1<=context<=2**63-1):
@@ -159,11 +220,16 @@ def admit_manifest(path,*,world_size,max_rank_bytes,context):
     value=json.loads(raw,object_pairs_hook=_pairs,
         parse_constant=lambda text: (_ for _ in ()).throw(ValueError(text)))
     def pin(text):return type(text) is str and len(text)==64 and all(c in '0123456789abcdef' for c in text)
-    if (type(value) is not dict or set(value)!={'version','kind','world_size','boundary_sha256','context_tokens','ranks'}
+    if (type(value) is not dict or set(value)!={'version','kind','world_size','boundary_sha256','context_tokens','application_identity','ranks'}
             or type(value['version']) is not int or value['version']!=1 or value['kind']!='generation'
             or type(value['world_size']) is not int or value['world_size']!=world_size
             or type(value['context_tokens']) is not int or not 1<=value['context_tokens']<=context
-            or not pin(value['boundary_sha256']) or type(value['ranks']) is not list
+            or not pin(value['boundary_sha256']) or
+            type(value['application_identity']) is not str or
+            not 0<len(value['application_identity'])<=8192 or
+            '\x00' in value['application_identity'] or
+            (application_identity is not None and value['application_identity'] != application_identity) or
+            type(value['ranks']) is not list
             or len(value['ranks'])!=world_size):
         raise ValueError('distributed generation manifest geometry differs')
     for rank,row in enumerate(value['ranks']):
@@ -177,8 +243,65 @@ def admit_manifest(path,*,world_size,max_rank_bytes,context):
 
 
 def restore_rank(coordinator,session,command):
-    receipt=command['manifest']['ranks'][coordinator.rank]
-    path=_path(Path(command['directory'])/receipt['filename'])
+    if (type(command) is not dict or
+            type(command.get('directory')) is not str or
+            type(command.get('application_identity')) is not str or
+            not 0<len(command['application_identity'])<=8192 or
+            '\x00' in command['application_identity'] or
+            type(command.get('recovery_max_bytes')) is not int or
+            command['recovery_max_bytes']<128):
+        raise ValueError('explicit distributed restore command identity and budget required')
+    manifest=command.get('manifest')
+    if (type(manifest) is not dict or manifest.get('kind')!='generation' or
+            type(manifest.get('world_size')) is not int or
+            manifest['world_size']!=coordinator.world_size or
+            type(manifest.get('context_tokens')) is not int or
+            manifest['context_tokens']<=0 or
+            type(manifest.get('application_identity')) is not str or
+            manifest['application_identity'] != command['application_identity'] or
+            type(manifest.get('boundary_sha256')) is not str or
+            len(manifest['boundary_sha256'])!=64 or
+            any(char not in '0123456789abcdef' for char in manifest['boundary_sha256']) or
+            type(manifest.get('ranks')) is not list or
+            len(manifest['ranks'])!=coordinator.world_size):
+        raise ValueError('foreign or stale distributed generation manifest')
+    receipt=manifest['ranks'][coordinator.rank]
+    if (type(receipt) is not dict or
+            type(receipt.get('rank')) is not int or receipt['rank']!=coordinator.rank or
+            type(receipt.get('filename')) is not str or
+            receipt['filename']!=f'rank-{coordinator.rank}.generation' or
+            type(receipt.get('bytes')) is not int or receipt['bytes']<128 or
+            type(receipt.get('sha256')) is not str or len(receipt['sha256'])!=64 or
+            any(char not in '0123456789abcdef' for char in receipt['sha256']) or
+            type(receipt.get('identity')) is not str or
+            not 0<len(receipt['identity'])<=8192):
+        raise ValueError('foreign distributed rank receipt')
+    root_path=_path(command['directory'])
+    try:
+        root_info=root_path.lstat()
+    except OSError as error:
+        raise ValueError('stable committed distributed generation directory required') from error
+    if not root_path.is_dir() or root_path.is_symlink() or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError('stable committed distributed generation directory required')
+    root=root_path.resolve(strict=True)
+    # Re-admit the immutable on-disk manifest before trusting any caller
+    # supplied receipt.  A locally valid rank entry is insufficient when the
+    # command carries a stale or foreign view of the other ranks.
+    _, committed = admit_manifest(
+        root / 'manifest.json',
+        world_size=coordinator.world_size,
+        max_rank_bytes=command['recovery_max_bytes'],
+        context=manifest['context_tokens'],
+        application_identity=command['application_identity'],
+    )
+    if committed != manifest:
+        raise ValueError('distributed generation manifest differs from committed directory')
+    path=(root/receipt['filename']).resolve(strict=True)
+    if not path.is_relative_to(root):
+        raise ValueError('distributed rank frame escapes the committed manifest directory')
+    if (type(receipt) is not dict or receipt.get('rank')!=coordinator.rank or
+            receipt.get('filename')!=f'rank-{coordinator.rank}.generation'):
+        raise ValueError('foreign distributed rank receipt')
     expected=dict(path=str(path),bytes=receipt['bytes'],sha256=receipt['sha256'])
     store=AtomicGenerationCheckpoint(path,max_bytes=command['recovery_max_bytes'])
     try:

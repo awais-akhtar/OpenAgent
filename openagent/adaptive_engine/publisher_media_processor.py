@@ -3,6 +3,7 @@
 Only preprocessing uses the admitted Transformers package. Decoder execution
 remains in OpenAgent's native composition. Remote code and downloads are off.
 """
+import copy
 from io import BytesIO
 from pathlib import Path
 import hashlib
@@ -111,6 +112,11 @@ class PublisherMediaProcessor:
                 raise ValueError('bounded rendered processor text required')
             if any(type(v) not in (list,tuple) or len(v)>64 for v in (images,audio,videos)):
                 raise ValueError('bounded explicit media item sequences required')
+            # Freeze request ordering before per-item decoding; individual
+            # decoders below create their own owned pixel/sample buffers.
+            images = tuple(images)
+            audio = tuple(audio)
+            videos = tuple(videos)
             def boundary():
                 if cancelled is not None:
                     if not callable(cancelled): raise TypeError('callable processor cancellation required')
@@ -133,18 +139,44 @@ class PublisherMediaProcessor:
                     for value in audio:
                         if not isinstance(value,np.ndarray) or value.ndim!=1 or value.dtype.kind!='f' or not 0<value.size<=self.max_audio_samples:
                             raise ValueError('bounded mono floating waveform required')
-                        work+=value.size*64
+                        owned_waveform = np.array(value,dtype=np.float32,copy=True,order='C')
+                        work+=owned_waveform.size*64
                         if work>self.max_bytes: raise MemoryError('aggregate audio preprocessing staging exceeds admission')
-                        if not np.isfinite(value).all(): raise ValueError('nonfinite waveform sample')
-                        waveforms.append(np.array(value,dtype=np.float32,copy=True))
+                        if not np.isfinite(owned_waveform).all(): raise ValueError('nonfinite waveform sample')
+                        waveforms.append(owned_waveform)
                     kwargs.update(audio=waveforms,sampling_rate=sampling_rate)
                 if videos:
-                    if self.family not in ('qwen3_5_moe','qwen4_exp','glm5_next') or video_metadata is None or len(video_metadata)!=len(videos):
+                    if (self.family not in ('qwen3_5_moe','qwen4_exp','glm5_next') or
+                            type(video_metadata) not in (list, tuple) or
+                            len(video_metadata) != len(videos)):
                         raise ValueError('selected frames require explicit publisher video metadata')
+                    if any(
+                            not isinstance(item, dict) for item in video_metadata):
+                        raise ValueError('video metadata must be an explicit mapping per selected sequence')
+                    if any(set(item) != {'frames_indices', 'total_num_frames', 'fps'}
+                           for item in video_metadata):
+                        raise ValueError('video metadata contains unadmitted fields')
+                    # Detach the processor call from caller-owned metadata so
+                    # frame ordering, timestamps, and source-count admission
+                    # cannot change while preprocessing is in flight.
+                    owned_video_metadata = tuple(copy.deepcopy(item) for item in video_metadata)
+                    owned_videos = tuple(tuple(frames) if type(frames) in (list, tuple) else frames
+                                         for frames in videos)
                     decoded_videos=[]
-                    for frames in videos:
+                    for frames, metadata in zip(owned_videos, owned_video_metadata):
                         if type(frames) not in (list,tuple) or not 1<=len(frames)<=4096:
                             raise ValueError('bounded explicit selected video frames required')
+                        indices = metadata.get('frames_indices')
+                        total = metadata.get('total_num_frames')
+                        fps = metadata.get('fps')
+                        if (type(indices) not in (list, tuple) or len(indices) != len(frames) or
+                                type(total) is not int or isinstance(total, bool) or total <= 0 or
+                                type(fps) not in (int, float) or isinstance(fps, bool) or
+                                not np.isfinite(fps) or fps <= 0 or
+                                any(type(index) is not int or isinstance(index, bool) or
+                                    not 0 <= index < total for index in indices) or
+                                any(left >= right for left, right in zip(indices, indices[1:]))):
+                            raise ValueError('ordered selected video indices, total frame count and FPS required')
                         decoded=[]
                         for value in frames:
                             boundary();image=self._image(value);owned.append(image)
@@ -152,7 +184,7 @@ class PublisherMediaProcessor:
                             if work>self.max_bytes: raise MemoryError('aggregate video staging exceeds admission')
                             decoded.append(image)
                         decoded_videos.append(decoded)
-                    kwargs.update(videos=decoded_videos,video_metadata=video_metadata,do_sample_frames=False)
+                    kwargs.update(videos=decoded_videos,video_metadata=owned_video_metadata,do_sample_frames=False)
                 boundary();result=dict(self.processor(**kwargs));boundary();self._unchanged()
                 allowed=({'input_ids','attention_mask','pixel_values','image_grid_thw','pixel_values_videos',
                     'video_grid_thw','mm_token_type_ids'} if self.family in ('qwen3_5_moe','qwen4_exp','glm5_next') else

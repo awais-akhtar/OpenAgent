@@ -5,6 +5,7 @@ import json
 import struct
 
 from .publisher_mtp import PublisherV41MTPSnapshot
+from ..checkpoint_stream import CheckpointStream
 
 _PREFIX = struct.Struct('<8sI')
 _MAGIC = b'OAMTP001'
@@ -66,7 +67,10 @@ def _read(source, count):
 def transport_mtp_cache(model, stream, *, max_bytes, restoring=False):
     """Transport one complete frame while excluding reentrant state mutation."""
     _budget(max_bytes)
+    stream = CheckpointStream(stream, model._cancelled)
     with model._lock:
+        if getattr(model, '_busy', False):
+            raise RuntimeError('MTP transaction owns continuation state')
         model._check_transport()
         expected_rng = model.rng.bit_generator.state['bit_generator']
         extent = model.stages*model.config['sliding_window']*model.config['head_dim']*4
@@ -99,7 +103,8 @@ def transport_mtp_cache(model, stream, *, max_bytes, restoring=False):
                     window = _read(stream, extent//model.stages)
                     digest.update(window)
                     windows.append(window)
-                if not hmac.compare_digest(_read(stream, 32), digest.digest()) or stream.read(1) != b'':
+                if (not hmac.compare_digest(_read(stream, 32), digest.digest()) or
+                        _read(stream, 1) != b''):
                     raise ValueError('MTP cache checksum or trailing bytes mismatch')
                 saved = PublisherV41MTPSnapshot(header['identity'], header['position'],
                                                 tuple(windows), header['rng'])
@@ -127,5 +132,6 @@ def transport_mtp_cache(model, stream, *, max_bytes, restoring=False):
         finally:
             model._cache_transport = False
         if restoring:
+            model._cancelled()
             model.restore(saved)
         return saved.position

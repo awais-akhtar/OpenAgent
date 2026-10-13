@@ -55,23 +55,37 @@ class GroupedContinuation:
             if len(values)!=len(self.components) or any(value is None for value in values):
                 raise ValueError('incomplete grouped snapshot cannot be restored')
             rollback=self.snapshot(_internal=True)
+            primary=None
             try:
                 for component,value in zip(self.components,values): component.restore(value)
             except BaseException as error:
+                primary=error
                 for component,value in zip(self.components,self._owned(rollback)):
                     try: component.restore(value)
                     except BaseException as failure: error.add_note('grouped rollback failed: '+str(failure))
                 raise
-            finally: self.release_snapshot(rollback)
+            finally:
+                try: self.release_snapshot(rollback)
+                except BaseException as cleanup:
+                    if primary is None: raise
+                    primary.add_note('grouped rollback snapshot cleanup remains pending: '+repr(cleanup))
 
     def reset(self):
         with self._lock:
             rollback=self.snapshot(_internal=True)
+            primary=None
             try:
                 for component in self.components: component.reset()
-            except BaseException:
-                self.restore(rollback);raise
-            finally: self.release_snapshot(rollback)
+            except BaseException as error:
+                primary=error
+                try: self.restore(rollback)
+                except BaseException as recovery: error.add_note('grouped reset rollback failed: '+repr(recovery))
+                raise
+            finally:
+                try: self.release_snapshot(rollback)
+                except BaseException as cleanup:
+                    if primary is None: raise
+                    primary.add_note('grouped reset snapshot cleanup remains pending: '+repr(cleanup))
 
     def write_cache(self,output,*,max_bytes):
         from .compound_cache import write_components

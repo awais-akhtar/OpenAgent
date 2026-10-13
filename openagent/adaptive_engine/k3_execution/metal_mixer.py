@@ -73,7 +73,7 @@ class MetalK3Mixer(FLAK3Mixer):
 
     def forward(self, q, k, v, gate_logits, beta_logits, output_gate, *, cancel=None):
         torch = self._torch
-        with self._lock, torch.inference_mode():
+        with self._operation(), torch.inference_mode():
             self._open()
             check_precision(torch, self.device)
             if not isinstance(q, torch.Tensor) or q.ndim != 4:

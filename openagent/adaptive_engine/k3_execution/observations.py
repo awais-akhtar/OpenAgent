@@ -88,7 +88,15 @@ class K3ObservationRecorder:
             if not expected<=set(self._counts):raise ValueError('executed route observations omit required layers')
         for name in self.projection_names:
             key='quantization.'+name;count=self._counts.get(key,0)
-            if not count or any(f'{key}.call.{call}.output' not in self._values for call in range(count)):
+            if (not count or
+                    any(f'{key}.call.{call}.input' not in self._values or
+                        f'{key}.call.{call}.output' not in self._values
+                        for call in range(count)) or
+                    any(record.startswith(key+'.call.') and
+                        record.endswith('.output') and
+                        record.rsplit('.call.',1)[1].split('.',1)[0].isdigit() and
+                        int(record.rsplit('.call.',1)[1].split('.',1)[0]) >= count
+                        for record in self._values)):
                 raise ValueError('selected arithmetic boundary was not completely observed')
         result={}
         for name in sorted(self.projection_names):

@@ -34,6 +34,8 @@ class PublisherComponents:
     variant: PublisherVariant
     original_config: dict
     text_config: dict
+    source_text_dtype: str
+    execution_arithmetic: str
     vision_config: dict
     audio_config: dict | None
     auxiliary_config: dict
@@ -135,9 +137,12 @@ def component_contract(config,*,arithmetic):
     if type(vision) is not dict:
         raise ValueError('publisher wrapper requires its own vision component')
     audio=deepcopy(original.get('audio_config'))
+    if audio is not None and type(audio) is not dict:
+        raise ValueError('publisher audio component must be an explicit configuration object')
     identity=hashlib.sha256(json.dumps(dict(original=original,arithmetic=arithmetic,
         repository=variant.repository,revision=variant.revision),sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
-    return PublisherComponents(variant,original,text,vision,audio,auxiliary,'openagent-publisher-components-v1:'+identity)
+    return PublisherComponents(variant,original,text,source_dtype or 'unspecified',arithmetic,
+        vision,audio,auxiliary,'openagent-publisher-components-v1:'+identity)
 
 def partition_weights(tensors,components):
     """Partition every tensor exactly once and retain optional head namespaces."""
@@ -151,14 +156,30 @@ def partition_weights(tensors,components):
             raise ValueError('checkpoint tensor names must be strings')
         if name=='lm_head.weight':
             retain(text,name,value)
+        elif name in ('model.language_model.lm_head.weight',
+                      'language_model.lm_head.weight', 'model.lm_head.weight',
+                      'output.weight', 'shared_head.weight',
+                      'model.output.weight', 'model.shared_head.weight',
+                      'model.language_model.output.weight',
+                      'model.language_model.shared_head.weight'):
+            retain(text,'lm_head.weight',value)
         elif name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
             retain(auxiliary,name,value)
-        elif name.startswith('model.language_model.'):
-            destination='model.'+name[len('model.language_model.'):]
-            retain(text,destination,value)
-        elif name.startswith('model.visual.') or name.startswith('model.vision_tower.'):
+        elif name.startswith(('model.language_model.visual.',
+                              'model.language_model.vision_tower.',
+                              'model.language_model.video_tower.')):
             retain(vision,name,value)
-        elif name.startswith('model.audio_tower.'):
+        elif name.startswith('model.language_model.audio_tower.'):
+            retain(audio,name,value)
+        elif name.startswith(('model.language_model.', 'language_model.')):
+            prefix = 'model.language_model.' if name.startswith('model.language_model.') else 'language_model.'
+            destination='model.'+name[len(prefix):]
+            retain(text,destination,value)
+        elif name.startswith(('model.visual.', 'model.vision_tower.',
+                              'model.video_tower.', 'visual.', 'vision_tower.',
+                              'video_tower.')):
+            retain(vision,name,value)
+        elif name.startswith(('model.audio_tower.', 'audio_tower.')):
             retain(audio,name,value)
         elif name.startswith(('model.layers.','model.embed_tokens.','model.norm.')):
             retain(text,name,value)
@@ -166,6 +187,26 @@ def partition_weights(tensors,components):
             raise ValueError('unowned publisher checkpoint tensor: '+name)
     if not text or not vision or (components.audio_config is not None and not audio):
         raise ValueError('publisher checkpoint is missing a required component')
+    if components.audio_config is None and audio:
+        raise ValueError('publisher checkpoint contains an unadmitted audio component')
+    # Tied publishers may omit a physical lm_head tensor.  Keep the public
+    # runtime namespace complete by binding the head to the admitted embedding
+    # owner; this is an ownership alias, not a decoded or copied fallback.
+    text_config = components.text_config
+    tied = text_config.get('tie_word_embeddings', False)
+    if type(tied) is not bool:
+        raise ValueError('publisher tied-embedding policy must be explicit boolean')
+    if tied and 'lm_head.weight' not in text:
+        embedding = text.get('model.embed_tokens.weight')
+        if embedding is None:
+            raise ValueError('tied publisher head requires an admitted embedding tensor')
+        text['lm_head.weight'] = embedding
+    elif tied:
+        embedding = text.get('model.embed_tokens.weight')
+        if embedding is None or text['lm_head.weight'] is not embedding:
+            raise ValueError('tied publisher head must share the admitted embedding owner')
+    if 'lm_head.weight' not in text:
+        raise ValueError('publisher checkpoint is missing its output head')
     return text,vision,audio,auxiliary
 
 __all__=['PublisherVariant','PublisherComponents','PUBLISHER_VARIANTS','component_contract','partition_weights']

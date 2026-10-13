@@ -37,6 +37,8 @@ def parser():
     result.add_argument('--checkpoint-mib', type=positive)
     result.add_argument('--tokenizer', type=Path)
     result.add_argument('--max-tokens', type=positive, default=32)
+    result.add_argument('--stop-prefix', action='append', default=[],
+                        help='comma-separated token IDs; may be repeated')
     result.add_argument('--context', type=positive, default=512)
     result.add_argument('--temperature', type=float, default=0.0)
     result.add_argument('--seed', type=int, default=0)
@@ -117,6 +119,21 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
     if type(stops) not in (list, tuple) or any(type(t) is not int or not 0 <= t < vocab for t in stops):
         raise ValueError('valid publisher EOS token inventory required')
     stop_tokens = frozenset(stops)
+    stop_prefixes = []
+    for raw_prefix in getattr(args, 'stop_prefix', ()):
+        try:
+            parts = raw_prefix.split(',')
+            if not raw_prefix or any(not value.strip() for value in parts):
+                raise ValueError('stop prefixes require comma-separated token IDs')
+            prefix = tuple(int(value.strip()) for value in parts)
+        except (TypeError, ValueError) as error:
+            raise ValueError('stop prefixes require comma-separated token IDs') from error
+        if (not prefix or len(prefix) > 128 or
+                any(token < 0 or token >= vocab for token in prefix)):
+            raise ValueError('stop prefix token IDs exceed vocabulary or length admission')
+        stop_prefixes.append(prefix)
+    if len(stop_prefixes) > 64 or len(set(stop_prefixes)) != len(stop_prefixes):
+        raise ValueError('bounded unique stop-prefix inventory required')
     mib = 1024**2
     started = time.perf_counter()
     generated, accepted, proposed = [], 0, 0
@@ -153,11 +170,14 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             if checkpoint_sink is not None:
                 from .v41_generation_recovery import publish
                 current_logits = decoder.next_logits if args.dspark else logits
-                header = dict(schema='openagent.v41-generation-boundary.v1',
+                header = dict(schema='openagent.v41-generation-boundary.v2',
                     identity=model.identity, tokenizer=session._tokenizer_identity,
                     position=model.length, prompt_ids=list(prompt), generated_ids=list(generated),
                     temperature=float(args.temperature), rng=copy.deepcopy(target_rng.bit_generator.state),
-                    stops=sorted(stop_tokens), dspark=bool(args.dspark), accepted=accepted, proposed=proposed)
+                    proposal_rng=(None if not args.dspark else
+                        copy.deepcopy(decoder.proposer.rng.bit_generator.state)),
+                    stops=sorted(stop_tokens), stop_prefixes=[list(prefix) for prefix in stop_prefixes],
+                    dspark=bool(args.dspark), accepted=accepted, proposed=proposed)
                 publish(checkpoint_sink, header, current_logits, decoder if args.dspark else model,
                     model=model, tokenizer=session._tokenizer_identity, max_bytes=max_checkpoint_bytes,
                     host_bytes=args.sampling_mib*mib, cancelled=cancelled)
@@ -180,7 +200,8 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             decoder.prefill(prompt, **image_options)
             check_cancelled()
             checkpoint_boundary()
-            for step in decoder.generate(args.max_tokens, stop_tokens=stop_tokens, cancelled=cancelled):
+            for step in decoder.generate(args.max_tokens, stop_tokens=stop_tokens,
+                                         stop_prefixes=stop_prefixes, cancelled=cancelled):
                 accepted += step.accepted
                 proposed += step.proposed
                 record(step.tokens, accepted=step.accepted, proposed=step.proposed,
@@ -203,7 +224,10 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
                 logits = model.forward([token])[-1]
                 check_cancelled()
                 record((token,))
-                if token in stop_tokens:
+                if (token in stop_tokens or any(
+                        len(generated) >= len(prefix) and
+                        tuple(generated[-len(prefix):]) == prefix
+                        for prefix in stop_prefixes)):
                     break
         check_cancelled()
         return dict(schema='openagent.publisher-v41-generation.v1',
@@ -223,7 +247,8 @@ class PublisherSession:
               'tokenizer', 'context', 'resident_mib', 'runtime_mib', 'arithmetic_mib',
               'expert_mib', 'projection_mib', 'draft_mib', 'evidence_mib',
               'sampling_mib', 'image_mib', 'vision_mib', 'image_max_tokens','bf16_projection_mib',
-              'metadata_mib','total_mib','device','torch_version')
+              'metadata_mib','total_mib','device','torch_version',
+              'include_vision','image_token_id','video_token_id','dspark')
     _budgets = ('resident_mib', 'runtime_mib', 'arithmetic_mib', 'expert_mib',
                 'projection_mib', 'draft_mib', 'evidence_mib', 'sampling_mib',
                 'image_mib', 'vision_mib','bf16_projection_mib')
@@ -267,6 +292,27 @@ class PublisherSession:
             from .v41_distributed_session import V41DistributedOptions
             if type(distributed) is not V41DistributedOptions:
                 raise TypeError('explicit caller-owned distributed publisher transport required')
+            # A distributed V4.1 session consumes several independently
+            # encoded projection banks, but the P02 matrix currently marks
+            # every exact tuple as candidate-unverified.  Do not let the
+            # loader/factory infer admission from the presence of the
+            # collective implementation.  Validate each bank tuple before
+            # opening checkpoint state; the first unverified tuple rejects
+            # this distributed route while leaving local V4.1 routes intact.
+            from .source_scope import require_source_matrix_admission
+            bank_tuples = (
+                ('BF16', 'bf16', distributed.bf16),
+                ('FP8', 'fp8', distributed.fp8),
+                ('FP4', 'fp4', distributed.fp4),
+            )
+            for source_format, persisted_format, enabled in bank_tuples:
+                if enabled:
+                    require_source_matrix_admission(
+                        family='deepseek-v41', model_type='deepseek_v41',
+                        backend='distributed',
+                        arithmetic='publisher-bf16-fp8-fp4',
+                        source_format=source_format,
+                        persisted_format=persisted_format)
             if distributed.bf16 and not getattr(args,'bf16_projection_mib',0):
                 raise ValueError('distributed BF16 requires positive row-streaming admission')
         directory = _path(args.checkpoint).resolve(strict=True)
@@ -296,6 +342,7 @@ class PublisherSession:
         self._requests = 0
         self._vision_model = self._draft_model = None
         self._vision_budget = self._draft_budget = None
+        self._auxiliary = None
         from .owned_resources import OwnedResources
         self._owned = OwnedResources()
         self.distributed=distributed
@@ -312,13 +359,13 @@ class PublisherSession:
             if args.tokenizer.stat().st_size>getattr(args,'metadata_mib',256)*mib:
                 raise MemoryError('publisher tokenizer source exceeds metadata admission')
             from .v41_generation_recovery import tokenizer_identity
-            self._tokenizer_identity = tokenizer_identity(args.tokenizer)
+            self._tokenizer_identity = tokenizer_identity(args.tokenizer,max_bytes=getattr(args,'metadata_mib',256)*mib)
             tokenizer_bytes=read_regular(args.tokenizer,max_bytes=getattr(args,'metadata_mib',256)*mib)
             if hashlib.sha256(tokenizer_bytes).hexdigest()!=self._tokenizer_identity:
                 raise ValueError('loaded tokenizer bytes differ from admitted generation identity')
             self.tokenizer = Tokenizer.from_str(tokenizer_bytes.decode('utf-8'))
             del tokenizer_bytes
-            if tokenizer_identity(args.tokenizer) != self._tokenizer_identity:
+            if tokenizer_identity(args.tokenizer,max_bytes=getattr(args,'metadata_mib',256)*mib) != self._tokenizer_identity:
                 raise ValueError('publisher tokenizer changed while loading')
             self.tokenizer.no_truncation()
             self.tokenizer.no_padding()
@@ -367,6 +414,9 @@ class PublisherSession:
                     tokenizer=self.tokenizer,projection_backend=self.projection_backend,fp4_provider=fp4_rows)
                 model_type=DevicePublisherV41Execution
             self._owned.callback(self.arithmetic.close)
+            from .v41_execution.publisher_auxiliary import PublisherV41Auxiliary
+            self._auxiliary = PublisherV41Auxiliary(self.arithmetic)
+            self._owned.callback(self._auxiliary.close)
             if self.bf16_projections is not None:self.bf16_projections.bind_arithmetic(self.arithmetic)
             check_cancelled()
             self.model = model_type.from_payload(self.payload, self.arithmetic,
@@ -383,17 +433,19 @@ class PublisherSession:
         self.load_ms = (time.perf_counter()-started)*1000
 
     def _vision(self, args):
-        from .v41_execution.publisher_auxiliary import PublisherV41Auxiliary
         if self._vision_model is None or self._vision_budget != args.vision_mib:
-            self._vision_model = PublisherV41Auxiliary(self.arithmetic).vision(
+            if self._vision_model is not None:
+                self._vision_model.close()
+            self._vision_model = self._auxiliary.vision(
                 max_bytes=args.vision_mib*1024**2)
             self._vision_budget = args.vision_mib
         return self._vision_model
 
     def _draft(self, args, rng):
-        from .v41_execution.publisher_auxiliary import PublisherV41Auxiliary
         if self._draft_model is None or self._draft_budget != args.draft_mib:
-            self._draft_model = PublisherV41Auxiliary(self.arithmetic).mtp(
+            if self._draft_model is not None:
+                self._draft_model.close()
+            self._draft_model = self._auxiliary.mtp(
                 max_bytes=args.draft_mib*1024**2, rng=rng)
             self._draft_budget = args.draft_mib
         self._draft_model.reset()
@@ -405,10 +457,13 @@ class PublisherSession:
             self.model.reset()
             if self._draft_model is not None:
                 self._draft_model.reset()
-        except BaseException:
+        except BaseException as primary:
             # A failed reset must never leave a reusable contaminated session.
             self._closed = True
-            self._owned.close()
+            try:
+                self._owned.close()
+            except BaseException as cleanup_error:
+                primary.add_note('publisher owner cleanup after failed request reset remains pending: '+repr(cleanup_error))
             raise
 
     def run(self, args, emit=None, cancelled=None, *, checkpoint_sink=None, max_checkpoint_bytes=0):
@@ -437,7 +492,16 @@ class PublisherSession:
                 with self.arithmetic.cancellation_scope(request_cancel),self.model.cancellation_scope(request_cancel):
                     result = _run_request(self, args, emit=emit, cancelled=cancelled,
                         checkpoint_sink=checkpoint_sink, max_checkpoint_bytes=max_checkpoint_bytes)
-            finally:
+            except BaseException as primary:
+                # Event callbacks and checkpoint sinks run synchronously inside
+                # the request boundary. A callback failure must not be replaced
+                # by a secondary cache-reset/cleanup failure.
+                try:
+                    self._reset_request()
+                except BaseException as cleanup_error:
+                    primary.add_note('publisher request rollback/reset failed: '+repr(cleanup_error))
+                raise
+            else:
                 self._reset_request()
             result['warm_reused'] = warm_reused
             result['total_ms'] = (time.perf_counter()-started)*1000
@@ -488,6 +552,8 @@ class PublisherSession:
                         target_rng, draft_rng = [np.random.default_rng(seed) for seed in
                             np.random.SeedSequence(args.seed).spawn(2)]
                         target_rng.bit_generator.state = copy.deepcopy(header['rng'])
+                        if header['dspark']:
+                            draft_rng.bit_generator.state = copy.deepcopy(header['proposal_rng'])
                         owner = self.model
                         decoder = None
                         if header['dspark']:
@@ -504,12 +570,25 @@ class PublisherSession:
                             raise ValueError('recovered V4.1 token history differs')
                         if decoder is not None and (decoder.history != tuple(header['prompt_ids'] + header['generated_ids'])
                                 or not np.array_equal(decoder.next_logits, logits)
-                                or decoder.rng.bit_generator.state != header['rng']):
+                                or decoder._stopped != bool(header['generated_ids'] and
+                                    (header['generated_ids'][-1] in header['stops'] or any(
+                                        len(header['generated_ids']) >= len(prefix) and
+                                        tuple(header['generated_ids'][-len(prefix):]) == tuple(prefix)
+                                        for prefix in header['stop_prefixes'])))
+                                or decoder.rng.bit_generator.state != header['rng']
+                                or decoder.proposer.rng.bit_generator.state != header['proposal_rng']):
                             raise ValueError('compound DSpark verifier boundary differs from envelope')
-                    finally:
+                    except BaseException as primary:
+                        try:
+                            cache.close()
+                        except BaseException as cleanup_error:
+                            primary.add_note('staged V4.1 generation frame close failed: '+repr(cleanup_error))
+                        raise
+                    else:
                         cache.close()
                     generated = list(header['generated_ids'])
                     stops = frozenset(header['stops'])
+                    stop_prefixes = tuple(tuple(prefix) for prefix in header['stop_prefixes'])
                     eos = self.checkpoint.config['text_config'].get('eos_token_id', [])
                     eos = [eos] if type(eos) is int else eos
                     if not set(eos) <= stops:
@@ -523,6 +602,8 @@ class PublisherSession:
                         header['position'] = self.model.length
                         header['accepted'] += accepted; header['proposed'] += proposed
                         header['rng'] = copy.deepcopy(target_rng.bit_generator.state)
+                        header['proposal_rng'] = (None if decoder is None else
+                            copy.deepcopy(decoder.proposer.rng.bit_generator.state))
                         if decoder is not None: logits = decoder.next_logits
                         if checkpoint_sink is not None:
                             publish(checkpoint_sink, header, logits, owner, model=self.model,
@@ -530,9 +611,15 @@ class PublisherSession:
                                 host_bytes=args.sampling_mib*1024**2, cancelled=cancelled)
                         if emit is not None:
                             emit(dict(event='tokens', token_ids=list(tokens), text=self.tokenizer.decode(generated)))
-                    if not generated or generated[-1] not in stops:
+                    recovered_stopped = bool(generated and (
+                        generated[-1] in stops or any(
+                            len(generated) >= len(prefix) and
+                            tuple(generated[-len(prefix):]) == tuple(prefix)
+                            for prefix in stop_prefixes)))
+                    if not recovered_stopped:
                         if decoder is not None:
-                            for step in decoder.generate(limit, stop_tokens=stops, cancelled=cancelled):
+                            for step in decoder.generate(limit, stop_tokens=stops,
+                                stop_prefixes=stop_prefixes, cancelled=cancelled):
                                 record(step.tokens, step.accepted, step.proposed)
                         else:
                             for _ in range(limit):
@@ -541,7 +628,11 @@ class PublisherSession:
                                     max_bytes=args.sampling_mib*1024**2-history_reservation)
                                 logits = self.model.forward([token])[-1]
                                 check(); record((token,))
-                                if token in stops: break
+                                if (token in stops or any(
+                                        len(generated) >= len(prefix) and
+                                        tuple(generated[-len(prefix):]) == prefix
+                                        for prefix in stop_prefixes)):
+                                    break
                     check()
                     self._requests += 1
                     return dict(schema='openagent.publisher-v41-generation.v1',
@@ -550,7 +641,17 @@ class PublisherSession:
                         accepted_draft_tokens=header['accepted'], proposed_draft_tokens=header['proposed'],
                         recovered=True, implementation=self.model.implementation,
                         numerical_parity_verified=False, platform_certified=False)
-            finally:
+            except BaseException as primary:
+                # Recovery may have staged or partially installed target and
+                # draft cache state before a codec, event, checkpoint, or
+                # cancellation callback fails. Reset/quarantine both owners,
+                # but preserve the original failure as the surfaced exception.
+                try:
+                    self._reset_request()
+                except BaseException as cleanup_error:
+                    primary.add_note('publisher recovery rollback/reset failed: '+repr(cleanup_error))
+                raise
+            else:
                 self._reset_request()
         finally:
             self._lock.release()
@@ -559,8 +660,21 @@ class PublisherSession:
         if not self._lock.acquire(blocking=False):
             raise RuntimeError('cannot close an active publisher session')
         try:
+            errors = []
+            for owner in (self._draft_model, self._vision_model):
+                close = getattr(owner, 'close', None)
+                if callable(close):
+                    try:
+                        close()
+                    except BaseException as error:
+                        errors.append(error)
+            try:
+                self._owned.close()
+            except BaseException as error:
+                errors.append(error)
+            if errors:
+                raise RuntimeError('publisher session cleanup remains pending') from errors[0]
             self._closed = True
-            self._owned.close()
             self._vision_model = self._draft_model = None
         finally:
             self._lock.release()

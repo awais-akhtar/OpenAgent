@@ -52,9 +52,6 @@ def write_native_snapshot(session,output,*,max_bytes=None):
         size = 44+len(encoded)+sum(a.nbytes for a in arrays)
         if len(encoded)>_HEADER_LIMIT or size>min(limit,target._engine.max_snapshot_bytes):
             raise MemoryError('native snapshot exceeds byte budget')
-        for array in arrays:
-            for _ in _chunks(array):
-                pass
         digest = hashlib.sha256()
         for data in (_MAGIC,struct.pack('<I',len(encoded)),encoded):
             digest.update(data)

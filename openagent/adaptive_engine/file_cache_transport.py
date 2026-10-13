@@ -21,6 +21,10 @@ def transport_cache(model, stream, codec, *, max_bytes, restoring=False,
         raise ValueError('explicit cache transport byte budget required')
     if type(restoring) is not bool or not callable(codec):
         raise ValueError('explicit cache direction and concrete codec required')
+    if not callable(getattr(stream, 'read', None)) and restoring:
+        raise TypeError('cache restore source must expose a counted read method')
+    if not restoring and not callable(getattr(stream, 'write', None)):
+        raise TypeError('cache publication sink must expose a counted write method')
     if scratch_directory is not None:scratch_directory=_path(scratch_directory).resolve(strict=True)
     with model._lock:
         if model._busy or model._closed:

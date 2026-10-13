@@ -80,7 +80,7 @@ def read_selected_video(path,*,max_bytes,max_frame_bytes,max_frames=4096,cancell
             any(type(value) is not int or not 0<=value<total for value in indices) or
             any(a>=b for a,b in zip(indices,indices[1:]))):
         raise ValueError('ordered explicit selected frame indices, total frame count and FPS required')
-    extent=len(raw);decoded=[]
+    extent=len(raw);decoded=[];seen_frames=set()
     for name in frames:
         if cancelled is not None and cancelled(): raise InterruptedError('selected video file staging cancelled')
         if type(name) is not str or not name or Path(name).is_absolute(): raise ValueError('relative selected-frame path required')
@@ -88,6 +88,12 @@ def read_selected_video(path,*,max_bytes,max_frame_bytes,max_frames=4096,cancell
         if candidate.is_symlink(): raise ValueError('selected frame symlinks are not admitted')
         target=candidate.resolve(strict=True)
         if not target.is_relative_to(root): raise ValueError('selected frame escapes manifest directory')
+        key=str(target).casefold()
+        if key in seen_frames:
+            raise ValueError('selected video frame inventory contains duplicate paths')
+        seen_frames.add(key)
+        if extent >= max_bytes:
+            raise MemoryError('selected video frame inventory exceeds media admission')
         value=read_regular(target,max_bytes=min(max_frame_bytes,max_bytes-extent))
         extent+=len(value);decoded.append(value)
     return decoded,metadata

@@ -19,7 +19,7 @@ import numpy as np
 
 
 SUPPORTED_PAYLOAD_DTYPES = frozenset({"float32", "float16", "int8-row"})
-REGISTERED_PAYLOAD_DTYPES = SUPPORTED_PAYLOAD_DTYPES | {"e8-lattice-caller-v1", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32"}
+REGISTERED_PAYLOAD_DTYPES = SUPPORTED_PAYLOAD_DTYPES | {"e8-lattice-caller-v1", "iq3-format6-98-v1", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32"}
 
 
 @dataclass(frozen=True)
@@ -297,10 +297,10 @@ class ExpertKernelRegistry:
     ) -> RoutedSwiGLUKernelBackend:
         if dtype not in REGISTERED_PAYLOAD_DTYPES:
             raise ValueError(f"unsupported expert payload dtype: {dtype}")
-        if dtype == "e8-lattice-caller-v1":
+        if dtype in {"e8-lattice-caller-v1", "iq3-format6-98-v1"}:
             if preferred is None:
-                raise ValueError("caller E8 execution requires an explicit contract-bound backend")
-            # Another available E8 backend may have a different caller codebook.
+                raise ValueError("lattice execution requires an explicit contract-bound backend")
+            # Another lattice backend may use a different admitted grid.
             allow_fallback = False
         if preferred is not None and preferred not in self._backends:
             if not allow_fallback:
@@ -318,6 +318,8 @@ class ExpertKernelRegistry:
         ]
         if candidates:
             return min(candidates, key=lambda item: (-item.info().priority, item.info().name))
+        if not allow_fallback:
+            raise RuntimeError(f"no available explicit backend supports {dtype}")
         fallback = self._backends[NumPyRoutedSwiGLUBackend.NAME]
         if not _supports(fallback.info(), dtype, batch):
             raise RuntimeError(f"no available backend supports {dtype}")

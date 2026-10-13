@@ -77,8 +77,13 @@ class Snapshot:
             raise ValueError("checkpoint shard inventory changed since planning")
 
     def read_range(self, name, offset, length):
+        if type(name) is not str or name not in self.tensors:
+            raise ValueError("unknown planned checkpoint tensor")
+        if (type(offset) is not int or type(length) is not int or
+                offset < 0 or length < 0):
+            raise ValueError("nonnegative integer tensor byte range required")
         tensor = self.tensors[name]
-        if not 0 <= offset <= offset + length <= tensor.nbytes:
+        if not offset <= offset + length <= tensor.nbytes:
             raise ValueError("tensor read outside declared extent")
         with ExitStack() as stack:
             source, stamp = _open_local(self.root, self.root / tensor.shard, stack)
@@ -140,11 +145,13 @@ def snapshot(directory, *, max_metadata_bytes, max_tensors, max_shards):
             base, ranges = length + 8, []
             for name, entry in header.items():
                 if name == "__metadata__":
-                    if type(entry) is not dict or any(type(v) is not str for v in entry.values()):
+                    if (type(entry) is not dict or
+                            any(type(k) is not str or not k or type(v) is not str
+                                for k, v in entry.items())):
                         raise ValueError("invalid SafeTensors metadata")
                     continue
-                if not name or name in inventory or type(entry) is not dict:
-                    raise ValueError("duplicate or invalid publisher tensor: " + name)
+                if type(name) is not str or not name or name in inventory or type(entry) is not dict:
+                    raise ValueError("duplicate or invalid publisher tensor: " + str(name))
                 dtype, shape, offsets = (entry.get(k) for k in ("dtype", "shape", "data_offsets"))
                 if (type(dtype) is not str or dtype not in WIDTHS
                         or type(shape) is not list or len(shape) > 32

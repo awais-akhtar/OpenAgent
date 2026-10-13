@@ -48,6 +48,8 @@ class NativePublisherProvider(BaseProvider):
         self._idle_seconds = self._lifetime_seconds = None
         self._cleanup_error = None
         self._construction_cleanup = None
+        self._stream_lock = threading.Lock()
+        self._stream_thread = None
 
     @staticmethod
     def _residency_key(config, args):
@@ -107,7 +109,29 @@ class NativePublisherProvider(BaseProvider):
                     continue
                 raise ProviderConfigurationError('native artifact missing: '+str(path))
             stamps.append((str(path), *_stamp(_path(path).stat())))
-        return json.dumps(config, sort_keys=True), tuple(stamps)
+        # Artifact identity alone is insufficient for warm reuse.  A decoder
+        # admitted under one bounded execution policy must not be reused after
+        # context, cache, projection, expert, media or continuation settings
+        # change.  Exclude prompt/request fields; include only construction and
+        # state-schema controls that affect resident ownership or token layout.
+        # Keep every parser-owned construction/state option in the reuse key.
+        # The gateway appends request data to the same namespace, so only fields
+        # that are inherently per-request are excluded.  This prevents a new
+        # backend option from silently reusing a resident session with a
+        # different execution contract.
+        request_fields = {
+            'prompt', 'prompt_text', 'token_ids', 'messages', 'image', 'images',
+            'audio_wav', 'video_manifest', 'media_library', 'media_items',
+            # ``checkpoint`` selects the resident model artifact and is a
+            # construction input, not request data.  Recovery destinations
+            # and sinks remain request-scoped below.
+            'checkpoint_file', 'checkpoint_sink', 'emit',
+            'cancelled', 'max_output_tokens', 'model',
+            'stop_prefix', 'stop_prefixes', 'stop_token_id', 'stop_ids',
+        }
+        policy = tuple((name, repr(value)) for name, value in sorted(vars(args).items())
+                       if name not in request_fields and not name.startswith('_'))
+        return json.dumps(config, sort_keys=True), policy, tuple(stamps)
 
     def _release_session(self):
         self._session_key = None
@@ -126,6 +150,25 @@ class NativePublisherProvider(BaseProvider):
             self._construction_cleanup=None
         self._loaded_at = self._last_used = None
         self._cleanup_error = None
+    @staticmethod
+    def _state_key(state):
+        import hashlib
+        return hashlib.sha256(state.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _serialize_jev_text(value, label):
+        if type(value) is str:
+            return value
+        if type(value) in (dict, list):
+            try:
+                rendered = json.dumps(value, ensure_ascii=False, separators=(',', ':'),
+                                      allow_nan=False)
+            except (TypeError, ValueError) as error:
+                raise ProviderConfigurationError(label+' must be JSON-serializable') from error
+            if len(rendered.encode('utf-8')) > 1024**2:
+                raise ProviderConfigurationError(label+' exceeds the 1 MiB serialized limit')
+            return rendered
+        raise ProviderConfigurationError(label+' must be text, object or array')
 
     def _construct_session(self,operator,args,cancelled):
         if self._construction_cleanup is not None:
@@ -144,8 +187,8 @@ class NativePublisherProvider(BaseProvider):
 
     def close(self, cancelled=None):
         with self._lifecycle_lock(cancelled):
-            self._closed = True
             self._release_session()
+            self._closed = True
 
     def unload(self, cancelled=None):
         with self._lifecycle_lock(cancelled):
@@ -167,6 +210,8 @@ class NativePublisherProvider(BaseProvider):
     def status(self):
         if not self._lock.acquire(blocking=False):
             return dict(closed=self._closed, active=self._active, busy=True,
+                        stream_worker_active=self._stream_lock.locked(),
+                        execution_runtime=self._execution_runtime_status(),
                         resident=self._session is not None,
                         eviction_policy='lazy', cleanup_pending=self._cleanup_error is not None)
         try:
@@ -176,7 +221,10 @@ class NativePublisherProvider(BaseProvider):
                 except Exception:
                     pass
             now = time.monotonic()
+            execution_runtime = self._execution_runtime_status()
             return dict(closed=self._closed, active=self._active, busy=self._active,
+                        stream_worker_active=self._stream_lock.locked(),
+                        execution_runtime=execution_runtime,
                         resident=self._session is not None,
                         reusable=not self._closed and self._session_key is not None and
                                  self._cleanup_error is None,
@@ -188,6 +236,21 @@ class NativePublisherProvider(BaseProvider):
                         idle_seconds=None if self._active or self._last_used is None else now-self._last_used)
         finally:
             self._lock.release()
+
+    def _execution_runtime_status(self):
+        """Return an actual scheduler snapshot, or None when no owner exists."""
+        try:
+            session = self._session
+            service = getattr(session, 'service', None)
+            runtime_status = getattr(service, 'runtime_status', None)
+            if not callable(runtime_status):
+                return None
+            snapshot = runtime_status()
+        except Exception:
+            # Status reporting must not mutate or tear down a live inference
+            # service. Callers represent an unavailable snapshot as unknown.
+            return None
+        return snapshot if type(snapshot) is dict else None
 
     def __enter__(self):
         if self._closed:
@@ -316,6 +379,15 @@ class NativePublisherProvider(BaseProvider):
                 raise ExecutionCancelled('native request cancelled')
             if self._active:
                 raise ProviderUnavailableError('cannot reenter or unload an active native request')
+            stream_thread = self._stream_thread
+            # Treat either marker as ownership evidence.  The worker clears
+            # its thread reference and releases the stream lock in separate
+            # operations; checking only their conjunction creates a teardown
+            # window in which a warm session can be unloaded while the worker
+            # is still unwinding.
+            if (stream_thread is not None and
+                    stream_thread is not threading.current_thread()) or self._stream_lock.locked():
+                raise ProviderUnavailableError('cannot unload while a native stream worker owns the session')
             yield
         finally:
             self._lock.release()
@@ -348,8 +420,309 @@ class NativePublisherProvider(BaseProvider):
                     except Exception:
                         pass
 
-    def complete(self, messages, *, model=None):
-        return self._run(messages, model=model)
+    def complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=()):
+        return self._run(messages, model=model, max_output_tokens=max_output_tokens,
+                         stop_prefixes=stop_prefixes)
+
+    def score_options(self, prompt, options, *, model=None, normalize='mean', cancelled=None):
+        return self.score_option_groups([prompt], [options], [normalize],
+                                        model=model, cancelled=cancelled)[0]
+
+    def score_option_groups(self, prompts, option_groups, normalizations, *, model=None,
+                            cancelled=None, option_limit=64, cache_slot=None, state_key=None):
+        """Score several closed sets from one admitted shared-prefix snapshot."""
+        if (type(prompts) not in (list, tuple) or not prompts or len(prompts) > 64 or
+                type(option_groups) not in (list, tuple) or len(option_groups) != len(prompts) or
+                type(normalizations) not in (list, tuple) or len(normalizations) != len(prompts) or
+                any(normalize not in ('mean', 'sum') for normalize in normalizations) or
+                type(option_limit) is not int or option_limit not in (64, 255)):
+            raise ProviderConfigurationError('bounded matching Brio prompt and option groups required')
+        if any(type(prompt) is not str or not prompt or len(prompt) > 2 * 1024**2 or
+               len(prompt.encode('utf-8')) > 2 * 1024**2 for prompt in prompts):
+            raise ProviderConfigurationError('bounded nonempty Brio prompts required')
+        if sum(len(prompt.encode('utf-8')) for prompt in prompts) > 8 * 1024**2:
+            raise ProviderConfigurationError('Brio prompt groups exceed the 8 MiB budget')
+        if cache_slot is not None and (type(cache_slot) is not int or not 0 <= cache_slot < 16):
+            raise ProviderConfigurationError('cache_slot must be an integer from 0 through 15')
+        if state_key is not None and (type(state_key) is not str or len(state_key) != 64 or
+                                      any(char not in '0123456789abcdef' for char in state_key)):
+            raise ProviderConfigurationError('state cache identity must be a lowercase SHA256 digest')
+        for options in option_groups:
+            if (type(options) not in (list, tuple) or not 2 <= len(options) <= option_limit or
+                    any(type(option) is not str or not option.strip() or len(option) > 1024**2
+                        for option in options) or len(set(options)) != len(options)):
+                raise ProviderConfigurationError('each Brio group exceeds its option limit or contains invalid choices')
+        if cancelled is not None and not callable(cancelled):
+            raise ProviderConfigurationError('cancellation callback must be callable')
+        if cache_slot is not None:
+            raise ProviderConfigurationError('persistent Brio cache_slot snapshots are not supported by this session owner')
+        with self._request_lock(cancelled):
+            if self._closed:
+                raise ProviderUnavailableError('native provider is closed')
+            config = self._configuration()
+            if model is not None and model != config['model']:
+                raise ProviderConfigurationError('requested model differs from configured native checkpoint')
+            operator, args = self._operator(config)
+            if config['family'] in ('kimi_k3', 'deepseek_v41'):
+                raise ProviderConfigurationError('closed-set scoring is not composed for direct K3/V4.1 sessions')
+            key = self._residency_key(config, args)
+            reused = self._session is not None and self._session_key == key
+            if not reused:
+                self._release_session()
+                started = time.monotonic()
+                try:
+                    self._session = self._construct_session(operator, args, cancelled)
+                except (ValueError, OSError, MemoryError, RuntimeError, ImportError) as error:
+                    raise ProviderUnavailableError('native scoring session could not load: '+str(error)) from error
+                self._session_key = key
+                self._loaded_at = started
+                self._last_used = time.monotonic()
+            return self._score_option_groups_in_session(
+                config, prompts, option_groups, normalizations, cancelled, reused,
+                option_limit=option_limit, cache_slot=cache_slot)
+
+    def _score_option_groups_in_session(self, config, prompts, option_groups,
+                                        normalizations, cancelled, reused, *,
+                                        option_limit=64, cache_slot=None):
+        scorer = getattr(self._session, 'score_option_groups', None)
+        if not callable(scorer):
+            raise ProviderConfigurationError('selected native family has no closed-set scoring owner')
+        results = scorer(prompts, option_groups, normalizations, cancelled=cancelled,
+                         option_limit=option_limit)
+        for result in results:
+            result['model'] = config['model']
+            result['resident_session_reused'] = reused
+        return tuple(results)
+
+    @staticmethod
+    def _render_brio_prompt(config, state, question):
+        if type(question) is not str or len(question) > 1024**2:
+            raise ProviderConfigurationError('bounded textual Brio question required')
+        if type(state) is not str:
+            raise ProviderConfigurationError('Brio state must be text')
+        if not state and not question.strip():
+            raise ProviderConfigurationError('Brio requires state or a question')
+        if len(state.encode('utf-8')) > 1024**2:
+            raise ProviderConfigurationError('Brio state exceeds the 1 MiB input limit')
+        content = ('Context:\n' + state + '\n\n') if state else ''
+        if question:
+            content += 'Question: ' + question + '\n'
+        content += 'Answer:'
+        try:
+            from jinja2 import StrictUndefined, TemplateError
+            from jinja2.sandbox import SandboxedEnvironment
+        except ImportError as error:
+            raise ProviderConfigurationError('native Brio scoring requires local Jinja2') from error
+        env = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
+        try:
+            prompt = env.from_string(config['chat_template']).render(
+                messages=[{'role': 'user', 'content': content}],
+                add_generation_prompt=True, **config.get('template_variables', {}))
+        except TemplateError as error:
+            raise ProviderConfigurationError('native Brio prompt template could not render: '+str(error)) from error
+        if len(prompt.encode('utf-8')) > 2 * 1024**2:
+            raise ProviderConfigurationError('rendered Brio prompt exceeds 2 MiB')
+        return prompt
+
+    def score_brio(self, state, options, *, question='', model=None,
+                   normalize='mean', cancelled=None, cache_slot=None):
+        config = self._configuration()
+        prompt = self._render_brio_prompt(config, state, question)
+        result = self.score_options(prompt, options, model=model, normalize=normalize,
+                                    cancelled=cancelled, cache_slot=cache_slot,
+                                    state_key=self._state_key(state))
+        if question:
+            result['question'] = question
+        result['object'] = 'brio.choice'
+        return result
+
+    def score_brio_questions(self, state, questions, *, model=None,
+                             normalize='mean', cancelled=None, option_limit=64,
+                             cache_slot=None, jev_model_alias=False):
+        state = self._serialize_jev_text(state, 'state')
+        if (not state or len(state.encode('utf-8')) > 1024**2 or
+                type(questions) is not list or not questions or len(questions) > 64):
+            raise ProviderConfigurationError('Brio questions must be a bounded nonempty array')
+        if normalize not in ('mean', 'sum'):
+            raise ProviderConfigurationError('Brio normalization must be mean or sum')
+        if type(jev_model_alias) is not bool:
+            raise ProviderConfigurationError('explicit Jev model alias policy required')
+        if jev_model_alias and (type(model) is not str or not model.strip()):
+            raise ProviderConfigurationError('Jev model name must be a nonempty string')
+        config = self._configuration()
+        prompts = []
+        option_groups = []
+        normalizations = []
+        questions_text = []
+        question_bytes = prompt_bytes = 0
+        for entry in questions:
+            if (type(entry) is not dict or set(entry) - {'question', 'options', 'normalize'} or
+                    type(entry.get('question')) is not str or not entry['question'].strip()):
+                raise ProviderConfigurationError('each Brio question requires question and options')
+            question_bytes += len(entry['question'].encode('utf-8'))
+            if question_bytes > 1024**2:
+                raise ProviderConfigurationError('Brio batch questions exceed the 1 MiB text budget')
+            per_normalize = entry.get('normalize', normalize)
+            if per_normalize not in ('mean', 'sum'):
+                raise ProviderConfigurationError('Brio question normalization must be mean or sum')
+            options = entry.get('options')
+            if (type(options) not in (list, tuple) or not 2 <= len(options) <= option_limit or
+                    any(type(option) is not str or not option.strip() for option in options) or
+                    len(set(options)) != len(options)):
+                raise ProviderConfigurationError('each Brio question requires distinct nonempty bounded options')
+            rendered = self._render_brio_prompt(config, state, entry['question'])
+            prompt_bytes += len(rendered.encode('utf-8'))
+            if prompt_bytes > 8 * 1024**2:
+                raise ProviderConfigurationError('Brio rendered prompt groups exceed the 8 MiB budget')
+            prompts.append(rendered)
+            option_groups.append(options)
+            normalizations.append(per_normalize)
+            questions_text.append(entry['question'])
+        if type(option_limit) is not int or option_limit not in (64, 255):
+            raise ProviderConfigurationError('Brio option limit must be the public 64 or Jev 255 contract')
+        if any(len(group) > option_limit for group in option_groups):
+            raise ProviderConfigurationError('Brio option group exceeds its admitted limit')
+        scored = self.score_option_groups(prompts, option_groups, normalizations,
+            model=None if jev_model_alias else model, cancelled=cancelled, option_limit=option_limit,
+            cache_slot=cache_slot, state_key=self._state_key(state))
+        answers = []
+        prompt_tokens = read_tokens = 0
+        for question, result in zip(questions_text, scored):
+            answers.append(dict(question=question, answer=result['answer'],
+                entropy=result['entropy'], normalize=result['normalize'],
+                choices=result['choices']))
+            prompt_tokens = max(prompt_tokens, result['usage']['prompt_tokens'])
+            read_tokens += result['usage']['read_tokens']
+        return dict(object='brio.answers', model=config['model'], answers=answers,
+            usage=dict(prompt_tokens=prompt_tokens, completion_tokens=0,
+                       read_tokens=read_tokens, total_tokens=prompt_tokens+read_tokens))
+
+    def score_brio_schema(self, state, schema, *, task='', model=None,
+                          normalize='mean', cancelled=None, cache_slot=None):
+        state = self._serialize_jev_text(state, 'state')
+        if (not state or len(state.encode('utf-8')) > 1024**2 or
+                type(schema) is not dict or not schema or len(schema) > 64):
+            raise ProviderConfigurationError('Brio schema must be a nonempty bounded object')
+        if type(task) is not str or len(task) > 1024**2:
+            raise ProviderConfigurationError('Brio schema task must be bounded text')
+        if normalize not in ('mean', 'sum'):
+            raise ProviderConfigurationError('Brio normalization must be mean or sum')
+        if cache_slot is not None:
+            if type(cache_slot) is not int or not 0 <= cache_slot < 16:
+                raise ProviderConfigurationError('cache_slot must be an integer from 0 through 15')
+            raise ProviderConfigurationError('persistent Brio cache_slot snapshots are not supported by this session owner')
+        answers = {}
+        fields = []
+        prompt_tokens = read_tokens = 0
+        model_config = self._configuration()
+        config = model_config
+        if model is not None and model != model_config['model']:
+            raise ProviderConfigurationError('requested model differs from configured native checkpoint')
+        prepared = []
+        option_groups = []
+        normalizations = []
+        fields_order = []
+        field_normalizations = []
+        option_bytes = 0
+        prompt_bytes = 0
+        for field, options in schema.items():
+            if (type(field) is not str or not field.strip() or
+                    any(character in field for character in '"\\\n\r')):
+                raise ProviderConfigurationError('Brio schema field names cannot contain quotes or newlines')
+            if (type(options) not in (list, tuple) or not 2 <= len(options) <= 64 or
+                    any(type(option) is not str or not option.strip() for option in options) or
+                    len(set(options)) != len(options)):
+                raise ProviderConfigurationError('each Brio schema field requires 2 to 64 distinct choices')
+            option_bytes += sum(len(option.encode('utf-8')) for option in options)
+            if option_bytes > 512 * 1024:
+                raise ProviderConfigurationError('Brio schema choices exceed the 512 KiB aggregate limit')
+            rendered = self._render_brio_prompt(
+                config, state, (task+'\n' if task else '')+
+                'Choose a value for '+field+'.\nValues already chosen: ')
+            prompt_bytes += len(rendered.encode('utf-8'))
+            if prompt_bytes > 8 * 1024**2:
+                raise ProviderConfigurationError('Brio schema prompts exceed the 8 MiB aggregate limit')
+            prepared.append(rendered)
+            option_groups.append(options)
+            normalizations.append(normalize)
+            field_normalizations.append(normalize)
+            fields_order.append(field)
+        # Each field includes prior selected values. The provider lifecycle lock
+        # pins one resident model for the complete dependent sequence; scoring
+        # restores the service session after every field.
+        # Keep the resident provider lifecycle lock for the entire schema so
+        # eviction or another request cannot replace the model between fields.
+        with self._request_lock(cancelled):
+            if self._closed:
+                raise ProviderUnavailableError('native provider is closed')
+            active_config = self._configuration()
+            if active_config != model_config:
+                raise ProviderConfigurationError('native scoring configuration changed during schema admission')
+            if model is not None and model != active_config['model']:
+                raise ProviderConfigurationError('requested model differs from configured native checkpoint')
+            operator, args = self._operator(active_config)
+            if active_config['family'] in ('kimi_k3', 'deepseek_v41'):
+                raise ProviderConfigurationError('closed-set scoring is not composed for direct K3/V4.1 sessions')
+            key = self._residency_key(active_config, args)
+            reused = self._session is not None and self._session_key == key
+            if not reused:
+                self._release_session()
+                started = time.monotonic()
+                try:
+                    self._session = self._construct_session(operator, args, cancelled)
+                except (ValueError, OSError, MemoryError, RuntimeError, ImportError) as error:
+                    raise ProviderUnavailableError('native scoring session could not load: '+str(error)) from error
+                self._session_key = key
+                self._loaded_at = started
+                self._last_used = time.monotonic()
+            tokenizer = self._session.tokenizer
+            prompt_ids = [tuple(tokenizer.encode(prompt, add_special_tokens=False).ids)
+                          for prompt in prepared]
+            common = list(prompt_ids[0])
+            for encoded in prompt_ids[1:]:
+                limit = min(len(common), len(encoded))
+                index = 0
+                while index < limit and common[index] == encoded[index]:
+                    index += 1
+                del common[index:]
+            if not common:
+                raise ProviderConfigurationError('schema prompts lack a reusable shared token prefix')
+            option_ids = [[tuple(tokenizer.encode(' '+option,
+                add_special_tokens=False).ids) for option in options]
+                for options in option_groups]
+            if any(not ids for group in option_ids for ids in group):
+                raise ProviderConfigurationError('schema choices must encode to nonempty token sequences')
+            if sum(len(ids) for group in option_ids for ids in group) > 65536:
+                raise ProviderConfigurationError('schema choices exceed the 65,536 token read budget')
+            prompt_suffix_tokens = 0
+            with self._session.scoring_prefix_tokens(common, cancelled=cancelled):
+                for field_index, field in enumerate(fields_order):
+                    context_suffix = json.dumps(answers, ensure_ascii=False,
+                        separators=(',', ':'), allow_nan=False)
+                    full_prompt = prepared[field_index] + context_suffix
+                    if len(full_prompt.encode('utf-8')) > 2 * 1024**2:
+                        raise ProviderConfigurationError('Brio schema field prompt exceeds the 2 MiB limit')
+                    full_ids = tuple(tokenizer.encode(full_prompt,
+                        add_special_tokens=False).ids)
+                    if full_ids[:len(common)] != tuple(common):
+                        raise ProviderConfigurationError('schema prompt changed its admitted shared token prefix')
+                    suffix = full_ids[len(common):]
+                    prompt_suffix_tokens += len(suffix)
+                    if prompt_suffix_tokens > 65536:
+                        raise ProviderConfigurationError('schema prompt suffixes exceed the 65,536 token budget')
+                    result = self._session.score_option_groups_token_ids(
+                        [suffix], [option_ids[field_index]], [field_normalizations[field_index]],
+                        option_labels=[option_groups[field_index]], cancelled=cancelled)[0]
+                    value = result['answer']
+                    answers[field] = value
+                    fields.append(dict(field=field, value=value, p=result['choices'][0]['p'],
+                        entropy=result['entropy'], choices=result['choices']))
+                    prompt_tokens = max(prompt_tokens, len(full_ids))
+                    read_tokens += result['usage']['read_tokens']
+        return dict(object='brio.schema', model=model_config['model'],
+            json=answers, fields=fields,
+            usage=dict(prompt_tokens=prompt_tokens, completion_tokens=0,
+                       read_tokens=read_tokens, total_tokens=prompt_tokens+read_tokens))
 
     def supports_vision(self):
         try:
@@ -362,24 +735,26 @@ class NativePublisherProvider(BaseProvider):
             return False
 
     def complete_vision(self, messages, image, *, media_type='image/png', model=None,
-                        max_output_tokens=None):
+                        max_output_tokens=None, stop_prefixes=()):
         self._validate_vision_input(image, media_type, max_output_tokens)
         return self._run(messages, model=model, image=image,
-                         max_output_tokens=max_output_tokens)
+                         max_output_tokens=max_output_tokens, stop_prefixes=stop_prefixes)
 
     @staticmethod
     def _validate_vision_input(image, media_type, max_output_tokens):
         if (type(image) is not bytes or not image or len(image) > 256*1024**2 or
-                type(media_type) is not str or not media_type.startswith('image/')):
+                type(media_type) is not str or not media_type.startswith('image/') or
+                any(ord(char) < 33 or ord(char) > 126 for char in media_type) or
+                media_type.count('/') != 1 or not media_type[6:].strip()):
             raise ProviderConfigurationError('bounded encoded image bytes and image MIME type required')
         if max_output_tokens is not None and (type(max_output_tokens) is not int or max_output_tokens <= 0):
             raise ProviderConfigurationError('positive integer vision output limit required')
 
     def stream_complete_vision(self, messages, image, *, media_type='image/png', model=None,
-                               max_output_tokens=None):
+                               max_output_tokens=None, stop_prefixes=()):
         self._validate_vision_input(image, media_type, max_output_tokens)
         return self._stream_run(messages, model=model, image=image,
-                                max_output_tokens=max_output_tokens)
+                                max_output_tokens=max_output_tokens, stop_prefixes=stop_prefixes)
 
     @staticmethod
     def _validate_decoded_media(items,max_output_tokens):
@@ -395,21 +770,36 @@ class NativePublisherProvider(BaseProvider):
             for frame in frames:
                 if getattr(frame,'n_frames',1)!=1:
                     raise ProviderConfigurationError('animated media requires explicitly selected decoded frames')
-                width,height=_dimensions(frame)
+                try:
+                    width,height=_dimensions(frame)
+                except (TypeError, ValueError, AttributeError, OverflowError) as error:
+                    raise ProviderConfigurationError('decoded RGB/RGBA media frame required') from error
                 if width<=0 or height<=0:raise ProviderConfigurationError('positive decoded media dimensions required')
                 total+=width*height*16
                 if total>256*1024**2:raise ProviderConfigurationError('decoded media request exceeds admission')
         return tuple(items),total
 
-    def complete_media(self,messages,media_items,*,model=None,max_output_tokens=None):
-        items,_=self._validate_decoded_media(media_items,max_output_tokens)
-        items=self._freeze_decoded_media(items)
-        return self._run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens)
+    @staticmethod
+    def _validate_stop_prefixes(value):
+        if (type(value) not in (tuple, list) or len(value)>64 or
+                any(type(prefix) not in (tuple, list) or not prefix or len(prefix)>128 or
+                    any(type(token) is not int or not 0 <= token < 2**31 for token in prefix)
+                    for prefix in value) or
+                len({tuple(prefix) for prefix in value}) != len(value)):
+            raise ProviderConfigurationError('bounded unique stop-prefix inventory required')
+        return tuple(tuple(prefix) for prefix in value)
 
-    def stream_complete_media(self,messages,media_items,*,model=None,max_output_tokens=None):
+    def complete_media(self,messages,media_items,*,model=None,max_output_tokens=None,stop_prefixes=()):
         items,_=self._validate_decoded_media(media_items,max_output_tokens)
         items=self._freeze_decoded_media(items)
-        return self._stream_run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens)
+        return self._run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens,
+                         stop_prefixes=stop_prefixes)
+
+    def stream_complete_media(self,messages,media_items,*,model=None,max_output_tokens=None,stop_prefixes=()):
+        items,_=self._validate_decoded_media(media_items,max_output_tokens)
+        items=self._freeze_decoded_media(items)
+        return self._stream_run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens,
+                                stop_prefixes=stop_prefixes)
 
     @staticmethod
     def _freeze_decoded_media(items):
@@ -419,8 +809,13 @@ class NativePublisherProvider(BaseProvider):
         from .publisher_media_inputs import PublisherVideoInput
         def frame_copy(frame):
             if isinstance(frame,np.ndarray):
-                return np.frombuffer(frame.tobytes(order='C'),dtype=np.uint8).reshape(frame.shape)
-            return frame.copy()
+                source = frame[..., :3] if frame.ndim == 3 and frame.shape[2] == 4 else frame
+                copied = np.frombuffer(source.tobytes(order='C'),dtype=np.uint8).reshape(source.shape)
+                copied.flags.writeable = False
+                return copied
+            copied = np.asarray(frame.convert('RGB'), dtype=np.uint8, order='C').copy()
+            copied.flags.writeable = False
+            return copied
         result=[]
         for item in items:
             if type(item) is K3VideoInput:
@@ -433,7 +828,7 @@ class NativePublisherProvider(BaseProvider):
         return tuple(result)
 
     def complete_checkpointed(self,messages,*,checkpoint_sink,checkpoint_max_bytes,
-                              model=None,max_output_tokens=None,media_items=None):
+                              model=None,max_output_tokens=None,media_items=None,stop_prefixes=()):
         """Generate locally while a caller-owned store publishes recovery frames."""
         if not callable(checkpoint_sink) or type(checkpoint_max_bytes) is not int or checkpoint_max_bytes<=0:
             raise ProviderConfigurationError('checkpoint sink and positive complete frame budget required')
@@ -441,33 +836,37 @@ class NativePublisherProvider(BaseProvider):
             self._validate_decoded_media(media_items,max_output_tokens)
             media_items=self._freeze_decoded_media(media_items)
         return self._run(messages,model=model,max_output_tokens=max_output_tokens,media_items=media_items,
+            stop_prefixes=stop_prefixes,
             checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
 
     def stream_complete_checkpointed(self,messages,*,checkpoint_sink,checkpoint_max_bytes,
-                                     model=None,max_output_tokens=None,media_items=None):
+                                     model=None,max_output_tokens=None,media_items=None,stop_prefixes=()):
         if not callable(checkpoint_sink) or type(checkpoint_max_bytes) is not int or checkpoint_max_bytes<=0:
             raise ProviderConfigurationError('checkpoint sink and positive complete frame budget required')
         if media_items is not None:
             self._validate_decoded_media(media_items,max_output_tokens)
             media_items=self._freeze_decoded_media(media_items)
         yield from self._stream_run(messages,model=model,max_output_tokens=max_output_tokens,
-            media_items=media_items,checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
+            media_items=media_items,stop_prefixes=stop_prefixes,
+            checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
 
     def complete_checkpoint_file(self,messages,destination,*,checkpoint_max_bytes,
-                                 model=None,max_output_tokens=None,media_items=None):
+                                 model=None,max_output_tokens=None,media_items=None,stop_prefixes=()):
         """Publish complete recovery frames to one caller-selected local file."""
         from .generation_checkpoint_files import AtomicGenerationCheckpoint
         store=AtomicGenerationCheckpoint(destination,max_bytes=checkpoint_max_bytes)
         try:
             result=self.complete_checkpointed(messages,checkpoint_sink=store,
                 checkpoint_max_bytes=checkpoint_max_bytes,model=model,
-                max_output_tokens=max_output_tokens,media_items=media_items)
+                max_output_tokens=max_output_tokens,media_items=media_items,
+                stop_prefixes=stop_prefixes)
             metadata=dict(result.metadata,checkpoint_receipt=store.receipt)
             return ModelResult(result.provider,result.model,result.content,metadata)
         finally:store.close()
 
     def resume_checkpoint_file(self,source,*,checkpoint_max_bytes,max_output_tokens,
-                               receipt=None,destination=None,model=None,emit=None,cancelled=None):
+                               receipt=None,destination=None,model=None,emit=None,cancelled=None,
+                               stop_prefixes=()):
         """Resume a stable local frame and optionally publish later boundaries.
 
         Source and destination can name the same file: capture releases its
@@ -482,7 +881,7 @@ class NativePublisherProvider(BaseProvider):
             with reader.source(receipt=receipt) as stream:
                 result=self.resume_checkpoint(stream,checkpoint_max_bytes=checkpoint_max_bytes,
                     max_output_tokens=max_output_tokens,checkpoint_sink=writer,model=model,
-                    emit=emit,cancelled=cancelled)
+                    emit=emit,cancelled=cancelled,stop_prefixes=stop_prefixes)
             return ModelResult(result.provider,result.model,result.content,
                 dict(result.metadata,checkpoint_receipt=None if writer is None else writer.receipt))
         finally:
@@ -491,18 +890,20 @@ class NativePublisherProvider(BaseProvider):
             finally:reader.close()
 
     def stream_resume_checkpoint(self,source,*,checkpoint_max_bytes,max_output_tokens,
-                                 model=None,checkpoint_sink=None):
+                                 model=None,checkpoint_sink=None,stop_prefixes=()):
         """Stream recovered tokens using the same cancellation and bounded queue."""
         yield from self._stream_run(None,model=model,max_output_tokens=max_output_tokens,
-            recovery_source=source,checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
+            recovery_source=source,checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes,
+            stop_prefixes=stop_prefixes)
 
     def resume_checkpoint(self,source,*,checkpoint_max_bytes,max_output_tokens,model=None,
-                          checkpoint_sink=None,emit=None,cancelled=None):
+                          checkpoint_sink=None,emit=None,cancelled=None,stop_prefixes=()):
         """Restore a complete supported decoder and sampler boundary under gateway ownership."""
         if (type(checkpoint_max_bytes) is not int or checkpoint_max_bytes<=0
                 or type(max_output_tokens) is not int or not 1<=max_output_tokens<=100000
                 or (checkpoint_sink is not None and not callable(checkpoint_sink))):
             raise ProviderConfigurationError('bounded recovery and continuation options required')
+        stop_prefixes = self._validate_stop_prefixes(stop_prefixes)
         with self._request_lock(cancelled):
             if self._closed:raise ProviderUnavailableError('native provider is closed')
             config=self._configuration()
@@ -511,6 +912,9 @@ class NativePublisherProvider(BaseProvider):
             self._idle_seconds=config.get('idle_timeout_seconds')
             self._lifetime_seconds=config.get('max_resident_seconds')
             operator,args=self._operator(config)
+            if stop_prefixes:
+                args.stop_prefix = [','.join(str(token) for token in prefix)
+                                    for prefix in stop_prefixes]
             key=self._residency_key(config,args)
             reused=self._session is not None and self._session_key==key
             if not reused:
@@ -520,16 +924,44 @@ class NativePublisherProvider(BaseProvider):
                 except (ValueError,OSError,MemoryError,RuntimeError,ImportError) as error:
                     raise ProviderUnavailableError('recovery session could not load: '+str(error)) from error
                 self._session_key=key;self._loaded_at=started;self._last_used=time.monotonic()
-            prior='';emitted=''
+            tokenizer = self._session.tokenizer
+            prior='';emitted='';stopped=False;stop_match=None;token_history=[]
+            def recovery_cancelled():
+                return (cancelled is not None and cancelled()) or stopped
             def event(row):
-                nonlocal prior,emitted
-                if row.get('event')=='recovered':prior=row['text'];emitted=prior;return
+                nonlocal prior,emitted,stopped,stop_match,token_history
+                if row.get('event')=='recovered':
+                    prior=row['text'];emitted=prior
+                    recovered_ids=row.get('token_ids', ())
+                    if type(recovered_ids) in (list, tuple):
+                        token_history.extend(int(token) for token in recovered_ids)
+                    return
                 if row.get('event')!='tokens' or emit is None:return
                 text=row['text']
                 if text.endswith('\ufffd'):return
                 if not text.startswith(emitted):
                     raise ProviderUnavailableError('recovery tokenizer changed streamed prefix')
                 delta=text[len(emitted):]
+                token_ids=row.get('token_ids', ())
+                if type(token_ids) not in (list, tuple) or any(type(token) is not int for token in token_ids):
+                    raise ProviderUnavailableError('recovery token event lacks an integer token inventory')
+                token_history.extend(token_ids)
+                matched=next((prefix for prefix in stop_prefixes
+                              if len(token_history)>=len(prefix) and
+                              tuple(token_history[-len(prefix):])==prefix),None)
+                if matched is not None:
+                    # The stop boundary is defined in token space.  The
+                    # decoded suffix may occupy a different number of
+                    # characters, so remove it only when the decoder exposes
+                    # the exact suffix; otherwise the final consistency check
+                    # below prevents publication of an untrimmed boundary.
+                    suffix = text[len(emitted):]
+                    decoded_stop = tokenizer.decode(list(matched), skip_special_tokens=False)
+                    if decoded_stop and suffix.endswith(decoded_stop):
+                        delta = delta[:-len(decoded_stop)]
+                    elif not decoded_stop:
+                        delta = ''
+                    stopped=True;stop_match=matched
                 if delta:emit(StreamChunk(self.id,config['model'],delta,False,
                     dict(network=False,offline=True,recovered=True,token_ids=list(row['token_ids']))))
                 emitted=text
@@ -537,15 +969,19 @@ class NativePublisherProvider(BaseProvider):
                 if config['family']=='kimi_k3':
                     output=self._session.resume_generation(source,checkpoint_max_bytes=checkpoint_max_bytes,
                         max_tokens=min(max_output_tokens,args.max_tokens),checkpoint_sink=checkpoint_sink,
-                        emit=event,cancelled=cancelled)
+                        emit=event,cancelled=recovery_cancelled)
                 else:
                     output=self._session.resume_generation(source,max_bytes=checkpoint_max_bytes,
                         max_new_tokens=min(max_output_tokens,args.max_tokens),checkpoint_sink=checkpoint_sink,
                         max_checkpoint_bytes=checkpoint_max_bytes if checkpoint_sink is not None else 0,
-                        emit=event,cancelled=cancelled)
+                        emit=event,cancelled=recovery_cancelled)
                 content=output['text']
-                if not content.startswith(prior) or not content.startswith(emitted):
+                if not content.startswith(prior) or (not stopped and not content.startswith(emitted)):
                     raise ProviderUnavailableError('final recovery output changed its captured prefix')
+                if stopped and stop_match is not None:
+                    decoded_stop = tokenizer.decode(list(stop_match), skip_special_tokens=False)
+                    if decoded_stop and content.endswith(decoded_stop):
+                        content=content[:-len(decoded_stop)]
                 if emit is not None and len(content)>len(emitted):
                     emit(StreamChunk(self.id,config['model'],content[len(emitted):],False,
                         dict(network=False,offline=True,recovered=True)))
@@ -558,9 +994,22 @@ class NativePublisherProvider(BaseProvider):
                 raise ProviderUnavailableError('native recovery failed: '+str(error)) from error
 
     def _run(self, messages, *, model=None, emit=None, cancelled=None, image=None,
-             max_output_tokens=None,media_items=None,checkpoint_sink=None,checkpoint_max_bytes=None):
+             max_output_tokens=None,media_items=None,stop_prefixes=(),
+             checkpoint_sink=None,checkpoint_max_bytes=None):
         if image is not None and media_items is not None:
             raise ProviderConfigurationError('one encoded image or decoded media sequence required')
+        if media_items is not None:
+            if type(media_items) not in (list, tuple):
+                raise ProviderConfigurationError('decoded media sequence must be an explicit list or tuple')
+            if not media_items:
+                raise ProviderConfigurationError('decoded media sequence must be nonempty')
+            # Preserve caller order and membership for the complete request;
+            # the media input objects own their detached pixel/frame buffers.
+            media_items = tuple(media_items)
+        stop_prefixes = self._validate_stop_prefixes(stop_prefixes)
+        if (max_output_tokens is not None and
+                (type(max_output_tokens) is not int or max_output_tokens <= 0)):
+            raise ProviderConfigurationError('positive integer output limit required')
         try:
             from jinja2 import StrictUndefined, TemplateError
             from jinja2.sandbox import SandboxedEnvironment
@@ -669,6 +1118,9 @@ class NativePublisherProvider(BaseProvider):
                 if hasattr(args,'prompt_text'):
                     args.prompt_text = prompt
             args.token_ids = json.dumps(prompt_ids)
+            if stop_prefixes:
+                args.stop_prefix = [','.join(str(token) for token in prefix)
+                                    for prefix in stop_prefixes]
             generated, emitted = [], ''
             def on_event(event):
                 nonlocal emitted
@@ -729,12 +1181,27 @@ class NativePublisherProvider(BaseProvider):
                      residency_eviction_policy='lazy-between-requests-or-status',
                      resident_session_reused=reused))
 
-    def stream_complete(self, messages, *, model=None):
-        return self._stream_run(messages, model=model)
+    def stream_complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=()):
+        return self._stream_run(messages, model=model, max_output_tokens=max_output_tokens,
+                                stop_prefixes=stop_prefixes)
 
     def _stream_run(self, messages, *, model=None, image=None, max_output_tokens=None,media_items=None,
+                    stop_prefixes=(),
                     checkpoint_sink=None,checkpoint_max_bytes=None,recovery_source=None):
         from .execution_service import ExecutionCancelled
+        if (max_output_tokens is not None and
+                (type(max_output_tokens) is not int or max_output_tokens <= 0)):
+            raise ProviderConfigurationError('positive integer output limit required')
+        stop_prefixes = self._validate_stop_prefixes(stop_prefixes)
+        if messages is not None:
+            if (type(messages) is not list or not messages or len(messages)>10000 or
+                    any(type(item) is not dict or item.get('role') not in
+                        ('system','user','assistant','tool') or type(item.get('content')) is not str
+                        for item in messages)):
+                raise ProviderConfigurationError('validated textual chat messages required')
+            if sum(len(item['content'].encode('utf-8')) for item in messages)>1024**2:
+                raise ProviderConfigurationError('native chat input exceeds 1 MiB')
+            messages=[{'role':item['role'],'content':item['content']} for item in messages]
         queue = Queue(maxsize=8)
         stopped = threading.Event()
         def put(item):
@@ -750,20 +1217,44 @@ class NativePublisherProvider(BaseProvider):
                 if recovery_source is not None:
                     result=self.resume_checkpoint(recovery_source,model=model,emit=put,cancelled=stopped.is_set,
                         checkpoint_max_bytes=checkpoint_max_bytes,max_output_tokens=max_output_tokens,
-                        checkpoint_sink=checkpoint_sink)
+                        checkpoint_sink=checkpoint_sink,stop_prefixes=stop_prefixes)
                 else:
                     result = self._run(messages, model=model, emit=put, cancelled=stopped.is_set,
                         image=image, max_output_tokens=max_output_tokens,media_items=media_items,
+                        stop_prefixes=stop_prefixes,
                         checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
                 put(StreamChunk(result.provider, result.model, '', True, result.metadata))
-            except Exception as error:
+            except BaseException as error:
                 if not stopped.is_set():
                     try:
                         put(error)
                     except ExecutionCancelled:
                         pass
+            finally:
+                # Publish the terminal worker state while the ownership lock
+                # is still held.  Lifecycle/status readers must never see a
+                # cleared thread marker before the stream ownership token is
+                # released, or vice versa.
+                with self._lock:
+                    if self._stream_thread is threading.current_thread():
+                        self._stream_thread = None
+                self._stream_lock.release()
         thread = threading.Thread(target=worker, name='native-publisher-stream', daemon=True)
-        thread.start()
+        if not self._stream_lock.acquire(blocking=False):
+            raise ProviderUnavailableError('native stream worker is still active')
+        with self._lock:
+            if self._closed:
+                self._stream_lock.release()
+                raise ProviderUnavailableError('native provider is closed')
+            self._stream_thread = thread
+        try:
+            thread.start()
+        except BaseException:
+            with self._lock:
+                if self._stream_thread is thread:
+                    self._stream_thread = None
+            self._stream_lock.release()
+            raise
         try:
             while True:
                 try:
@@ -772,7 +1263,7 @@ class NativePublisherProvider(BaseProvider):
                     if not thread.is_alive():
                         raise ProviderUnavailableError('native stream ended without a completion event')
                     continue
-                if isinstance(item, Exception):
+                if isinstance(item, BaseException):
                     raise item
                 yield item
                 if item.done:

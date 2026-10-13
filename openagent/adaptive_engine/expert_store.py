@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import hashlib
 import mmap
 from pathlib import Path
+import stat
 import threading
 import time
 from typing import Iterable, Iterator
@@ -67,7 +68,7 @@ class DiskExpertStore:
         prefetch_workers: int = 1,
         prefetch_depth: int = 2,
     ) -> None:
-        if capacity_bytes <= 0:
+        if type(capacity_bytes) is not int or capacity_bytes <= 0:
             raise ValueError("capacity_bytes must be positive")
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
@@ -80,20 +81,24 @@ class DiskExpertStore:
             if not resolved.is_dir():
                 raise ValueError("each expert storage root must be a directory")
             self.storage_roots[name] = resolved
-        self.capacity_bytes = int(capacity_bytes)
+        self.capacity_bytes = capacity_bytes
         if io_mode not in {"buffered", "mmap", "direct", "uring"}:
             raise ValueError("io_mode must be buffered, mmap, direct or uring")
         self.io_mode = io_mode
-        if prefetch_workers <= 0 or prefetch_depth < prefetch_workers:
+        if (type(prefetch_workers) is not int or type(prefetch_depth) is not int or
+                prefetch_workers <= 0 or prefetch_depth < prefetch_workers):
             raise ValueError("prefetch_depth must be at least the positive worker count")
-        self.prefetch_workers = int(prefetch_workers)
-        self.prefetch_depth = int(prefetch_depth)
+        self.prefetch_workers = prefetch_workers
+        self.prefetch_depth = prefetch_depth
         self.regions = dict(regions)
         self._file_signatures: dict[Path, tuple[int, int]] = {}
         self._verified: set[str] = set()
         self._maps: dict[Path, mmap.mmap] = {}
         for key, region in self.regions.items():
-            if not key or region.offset < 0 or region.size <= 0 or region.size > self.capacity_bytes:
+            if (type(key) is not str or not key or type(region) is not ExpertRegion or
+                    type(region.storage) is not str or
+                    type(region.offset) is not int or type(region.size) is not int or
+                    region.offset < 0 or region.size <= 0 or region.size > self.capacity_bytes):
                 raise ValueError("invalid expert region or region exceeds capacity")
             if region.sha256 and (len(region.sha256) != 64 or any(c not in "0123456789abcdef" for c in region.sha256)):
                 raise ValueError("sha256 must be a lowercase hexadecimal digest")
@@ -110,10 +115,27 @@ class DiskExpertStore:
                            demand_waits=0, read_seconds=0.0)
 
     def _path(self, region: ExpertRegion) -> Path:
+        if (type(region.path) is not str or not region.path or
+                Path(region.path).is_absolute()):
+            raise ValueError("expert file path must be a relative non-empty string")
         storage_root = self.storage_roots.get(region.storage)
         if storage_root is None:
             raise ValueError(f"unknown expert storage root: {region.storage}")
-        path = (storage_root / region.path).resolve(strict=True)
+        candidate = storage_root / region.path
+        probe = candidate.absolute()
+        while True:
+            try:
+                info = probe.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (stat.S_ISLNK(info.st_mode) or
+                        getattr(info, 'st_file_attributes', 0) & 0x400):
+                    raise ValueError("expert file paths cannot traverse links or reparse points")
+            if probe == storage_root or probe.parent == probe:
+                break
+            probe = probe.parent
+        path = candidate.resolve(strict=True)
         if not path.is_relative_to(storage_root) or not path.is_file():
             raise ValueError("expert file must remain inside its declared storage root")
         stat = path.stat()
@@ -169,7 +191,7 @@ class DiskExpertStore:
                     break
         return True
 
-    def _read_payload(self, key: str) -> bytearray | memoryview:
+    def _read_payload(self, key: str, cancelled=None) -> bytearray | memoryview:
         region = self.regions[key]
         path = self._path(region)
         started = time.perf_counter()
@@ -201,11 +223,15 @@ class DiskExpertStore:
                     with memoryview(payload) as view:
                         offset = 0
                         while offset < region.size:
+                            if cancelled is not None and cancelled():
+                                raise InterruptedError("expert payload read cancelled")
                             count = source.readinto(view[offset:])
                             if not count:
                                 raise OSError("expert file ended before the declared region")
                             offset += count
                             bytes_read += count
+            if cancelled is not None and cancelled():
+                raise InterruptedError("expert payload read cancelled")
             if region.sha256 and key not in self._verified:
                 if hashlib.sha256(payload).hexdigest() != region.sha256:
                     raise ValueError("expert checksum mismatch")
@@ -218,17 +244,19 @@ class DiskExpertStore:
                 self._stats["read_seconds"] += time.perf_counter() - started
         return payload
 
-    def _load(self, key: str, *, prefetch: bool = False) -> _Entry | None:
+    def _load(self, key: str, *, prefetch: bool = False, cancelled=None) -> _Entry | None:
         region = self.regions[key]
         if not self._make_room(region.size, prefetch=prefetch):
             return None
-        payload = self._read_payload(key)
+        payload = self._read_payload(key, cancelled)
         entry = _Entry(payload, prefetched=prefetch)
         self._entries[key] = entry
         return entry
 
     @contextmanager
-    def acquire(self, key: str) -> Iterator[memoryview]:
+    def acquire(self, key: str, *, cancelled=None) -> Iterator[memoryview]:
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError("expert lease cancellation must be callable")
         pending = None
         with self._lock:
             self._check_open()
@@ -238,13 +266,19 @@ class DiskExpertStore:
             if pending is not None and not pending.done():
                 self._stats["demand_waits"] += 1
         if pending is not None:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("expert lease acquisition cancelled")
             pending.result()
+        if cancelled is not None and cancelled():
+            raise InterruptedError("expert lease acquisition cancelled")
         with self._lock:
             self._check_open()
+            if cancelled is not None and cancelled():
+                raise InterruptedError("expert lease acquisition cancelled")
             entry = self._entries.get(key)
             if entry is None:
                 self._stats["misses"] += 1
-                entry = self._load(key)
+                entry = self._load(key, cancelled=cancelled)
             else:
                 self._stats["hits"] += 1
                 if entry.prefetched:
@@ -308,6 +342,13 @@ class DiskExpertStore:
                 self._reservations.pop(key, None)
                 self._stats["prefetch_errors"] += 1
             return False
+        except BaseException:
+            # Memory/admission failures must not strand the reservation while
+            # the worker future carries the original failure to the caller.
+            with self._lock:
+                self._reservations.pop(key, None)
+                self._stats["prefetch_errors"] += 1
+            raise
         with self._lock:
             self._reservations.pop(key, None)
             if self._closed or key in self._entries:

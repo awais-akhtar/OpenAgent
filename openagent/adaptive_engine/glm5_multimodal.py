@@ -12,6 +12,7 @@ from .publisher_checkpoint.storage import snapshot
 from .glm5_vision import Glm5VisionEncoder
 from .flat_native_session import FlatNativeSession
 from .qwen4_vision import _cancel
+from .publisher_media_files import read_regular
 
 class Glm5MultimodalDecoder:
     implementation='native-c-glm5-next-conditional-fp32'
@@ -31,7 +32,7 @@ class Glm5MultimodalDecoder:
             raise ValueError('native public GLM requires CPU text execution and explicit native work admission')
         inventory=snapshot(directory,max_metadata_bytes=min(max_weight_bytes,256*1024**2),max_tensors=1000000,max_shards=4096)
         from .native_checkpoint import _pairs
-        with Path(directory).joinpath('config.json').open('rb') as stream: raw=stream.read(1024**2+1)
+        raw=read_regular(Path(directory)/'config.json',max_bytes=1024**2)
         if (len(raw)>1024**2 or hashlib.sha256(raw).hexdigest()!=inventory.config_sha256 or
                 json.loads(raw,object_pairs_hook=_pairs)!=config):
             raise ValueError('GLM conditional checkpoint configuration changed after admission')
@@ -164,9 +165,24 @@ class Glm5MultimodalDecoder:
         with self._lock:
             if self._busy: raise RuntimeError('GLM media inference owns resources')
             if self._closed: return
-            if self.owner is not None: self.owner.close();self.owner=None
-            if self.session is not None: self.session.close();self.session=None
-            if self.vision is not None: self.vision.close();self.vision=None
+            errors=[]
+            # The continuation session owns snapshots around the decoder also
+            # referenced by the text owner. Retire it first, then let the text
+            # owner close its decoder/provider resources; still attempt every
+            # independent owner when any close fails.
+            if self.session is not None:
+                try: self.session.close();self.session=None
+                except BaseException as error: errors.append(error)
+            if self.owner is not None:
+                try: self.owner.close();self.owner=None
+                except BaseException as error: errors.append(error)
+            if self.vision is not None:
+                try: self.vision.close();self.vision=None
+                except BaseException as error: errors.append(error)
+            if errors:
+                failure=RuntimeError('GLM conditional cleanup remains pending')
+                for error in errors: failure.add_note(str(error))
+                raise failure from errors[0]
             self.auxiliary.clear();self._closed=True
 
 __all__=['Glm5MultimodalDecoder']

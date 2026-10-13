@@ -68,8 +68,20 @@ class _WriteStream:
     def __init__(self, callback, user, limit):
         self.callback, self.user, self.limit = callback, user, limit
         self.count = 0
+        self._owner_thread = None
+        self._active = False
 
     def write(self, data):
+        thread = threading.get_ident()
+        if self._active or (self._owner_thread is not None and self._owner_thread != thread):
+            raise RuntimeError("native snapshot writer callback reentry or thread handoff")
+        self._owner_thread, self._active = thread, True
+        try:
+            return self._write(data)
+        finally:
+            self._active = False
+
+    def _write(self, data):
         if len(data) > self.limit-self.count:
             raise MemoryError("snapshot exceeds adapter transport admission")
         raw = bytes(data)
@@ -87,8 +99,20 @@ class _ReadStream:
         self.count = 0
         self.extent = None
         self.header_bytes = None
+        self._owner_thread = None
+        self._active = False
 
     def read(self, count):
+        thread = threading.get_ident()
+        if self._active or (self._owner_thread is not None and self._owner_thread != thread):
+            raise RuntimeError("native snapshot reader callback reentry or thread handoff")
+        self._owner_thread, self._active = thread, True
+        try:
+            return self._read(count)
+        finally:
+            self._active = False
+
+    def _read(self, count):
         if self.extent is not None and self.count == self.extent:
             return b""
         if type(count) is not int or count < 0 or count > self.limit-self.count:
@@ -108,8 +132,22 @@ class _ReadStream:
         elif self.count == 12:
             if count != self.header_bytes:
                 raise ValueError("snapshot header read differs from its declared length")
-            document = json.loads(raw)
-            shapes = document.get("shapes") if type(document) is dict else None
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate native snapshot header field")
+                    result[key] = value
+                return result
+            document = json.loads(
+                raw, object_pairs_hook=unique,
+                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+            if (type(document) is not dict or
+                    set(document) != {'identity', 'position', 'shapes'} or
+                    type(document['identity']) is not dict or
+                    type(document['position']) is not int or document['position'] < 0):
+                raise ValueError("invalid native snapshot identity or boundary")
+            shapes = document['shapes']
             if type(shapes) is not list or len(shapes) > 8192:
                 raise ValueError("invalid native snapshot array inventory")
             payload = 0
@@ -162,6 +200,7 @@ class NativeOlmoePublicAdapters:
         self.lock = threading.RLock()
         self.objects = {}
         self.pending = {}
+        self._destroying = set()
         self.next_id = 1
         self._initialize_resource_ledger(max_resource_bytes)
         self.registered_segment = self.registered_edge = False
@@ -213,6 +252,7 @@ class NativeOlmoePublicAdapters:
         def guarded(*arguments):
             receipt = None
             frame = None
+            status = 0
             try:
                 if callback_type in (_SOPEN, _EOPEN, _CREATE):
                     if getattr(self._construction, 'frame', None) is not None:
@@ -222,14 +262,20 @@ class NativeOlmoePublicAdapters:
                     frame = [receipt, False]
                     self._construction.frame = frame
                 function(*arguments[:-2])
-                return 0
+                status = 0
             except BaseException as error:
-                return _error(arguments[-2], arguments[-1], error)
+                status = _error(arguments[-2], arguments[-1], error)
             finally:
                 if frame is not None:
                     self._construction.frame = None
                     if not frame[1]:
-                        self.resource_ledger.abandon(receipt)
+                        try:
+                            self.resource_ledger.abandon(receipt)
+                        except BaseException as cleanup:
+                            if status == 0:
+                                status = _error(arguments[-2], arguments[-1], cleanup)
+
+            return status
         callback = callback_type(guarded)
         self._callbacks.append(callback)
         return callback
@@ -240,6 +286,13 @@ class NativeOlmoePublicAdapters:
                 entry = self.objects.get(number)
                 if entry is None or entry[0] != kind:
                     return
+                # Native runtimes may repeat a destroy callback while an
+                # earlier callback is still unwinding.  Claim the resource
+                # before releasing the registry lock so only one owner calls
+                # into its close path; failures remain registered for retry.
+                if number in self._destroying:
+                    return
+                self._destroying.add(number)
             try:
                 entry[1].close()
             except BaseException as error:
@@ -249,27 +302,41 @@ class NativeOlmoePublicAdapters:
                 with self.lock:
                     self.objects.pop(number, None)
                     self.pending.pop(number, None)
+            finally:
+                with self.lock:
+                    self._destroying.discard(number)
         callback = _VOID(destroy)
         self._callbacks.append(callback)
         return callback
 
     def retry_cleanup(self):
         with self.lock:
-            order = sorted(self.pending, key=lambda n: self.objects[n][0] != "session")
+            order = sorted((number for number in self.pending
+                            if number not in self._destroying),
+                           key=lambda n: self.objects[n][0] != "session")
         errors = []
         for number in order:
             with self.lock:
+                if number in self._destroying:
+                    continue
                 entry = self.objects.get(number)
+                if entry is not None:
+                    self._destroying.add(number)
             if entry is None:
                 continue
             try:
                 entry[1].close()
             except BaseException as error:
                 errors.append(error)
+                with self.lock:
+                    self.pending[number] = error
             else:
                 with self.lock:
                     self.objects.pop(number, None)
                     self.pending.pop(number, None)
+            finally:
+                with self.lock:
+                    self._destroying.discard(number)
         if errors:
             raise RuntimeError("registered native adapter cleanup is incomplete") from errors[0]
 
@@ -323,6 +390,12 @@ class NativeOlmoePublicAdapters:
         def run(session_id, raw_request):
             session = self._get(session_id, "session")
             request = raw_request.contents
+            if (request.size != C.sizeof(_Run) or type(request.rows) is not int or
+                    not 0 < request.rows <= self.rows or request.position < 0 or
+                    not request.input or not request.output or
+                    request.input_bytes != request.rows * session._engine.config.hidden_size * 4 or
+                    request.output_bytes != request.input_bytes):
+                raise ValueError("invalid counted native segment request")
             if session.position != request.position:
                 raise ValueError("native segment position differs from the requested sequence")
             width = session._engine.config.hidden_size
@@ -370,6 +443,11 @@ class NativeOlmoePublicAdapters:
         def embed(edge_id, raw_request):
             edge = self._get(edge_id, "edge")
             request = raw_request.contents
+            if (request.size != C.sizeof(_Embed) or not 0 < request.rows <= self.rows or
+                    not request.tokens or not request.output or
+                    request.token_count != request.rows or
+                    request.output_bytes != request.rows * edge.config.hidden_size * 4):
+                raise ValueError("invalid counted native embedding request")
             if request.cancel and request.cancel(request.cancel_data):
                 raise RuntimeError("embedding cancelled")
             ids = np.ctypeslib.as_array(C.cast(request.tokens, C.POINTER(C.c_int32)), shape=(request.rows,))
@@ -381,6 +459,11 @@ class NativeOlmoePublicAdapters:
         def logits(edge_id, raw_request):
             edge = self._get(edge_id, "edge")
             request = raw_request.contents
+            if (request.size != C.sizeof(_Logits) or not 0 < request.rows <= self.rows or
+                    not request.input or not request.output or
+                    request.input_bytes != request.rows * edge.config.hidden_size * 4 or
+                    request.capacity < request.rows * edge.config.vocab_size * 4):
+                raise ValueError("invalid counted native logits request")
             if request.cancel and request.cancel(request.cancel_data):
                 raise RuntimeError("logit generation cancelled")
             view = np.ctypeslib.as_array(C.cast(request.input, C.POINTER(C.c_float)),
@@ -392,7 +475,8 @@ class NativeOlmoePublicAdapters:
 
         def tokenize(edge_id, pointer, size, output, capacity, count):
             self._get(edge_id, "edge")
-            if self.tokenizer is None or size > self.staging_bytes:
+            if (self.tokenizer is None or size > self.staging_bytes or
+                    (size and not pointer) or not count):
                 raise ValueError("tokenizer unavailable or text exceeds admission")
             text = C.string_at(pointer, size).decode("utf-8", errors="strict")
             ids = self.tokenizer.encode(text, add_special_tokens=False).ids
@@ -408,6 +492,12 @@ class NativeOlmoePublicAdapters:
         def select(edge_id, raw_request):
             edge = self._get(edge_id, "edge")
             request = raw_request.contents
+            if (request.size != C.sizeof(_Select) or not 0 < request.rows <= self.rows or
+                    not request.input or not request.tokens or
+                    request.input_bytes != request.rows * edge.config.hidden_size * 4 or
+                    request.token_capacity < request.rows or
+                    (request.scores and request.score_capacity < request.rows)):
+                raise ValueError("invalid counted native selection request")
             if request.cancel and request.cancel(request.cancel_data):
                 raise RuntimeError("greedy selection cancelled")
             view = np.ctypeslib.as_array(C.cast(request.input, C.POINTER(C.c_float)),
@@ -425,7 +515,8 @@ class NativeOlmoePublicAdapters:
 
         def detokenize(edge_id, pointer, count, output, capacity, size):
             self._get(edge_id, "edge")
-            if self.tokenizer is None or count*4 > self.staging_bytes:
+            if (self.tokenizer is None or count*4 > self.staging_bytes or
+                    (count and not pointer) or not size):
                 raise ValueError("detokenizer unavailable or input exceeds admission")
             ids = np.ctypeslib.as_array(C.cast(pointer, C.POINTER(C.c_int32)), shape=(count,))
             value = self.tokenizer.decode(ids.tolist(), skip_special_tokens=False).encode("utf-8")

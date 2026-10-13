@@ -182,7 +182,11 @@ class LowBitExpertBackend:
             evidence=(KernelEvidence("implementation", "Direct low-bit row reductions"),))
 
     def _check_available(self):
-        pass
+        if (self.dtype not in (INT2, INT3) or type(self.bits) is not int or
+                self.bits not in (2, 3) or (self.group is not None and
+                (type(self.group) is not int or self.group <= 0)) or
+                type(self.max_scratch_bytes) is not int or self.max_scratch_bytes <= 0):
+            raise RuntimeError("low-bit backend admission state is invalid")
 
     def _run(self, raw, *arguments):
         return _kernel(raw, *arguments)

@@ -58,10 +58,8 @@ class FlatNativeSession:
             array = decoder.weights[name]
             digest.update(repr((name,array.shape,array.dtype.str)).encode())
             digest.update(memoryview(array).cast('B'))
-        library = Path(decoder.library._name).resolve(strict=True)
-        with library.open('rb') as stream:
-            for block in iter(lambda:stream.read(1024**2),b''):
-                digest.update(block)
+        decoder._library_identity.assert_unchanged()
+        digest.update(bytes.fromhex(decoder._library_identity.sha256))
         self.identity = 'oa-flat-native-v1:'+digest.hexdigest()
         self._admit(self._full_state_bytes)
 
@@ -69,9 +67,11 @@ class FlatNativeSession:
     def position(self):
         return self.decoder.position
 
-    def _check(self):
+    def _check(self, *, check_source=True):
         if self._closed or self._busy:
             raise RuntimeError('flat native session closed or active')
+        if check_source:
+            self.decoder._library_identity.assert_unchanged()
 
     def _admit(self, staging):
         base=max(self._weights+self._full_state_bytes,
@@ -100,13 +100,13 @@ class FlatNativeSession:
     def forward(self, tokens):
         with self._lock:
             self._check()
-            self._cancel()
             ids = np.asarray(tokens)
             if ids.ndim!=1 or ids.dtype.kind not in 'iu' or not 0<ids.size<=4096:
                 raise ValueError('bounded integer token sequence required')
             self._admit(self._full_state_bytes+ids.size*(self.vocabulary*8+16))
             self._busy = True
             try:
+                self._cancel()
                 result = self.decoder.forward(ids[None,:],cancelled=self._cancel)
                 logits = result['logits'] if isinstance(result,dict) else result.logits
                 if logits.shape!=(1,ids.size,self.vocabulary) or not np.isfinite(logits).all():
@@ -186,13 +186,17 @@ class FlatNativeSession:
         with self._lock:
             self._check()
             _,banks,_ = self._owned(handle)
-            staged = self._stage(banks,handle.position)
-            self._cancel()
-            self.decoder._cache,self.decoder.position = staged,handle.position
+            self._busy = True
+            try:
+                staged = self._stage(banks,handle.position)
+                self._cancel()
+                self.decoder._cache,self.decoder.position = staged,handle.position
+            finally:
+                self._busy = False
 
     def release_snapshot(self, handle):
         with self._lock:
-            self._check()
+            self._check(check_source=False)
             _,_,size = self._owned(handle)
             del self._snapshots[handle.key]
             self._snapshot_bytes -= size
@@ -238,7 +242,8 @@ class FlatNativeSession:
                 if prefix[:8]!=_MAGIC or not 0<length<=min(65536,max_bytes-44):
                     raise ValueError('invalid flat native frame header')
                 raw = _read(source,length)
-                header = json.loads(raw,object_pairs_hook=_pairs)
+                header = json.loads(raw, object_pairs_hook=_pairs,
+                                    parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
                 if (type(header) is not dict or set(header)!={'identity','position','empty','shapes'} or
                         header['identity']!=self.identity or type(header['empty']) is not bool or
                         header['shapes']!=json.loads(json.dumps(self.shapes))):
@@ -259,7 +264,8 @@ class FlatNativeSession:
                             bank.append(data)
                         banks.append(tuple(bank))
                     banks = tuple(banks)
-                if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
+                if (not hmac.compare_digest(digest.digest(), _read(source, 32)) or
+                        _read(source, 1) != b''):
                     raise ValueError('native frame checksum or EOF mismatch')
                 staged = self._stage(banks,header['position'])
                 self._cancel()

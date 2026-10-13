@@ -383,8 +383,8 @@ class PublisherSession:
         return self.generate(emit=emit, cancelled=cancelled, _request_args=request)
 
     def _close_unlocked(self):
-        self._closed = True
         self._owned.close()
+        self._closed = True
         self._model = self._tokenizer = self._checkpoint = None
 
     def close(self):
@@ -398,6 +398,7 @@ class PublisherSession:
 
     def generate(self, *, prompt=None, token_ids=None, max_tokens=None, prefill_chunk=None,
                  temperature=None, seed=None, stop_token_ids=None, emit=None, cancelled=None,
+                 stop_prefixes=(),
                  images=None, media_items=None, checkpoint_sink=None,checkpoint_max_bytes=None,
                  checkpoint_scratch_directory=None,_request_args=None):
         """Return the CLI result; token_ids accepts a list/tuple or JSON array.
@@ -425,11 +426,23 @@ class PublisherSession:
                     max_tokens, prefill_chunk = _request_args.max_tokens, _request_args.prefill_chunk
                     temperature, seed = _request_args.temperature, _request_args.seed
                     stop_token_ids = _request_args.stop_token_id
+                    raw_prefixes = getattr(_request_args, 'stop_prefix', []) or []
+                    try:
+                        if (type(raw_prefixes) not in (tuple, list) or
+                                any(type(value) is not str or not value or
+                                    any(not token.strip() for token in value.split(','))
+                                    for value in raw_prefixes)):
+                            raise ValueError('stop prefixes require comma-separated token IDs')
+                        stop_prefixes = tuple(tuple(int(token.strip()) for token in value.split(','))
+                            for value in raw_prefixes)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError('stop prefixes require comma-separated token IDs') from error
                     images = getattr(_request_args, 'image', [])
                     self._sampling_options(max_tokens, prefill_chunk, temperature, seed)
                     self._validate_stops(stop_token_ids)
                 result = self._generate(prompt, token_ids, max_tokens, prefill_chunk,
                     temperature, seed, stop_token_ids, emit,
+                    stop_prefixes,
                     self._cancelled if cancelled is None else cancelled, images,media_items,
                     checkpoint_sink,checkpoint_max_bytes,checkpoint_scratch_directory)
             except BaseException as error:
@@ -453,7 +466,7 @@ class PublisherSession:
             self._lock.release()
 
     def _generate(self, prompt, token_ids, max_tokens, prefill_chunk, temperature,
-                  seed, stop_token_ids, emit, cancelled, images,media_items=None,
+                  seed, stop_token_ids, emit, stop_prefixes, cancelled, images,media_items=None,
                   checkpoint_sink=None,checkpoint_max_bytes=None,checkpoint_scratch_directory=None):
         started = time.perf_counter()
         _check_cancelled(cancelled)
@@ -529,6 +542,13 @@ class PublisherSession:
             raise MemoryError('token history exceeds input budget')
         additional_stops = self._validate_stops(args.stop_token_id if stop_token_ids is None else stop_token_ids)
         stops = self._stops | additional_stops
+        if (type(stop_prefixes) not in (tuple, list) or len(stop_prefixes)>64 or
+                any(type(prefix) not in (tuple, list) or not prefix or len(prefix)>128 or
+                    any(type(token) is not int or not 0<=token<self._vocabulary for token in prefix)
+                    for prefix in stop_prefixes) or
+                len({tuple(prefix) for prefix in stop_prefixes}) != len(stop_prefixes)):
+            raise ValueError('bounded unique K3 stop-prefix inventory required')
+        stop_prefixes = tuple(tuple(prefix) for prefix in stop_prefixes)
         rng = np.random.default_rng(seed)
         reused = self._requests > 0
         self._requests += 1
@@ -557,7 +577,12 @@ class PublisherSession:
             count = len(tokens) if expanded_count is None else expanded_count
             with self._model.cancellation_scope(request_cancel):
                 output = np.asarray(self._model.forward(np.asarray(tokens, dtype=np.int64),
-                    position_ids=np.arange(start, start + count, dtype=np.int64), **(media or {})))
+                    # K3Execution owns placeholder expansion and derives the
+                    # expanded rotary positions itself.  Supplying `count`
+                    # positions here would give it expanded positions for an
+                    # original-token input and make media requests fail extent
+                    # validation (or misalign once that validation changes).
+                    position_ids=np.arange(start, start + len(tokens), dtype=np.int64), **(media or {})))
             _check_cancelled(cancelled)
             if output.shape != (count, self._vocabulary) or self._model.position != start + count:
                 raise ValueError('executor output/prefix differs from appended token inventory')
@@ -589,7 +614,7 @@ class PublisherSession:
                 boundary=GenerationBoundary(self._config_sha256,self._model.position,tuple(ids),
                     tuple(generated),expanded_prompt,np.asarray(logits,dtype=np.float32),
                     copy.deepcopy(rng.bit_generator.state),temperature,tuple(sorted(stops)),scope,
-                    tuple(copy.deepcopy(media_metadata)),self._tokenizer_sha256)
+                    stop_prefixes,tuple(copy.deepcopy(media_metadata)),self._tokenizer_sha256)
                 self._publish_boundary(checkpoint_sink,boundary,checkpoint_max_bytes,checkpoint_scratch_directory)
                 _check_cancelled(cancelled)
         save_boundary()
@@ -604,8 +629,11 @@ class PublisherSession:
                 first_token_ms = (time.perf_counter() - loaded) * 1000
             event('tokens', token_ids=[token], position=self._model.position,
                   text=self._tokenizer.decode(generated, skip_special_tokens=False))
-            if token in stops:
-                finish_reason = 'eos' if token in self._stops else 'stop_token'
+            prefix_stopped = any(len(generated) >= len(prefix) and
+                tuple(generated[-len(prefix):]) == prefix for prefix in stop_prefixes)
+            if token in stops or prefix_stopped:
+                finish_reason = ('eos' if token in self._stops else
+                                 'stop_prefix' if prefix_stopped else 'stop_token')
                 break
         _check_cancelled(cancelled)
         load_ms = 0.0 if reused else self._load_ms
@@ -675,7 +703,7 @@ class PublisherSession:
                         return value
                 boundary=restore_generation_boundary(self._model,RecoverySource(),config_sha256=self._config_sha256,
                     tokenizer_sha256=self._tokenizer_sha256,max_bytes=checkpoint_max_bytes,
-                    scratch_directory=checkpoint_scratch_directory)
+                    scratch_directory=checkpoint_scratch_directory,cancelled=cancelled)
                 if self._model.position+max_tokens>self._args.context:
                     raise ValueError('restored prefix plus continuation exceeds context')
                 if (len(boundary.prompt_ids)+len(boundary.generated_ids)+max_tokens)*32>self._budgets['input']:
@@ -683,6 +711,7 @@ class PublisherSession:
                 rng=np.random.default_rng();rng.bit_generator.state=copy.deepcopy(boundary.rng_state)
                 logits=boundary.next_logits;generated=list(boundary.generated_ids)
                 stops=set(boundary.stop_token_ids)
+                stop_prefixes=tuple(boundary.stop_prefixes)
                 if not self._stops<=stops:raise ValueError('recovery omitted configured EOS boundaries')
                 finish='length';added=[]
                 if emit is not None:emit(dict(event='recovered',position=self._model.position,
@@ -691,8 +720,13 @@ class PublisherSession:
                     def is_set(self):return bool(cancelled is not None and cancelled())
                 for _ in range(max_tokens):
                     _check_cancelled(cancelled)
-                    if generated and generated[-1] in stops:
-                        finish='eos' if generated[-1] in self._stops else 'stop_token';break
+                    prefix_stopped = bool(generated and any(
+                        len(generated)>=len(prefix) and
+                        tuple(generated[-len(prefix):])==prefix
+                        for prefix in stop_prefixes))
+                    if generated and (generated[-1] in stops or prefix_stopped):
+                        finish=('eos' if generated[-1] in self._stops else
+                                'stop_prefix' if prefix_stopped else 'stop_token');break
                     token=_sample(logits,boundary.temperature,rng,self._budgets['sampling'])
                     position=self._model.position
                     with self._model.cancellation_scope(RequestCancellation()):
@@ -706,14 +740,19 @@ class PublisherSession:
                     current=GenerationBoundary(self._config_sha256,self._model.position,boundary.prompt_ids,
                         tuple(generated),boundary.expanded_prompt_tokens,logits,
                         copy.deepcopy(rng.bit_generator.state),boundary.temperature,boundary.stop_token_ids,
-                        boundary.execution_scope,boundary.media_metadata,self._tokenizer_sha256)
+                        boundary.execution_scope,stop_prefixes,boundary.media_metadata,self._tokenizer_sha256)
                     if checkpoint_sink is not None:
                         self._publish_boundary(checkpoint_sink,current,checkpoint_max_bytes,checkpoint_scratch_directory)
                     _check_cancelled(cancelled)
                     if emit is not None:emit(dict(event='tokens',token_ids=[token],position=self._model.position,
                         text=self._tokenizer.decode(generated,skip_special_tokens=False),recovered=True))
-                if generated and generated[-1] in stops:
-                    finish='eos' if generated[-1] in self._stops else 'stop_token'
+                prefix_stopped = bool(generated and any(
+                    len(generated)>=len(prefix) and
+                    tuple(generated[-len(prefix):])==prefix
+                    for prefix in stop_prefixes))
+                if generated and (generated[-1] in stops or prefix_stopped):
+                    finish=('eos' if generated[-1] in self._stops else
+                            'stop_prefix' if prefix_stopped else 'stop_token')
                 result=dict(schema='openagent.publisher-k3-recovery.v1',generated_ids=generated,
                     resumed_ids=added,prompt_ids=list(boundary.prompt_ids),position=self._model.position,
                     text=self._tokenizer.decode(generated,skip_special_tokens=False),finish_reason=finish,

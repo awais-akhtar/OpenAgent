@@ -17,10 +17,15 @@ class FamilyExecutor:
     """Own one decoder and expose its complete physical state to the reader."""
 
     def __init__(self, decoder, *, vocabulary_size, max_observation_bytes,routing_geometry=None,cache_keyword=True):
+        if decoder is None or any(not callable(getattr(decoder, name, None))
+                                  for name in ('forward', 'snapshot', 'restore', 'close')):
+            raise ValueError('complete publisher decoder lifecycle is required')
         if type(vocabulary_size) is not int or vocabulary_size <= 0:
             raise ValueError('positive publisher vocabulary required')
         if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
             raise ValueError('bounded whole-decoder observation admission required')
+        if type(cache_keyword) is not bool:
+            raise ValueError('explicit publisher cache invocation policy required')
         self.decoder = decoder
         self.vocabulary_size = vocabulary_size
         self.max_observation_bytes = max_observation_bytes
@@ -29,6 +34,8 @@ class FamilyExecutor:
         self.last_output = None
         self.closed = False
         self.identity = getattr(decoder, 'identity', getattr(decoder, '_identity', None))
+        if type(self.identity) is not str or not self.identity:
+            raise ValueError('stable publisher decoder identity required')
 
     def forward(self, tokens):
         if self.closed:
@@ -136,8 +143,14 @@ def create_candidate(*, offline_root, options):
             return FamilyExecutor(decoder, vocabulary_size=vocabulary,
                 max_observation_bytes=options['max_observation_bytes'],routing_geometry=routing_geometry,
                 cache_keyword=family not in ('qwen4_exp_text','qwen3_5_moe_text'))
-        except BaseException:
-            decoder.close()
+        except BaseException as primary:
+            try:
+                decoder.close()
+            except BaseException as cleanup:
+                # Preserve the failed owner for the caller's explicit retry;
+                # comparison construction must not discard a live decoder.
+                primary.cleanup = decoder.close
+                primary.add_note('candidate decoder cleanup remains pending: '+str(cleanup))
             raise
 
     return NativeExecutorAdapter(loaded, metadata, cache_reader=reader,

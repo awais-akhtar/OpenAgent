@@ -143,7 +143,8 @@ def load_replay_checkpoint(source, *, max_tokens):
             raise ValueError('invalid replay checkpoint prefix')
         raw_header = read_exact(size)
         try:
-            header = json.loads(raw_header.decode('ascii'), object_pairs_hook=_pairs)
+            header = json.loads(raw_header.decode('ascii'), object_pairs_hook=_pairs,
+                                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
         except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
             raise ValueError('invalid replay checkpoint metadata') from error
         if (type(header) is not dict or set(header) != {
@@ -162,7 +163,9 @@ def load_replay_checkpoint(source, *, max_tokens):
             data = read_exact(min(4096, count-offset)*4)
             digest.update(data)
             tokens.extend(token[0] for token in struct.iter_unpack('<I', data))
-        if not hmac.compare_digest(digest.digest(), read_exact(32)) or stream.read(1):
+        checksum = read_exact(32)
+        trailing = stream.read(1)
+        if not hmac.compare_digest(digest.digest(), checksum) or trailing:
             raise ValueError('replay checkpoint checksum or trailing data mismatch')
         return ReplayCheckpoint(header['identity'], header['vocabulary'], header['context'],
                                 tuple(tokens)).validate(max_tokens=max_tokens)

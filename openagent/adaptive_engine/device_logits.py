@@ -7,7 +7,8 @@ from .device_execution_policy import admit_fp32
 def device_logits(torch,hidden,head,*,max_device_bytes,max_host_bytes,cancel=None):
     admit_fp32(torch,hidden.device)
     if (hidden.ndim not in (2,3) or head.ndim!=2 or hidden.shape[-1]!=head.shape[1] or
-            hidden.dtype!=torch.float32 or head.dtype!=torch.float32 or hidden.device!=head.device):
+            hidden.dtype!=torch.float32 or head.dtype!=torch.float32 or hidden.device!=head.device or
+            not bool(torch.isfinite(hidden).all()) or not bool(torch.isfinite(head).all())):
         raise ValueError('matching FP32 device hidden/head projection required')
     if any(type(value) is not int or value<=0 for value in (max_device_bytes,max_host_bytes)):
         raise ValueError('explicit vocabulary device/host projection admission required')

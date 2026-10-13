@@ -172,7 +172,8 @@ class V41PackedExpertProvider(_LeaseProvider):
 
     @contextmanager
     def lease(self, layer, expert, *, namespace="layers"):
-        if (type(layer) is not int or type(expert) is not int or type(namespace) is not str
+        if (type(layer) is not int or isinstance(layer, bool) or
+                type(expert) is not int or isinstance(expert, bool) or type(namespace) is not str
                 or (namespace, layer, expert) not in self._groups):
             raise ValueError("unknown exact V4.1 namespace/layer/expert")
         with self._lease():

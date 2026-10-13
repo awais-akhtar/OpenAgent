@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from copy import deepcopy
 
 from .hf_moe import SUPPORTED_MODEL_TYPES
-from .native_checkpoint import _DECODERS
+from .text_decoder_registry import _DECODERS
 from .mixtral_inventory import MIXTRAL_PUBLISHER_VARIANTS
-from .source_scope import source_scope_matrix
+from .source_scope import (source_scope_matrix, validate_phase1_source,
+                           source_contract_summary, source_callable_chain)
 
 
 # Identity and wrapper metadata only; similar attention names are not equations.
@@ -78,10 +80,26 @@ def conformance_matrix(*, probe_transformers=False):
             metadata = {name: (CONFIG_MAPPING_NAMES.get(name),
                                MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(name))
                         for _, names, _, _ in REGISTRY_IDENTITIES for name in names}
+    scope = source_scope_matrix()
+    validate_phase1_source(scope=scope)
+    scope_families = scope['families']
     rows = []
     for family, names, section, reason in REGISTRY_IDENTITIES:
+        scope_name = {
+            'glm53': 'glm5-next', 'glm': 'glm-dsa', 'kimi': 'kimi-k3',
+            'qwen36': 'qwen35', 'qwen38': 'qwen4',
+            'deepseek_v41': 'deepseek-v41',
+        }.get(family, family)
+        scope_row = scope_families.get(scope_name)
+        if scope_row is None and family!='deepseek_v4':
+            raise ValueError('registry family lacks Phase 1 source scope: '+family)
         for name in names:
             config, causal = metadata.get(name, (None, None))
+            phase1_catalogued=scope_row is not None and name in scope_row['identities']
+            phase1_admitted=any(case['family']==scope_name and
+                                case['model_type']==name and
+                                case.get('admission')=='verified-admitted'
+                                for case in scope.get('execution_cases', ()))
             rows.append(dict(model_type=name, registry_family=family,
                 config_section='root' if name in _DECODERS or name=='deepseek_v41_text' else section,
                 library_allowlisted=name in SUPPORTED_MODEL_TYPES,
@@ -97,11 +115,39 @@ def conformance_matrix(*, probe_transformers=False):
                 resident_text_execution_contract=RESIDENT_TEXT_CONTRACTS.get(name, (None, False))[0],
                 resident_text_experimental=RESIDENT_TEXT_CONTRACTS.get(name, (None, False))[1],
                 native_decoder_supported=False, upstream_abi_compatible=False,
+                phase1_identity_admitted=phase1_admitted,
+                phase1_identity_catalogued=phase1_catalogued,
+                source_execution_cases=[deepcopy(case) for case in scope['execution_cases']
+                                        if case['family']==scope_name and
+                                        case['model_type']==name]
+                if phase1_catalogued else [],
+                source_contract_summary=(source_contract_summary(scope_name)
+                                        if phase1_catalogued else {}),
+                source_contract_cases=dict(scope_row['contract_cases']) if phase1_catalogued else {},
+                source_owner_modules=dict(
+                    configuration=scope_row['configuration'],
+                    inventory=scope_row['inventory'], loading=scope_row['loading'],
+                    execution=scope_row['native'] + scope_row['device'],
+                    streaming=scope_row['streaming'],
+                    cache_tp=scope_row['cache_tp'], native_abi=scope_row['native_abi'],
+                    factory=scope_row['factory'], cli=scope_row['cli'],
+                    gateway=scope_row['gateway'], recovery=scope_row['recovery'],
+                    tooling=scope_row['tooling'], comparison=scope_row['comparison'],
+                    serving=scope_row['serving_entrypoints']) if phase1_catalogued else {},
+                source_callable_chains=[
+                    dict(source_callable_chain(case['case_id']),
+                         admission=case['admission'],
+                         persisted_format=case['persisted_format'],
+                         callable_chain=deepcopy(case['callable_chain']))
+                    for case in scope['execution_cases']
+                    if phase1_catalogued and case['family']==scope_name and
+                    case['model_type']==name],
+                source_chain_dimensions=scope_row.get('chain_dimensions', ()) if phase1_catalogued else (),
                 rejection_reason=reason, transformers_config_class=config,
                 transformers_causal_class=causal,
                 identity_collision=(name == 'glm' and causal == 'GlmForCausalLM')))
     return dict(schema='openagent.family-conformance.v1',
-        source_scope=source_scope_matrix(),
+        source_scope=scope,
         evidence_scope='identity metadata and installed library mappings; not numerical conformance',
         native_decoder_supported_scope='full-registry-family',
         transformers_probed=probe_transformers, transformers_installed=installed,

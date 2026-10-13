@@ -22,6 +22,7 @@ class PublisherV41AuxiliaryProvider:
             raise ValueError('NativePublisherV41Arithmetic required')
         arithmetic._ensure_open()
         self.arithmetic = arithmetic
+        self._closed = False
         self.attention_rows = getattr(arithmetic,'attention_rows',None)
         self.auxiliary_math = getattr(arithmetic,'auxiliary_math',None)
         self.payload = arithmetic.payload
@@ -44,7 +45,17 @@ class PublisherV41AuxiliaryProvider:
                     self.aliases[alias] = target
         self.identity = arithmetic.identity+':auxiliary-target-adapter-v1'
 
+    def _ensure_open(self):
+        if self._closed:
+            raise RuntimeError('auxiliary provider is closed')
+        self.arithmetic._ensure_open()
+
+    def close(self):
+        """Release only this borrowed adapter; never close caller-owned arithmetic."""
+        self._closed = True
+
     def contract(self, name):
+        self._ensure_open()
         target = self.aliases.get(name, name)
         try:
             return self.rules[target]
@@ -66,9 +77,11 @@ class PublisherV41AuxiliaryProvider:
         return value
 
     def linear(self, name, row):
+        self._ensure_open()
         return self.arithmetic.linear(self.contract(name).sources[0], row)
 
     def grouped_linear(self, name, rows, *, groups):
+        self._ensure_open()
         return self.arithmetic.grouped_linear(self.contract(name).sources[0], rows,
                                               groups=groups)
 
@@ -89,16 +102,19 @@ class PublisherV41AuxiliaryProvider:
         return row
 
     def cast(self, row):
+        self._ensure_open()
         return self.arithmetic.cast(row)
 
     def check_cancelled(self):
+        self._ensure_open()
         self.arithmetic.check_cancelled()
 
     def roundtrip(self, row, encoding):
+        self._ensure_open()
         return self.arithmetic.roundtrip(row, encoding)
 
     def rotate(self, stage, rows, positions, inverse=False):
-        self.arithmetic._ensure_open()
+        self._ensure_open()
         if type(stage) is not int or not 0 <= stage < self.stages:
             raise ValueError('valid draft stage required')
         p = self.payload.profile
@@ -173,7 +189,7 @@ class PublisherV41DraftBlock:
                 provider.contract(prefix+'moe.shared.'+projection)
 
     def _kernel(self, *args, **kwargs):
-        self.provider.arithmetic._ensure_open()
+        self.provider._ensure_open()
         return self.provider.arithmetic._kernel(*args, **kwargs)
 
     def _moe(self, x, stage):
@@ -194,6 +210,7 @@ class PublisherV41DraftBlock:
         return self._cast(out)
 
     def __call__(self, stage, streams, position, pre_mix, main_x, attention):
+        self.provider._ensure_open()
         if type(stage) is not int or not 0 <= stage < self.provider.stages:
             raise ValueError('valid draft stage required')
         if type(position) is not int or position <= 0:
@@ -234,8 +251,25 @@ class PublisherV41Auxiliary:
 
     def __init__(self, arithmetic):
         self.provider = PublisherV41AuxiliaryProvider(arithmetic)
+        self._children = set()
+        self._closed = False
+
+    def _ensure_open(self):
+        if self._closed:
+            raise RuntimeError('publisher auxiliary owner is closed')
+        self.provider._ensure_open()
+
+    def close(self):
+        if self._closed:
+            return
+        for child in tuple(self._children):
+            child.close()
+        self._children.clear()
+        self.provider.close()
+        self._closed = True
 
     def vision(self, *, max_bytes=64*1024**2):
+        self._ensure_open()
         config = self.provider.payload.publisher_config
         if config.get('vision_config') is None:
             raise ValueError('payload has no publisher vision configuration')
@@ -243,11 +277,16 @@ class PublisherV41Auxiliary:
         if callable(self.provider.auxiliary_math):
             from .device_vision import DevicePublisherV41Vision
             vision_type=DevicePublisherV41Vision
-        return vision_type(config['vision_config'],
+        result = vision_type(config['vision_config'],
                                   self.provider.payload.profile.hidden_size,
                                   self.provider, max_bytes=max_bytes)
+        self._children.add(result)
+        return result
 
     def mtp(self, *, rng=None, max_bytes=64*1024**2):
-        return PublisherV41MTP(self.provider.payload.publisher_config['text_config'],
+        self._ensure_open()
+        result = PublisherV41MTP(self.provider.payload.publisher_config['text_config'],
                                self.provider, PublisherV41DraftBlock(self.provider),
                                rng=rng, max_bytes=max_bytes)
+        self._children.add(result)
+        return result

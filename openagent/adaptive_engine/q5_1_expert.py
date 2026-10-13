@@ -179,7 +179,9 @@ class Q5_1ExpertBackend:
             evidence=(KernelEvidence("implementation", "Independent affine Q5_1 byte reductions"),))
 
     def _check_available(self):
-        pass
+        if (type(self.max_scratch_bytes) is not int or self.max_scratch_bytes <= 0 or
+                BLOCK_WIDTH != 32 or BLOCK_BYTES != 24):
+            raise RuntimeError("Q5_1 backend admission state is invalid")
 
     def _run_expert(self, payload, vector, h, i, weight, activation, output):
         return _scalar_expert(payload, vector, h, i, weight, activation, output)

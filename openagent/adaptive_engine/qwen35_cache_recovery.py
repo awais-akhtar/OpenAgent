@@ -153,7 +153,8 @@ def restore_qwen35_cache(model,source,*,max_bytes):
                     raise ValueError('invalid Qwen3.5 continuation values')
                 values[:] = incoming
             iterator.close()
-        if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
+        if (not hmac.compare_digest(digest.digest(), _read(source, 32)) or
+                _read(source, 1) != b''):
             raise ValueError('Qwen3.5 continuation checksum/EOF mismatch')
         model.cache,model.mask,model.position = banks,mask,position
         return position

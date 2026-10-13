@@ -10,6 +10,7 @@ class DevicePublisherPackedProjection:
     _host = DevicePublisherV41Arithmetic._host
     _admit = DevicePublisherV41Arithmetic._admit
     packed_matvec = DevicePublisherV41Arithmetic.packed_matvec
+    _packed_matvec_open = DevicePublisherV41Arithmetic._packed_matvec_open
 
     def __init__(self,*,device,torch_version,max_bytes,encoding):
         import torch
@@ -37,6 +38,9 @@ class DevicePublisherPackedProjection:
 
     def matvec(self,packed,scales,x,*,rows,cols):
         with self._lock:
+            self._ensure_open()
+            if (type(rows) is not int or type(cols) is not int or rows <= 0 or cols <= 0):
+                raise ValueError('packed projection geometry exceeds the admitted kernel contract')
             return self.packed_matvec(packed,scales,x,rows=rows,cols=cols,encoding=self.encoding)
 
     def close(self):

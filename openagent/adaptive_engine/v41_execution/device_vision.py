@@ -1,6 +1,7 @@
 """Device vision and aligner equations with bounded host transport."""
 import numpy as np
 from .publisher_vision import PublisherV41Vision
+from .owner_scope import owned_auxiliary
 
 
 class DevicePublisherV41Vision(PublisherV41Vision):
@@ -14,7 +15,9 @@ class DevicePublisherV41Vision(PublisherV41Vision):
             out = self.provider.arithmetic.auxiliary_math('add',out,self._tensor(name+'.bias',(width,)))
         return out
 
+    @owned_auxiliary
     def encode_image(self,patches,n_h,n_w,*,workspace_bytes=None):
+        self._check_open()
         budget = self.max_bytes if workspace_bytes is None else workspace_bytes
         if type(budget) is not int or not 0<budget<=self.max_bytes:
             raise ValueError('positive admitted device vision workspace required')

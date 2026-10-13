@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import islice
+import math
 import threading
 from typing import Callable
 from uuid import uuid4
@@ -21,6 +22,22 @@ def _admit_checkpoint_publication(sink,max_bytes):
             raise ValueError('checkpoint publication budget requires a sink')
     elif not callable(sink) or type(max_bytes) is not int or not 0<max_bytes<=2**63-1:
         raise ValueError('checkpoint sink requires explicit complete frame admission')
+
+
+def _admit_stop_prefixes(value, vocabulary):
+    if type(value) not in (tuple, list) or len(value) > 64:
+        raise ValueError('bounded stop-prefix inventory required')
+    prefixes = tuple(tuple(prefix) for prefix in value)
+    if (any(not prefix or len(prefix) > 128 or
+            any(type(token) is not int or not 0 <= token < vocabulary for token in prefix)
+            for prefix in prefixes) or len(set(prefixes)) != len(prefixes)):
+        raise ValueError('finite valid stop-token prefixes required')
+    return prefixes
+
+
+def _matches_stop_prefix(history, prefixes):
+    return any(len(history) >= len(prefix) and tuple(history[-len(prefix):]) == prefix
+               for prefix in prefixes)
 
 
 @dataclass(frozen=True)
@@ -336,8 +353,8 @@ class NativeExecutionService:
         snapshot = session.model.snapshot()
         try:
             self._validate_model_snapshot(session, snapshot, history, current=True)
-        except BaseException:
-            self._release_snapshot(session, snapshot)
+        except BaseException as primary:
+            self._release_transaction_snapshot(session, snapshot, primary)
             raise
         return snapshot
 
@@ -375,8 +392,8 @@ class NativeExecutionService:
                                                    session.identity, session.tokens)
                 session.snapshots[handle.snapshot_id] = (
                     handle, model_snapshot, session.identity, session.tokens)
-            except BaseException:
-                self._release_snapshot(session, model_snapshot)
+            except BaseException as primary:
+                self._release_transaction_snapshot(session, model_snapshot, primary)
                 raise
             return handle
 
@@ -446,6 +463,344 @@ class NativeExecutionService:
         self._cancelled(cancel)
         return self._logits(value, len(tokens))
 
+    def prefill(self, session_id, prompt_ids, *, cancel=None):
+        """Append a bounded prompt transactionally without sampling a token."""
+        session = self._session(session_id)
+        incoming = self._tokens(prompt_ids, self.limits.context)
+        if not incoming:
+            raise ValueError('nonempty tokenized prefill required')
+        if cancel is not None and not callable(getattr(cancel, 'is_set', None)):
+            raise ValueError('cancellation must provide is_set')
+        with self._generation_slot(session, cancel), session.transaction():
+            cancellation = _SessionCancellation(session, cancel)
+            previous = session.tokens
+            if len(previous) + len(incoming) > self.limits.context:
+                raise ValueError('prefill exceeds session context')
+            boundary = self._capture_snapshot(session, previous)
+            primary = None
+            committed = False
+            try:
+                for offset in range(0, len(incoming), self.limits.admitted_prefill_tokens):
+                    chunk = incoming[offset:offset + self.limits.admitted_prefill_tokens]
+                    self._forward_model(session, list(chunk), cancellation)
+                target = previous + incoming
+                self._model_position(session, target)
+                self._cancelled(cancellation)
+                session.tokens = target
+                committed = True
+                return len(incoming)
+            except BaseException as error:
+                primary = error
+                if not committed:
+                    try:
+                        session.model.restore(boundary)
+                        self._model_position(session, previous)
+                    except BaseException as recovery:
+                        session.closed = True
+                        error.add_note('prefill rollback failed; session quarantined: ' + repr(recovery))
+                raise
+            finally:
+                self._release_transaction_snapshot(session, boundary, primary)
+
+    def score_continuations(self, session_id, prompt_ids, continuations, *,
+                            normalize='mean', cancel=None):
+        """Score a bounded closed set of candidate continuations without committing it.
+
+        Candidate log probabilities are computed from the target executor's
+        unmodified logits. The prompt is evaluated once; each continuation is
+        evaluated from a snapshot of that prompt boundary. Both the session
+        history and executor state are restored before returning.
+        """
+        session = self._session(session_id)
+        if normalize not in ('mean', 'sum'):
+            raise ValueError("score normalization must be 'mean' or 'sum'")
+        if type(prompt_ids) not in (tuple, list) or not prompt_ids:
+            raise ValueError('nonempty tokenized scoring prompt required')
+        if (type(continuations) not in (tuple, list) or
+                not 2 <= len(continuations) <= 64):
+            raise ValueError('closed-set scoring requires 2 to 64 candidates')
+        admitted = []
+        total_read = 0
+        for candidate in continuations:
+            if (type(candidate) not in (tuple, list) or not candidate or
+                    len(candidate) > self.limits.max_new_tokens):
+                raise ValueError('each scoring candidate must be a bounded nonempty token sequence')
+            tokens = tuple(candidate)
+            if any(type(token) is not int or not 0 <= token < self.limits.vocabulary
+                   for token in tokens):
+                raise ValueError('scoring candidate contains an invalid token ID')
+            total_read += len(tokens)
+            admitted.append(tokens)
+        if total_read > 65536:
+            raise MemoryError('closed-set scoring token budget exceeded')
+        incoming = self._tokens(prompt_ids, self.limits.context)
+        if self.limits.vocabulary * 8 > self.limits.max_logit_buffer_bytes:
+            raise MemoryError('scoring logit row exceeds admission')
+        if cancel is not None and not callable(getattr(cancel, 'is_set', None)):
+            raise ValueError('cancellation must provide is_set')
+
+        with self._generation_slot(session, cancel), session.transaction():
+            cancellation = _SessionCancellation(session, cancel)
+            if len(session.tokens) + len(incoming) + max(map(len, admitted)) > self.limits.context:
+                raise ValueError('scoring prompt and candidate exceed session context')
+            base = self._capture_snapshot(session, session.tokens)
+            prompt_snapshot = None
+            primary = None
+            restored = False
+            try:
+                logits = None
+                for offset in range(0, len(incoming), self.limits.admitted_prefill_tokens):
+                    chunk = incoming[offset:offset + self.limits.admitted_prefill_tokens]
+                    logits = self._forward_model(session, list(chunk), cancellation)
+                prompt_logits = np.array(logits[-1], copy=True)
+                prompt_snapshot = self._capture_snapshot(session, session.tokens + incoming)
+                raw_scores = []
+                for candidate in admitted:
+                    self._cancelled(cancellation)
+                    session.model.restore(prompt_snapshot)
+                    self._model_position(session, session.tokens + incoming)
+                    row_logits = prompt_logits
+                    terms = []
+                    for index, token in enumerate(candidate):
+                        self._cancelled(cancellation)
+                        row = np.asarray(row_logits, dtype=np.float64)
+                        if row.shape != (self.limits.vocabulary,) or not np.isfinite(row).all():
+                            raise ValueError('executor returned invalid scoring logits')
+                        log_normalizer = float(np.logaddexp.reduce(row))
+                        if not math.isfinite(log_normalizer):
+                            raise ValueError('executor returned invalid scoring normalization')
+                        terms.append(min(0.0, float(row[token]) - log_normalizer))
+                        if index + 1 < len(candidate):
+                            row_logits = self._forward_model(session, [token], cancellation)[-1]
+                    total = math.fsum(terms)
+                    raw_scores.append(total / len(terms) if normalize == 'mean' else total)
+
+                score_array = np.asarray(raw_scores, dtype=np.float64)
+                if not np.isfinite(score_array).all():
+                    raise ValueError('closed-set scores are nonfinite')
+                shifted = score_array - score_array.max()
+                weights = np.exp(shifted)
+                denominator = float(weights.sum())
+                if not math.isfinite(denominator) or denominator <= 0:
+                    raise ValueError('closed-set probability normalization failed')
+                probabilities = weights / denominator
+                entropy = -math.fsum(float(p) * math.log(float(p))
+                                     for p in probabilities if p > 0)
+                choices = tuple({
+                    'candidate_index': index,
+                    'logprob': raw_scores[index] if normalize == 'sum' else
+                        raw_scores[index] * len(admitted[index]),
+                    'mean_logprob': raw_scores[index] / len(admitted[index])
+                        if normalize == 'sum' else raw_scores[index],
+                    'normalized_score': raw_scores[index],
+                    'tokens': len(admitted[index]),
+                    'probability': float(probabilities[index]),
+                } for index in range(len(admitted)))
+                best = max(range(len(choices)), key=lambda index: (choices[index]['probability'], -index))
+                result = {
+                    'answer_index': best,
+                    'normalize': normalize,
+                    'entropy': entropy,
+                    'choices': choices,
+                    'usage': {'prompt_tokens': len(incoming), 'completion_tokens': 0,
+                              'read_tokens': total_read},
+                }
+                self._cancelled(cancellation)
+                session.model.restore(base)
+                self._model_position(session, session.tokens)
+                restored = True
+                return result
+            except BaseException as error:
+                primary = error
+                if not restored:
+                    try:
+                        session.model.restore(base)
+                        self._model_position(session, session.tokens)
+                        restored = True
+                    except BaseException as recovery:
+                        session.closed = True
+                        error.add_note('scoring rollback failed; session quarantined: ' + repr(recovery))
+                raise
+            finally:
+                cleanup = None
+                for snapshot in (prompt_snapshot, base):
+                    if snapshot is None:
+                        continue
+                    try:
+                        self._release_transaction_snapshot(session, snapshot, primary or cleanup)
+                    except BaseException as error:
+                        if cleanup is None:
+                            cleanup = error
+                        else:
+                            cleanup.add_note('additional scoring snapshot cleanup failed: ' + repr(error))
+                if primary is None and cleanup is not None:
+                    raise cleanup
+
+    def score_continuation_groups(self, session_id, prompt_groups, continuation_groups, *,
+                                  normalizations=None, cancel=None):
+        """Score multiple closed sets while sharing one immutable prompt prefix."""
+        session = self._session(session_id)
+        if (type(prompt_groups) not in (tuple, list) or not prompt_groups or
+                len(prompt_groups) > 64 or type(continuation_groups) not in (tuple, list) or
+                len(continuation_groups) != len(prompt_groups)):
+            raise ValueError('bounded matching prompt and continuation groups required')
+        if normalizations is None:
+            normalizations = ('mean',) * len(prompt_groups)
+        if (type(normalizations) not in (tuple, list) or
+                len(normalizations) != len(prompt_groups) or
+                any(value not in ('mean', 'sum') for value in normalizations)):
+            raise ValueError('one mean/sum normalization required per scoring group')
+        prompts = [self._tokens(prompt, self.limits.context) for prompt in prompt_groups]
+        candidates = []
+        total_read = 0
+        for group in continuation_groups:
+            if type(group) not in (tuple, list) or not 2 <= len(group) <= 255:
+                raise ValueError('each closed set requires 2 to 255 candidates')
+            admitted_group = []
+            for candidate in group:
+                if (type(candidate) not in (tuple, list) or not candidate or
+                        len(candidate) > self.limits.max_new_tokens):
+                    raise ValueError('each scoring candidate must be a bounded nonempty token sequence')
+                tokens = tuple(candidate)
+                if any(type(token) is not int or not 0 <= token < self.limits.vocabulary
+                       for token in tokens):
+                    raise ValueError('scoring candidate contains an invalid token ID')
+                admitted_group.append(tokens)
+                total_read += len(tokens)
+            candidates.append(admitted_group)
+        if total_read > 65536:
+            raise MemoryError('multi-question scoring exceeds the bounded option/token budget')
+        if cancel is not None and not callable(getattr(cancel, 'is_set', None)):
+            raise ValueError('cancellation must provide is_set')
+
+        common = list(prompts[0])
+        for prompt in prompts[1:]:
+            limit = min(len(common), len(prompt))
+            index = 0
+            while index < limit and common[index] == prompt[index]:
+                index += 1
+            del common[index:]
+        if not common:
+            raise ValueError('scoring prompt groups require a nonempty shared token prefix')
+        if sum(len(prompt) - len(common) for prompt in prompts) > 65536:
+            raise MemoryError('multi-question prompt suffix token budget exceeded')
+
+        with self._generation_slot(session, cancel), session.transaction():
+            cancellation = _SessionCancellation(session, cancel)
+            if any(len(session.tokens) + len(prompt) + max(map(len, group)) > self.limits.context
+                   for prompt, group in zip(prompts, candidates)):
+                raise ValueError('scoring prompt and candidate exceed session context')
+            base = self._capture_snapshot(session, session.tokens)
+            shared_snapshot = None
+            primary = None
+            restored = False
+            try:
+                common_logits = None
+                for offset in range(0, len(common), self.limits.admitted_prefill_tokens):
+                    chunk = common[offset:offset + self.limits.admitted_prefill_tokens]
+                    common_logits = self._forward_model(session, list(chunk), cancellation)
+                common_last = np.array(common_logits[-1], copy=True)
+                shared_snapshot = self._capture_snapshot(session, session.tokens + tuple(common))
+                results = []
+                for prompt, group, normalize in zip(prompts, candidates, normalizations):
+                    self._cancelled(cancellation)
+                    session.model.restore(shared_snapshot)
+                    prefix_history = session.tokens + tuple(common)
+                    self._model_position(session, prefix_history)
+                    suffix = prompt[len(common):]
+                    prompt_logits = common_last
+                    for offset in range(0, len(suffix), self.limits.admitted_prefill_tokens):
+                        chunk = suffix[offset:offset + self.limits.admitted_prefill_tokens]
+                        prompt_logits = self._forward_model(session, list(chunk), cancellation)[-1]
+                    prompt_logits = np.array(prompt_logits, copy=True)
+                    prompt_snapshot = self._capture_snapshot(session, session.tokens + prompt)
+                    group_primary = None
+                    try:
+                        raw_scores = []
+                        for candidate in group:
+                            self._cancelled(cancellation)
+                            session.model.restore(prompt_snapshot)
+                            self._model_position(session, session.tokens + prompt)
+                            row_logits = prompt_logits
+                            terms = []
+                            for index, token in enumerate(candidate):
+                                self._cancelled(cancellation)
+                                row = np.asarray(row_logits, dtype=np.float64)
+                                if row.shape != (self.limits.vocabulary,) or not np.isfinite(row).all():
+                                    raise ValueError('executor returned invalid scoring logits')
+                                log_normalizer = float(np.logaddexp.reduce(row))
+                                if not math.isfinite(log_normalizer):
+                                    raise ValueError('executor returned invalid scoring normalization')
+                                terms.append(min(0.0, float(row[token]) - log_normalizer))
+                                if index + 1 < len(candidate):
+                                    row_logits = self._forward_model(session, [token], cancellation)[-1]
+                            total = math.fsum(terms)
+                            raw_scores.append(total / len(terms) if normalize == 'mean' else total)
+                        score_array = np.asarray(raw_scores, dtype=np.float64)
+                        if not np.isfinite(score_array).all():
+                            raise ValueError('closed-set scores are nonfinite')
+                        weights = np.exp(score_array - score_array.max())
+                        denominator = float(weights.sum())
+                        if not math.isfinite(denominator) or denominator <= 0:
+                            raise ValueError('closed-set probability normalization failed')
+                        probabilities = weights / denominator
+                        entropy = -math.fsum(float(p) * math.log(float(p))
+                                             for p in probabilities if p > 0)
+                        choices = tuple({
+                            'candidate_index': index,
+                            'logprob': raw_scores[index] if normalize == 'sum' else
+                                raw_scores[index] * len(group[index]),
+                            'mean_logprob': raw_scores[index] / len(group[index])
+                                if normalize == 'sum' else raw_scores[index],
+                            'normalized_score': raw_scores[index],
+                            'tokens': len(group[index]),
+                            'probability': float(probabilities[index]),
+                        } for index in range(len(group)))
+                        best = max(range(len(choices)), key=lambda index:
+                                   (choices[index]['probability'], -index))
+                        results.append({
+                            'answer_index': best, 'normalize': normalize,
+                            'entropy': entropy, 'choices': choices,
+                            'usage': {'prompt_tokens': len(prompt), 'completion_tokens': 0,
+                                      'read_tokens': sum(map(len, group))},
+                        })
+                    except BaseException as error:
+                        group_primary = error
+                        raise
+                    finally:
+                        self._release_transaction_snapshot(session, prompt_snapshot, group_primary)
+
+                self._cancelled(cancellation)
+                session.model.restore(base)
+                self._model_position(session, session.tokens)
+                restored = True
+                return tuple(results)
+            except BaseException as error:
+                primary = error
+                if not restored:
+                    try:
+                        session.model.restore(base)
+                        self._model_position(session, session.tokens)
+                        restored = True
+                    except BaseException as recovery:
+                        session.closed = True
+                        error.add_note('group scoring rollback failed; session quarantined: ' + repr(recovery))
+                raise
+            finally:
+                cleanup = None
+                for snapshot in (shared_snapshot, base):
+                    if snapshot is None:
+                        continue
+                    try:
+                        self._release_transaction_snapshot(session, snapshot, primary or cleanup)
+                    except BaseException as error:
+                        if cleanup is None:
+                            cleanup = error
+                        else:
+                            cleanup.add_note('additional group scoring snapshot cleanup failed: ' + repr(error))
+                if primary is None and cleanup is not None:
+                    raise cleanup
+
     @staticmethod
     def _release_snapshot(session, snapshot):
         try:
@@ -466,7 +821,7 @@ class NativeExecutionService:
             primary.add_note('transaction snapshot cleanup retained; session quarantined: '+repr(cleanup))
 
     def generate(self, session_id, prompt_ids, *, max_new_tokens=None,
-                 stop_ids=(), cancel=None, on_event=None, sampling=None, media=None,
+                 stop_ids=(), stop_prefixes=(), cancel=None, on_event=None, sampling=None, media=None,
                  resume_boundary=None,checkpoint_sink=None,max_checkpoint_bytes=0,application_identity=''):
         from .sampling import SamplingPolicy, TokenSampler
         session = self._session(session_id)
@@ -475,6 +830,7 @@ class NativeExecutionService:
             if type(count) is not int or not 1 <= count <= self.limits.max_new_tokens:
                 raise ValueError('invalid generation length')
             stop = frozenset(self._tokens(stop_ids, self.limits.vocabulary)) if stop_ids else frozenset()
+            prefixes = _admit_stop_prefixes(stop_prefixes, self.limits.vocabulary)
             if cancel is not None and not callable(getattr(cancel, 'is_set', None)):
                 raise ValueError('cancellation must provide is_set')
             cancel = _SessionCancellation(session, cancel)
@@ -482,7 +838,10 @@ class NativeExecutionService:
                 raise ValueError('event handler must be callable')
             from .service_generation_checkpoint import ServiceGenerationBoundary,write_boundary
             _admit_checkpoint_publication(checkpoint_sink,max_checkpoint_bytes)
-            if type(application_identity) is not str or len(application_identity)>8192:
+            if (type(application_identity) is not str or len(application_identity)>8192 or
+                    '\x00' in application_identity or
+                    ((checkpoint_sink is not None or resume_boundary is not None) and
+                     not application_identity)):
                 raise ValueError('bounded generation application identity required')
             if resume_boundary is None:
                 incoming = self._tokens(prompt_ids, self.limits.context - len(session.tokens))
@@ -493,7 +852,13 @@ class NativeExecutionService:
                 if resume_boundary.identity!=session.identity or resume_boundary.tokens!=session.tokens:
                     raise ValueError('recovered generation differs from live session')
                 self._model_position(session,session.tokens,required=True)
-                sampling=resume_boundary.policy;stop=frozenset(resume_boundary.stops);incoming=()
+                sampling=resume_boundary.policy;stop=frozenset(resume_boundary.stops)
+                # A recovered boundary owns the stop policy that governed its
+                # next-token state.  Permit an omitted request policy, but do
+                # not silently replace it with a conflicting caller policy.
+                if prefixes and prefixes != resume_boundary.stop_prefixes:
+                    raise ValueError('recovered generation stop-prefix policy differs')
+                prefixes=resume_boundary.stop_prefixes;incoming=()
                 if application_identity!=resume_boundary.application_identity:
                     raise ValueError('generation application identity differs')
                 if resume_boundary.stopped:
@@ -504,10 +869,15 @@ class NativeExecutionService:
                     raise ValueError('explicit nonempty processor media inventory required')
                 if not callable(getattr(session.model,'forward_media',None)):
                     raise ValueError('session executor does not admit media inputs')
-                # A modality span and its grids must reach the decoder together.
-                # The complete prompt still obeys the admitted logit row bound.
+                # This service has no media-span planner: forwarding the same
+                # processor tensors once per text chunk would duplicate media
+                # and misalign placeholders/positions. Admit media only as one
+                # complete, nonempty prompt operation until a span planner is
+                # part of the public request contract.
+                if not incoming:
+                    raise ValueError('media execution requires a nonempty prompt in the same request')
                 if len(incoming)>self.limits.admitted_prefill_tokens:
-                    raise MemoryError('complete media prompt exceeds admitted prefill rows')
+                    raise MemoryError('media prompt requires a single admitted prefill operation')
             if sampling is not None and type(sampling) is not SamplingPolicy:
                 raise TypeError('SamplingPolicy required')
             if sampling is not None:
@@ -522,7 +892,8 @@ class NativeExecutionService:
             def checkpoint(tokens,logits,stopped=False):
                 if checkpoint_sink is None:return
                 self._cancelled(cancel)
-                boundary=ServiceGenerationBoundary.capture(session,tokens,logits[-1],sampler,stop,self.limits,stopped,application_identity)
+                boundary=ServiceGenerationBoundary.capture(session,tokens,logits[-1],sampler,stop,self.limits,
+                    stopped,application_identity,prefixes)
                 boundary.admit(self.limits,max_checkpoint_bytes)
                 active=True;used=False;written=False;thread=threading.get_ident()
                 def write(output):
@@ -576,12 +947,14 @@ class NativeExecutionService:
                                  if sampler.needs_history else ())))
                     generated.append(token)
                     logits = self._forward_model(session, [token], cancel)
-                    checkpoint(session.tokens+incoming+tuple(generated),logits,token in stop)
+                    stopped = token in stop or _matches_stop_prefix(
+                        session.tokens+incoming+tuple(generated), prefixes)
+                    checkpoint(session.tokens+incoming+tuple(generated),logits,stopped)
                     if on_event is not None:
                         on_event({'event': 'generation.token', 'index': index,
                                   'token_id': token, 'committed': False})
                     self._cancelled(cancel)
-                    if token in stop:
+                    if stopped:
                         reason = 'stop'
                         break
                 committed = session.tokens + incoming + tuple(generated)
@@ -616,7 +989,7 @@ class NativeExecutionService:
                 def read(self,count):
                     service._cancelled(cancel);return source.read(count)
             boundary,cache,size=read_boundary(CancelledReader(),limits=self.limits,max_bytes=max_bytes)
-            rollback=None;primary=None;previous=session.tokens
+            rollback=None;primary=None;previous=session.tokens;cache_closed=False
             try:
                 if boundary.identity!=session.identity or boundary.application_identity!=application_identity:
                     raise ValueError('generation checkpoint execution or application identity differs')
@@ -628,6 +1001,10 @@ class NativeExecutionService:
                 reader(CancelledCache(),max_bytes=size)
                 if cache.tell()!=size:raise ValueError('generation cache reader did not consume the complete staged frame')
                 self._model_position(session,boundary.tokens,required=True);self._cancelled(cancel)
+                # Close staging before publishing service history.  A close
+                # failure is still a failed restore and must take the rollback
+                # path rather than leaving a committed state behind an error.
+                cache.close();cache_closed=True
                 session.tokens=boundary.tokens
                 return boundary
             except BaseException as error:
@@ -641,16 +1018,33 @@ class NativeExecutionService:
                         error.add_note('generation recovery rollback failed; session quarantined: '+repr(recovery))
                 raise
             finally:
-                cache.close()
+                failed=primary is not None
+                # Do not let temporary-frame cleanup replace the actual
+                # restore/identity/cancellation failure.  Still attempt both
+                # cleanup actions, since either owner may retain physical
+                # state after a failed close.
+                if not cache_closed:
+                    try:
+                        cache.close()
+                    except BaseException as cleanup:
+                        if primary is None:
+                            primary=cleanup
+                        else:
+                            primary.add_note('generation recovery staged-cache cleanup failed: '+repr(cleanup))
                 if rollback is not None:
                     try:self._release_snapshot(session,rollback)
                     except BaseException as cleanup:
-                        if primary is None:raise
-                        primary.add_note('generation recovery receipt cleanup retained: '+repr(cleanup))
+                        if primary is None:
+                            primary=cleanup
+                        else:
+                            primary.add_note('generation recovery receipt cleanup retained: '+repr(cleanup))
+                if primary is not None and not failed:
+                    raise primary
 
-    def resume_generation(self,session_id,boundary,*,max_new_tokens=None,cancel=None,on_event=None,
+    def resume_generation(self,session_id,boundary,*,max_new_tokens=None,stop_prefixes=(),cancel=None,on_event=None,
                           checkpoint_sink=None,max_checkpoint_bytes=0,application_identity=''):
-        return self.generate(session_id,(),max_new_tokens=max_new_tokens,cancel=cancel,on_event=on_event,
+        return self.generate(session_id,(),max_new_tokens=max_new_tokens,stop_prefixes=stop_prefixes,
+            cancel=cancel,on_event=on_event,
             resume_boundary=boundary,checkpoint_sink=checkpoint_sink,max_checkpoint_bytes=max_checkpoint_bytes,
             application_identity=application_identity)
 
@@ -747,6 +1141,14 @@ class NativeExecutionService:
             rollback = self._capture_snapshot(session,session.tokens);primary=None
             try:
                 reader(source,max_bytes=max_bytes-44-length)
+                # The outer file helper performs the same check, but direct
+                # service callers must also reject a valid frame followed by
+                # unowned bytes before publishing the new history.
+                trailing = source.read(1)
+                if not isinstance(trailing, bytes):
+                    raise ValueError('session cache EOF probe returned invalid bytes')
+                if trailing:
+                    raise ValueError('session cache contains trailing bytes')
                 self._model_position(session,tokens,required=True)
             except BaseException as error:
                 primary=error

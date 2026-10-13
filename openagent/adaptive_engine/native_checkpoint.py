@@ -12,16 +12,7 @@ from threading import RLock
 import numpy as np
 from .session_recovery import _path
 
-_DECODERS = {
-    'mixtral': ('native_mixtral_decoder', 'NativeMixtralDecoder'),
-    'glm_moe_dsa': ('native_glm_dsa', 'NativeGlmDsaDecoder'),
-    'qwen3_5_moe_text': ('native_qwen35', 'NativeQwen35TextDecoder'),
-    'qwen4_exp_text': ('native_qwen4', 'NativeQwen4TextDecoder'),
-    'glm5_next_text': ('native_glm5_next', 'NativeGlm5NextTextDecoder'),
-    'deepseek_v4': ('native_deepseek_v4', 'NativeDeepseekV4Decoder'),
-    'inkling_text': ('native_inkling', 'NativeInklingDecoder'),
-    'kimi_linear': ('native_kimi', 'NativeKimiLinearDecoder'),
-}
+from .text_decoder_registry import _DECODERS, decoder_owner
 
 
 @dataclass(frozen=True)
@@ -66,7 +57,15 @@ def retry_checkpoint_cleanup():
 
 
 def _cancelled(cancel):
-    if cancel is not None and cancel.is_set():
+    if cancel is None:
+        return
+    if callable(cancel):
+        active = bool(cancel())
+    elif callable(getattr(cancel, 'is_set', None)):
+        active = bool(cancel.is_set())
+    else:
+        raise TypeError('checkpoint cancellation must be callable or event-like')
+    if active:
         raise CheckpointLoadCancelled('checkpoint loading cancelled')
 
 
@@ -230,8 +229,7 @@ def _read_tensor(source, tensor, base, *, chunk_bytes=1024*1024, cancel=None):
 def read_native_text_checkpoint(directory, *, model_type, max_weight_bytes,
                                 read_limits=None,cancel=None,tensor_selection=None,context_tokens=None):
     """Read an exact registered text checkpoint, without wrapper reinterpretation."""
-    if type(model_type) is not str or model_type not in _DECODERS:
-        raise ValueError(f'unsupported exact native text identity: {model_type!r}')
+    decoder_owner(model_type)
     admission=None
     if tensor_selection is None:
         from .resident_family_inventory import FAMILIES,admit_resident_inventory
@@ -383,8 +381,7 @@ def load_native_text_decoder(directory, *, model_type, library,
                            + '; '.join(cleanup['errors']))
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError('max_bytes must be a positive integer')
-    if type(model_type) is not str or model_type not in _DECODERS:
-        raise ValueError(f'unsupported exact native text identity: {model_type!r}')
+    decoder_owner(model_type)
     options = {}
     if max_snapshots is not None:
         if model_type not in ('glm_moe_dsa','qwen3_5_moe_text'):
@@ -435,13 +432,23 @@ def load_native_multimodal_decoder(directory, *, model_type, library, text_libra
                                    max_weight_bytes, max_bytes=256 * 1024 * 1024,
                                    read_limits=None, cancel=None,arithmetic='fp32',context_tokens=None,
                                    max_snapshots=4):
-    """Load a bounded exact Qwen3.5 wrapper, never a text-only fallback."""
+    """Load the bounded direct Qwen3.5 wrapper, never a text-only fallback.
+
+    Qwen4 and Inkling multimodal checkpoints are intentionally admitted only
+    through ``publisher_conditional_loader``. Their component inventories need
+    family-specific config and header planning before payload materialization;
+    this simpler resident reader does not provide that preflight.
+    """
     cleanup = retry_checkpoint_cleanup()
     if cleanup['pending']:
         raise RuntimeError('previous cancelled decoder cleanup is still pending: '
                            + '; '.join(cleanup['errors']))
     if type(model_type) is not str or model_type not in ('qwen3_5_moe','qwen4_exp','inkling_mm_model'):
         raise ValueError(f'unsupported exact native multimodal identity: {model_type!r}')
+    if model_type in ('qwen4_exp', 'inkling_mm_model'):
+        raise ValueError(
+            f'direct native multimodal loading is not admitted for {model_type}; '
+            'use the publisher conditional loader with its family inventory planner')
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError('max_bytes must be a positive integer')
     libraries = []
@@ -450,10 +457,38 @@ def load_native_multimodal_decoder(directory, *, model_type, library, text_libra
         if not resolved.is_file():
             raise ValueError('libraries must be explicit local files')
         libraries.append(resolved)
+    metadata_admission = None
+    if model_type == 'qwen3_5_moe':
+        # The direct native Qwen3.5 wrapper is the explicitly bounded tiny
+        # vision vertical slice. Validate its complete vision namespace from
+        # SafeTensors headers before _read_native_checkpoint materializes any
+        # payload. The general publisher conditional loader has its own full
+        # producer/consumer planner and is intentionally unaffected.
+        def metadata_admission(config, inventory, resident):
+            from .native_qwen35_vision import NativeQwen35Vision
+            NativeQwen35Vision.validate_config(config, max_bytes=max_bytes)
+            vision = config['vision_config']
+            expected = dict(NativeQwen35Vision._shapes)
+            block_shapes = {
+                'norm1.weight': (8,), 'norm1.bias': (8,),
+                'norm2.weight': (8,), 'norm2.bias': (8,),
+                'attn.qkv.weight': (24, 8), 'attn.qkv.bias': (24,),
+                'attn.proj.weight': (8, 8), 'attn.proj.bias': (8,),
+                'mlp.linear_fc1.weight': (16, 8), 'mlp.linear_fc1.bias': (16,),
+                'mlp.linear_fc2.weight': (8, 16), 'mlp.linear_fc2.bias': (8,),
+            }
+            for layer in range(vision['depth']):
+                expected.update({f'blocks.{layer}.{name}': shape
+                                 for name, shape in block_shapes.items()})
+            prefix = 'model.visual.'
+            actual = {name[len(prefix):]: tuple(tensor['shape'])
+                      for name, tensor in inventory.items() if name.startswith(prefix)}
+            if actual != expected:
+                raise ValueError('Qwen3.5 native wrapper vision header inventory differs')
     config, weights = _read_native_checkpoint(
         directory, model_type=model_type, max_weight_bytes=max_weight_bytes,
         runtime_budget=max_bytes if model_type=='qwen3_5_moe' else None,
-        read_limits=read_limits, cancel=cancel)
+        metadata_admission=metadata_admission, read_limits=read_limits, cancel=cancel)
     _cancelled(cancel)
     if model_type=='inkling_mm_model':
         from .inkling_multimodal import InklingMultimodalDecoder

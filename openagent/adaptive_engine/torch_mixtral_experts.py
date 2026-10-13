@@ -15,8 +15,11 @@ class TorchMixtralExperts:
 
     Decoder hidden rows and expert products stay on device. Packed weights and
     row scales decode on the host within an explicit working-set reservation.
-    Formats are admitted by the shared packed decoder, including explicit
-    persisted lattice contracts. Provider storage remains caller-owned.
+    Formats are admitted by the shared packed decoder only when this consumer
+    has the matching activation transform, including the IQ3 rotation contract.
+    This implementation is inherited by the Qwen3.5 and Qwen4 device expert
+    providers, so format restrictions here apply to all three architectures.
+    Provider storage remains caller-owned.
     """
     architecture = 'mixtral'
 
@@ -48,10 +51,26 @@ class TorchMixtralExperts:
                     (layer.hidden_size,layer.intermediate_size,layer.experts_used)!=(self.hidden_size,self.intermediate_size,self.selected_experts) or
                     set(layer.regions)!={str(index) for index in range(self.expert_count)}):
                 raise ValueError('exact admitted device expert format/geometry required')
-            if layer.dtype in ('e8-lattice-caller-v1','iq3-format6-98-v1'):
-                contract = lattice_contract if layer.dtype=='e8-lattice-caller-v1' else iq3_grid
-                if contract is None or layer.contract!=contract.metadata():
+            # E8 payload decoding transforms each codebook row into the
+            # rotated basis, but this provider has no matching device-side
+            # activation transform.  Admitting it here would silently compute
+            # products in incompatible bases.  This is the shared selected
+            # device path for Mixtral, Qwen3.5 and Qwen4. Keep E8 unavailable
+            # for all three until activation rotation, its bounded scratch
+            # contract, and its cancellation path are implemented together.
+            if layer.dtype == 'e8-lattice-caller-v1':
+                raise ValueError(self.architecture +
+                    ' E8 lattice device experts are not admitted without activation rotation')
+            if layer.dtype == 'iq3-format6-98-v1':
+                if iq3_grid is None or layer.contract != iq3_grid.metadata():
                     raise ValueError('exact persisted device lattice contract required')
+                # Each of the three matrices is stored as independent
+                # format-6 256-weight blocks.  Reject incompatible model
+                # geometry at admission instead of waiting until a selected
+                # expert is staged and decoded on the first request.
+                if layer.hidden_size % 256 or layer.intermediate_size % 256:
+                    raise ValueError(
+                        'persisted IQ3 device experts require hidden and intermediate widths aligned to 256')
             for expert,region in layer.regions.items():
                 key = layer.id+'/'+expert
                 if not region.sha256 or store.regions.get(key)!=region:
@@ -79,7 +98,7 @@ class TorchMixtralExperts:
         document = dict(manifest=self.manifest.to_dict(),capacity=self.store.capacity_bytes,
             regions=[(key,region.path,region.offset,region.size,region.sha256,region.storage)
                      for key,region in sorted(self.store.regions.items())],work=self.work_bytes,
-            policy=self.architecture+'-selected-device-fp32-iq3-rotation-v2')
+            policy=self.architecture+'-selected-device-fp32-e8-rejected-iq3-rotation-256-aligned-v4')
         return hashlib.sha256(json.dumps(document,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 
     def execute(self,layer,expert,value,*,torch,device,cancel=None):
@@ -105,9 +124,23 @@ class TorchMixtralExperts:
             with self.store.acquire(entry.id+'/'+str(expert)) as payload:
                 decoded = decode_device_expert(payload,hidden=h,intermediate=m,dtype=entry.dtype,
                     max_bytes=self.work_bytes,lattice_contract=self.lattice_contract,iq3_grid=self.iq3_grid)
-                weights = tuple(torch.tensor(np.array(item,dtype=np.float32,copy=True),device=device)
-                                for item in decoded)
-                del decoded
+                # Device admission can involve three large host->device
+                # copies.  Make cancellation observable between each copy and
+                # release every completed temporary if a later copy fails;
+                # do not leave a partially staged expert looking usable.
+                staged=[]
+                try:
+                    for item in decoded:
+                        _cancel(cancel)
+                        staged.append(torch.tensor(
+                            np.array(item,dtype=np.float32,copy=True),device=device))
+                    _cancel(cancel)
+                    weights=tuple(staged)
+                except BaseException:
+                    staged.clear()
+                    del decoded
+                    raise
+                del staged,decoded
             gate,up,down,gs,us,ds = weights
             if entry.dtype=='iq3-format6-98-v1':
                 from .device_iq3_rotation import rotate_device_iq3

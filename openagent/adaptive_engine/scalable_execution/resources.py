@@ -257,6 +257,8 @@ class PackedStore:
         if any(not path.is_dir() for path in self.roots.values()):
             raise ValueError("storage roots must be directories")
         self.regions = dict(regions)
+        if not isinstance(mapped_budget, Budget):
+            raise TypeError("packed store requires an explicit Budget")
         self.budget = mapped_budget
         self._pool = LeasePool(mapped_budget)
         self._lock = threading.RLock()
@@ -264,13 +266,16 @@ class PackedStore:
         self._closed = False
         self._signatures = {}
         for key, region in self.regions.items():
-            if not key or type(region.offset) is not int or region.offset < 0:
+            if (type(key) is not str or not key or type(region) is not PackedRegion or
+                    type(region.offset) is not int or region.offset < 0):
                 raise ValueError("invalid packed region")
             positive(region.size, "region size")
             if len(region.sha256) != 64 or any(c not in "0123456789abcdef" for c in region.sha256):
                 raise ValueError("every packed region requires SHA-256")
-            if not region.packed_format:
+            if type(region.packed_format) is not str or not region.packed_format:
                 raise ValueError("packed format required")
+            if region.storage not in self.roots:
+                raise ValueError("packed region references an unknown storage root")
             self._path(region)
 
     @classmethod
