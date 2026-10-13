@@ -51,7 +51,7 @@ export class ThemeController {
     const select = document.querySelector<HTMLSelectElement>("#settingsTheme");
     if (select) select.value = preference;
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-      ?.setAttribute("content", resolved === "dark" ? "#0b0f16" : "#f5f7fb");
+      ?.setAttribute("content", resolved === "dark" ? "#0B1016" : "#F6F8FA");
     this.onChange?.(preference, resolved);
   }
 

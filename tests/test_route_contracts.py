@@ -13,7 +13,12 @@ class RouteContractTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         documentation = [root / "README.md", *(root / "docs").rglob("*.md")]
         documented_text = "\n".join(path.read_text(encoding="utf-8") for path in documentation)
+        # Match endpoint-shaped paths only. Provider/model identifiers can also
+        # begin with /api/models/ but are not HTTP route documentation.
         blueprint_paths = sorted(set(re.findall(r"/api/[A-Za-z0-9_./{}-]+", documented_text)))
+        blueprint_paths = [path for path in blueprint_paths if not re.match(
+            r"/api/models/[a-z0-9_-]+/[A-Z][A-Za-z0-9._-]*", path
+        )]
         declared = {
             (route["method"], route["path"])
             for contract in route_contracts()
@@ -35,6 +40,13 @@ class RouteContractTests(unittest.TestCase):
             missing.append(path)
 
         self.assertEqual(missing, [])
+
+    def test_model_catalog_ids_are_not_treated_as_api_routes(self) -> None:
+        text = "Catalog entries: /api/models/deepseek-ai/DeepSeek-V4.1-Flash and /api/models/moonshotai/Kimi-K3"
+        endpoint_paths = [path for path in re.findall(r"/api/[A-Za-z0-9_./{}-]+", text) if not re.match(
+            r"/api/models/[a-z0-9_-]+/[A-Z][A-Za-z0-9._-]*", path
+        )]
+        self.assertEqual(endpoint_paths, [])
 
     def test_each_domain_route_contract_is_declared(self) -> None:
         contracts = route_contracts()

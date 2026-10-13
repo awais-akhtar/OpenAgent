@@ -362,6 +362,13 @@ const viewRouter = new ViewRouter({
     const titleEl = qs("#screenTitle");
     const viewTitles = { phd: "Application Studio", finetune: "Fine-Tuning", communications: "Communications" };
     if (titleEl) titleEl.textContent = viewTitles[view] || view.split("-").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+    document.querySelectorAll<HTMLElement>("[data-view-panel]").forEach(panel => {
+      panel.setAttribute("aria-hidden", String(panel.dataset.viewPanel !== view));
+    });
+    document.querySelectorAll<HTMLAnchorElement>("[data-view-link]").forEach(link => {
+      if (link.dataset.viewLink === view) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
     const loader = VIEW_LOADERS[view];
     if (loader) loader();
   },
@@ -7996,7 +8003,7 @@ async function refreshWorkspace() {
 // =============================================
 
 async function init() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js?v=20260917-frontend-01").catch(() => {});
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js?v=20261013-harbor-01").catch(() => {});
   try { document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("oa-sidebar-collapsed") === "true"); } catch (_) {}
   initTheme();
   initNavigation();

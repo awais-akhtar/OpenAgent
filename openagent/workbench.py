@@ -105,10 +105,14 @@ def ui_build_token() -> str:
     root = web_root()
     digest = hashlib.sha256()
     found = False
-    for name in ("index.html", "app.js", "styles.css", "sw.js", "manifest.json"):
-        path = root / name
+    assets = [root / name for name in ("index.html", "app.js", "styles.css", "sw.js", "manifest.json")]
+    assets.extend(sorted((root / "assets").rglob("*")))
+    for path in assets:
+        if not path.is_file():
+            continue
+        name = path.relative_to(root).as_posix()
         try:
-            digest.update(name.encode("ascii"))
+            digest.update(name.encode("utf-8"))
             digest.update(path.read_bytes())
             found = True
         except OSError:

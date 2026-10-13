@@ -11,5 +11,6 @@ recursive-include openagent/adaptive_engine *.c *.h
 recursive-include openagent/adaptive_engine *.cu *.swift *.metal *.hip *.cpp
 recursive-include docs *.md
 recursive-include web *.html *.js *.css *.scss *.json
+recursive-include web/assets *
 recursive-include deploy *.yaml
 recursive-include installers *.md *.ps1 *.cmd

@@ -68,7 +68,9 @@ browser-*/
 /done-things.md
 /docs/CLEAN_ROOM_COMPARISON_AND_ARCHITECTURE.md
 /docs/STAGE_COMPLETION_AUDIT.md
-
+/CODEX_UI_REDESIGN_DOCS
+/CODEX_UI_REDESIGN_DOCS/*
+/CODEX_UI_REDESIGN_DOCS/
 .env
 .env.*
 !.env.example

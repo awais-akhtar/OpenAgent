@@ -125,11 +125,11 @@ include = ["openagent*"]
 "web" = [
   "web/index.html",
   "web/styles.css",
-  "web/styles.scss",
   "web/app.js",
   "web/manifest.json",
   "web/sw.js",
   "web/icons.svg",
+  "web/assets/*",
 ]
 
 [build-system]
