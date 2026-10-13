@@ -16,7 +16,7 @@ This is a bounded source review, not a complete build-output, dependency, image/
 
 The development-only reference pack and source atlas were used to study public interaction patterns: conversation-first home, compact grouped sidebar/history, command search, concise header, message composer, grouped conversations, focused settings, responsive workspace, restrained grayscale surfaces, typography and spacing. These are general interface concepts; OpenAgent's JSX/CSS, route model, data shape and backend integration were independently implemented. No AionUI logo or product branding is used in the shell; it presents OpenAgent.
 
-Reference material was under `CODEX_AIONUI_TRANSFORMATION/REFERENCE_ONLY/` and `CODEX_AIONUI_TRANSFORMATION/SCREENS/`. Those are audit/reference inputs, not production frontend imports. Confirm the packaging configuration excludes the reference archive, source, screenshots and sample material before redistribution.
+The AionUI reference archive, source, screenshots and sample material were local audit inputs and are excluded from this repository. Production frontend source does not import AionUI assets.
 
 ## Project and dependency licensing
 
@@ -29,7 +29,7 @@ Reference material was under `CODEX_AIONUI_TRANSFORMATION/REFERENCE_ONLY/` and `
 
 1. Scan the production source and built `web/` bundle for AionUI/iOfficeAI names, logos, unique assets, source maps and reference screenshots.
 2. Generate an SBOM or dependency-license inventory from the locked dependency graph; review notices for Arco, icons, fonts and transitive packages.
-3. Confirm package/build rules exclude `CODEX_AIONUI_TRANSFORMATION/REFERENCE_ONLY/` and any provided ZIP from the distributed app.
+3. Keep upstream reference archives, source and screenshots out of the distributed app and repository.
 4. Review final branding, favicon, font, icon and user-facing About/licence presentation before release.
 
 No release-grade license gate is marked PASS by this document.

@@ -96,3 +96,13 @@ check BLUEPRINT .md
 
 # Separate upstream study checkout; not part of OpenAgent distributions.
 /reference/colibri/
+
+# Private Codex transformation instructions, upstream reference pack, and
+# local AI/audit working notes. Keep these on the developer machine only.
+/CODEX_AIONUI_TRANSFORMATION/
+/COPY_TO_EXISTING_PROJECT_README.txt
+/docs/AIONUI_TRANSFORMATION_PROGRESS.md
+/docs/FRONTEND_FEATURE_PARITY.md
+/docs/FRONTEND_NPM_LICENSE_INVENTORY.md
+/docs/FRONTEND_QA_RESULTS.md
+/docs/ui-redesign/IMPLEMENTATION_LOG.md

@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-This document inventories the client behavior and endpoint families found in the current frontend source, cross-checked against the screen dossiers and supplied API inventory. It is not a complete listing of every Python route, and source references do not prove runtime handler behavior. The route inventory reports 672 method/path declarations across 50 modules; declarations alone are not a tested contract. Exact handlers remain authoritative.
+This document inventories client behavior and endpoint families found in the current frontend source. It is not a complete listing of every Python route, and source references do not prove runtime handler behavior. The route inventory reports 672 method/path declarations across 50 modules; declarations alone are not a tested contract. Exact handlers remain authoritative.
 
 ## Shared HTTP and stream clients
 
@@ -39,7 +39,7 @@ The client is **generic rather than domain-typed**: many calls use `api.get<unkn
 | Scraper | GET scraper status/jobs; POST schedule/scrape/run-due |
 | Fine-tuning | GET finetune status/templates/datasets/jobs/adapters; POST dataset/example/job/adapter registration/activation |
 
-See [FRONTEND_FEATURE_PARITY.md](FRONTEND_FEATURE_PARITY.md) for the screen-by-screen implementation assessment and [22_ENDPOINT_TO_SURFACE_MATRIX.md](../CODEX_AIONUI_TRANSFORMATION/22_ENDPOINT_TO_SURFACE_MATRIX.md) for the supplied wiring targets.
+The endpoint families can be traced to the active React pages and Python route handlers. This inventory is descriptive; test results belong to the project CI and do not imply that every endpoint has been exercised.
 
 ## Privacy and safety behavior represented in source
 
@@ -54,4 +54,4 @@ See [FRONTEND_FEATURE_PARITY.md](FRONTEND_FEATURE_PARITY.md) for the screen-by-s
 
 ## Verification boundary
 
-The source tree includes API-client, SSE, chat, specialist, resource, workspace and project-scope tests. The latest targeted verification for this audit ran the TypeScript check and the API/SSE/chat/agent-workflow/workspace suites; the new Workspace project-change case uses mocked responses and makes no live mutations. It proves request scope and UI clearing, not server-side isolation. This audit did not validate response schemas comprehensively, simulate protected-route auth/egress denials against Python, exercise every protected route, or verify real stream cancel/reconnect against the backend. The previously listed PhD Application Studio is retired, leaving 22 active view destinations. See [FRONTEND_QA_RESULTS.md](FRONTEND_QA_RESULTS.md) for the broader recorded checks and limitations.
+The source tree includes API-client, SSE, chat, specialist, resource, workspace and project-scope tests. Mocked Workspace project-change coverage proves client request scope and UI clearing, not server-side isolation. The tests do not comprehensively validate response schemas, protected-route authorization/egress denials, every protected route, or real stream cancellation/reconnection. The PhD Application Studio was retired, leaving 22 active view destinations.
