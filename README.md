@@ -424,6 +424,8 @@ OpenAgent contains tested local implementations for chat and model routing, know
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the staged build plan.
 
+See [docs/FRONTEND_DESIGN_AUDIT.md](docs/FRONTEND_DESIGN_AUDIT.md) for the current screen-by-screen frontend quality audit and prioritized redesign plan.
+
 See [docs/RELEASES.md](docs/RELEASES.md) for release and package policy.
 
 See [docs/WORKSPACE_ASSISTANT.md](docs/WORKSPACE_ASSISTANT.md) for the workspace, chat management, assistant, knowledge synthesis, and workflow data-action APIs.
