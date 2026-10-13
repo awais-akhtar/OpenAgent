@@ -7,7 +7,7 @@ import { resourcePageConfigs } from './ResourcePages';
 import '../features/specialists/specialist-workspace.css';
 import './platform-workspaces.css';
 
-const IDS = ['developer', 'engine', 'finetune', 'phd', 'science', 'scraper'] as const;
+const IDS = ['developer', 'engine', 'finetune', 'science', 'scraper'] as const;
 export type PlatformWorkspaceId = typeof IDS[number];
 type Snapshot = { data?: unknown; error?: string; loading: boolean };
 const currentProject = () => new URL(location.href).searchParams.get('project') || (() => { try { return localStorage.getItem('oa-project') || 'default'; } catch { return 'default'; } })();

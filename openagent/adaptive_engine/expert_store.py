@@ -138,12 +138,12 @@ class DiskExpertStore:
         path = candidate.resolve(strict=True)
         if not path.is_relative_to(storage_root) or not path.is_file():
             raise ValueError("expert file must remain inside its declared storage root")
-        stat = path.stat()
-        signature = (stat.st_size, stat.st_mtime_ns)
+        file_stat = path.stat()
+        signature = (file_stat.st_size, file_stat.st_mtime_ns)
         original = self._file_signatures.setdefault(path, signature)
         if signature != original:
             raise ValueError("expert file changed while the store was open")
-        if region.offset + region.size > stat.st_size:
+        if region.offset + region.size > file_stat.st_size:
             raise ValueError("expert range exceeds file size")
         return path
 

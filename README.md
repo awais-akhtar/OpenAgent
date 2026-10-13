@@ -63,7 +63,6 @@ The source tree includes optional and experimental integrations alongside the lo
 - Scientific AI tooling with validated local-model planning and deterministic fallback, evidence-bound result analysis, project-scoped memory, traceback-driven self-correction, AST execution policy, SymPy and Pint checks, an optional FEniCS heat adapter, experiment planning, runtime profiles, and a collapsible workbench navigation; FNO and PINN remain clearly labeled baselines
 - CodeQ IDE directly below Chat with a native folder chooser, protected working copies, verified write-back to the selected folder, Explorer, closable multi-file tabs, terminal and Git panels, a live agent feed and editor, model-planned greenfield and existing-project work without a forced default framework, cross-framework host and toolchain preflight, permission-aware tools, repair loops, independent review, snapshots, resumable state, and evidence-based completion gates
 - Public CodeQ generator SDK with declarative or protocol-based framework adapters, Python entry-point discovery, artifact and validation contracts, environment preparation plans, and the `openagent-codeq` catalog/inspect/preflight CLI
-- Private PhD Application Studio with reusable academic data, local CV/SOP evidence uploads, position tracking, approval-gated professor and lab research, evidence-grounded document generation, revision history, local quality review, and DOCX/PDF/ZIP exports
 - Stage 13 local product runtime with submitted-audio STT, local voiceprint clone records, generated WAV voice audio, offline HTML form simulation, approved desktop file automation, and PWA/mobile/desktop package directories. Optional Playwright browser control is documented separately.
 - Stage 14 native Windows desktop installability with a standard-library desktop shell, local status command, Start Menu/Desktop launcher scripts, and hard-audit proof that no browser is required
 - Stage 15 native desktop workbench exposing the current local OpenAgent feature set through one stable workbench
@@ -134,7 +133,7 @@ This opens the native OpenAgent desktop shell. It does not open a browser. The d
 
 The desktop workbench includes tabs for:
 
-- Chat, PhD Studio, Agents, Memory, Workspace, Knowledge, Assistant, Models, Voice + Media, Automation, Security + Dev, and Audit.
+- Chat, Agents, Memory, Workspace, Knowledge, Assistant, Models, Voice + Media, Automation, Security + Dev, and Audit.
 
 For a no-GUI install check:
 
@@ -180,10 +179,10 @@ Then open:
 http://127.0.0.1:8765
 ```
 
-The local server serves the modern OpenAgent Workbench UI from `web/`. It is a
-CSS3/Sass-backed, component-style interface for chat, agents, workspace,
-knowledge, PhD applications, automation, assistant, communications, models, security, and
-developer tools. The UI talks only to the local OpenAgent API at the same
+The local server serves the React 19 OpenAgent Workbench UI from `web/`, built
+with TypeScript, Vite, Arco Design and UnoCSS. Its responsive chat, workspace,
+assistant, tools, settings and security screens call the existing local
+OpenAgent API at the same
 localhost origin unless a specific action asks for an approved external
 boundary.
 
@@ -265,7 +264,6 @@ curl http://127.0.0.1:8765/api/semantic/status
 curl http://127.0.0.1:8765/api/media/status
 curl http://127.0.0.1:8765/api/voice/status
 curl http://127.0.0.1:8765/api/production/status
-curl http://127.0.0.1:8765/api/phd/status
 ```
 
 Run the executable hard audit:
@@ -412,7 +410,6 @@ linked documents below.
 - [Multi-agent runtime](docs/MULTI_AGENT_RUNTIME.md) - delegation, approvals, parallel work, and verification
 - [Workflows](docs/WORKFLOWS.md) - triggers, actions, queues, and rollback
 - [Communication hub](docs/COMMUNICATION_HUB.md) - local connectors, inbox, drafts, and approvals
-- [PhD Application Studio](docs/PHD_APPLICATION_STUDIO.md) - private evidence, position research, and document generation
 - [Semantic media and voice](docs/SEMANTIC_MEDIA_VOICE.md) - media ingestion, voice sessions, and local transcription
 - [Production runtime](docs/PRODUCTION_RUNTIME.md) - production policies, queues, audit anchoring, and packaging
 - [Lifecycle completion](docs/LIFECYCLE_COMPLETION.md) - durable research, image, document, identity, model, and proof controls
@@ -436,8 +433,6 @@ See [docs/SEMANTIC_MEDIA_VOICE.md](docs/SEMANTIC_MEDIA_VOICE.md) for semantic me
 See [docs/PRODUCTION_RUNTIME.md](docs/PRODUCTION_RUNTIME.md) for policy, queue, audit anchoring, vector, reranking, connector, crypto, automation, packaging, marketplace, GPU, fine-tuning, proactive, federated, sync, and sandbox APIs.
 
 See [docs/LIFECYCLE_COMPLETION.md](docs/LIFECYCLE_COMPLETION.md) for durable research streaming, reversible image operations, document processing, communication, task outputs, skills, identity, model certification, and production-proof boundaries.
-
-See [docs/PHD_APPLICATION_STUDIO.md](docs/PHD_APPLICATION_STUDIO.md) for the private applicant data vault, public research boundary, grounded writing workflow, revisions, exports, and PhD API routes.
 
 See [docs/ADVANCED_RAG_AND_CPU_ENGINE.md](docs/ADVANCED_RAG_AND_CPU_ENGINE.md) for FAISS, ChromaDB, grounded retrieval, CPU latency controls, privacy boundaries, APIs, and honest benchmark scope. See [docs/ULTRA_CPU_MODEL_ENGINE.md](docs/ULTRA_CPU_MODEL_ENGINE.md) for large sharded GGUF planning, 200B physical limits, warm lifecycle control, private distribution, and output verification.
 

@@ -62,7 +62,6 @@ from ..model_gateway import ModelGateway, ProviderConfigurationError, runtime_se
 from ..models import AuditEvent, utc_now
 from ..multi_agent import MultiAgentRuntime
 from ..personal_os import PersonalOS, PersonalOSError
-from ..phd_workspace import PhDWorkspace
 from ..production_runtime import ProductionRuntime, ProductionRuntimeError
 from ..research import ResearchEngine
 from ..research_lifecycle import ResearchLifecycle
@@ -101,7 +100,6 @@ from .knowledge_routes import KnowledgeRouteDependencies, handle_get as handle_k
 from .mcp_runtime_routes import MCPRuntimeRouteDependencies, handle_get as handle_mcp_runtime_get, handle_patch as handle_mcp_runtime_patch, handle_post as handle_mcp_runtime_post
 from .media_routes import MediaRouteDependencies, ResponseAlreadySent, handle_get as handle_media_get, handle_post as handle_media_post
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
-from .phd_routes import PhDRouteDependencies, handle_delete as handle_phd_delete, handle_get as handle_phd_get, handle_patch as handle_phd_patch, handle_post as handle_phd_post
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
 from .scraper_routes import ScraperRouteDependencies, handle_get as handle_scraper_get, handle_post as handle_scraper_post
@@ -382,7 +380,6 @@ def build_http_server(
     vault = EncryptedVault(store)
     backup_restore = BackupRestoreManager(store)
     scraper = WebScraper(store)
-    phd_workspace = PhDWorkspace(store, gateway=gateway, scraper=scraper)
     scientific_agent = ScientificAgent(context, gateway=gateway)
     scientific_service = ScientificService(store)
     fine_tuning = FineTuningManager(store)
@@ -514,7 +511,6 @@ def build_http_server(
         add_module("dashboard", "Dashboard telemetry", lambda: {"health": store.health(), "metrics": system_metrics(store.data_dir)})
         add_module("voice", "Voice runtime", lambda: voice.status(project=project))
         add_module("research", "Research engine", lambda: research_engine.status(project=project))
-        add_module("phd", "PhD application workspace", lambda: phd_workspace.status(project=project))
         add_module("science", "Scientific AI", lambda: {"status": "ready", "privacy_boundary": "Local scientific computation only."})
         add_module("codebase", "Autonomous software engineering", lambda: {"projects": len(codebase.list_projects(project=project)), "runs": len(codebase.list_runs(project=project, limit=20)), "sandbox_root": str(codebase.sandboxes.root)})
         add_module("agents", "Multi-agent system", lambda: {"agents": agents.specs(), "marketplace": multi_agent.marketplace()})
@@ -802,17 +798,6 @@ def build_http_server(
 
     def model_cookbook_route_dependencies(read_json) -> ModelCookbookRouteDependencies:
         return ModelCookbookRouteDependencies(cookbook=model_cookbook, read_json=read_json)
-
-    def phd_route_dependencies(read_json, query_owner, payload_owner) -> PhDRouteDependencies:
-        return PhDRouteDependencies(
-            workspace=phd_workspace,
-            first=first,
-            parse_bool=parse_bool,
-            parse_int=parse_int,
-            query_owner=query_owner,
-            payload_owner=payload_owner,
-            read_json=read_json,
-        )
 
     def document_processing_route_dependencies(read_json, payload_owner) -> DocumentProcessingRouteDependencies:
         return DocumentProcessingRouteDependencies(processing=document_processing, payload_owner=payload_owner, read_json=read_json)
@@ -1182,14 +1167,6 @@ def build_http_server(
             model_cookbook_route = handle_model_cookbook_get(parsed.path, parsed.query, model_cookbook_route_dependencies(self.read_json))
             if model_cookbook_route is not None:
                 self.send_json(model_cookbook_route.payload, status=model_cookbook_route.status)
-                return
-            phd_route = handle_phd_get(
-                parsed.path,
-                parsed.query,
-                phd_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
-            )
-            if phd_route is not None:
-                self.send_json(phd_route.payload, status=phd_route.status)
                 return
             image_studio_route = handle_image_studio_get(
                 parsed.path,
@@ -2118,13 +2095,6 @@ def build_http_server(
             model_cookbook_route = handle_model_cookbook_post(parsed.path, model_cookbook_route_dependencies(self.read_json))
             if model_cookbook_route is not None:
                 self.send_json(model_cookbook_route.payload, status=model_cookbook_route.status)
-                return
-            phd_route = handle_phd_post(
-                parsed.path,
-                phd_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
-            )
-            if phd_route is not None:
-                self.send_json(phd_route.payload, status=phd_route.status)
                 return
             document_processing_route = handle_document_processing_post(
                 parsed.path,
@@ -3794,13 +3764,6 @@ def build_http_server(
                 return
             if not self._enforce_auth_gate(parsed.path, "PATCH"):
                 return
-            phd_route = handle_phd_patch(
-                parsed.path,
-                phd_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
-            )
-            if phd_route is not None:
-                self.send_json(phd_route.payload, status=phd_route.status)
-                return
             contacts_route = handle_contacts_patch(
                 parsed.path,
                 contacts_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
@@ -3852,13 +3815,6 @@ def build_http_server(
             auth_route = handle_auth_delete(parsed.path, auth_route_dependencies(self))
             if auth_route is not None:
                 self.send_json(auth_route.payload, status=auth_route.status)
-                return
-            phd_route = handle_phd_delete(
-                parsed.path,
-                phd_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
-            )
-            if phd_route is not None:
-                self.send_json(phd_route.payload, status=phd_route.status)
                 return
             identity_route = handle_identity_delete(parsed.path, identity_route_dependencies(self))
             if identity_route is not None:

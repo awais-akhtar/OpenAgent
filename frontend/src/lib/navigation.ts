@@ -1,11 +1,11 @@
 import {
   Activity, Bot, BrainCircuit, CalendarDays, Code2, FileText, FlaskConical,
-  FolderGit2, Headphones, Home, MessageSquare, Network, Search, Send,
+  Headphones, Home, MessageSquare, Network, Search, Send,
   Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Users, Workflow,
   Wrench, Vault, Waypoints, type IconComponent,
 } from './icons';
 
-export type ViewId = 'dashboard' | 'chat' | 'codebase' | 'voice' | 'research' | 'phd' | 'agents' | 'knowledge' | 'workspace' | 'automation' | 'assistant' | 'communications' | 'models' | 'security' | 'developer' | 'settings' | 'engine' | 'science' | 'calendar' | 'twin' | 'vault' | 'scraper' | 'finetune';
+export type ViewId = 'dashboard' | 'chat' | 'codebase' | 'voice' | 'research' | 'agents' | 'knowledge' | 'workspace' | 'automation' | 'assistant' | 'communications' | 'models' | 'security' | 'developer' | 'settings' | 'engine' | 'science' | 'calendar' | 'twin' | 'vault' | 'scraper' | 'finetune';
 export type NavItem = { id: ViewId; label: string; icon: IconComponent; keywords?: string };
 export type NavGroup = { label: string; key: string; items: NavItem[] };
 
@@ -23,7 +23,6 @@ export const groups: NavGroup[] = [
     { id: 'knowledge', label: 'Knowledge', icon: BrainCircuit },
     { id: 'codebase', label: 'CodeQ', icon: Code2, keywords: 'codebase project' },
     { id: 'voice', label: 'Voice', icon: Headphones },
-    { id: 'phd', label: 'Application Studio', icon: FolderGit2, keywords: 'phd applications' },
     { id: 'science', label: 'Scientific AI', icon: FlaskConical },
     { id: 'scraper', label: 'Web Scraper', icon: Network },
     { id: 'finetune', label: 'Fine-tuning', icon: Waypoints },

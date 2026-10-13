@@ -21,7 +21,6 @@ The client is **generic rather than domain-typed**: many calls use `api.get<unkn
 | CodeQ | GET `/api/codebase/projects`, project tree/file, runs/detail/events; POST folder-picker/project/scan/preflight/run/cancel/resume/snapshot restore/approval resolve/file write; event stream is fetched with cursor/timeout parameters |
 | Voice | GET `/api/voice/status`, `/personas`, `/sessions`, `/turns`; POST sessions/STT/personas/transcript/TTS/translate/close |
 | Research | GET `/api/research/sessions` and session event stream; POST session creation and `/api/chat/research-record` |
-| PhD Application Studio | GET `/api/phd/status`, `/profile`, `/applications`, `/documents`, `/generation-runs`, `/artifacts`; POST application create and application generation start |
 | Agents | GET `/api/agents`, `/marketplace`, `/permissions`, `/approvals`; POST `/run-checked`, approval request/resolve, `/delegate`, permission grant |
 | Knowledge | GET knowledge status/documents/tags/graph/timeline and RAG status; POST hybrid search/synthesis/upload/ingest |
 | Workspace | GET `/api/workspace/items`, `/api/documents/library`, `/api/document/{id}`, versions; POST create/archive/restore/update and PUT document |
@@ -44,16 +43,15 @@ See [FRONTEND_FEATURE_PARITY.md](FRONTEND_FEATURE_PARITY.md) for the screen-by-s
 
 ## Privacy and safety behavior represented in source
 
-- Project scope is sent on many reads and mutations from the active `project` query or saved `oa-project` value. The Python service remains the authorization and data-isolation authority; no frontend-only selection is a security boundary.
+- Project scope is sent on many reads and mutations from the active `project` query or saved `oa-project` value. The Workspace route subtree is keyed by active project in the shell; Workspace also clears document selection, content, versions, and library rows on a scope change and guards late document reads. A deterministic component regression test covers the page transition and the encoded project-scoped library requests. These client behaviors do not establish backend authorization: the Python service remains the authorization and data-isolation authority, and no frontend-only selection is a security boundary.
 - Chat sends default to local-only/external access disabled unless the user explicitly opts in. The chat page passes the scope into `/api/chat/stream`; source tests cover payload construction but not the live backend policy.
 - Communications sends are separated into draft, approval request, approval resolution, then send. The send request includes `allow_external:false`; server enforcement still governs delivery.
 - Workflow run supports dry-run and a separate confirmed live action; configured payload sets `allow_network:false`. The JSON steps field remains a usability/parity concern.
 - Scraper requests default external access off, request robots compliance, and leave egress/SSRF enforcement to the backend.
-- PhD draft generation disables external model and external research flags in its action payload.
 - CodeQ write includes the file's expected SHA-256 and requires an explicit confirmation; operation approvals, runs, and snapshots call dedicated API routes.
 - Vault secrets are submitted to server endpoints, reveal requires a passphrase and source schedules concealment after 15 seconds; source review does not prove memory clearing, transport behavior or project isolation.
-- Security/settings and privileged actions remain server-backed, but current views sometimes display raw response JSON. Avoid treating a UI label, payload flag, or client confirmation as equivalent to backend security enforcement.
+- Security/settings and privileged actions remain server-backed. Security and Settings summaries use allowlisted, human-readable fields and omit sensitive nested policy details and identifiers; some specialist surfaces may still show API-shaped data. Avoid treating a UI label, payload flag, or client confirmation as equivalent to backend security enforcement.
 
 ## Verification boundary
 
-The source tree includes API/stream/chat/specialist contract tests, but this audit did not execute them and does not claim them as passing. It did not exercise protected routes against the Python service, validate response schemas, simulate auth/egress denials, test project isolation, verify stream cancellation/reconnect, or run all 23 screen smoke tests. The documented Playwright Chromium launch limitation is Windows `spawn EPERM`; final browser/visual checks remain unverified. Re-run the current frontend and Python suites after integration and record their output before release.
+The source tree includes API-client, SSE, chat, specialist, resource, workspace and project-scope tests. The latest targeted verification for this audit ran the TypeScript check and the API/SSE/chat/agent-workflow/workspace suites; the new Workspace project-change case uses mocked responses and makes no live mutations. It proves request scope and UI clearing, not server-side isolation. This audit did not validate response schemas comprehensively, simulate protected-route auth/egress denials against Python, exercise every protected route, or verify real stream cancel/reconnect against the backend. The previously listed PhD Application Studio is retired, leaving 22 active view destinations. See [FRONTEND_QA_RESULTS.md](FRONTEND_QA_RESULTS.md) for the broader recorded checks and limitations.

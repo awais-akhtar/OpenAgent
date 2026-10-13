@@ -90,8 +90,6 @@ SCOPE_CATALOG: tuple[dict[str, str], ...] = (
     {"scope": "integrations:admin", "description": "Manage pairing codes, preferences, and backups"},
     {"scope": "settings:read", "description": "View runtime settings and model policy"},
     {"scope": "settings:write", "description": "Change runtime settings"},
-    {"scope": "phd:read", "description": "View private PhD profiles, positions, sources, and artifacts"},
-    {"scope": "phd:write", "description": "Manage PhD application data, research, generation, and exports"},
     {"scope": "codebase:read", "description": "View codebase projects, workspaces, runs, and event history"},
     {"scope": "codebase:write", "description": "Create and operate isolated software-engineering workspaces"},
 )
@@ -869,7 +867,10 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/voice/", "voice:read", "voice:write"),
     ("/api/communication/", "communication:read", "communication:write"),
     ("/api/calendar/", "calendar:read", "calendar:write"),
-    ("/api/document/", "docs:read", "docs:write"),
+    # The singular document collection endpoint is exactly /api/document for
+    # POST, while item routes extend it with a slash. Keep the collection in
+    # the same protected scope family as the item routes.
+    ("/api/document", "docs:read", "docs:write"),
     ("/api/documents/", "docs:read", "docs:write"),
     ("/api/editor-drafts", "drafts:read", "drafts:write"),
     ("/api/security/", "security:read", "security:admin"),
@@ -889,7 +890,6 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/assistant/", "assistant:read", "assistant:write"),
     ("/api/integrations/", "integrations:read", "integrations:admin"),
     ("/api/settings/", "settings:read", "settings:write"),
-    ("/api/phd/", "phd:read", "phd:write"),
     ("/api/codebase/", "codebase:read", "codebase:write"),
     ("/v1/brio", "local_ai:read", "local_ai:admin"),
     ("/v1/systemone", "local_ai:read", "local_ai:admin"),

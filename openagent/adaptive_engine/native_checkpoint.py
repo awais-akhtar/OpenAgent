@@ -94,7 +94,8 @@ def _pairs(pairs):
 
 def _stamp(source):
     value = os.fstat(source.fileno())
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+    creation_time = getattr(value, "st_birthtime_ns", value.st_ctime_ns)
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, creation_time
 
 
 def _open_local(root, path, stack):
@@ -115,7 +116,8 @@ def _open_local(root, path, stack):
         raise
     source=stack.enter_context(source)
     identity = _stamp(source)
-    if identity != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns):
+    before_birthtime = getattr(before, "st_birthtime_ns", before.st_ctime_ns)
+    if identity != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before_birthtime):
         raise ValueError('checkpoint file changed during opening')
     return source, identity
 

@@ -22,6 +22,8 @@ export function ChatPage(props: ChatPageProps) {
   const [messages, setMessages] = useState<ChatItem[]>([]);
   const [localAttachments, setLocalAttachments] = useState<ChatItem[]>([]);
   const [providers, setProviders] = useState<ChatItem[]>([]);
+  const [agents, setAgents] = useState<ChatItem[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedId, setSelectedId] = useState(() => new URL(location.href).searchParams.get('conversation_id') || '');
   const [selectedProvider, setSelectedProvider] = useState('auto');
   const [selectedModel, setSelectedModel] = useState('');
@@ -53,6 +55,10 @@ export function ChatPage(props: ChatPageProps) {
     try { const data = await api.get<unknown>('/api/models'); setProviders(records(data, 'providers')); }
     catch { setProviders([]); }
   }, []);
+  const loadAgents = useCallback(async () => {
+    try { const data = await api.get<unknown>('/api/agents'); setAgents(records(data, 'agents')); }
+    catch { setAgents([]); }
+  }, []);
   const loadPrivacy = useCallback(() => {
     try { const saved = record(JSON.parse(localStorage.getItem('oa-privacy-settings') || '{}')); setLocalOnly(saved.localOnly !== false); }
     catch { setLocalOnly(true); }
@@ -60,13 +66,13 @@ export function ChatPage(props: ChatPageProps) {
 
   useEffect(() => {
     alive.current = true;
-    void Promise.allSettled([loadConversations().catch(cause => { setError(cause instanceof Error ? cause.message : 'Could not load conversation history.'); }), loadProviders(), Promise.resolve(loadPrivacy())]).finally(() => {
+    void Promise.allSettled([loadConversations().catch(cause => { setError(cause instanceof Error ? cause.message : 'Could not load conversation history.'); }), loadProviders(), loadAgents(), Promise.resolve(loadPrivacy())]).finally(() => {
       if (!alive.current) return;
       const initialConversation = new URL(location.href).searchParams.get('conversation_id');
       if (initialConversation) void openConversation({ id: initialConversation });
     });
     return () => { alive.current = false; controller.current?.abort(); };
-  }, [loadConversations, loadProviders, loadPrivacy]);
+  }, [loadConversations, loadProviders, loadAgents, loadPrivacy]);
 
   useEffect(() => {
     const syncRoute = () => {
@@ -183,6 +189,25 @@ export function ChatPage(props: ChatPageProps) {
     let assistant = ''; let nextConversationId = selectedId; let serverAcknowledged = false;
     const optimisticMessageId = 'pending-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     setMessages(current => current.map((item, index) => index === current.length - 1 && item.role === 'user' && item.content === content ? { ...item, id: optimisticMessageId } : item));
+    if (selectedAgent) {
+      try {
+        setStatus(`Running ${text(agents.find(agent => agent.id === selectedAgent)?.name, selectedAgent)} through the checked agent service…`);
+        const result = record(await api.post<unknown>('/api/agents/run-checked', { agent: selectedAgent, goal: content, project, require_approval: false, verify: true }, aborter.signal));
+        if (controller.current !== aborter) return;
+        const run = record(result.run);
+        const response = text(run.response, text(run.result, text(result.message, 'The agent completed without a text response.')));
+        setMessages(current => [...current.filter(item => item.id !== optimisticMessageId), { role: 'assistant', content: response }]);
+        setStatus(result.approval ? 'The agent request is waiting for approval in Assistants.' : 'Agent run completed.');
+        setAttachments([]); setSelectedAgent('');
+      } catch (cause) {
+        if (controller.current !== aborter) return;
+        setMessages(current => current.filter(item => item.id !== optimisticMessageId));
+        setDraft(current => current || content);
+        if (aborter.signal.aborted) { setError(''); setStatus('Agent run stopped; your prompt was restored.'); }
+        else { setError(cause instanceof Error ? cause.message : 'The checked agent run failed.'); setStatus(''); }
+      } finally { if (controller.current === aborter) { setSending(false); controller.current = null; } }
+      return;
+    }
     const parse = (value: string) => { try { return record(JSON.parse(value)); } catch { return {}; } };
     try {
       const payload = { message: content, project, provider: selectedProvider, model: selectedModel || null, allow_external: !localOnly && allowExternal, conversation_id: selectedId || null, attachments };
@@ -241,6 +266,16 @@ export function ChatPage(props: ChatPageProps) {
           <div className="oa-chat-artifact-row"><label htmlFor="artifact-format">Create document</label><select id="artifact-format" aria-label="Artifact format" value={artifactFormat} onChange={event => setArtifactFormat(event.currentTarget.value)}>{['pdf','docx','pptx','xlsx','md','html','txt'].map(format => <option key={format}>{format}</option>)}</select><button onClick={() => void createArtifact()} aria-label="Create document"><FileDown size={15}/></button></div>
         </div></details>}
       </div>
+      {!messages.length && <div className="oa-chat-home-models" aria-label="Choose a chat provider">
+        <span>Provider</span>
+        <button type="button" aria-pressed={selectedProvider === 'auto'} onClick={() => { setSelectedProvider('auto'); setSelectedModel(''); }}>Auto</button>
+        {providers.filter(provider => provider.id !== 'auto').map(provider => <button type="button" key={String(provider.id)} aria-pressed={selectedProvider === provider.id} disabled={provider.available === false} onClick={() => { setSelectedProvider(String(provider.id)); setSelectedModel(''); }}>{text(provider.label, text(provider.name, String(provider.id)))}</button>)}
+      </div>}
+      {!messages.length && agents.length > 0 && <div className="oa-chat-home-agents" aria-label="Assistant shortcuts">
+        <div className="oa-chat-home-agents-heading"><span>Start with an assistant</span>{selectedAgent && <button type="button" onClick={() => setSelectedAgent('')}>Use standard chat</button>}</div>
+        {selectedAgent && <p className="oa-chat-agent-mode" role="status">{text(agents.find(agent => agent.id === selectedAgent)?.name, selectedAgent)} uses the checked local agent runtime; provider selection applies to standard chat.</p>}
+        <div className="oa-chat-home-agent-grid">{agents.slice(0, 9).map(agent => <button type="button" key={String(agent.id)} aria-pressed={selectedAgent === agent.id} className={selectedAgent === agent.id ? 'selected' : ''} onClick={() => setSelectedAgent(current => current === agent.id ? '' : String(agent.id))}><strong>{text(agent.name, String(agent.id))}</strong><span>{text(agent.description, 'Run this registered assistant with the checked agent service.')}</span></button>)}</div>
+      </div>}
       {error && <div className="oa-chat-error" role="alert"><WifiOff size={15}/><span>{error}</span><button onClick={() => void reload()}>Reload saved conversation</button></div>}
       {status && <div className="oa-chat-status" role="status"><span className={sending ? 'active' : ''}/>{status}</div>}
       <ConversationTimeline messages={messages} sending={sending} replay={replay} onCloseReplay={() => setReplay(null)}/>

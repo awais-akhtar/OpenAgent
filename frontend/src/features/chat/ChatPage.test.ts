@@ -27,6 +27,7 @@ describe('ChatPage conversation experience', () => {
     get.mockImplementation(async (path: string) => {
       if (path.startsWith('/api/conversations/organized')) return { conversations: [] };
       if (path === '/api/models') return { providers: [{ id: 'local-provider', label: 'Local model', default_model: 'small', installed_models: ['small', 'large'] }] };
+      if (path === '/api/agents') return { agents: [{ id: 'executive', name: 'Executive Agent', description: 'Plans work using local context.' }, { id: 'knowledge', name: 'Knowledge Agent', description: 'Searches local memory.' }] };
       if (path.startsWith('/api/conversation/messages')) return { messages: [{ id: 'saved-1', role: 'assistant', content: path.includes('target-conversation') ? 'Target conversation message' : path.includes('conversation-1') ? 'A real streamed response.' : 'Saved assistant response' }] };
       return {};
     });
@@ -65,6 +66,73 @@ describe('ChatPage conversation experience', () => {
       allow_external: false, conversation_id: null, attachments: [],
     }), expect.any(AbortSignal));
     expect(host.textContent).toContain('A real streamed response.');
+  });
+
+  it('selects a provider shortcut and sends that provider through the normal chat stream', async () => {
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const provider = [...host.querySelectorAll<HTMLButtonElement>('.oa-chat-home-models button')].find(button => button.textContent === 'Local model');
+    await act(async () => { provider?.click(); });
+    expect(provider?.getAttribute('aria-pressed')).toBe('true');
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    await act(async () => {
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, 'Use this provider');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(postEvents).toHaveBeenCalledWith('/api/chat/stream', expect.objectContaining({ provider: 'local-provider', model: null }), expect.any(AbortSignal));
+  });
+
+  it('runs a selected assistant shortcut through the checked agent API', async () => {
+    post.mockResolvedValueOnce({ run: { response: 'A checked local plan.' } });
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const shortcut = [...host.querySelectorAll<HTMLButtonElement>('.oa-chat-home-agent-grid button')].find(button => button.textContent?.includes('Executive Agent'));
+    await act(async () => { shortcut?.click(); });
+    expect(shortcut?.getAttribute('aria-pressed')).toBe('true');
+    expect(host.textContent).toContain('uses the checked local agent runtime; provider selection applies to standard chat.');
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    await act(async () => {
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, 'Plan this project');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(post).toHaveBeenCalledWith('/api/agents/run-checked', { agent: 'executive', goal: 'Plan this project', project: 'project-one', require_approval: false, verify: true }, expect.any(AbortSignal));
+    expect(host.textContent).toContain('A checked local plan.');
+    expect(postEvents).not.toHaveBeenCalled();
+  });
+
+  it('stops a checked assistant run and restores its prompt without leaving an optimistic message', async () => {
+    let runSignal: AbortSignal | undefined;
+    post.mockImplementationOnce((_path: string, _body: unknown, signal?: AbortSignal) => {
+      runSignal = signal;
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+    });
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const shortcut = [...host.querySelectorAll<HTMLButtonElement>('.oa-chat-home-agent-grid button')].find(button => button.textContent?.includes('Executive Agent'));
+    await act(async () => { shortcut?.click(); });
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    await act(async () => {
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, 'Stop this checked run');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click(); });
+    expect(runSignal).toBeDefined();
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Stop generation"]')?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(runSignal?.aborted).toBe(true);
+    expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value).toBe('Stop this checked run');
+    expect(host.querySelector('.oa-chat-message.user')).toBeNull();
+    expect(host.textContent).toContain('Agent run stopped; your prompt was restored.');
   });
 
   it('restores text when the stream fails before the server acknowledges the message', async () => {

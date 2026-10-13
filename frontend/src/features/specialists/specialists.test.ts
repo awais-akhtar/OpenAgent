@@ -4,7 +4,7 @@ import { specialistFacts } from './SpecialistInspector';
 
 const specialistViews = [
   'agents', 'assistant', 'automation', 'calendar', 'communications', 'developer',
-  'engine', 'finetune', 'phd', 'science', 'scraper', 'twin',
+  'engine', 'finetune', 'science', 'scraper', 'twin',
 ] as const;
 
 describe('specialist workspace API parity', () => {
@@ -68,10 +68,6 @@ describe('specialist workspace API parity', () => {
         'Create a training job': ['POST', '/api/finetune/jobs'],
         'Register adapter': ['POST', '/api/finetune/adapters'],
         'Activate a registered adapter': ['POST', '/api/finetune/adapters/activate'],
-      },
-      phd: {
-        'Create an application record': ['POST', '/api/phd/applications'],
-        'Start private draft generation': ['POST', '/api/phd/applications/application-id/generate/start'],
       },
       science: {
         'Add a scientific note': ['POST', '/api/science/memory'],

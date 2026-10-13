@@ -18,9 +18,10 @@ describe('workspace split panes and mobile preview', () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     get.mockReset().mockResolvedValue({ items: [] });
+    history.replaceState(null, '', '/?view=workspace&project=workspace-test');
     host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   });
-  afterEach(async () => { await act(async () => root.unmount()); host.remove(); });
+  afterEach(async () => { await act(async () => root.unmount()); host.remove(); history.replaceState(null, '', '/'); });
   async function renderWorkspace() {
     const { WorkspacePage } = await import('./WorkspacePage');
     await act(async () => { root.render(createElement(WorkspacePage)); await new Promise(resolve => setTimeout(resolve, 0)); });
@@ -73,5 +74,43 @@ describe('workspace split panes and mobile preview', () => {
     expect(tabs[0].getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(tabs[0]);
     expect(tabs[1].tabIndex).toBe(-1);
+  });
+
+  it('keeps the document title and editor actions in separate toolbar groups', async () => {
+    await renderWorkspace();
+    const toolbar = host.querySelector<HTMLElement>('.oa-file-toolbar');
+    const title = toolbar?.querySelector<HTMLInputElement>('.oa-file-title input');
+    const actions = toolbar?.querySelector<HTMLElement>('.oa-file-actions');
+    expect(toolbar?.children).toHaveLength(2);
+    expect(title?.getAttribute('aria-label')).toBe('Document title');
+    expect(actions?.querySelector('[aria-label="Document format"]')).toBeTruthy();
+    expect(actions?.querySelector('button')).toBeTruthy();
+  });
+
+  it('clears an open document when switching project scope and loads only the new project library', async () => {
+    get.mockImplementation(async (path: string) => {
+      if (path === '/api/documents/library?project=alpha&q=&limit=100') return { items: [{ doc_id: 'doc-alpha', title: 'Alpha private note', project: 'alpha', version: 1 }] };
+      if (path === '/api/document/doc-alpha') return { document: { doc_id: 'doc-alpha', title: 'Alpha private note', content: 'private alpha content', project: 'alpha', version: 1 } };
+      if (path === '/api/document/doc-alpha/versions') return { versions: [] };
+      return { items: [] };
+    });
+    history.replaceState(null, '', '/?view=workspace&project=alpha');
+    await renderWorkspace();
+    await act(async () => new Promise(resolve => setTimeout(resolve, 220)));
+    const file = [...host.querySelectorAll<HTMLButtonElement>('.oa-files-rows button')].find(button => button.textContent?.includes('Alpha private note'));
+    expect(file).toBeTruthy();
+    await act(async () => { file?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector<HTMLTextAreaElement>('#oa-file-content')?.value).toBe('private alpha content');
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    history.pushState(null, '', '/?view=workspace&project=beta');
+    // App.tsx keys the page subtree by project, so switching scope remounts it.
+    await renderWorkspace();
+    await act(async () => new Promise(resolve => setTimeout(resolve, 220)));
+    expect(host.querySelector<HTMLTextAreaElement>('#oa-file-content')?.value).toBe('');
+    expect(host.textContent).not.toContain('Alpha private note');
+    expect(get).toHaveBeenCalledWith('/api/workspace/items?project=beta&q=&limit=100', expect.any(AbortSignal));
+    expect(get).toHaveBeenCalledWith('/api/documents/library?project=beta&q=&limit=100', expect.any(AbortSignal));
   });
 });

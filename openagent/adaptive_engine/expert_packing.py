@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from contextlib import ExitStack
 import hashlib
+import math
 import os
 import json
 from uuid import uuid4
@@ -381,7 +382,11 @@ def pack_safetensors_directory_int8(
 
 
 def _source_stamp(info):
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    # Windows exposes st_ctime as creation time (and Python 3.14 may report
+    # different values for path.stat() and fstat() on the same file). Use the
+    # explicit birth time there so opening an unchanged checkpoint is stable.
+    creation_time = getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, creation_time)
 
 
 def _cleanup_temporaries(paths,primary):
@@ -561,12 +566,12 @@ def _read_float_matrix(index: dict[str, tuple[Path, dict[str, Any], int]], name,
     if dtype not in _SOURCE_ITEM_BYTES:
         raise ValueError(f"tensor {name} uses unsupported source dtype {dtype}")
     shape = tensor['shape']
-    if (not isinstance(shape, list) or len(shape) != 2 or
+    if (not isinstance(shape, list) or not shape or
             any(type(value) is not int or value <= 0 for value in shape) or
             (expected_shape is not None and shape != list(expected_shape))):
-        raise ValueError(f'tensor {name} has an invalid mapped matrix shape')
+        raise ValueError(f'tensor {name} has an invalid mapped shape')
     start, end = tensor["data_offsets"]
-    elements = shape[0]*shape[1]
+    elements = math.prod(shape)
     if end-start != elements*_SOURCE_ITEM_BYTES[dtype]:
         raise ValueError('source matrix byte extent differs from its shape')
     if type(max_bytes) is not int or max_bytes <= 0 or elements*12 > max_bytes:

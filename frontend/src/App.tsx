@@ -14,7 +14,7 @@ const SpecialPages = lazy(() => import('./pages/SpecialPages').then(module => ({
 const ResourcePages = lazy(() => import('./pages/ResourcePages'));
 const PlatformWorkspaces = lazy(() => import('./pages/PlatformWorkspaces').then(module => ({ default: module.PlatformWorkspaces })));
 const PersonalWorkSurface = lazy(() => import('./pages/PersonalWorkSurfaces').then(module => ({ default: module.PersonalWorkSurface })));
-const platformWorkspaceIds = new Set(['developer', 'engine', 'finetune', 'phd', 'science', 'scraper']);
+const platformWorkspaceIds = new Set(['developer', 'engine', 'finetune', 'science', 'scraper']);
 const personalSurfaceIds = new Set(['assistant', 'calendar', 'communications', 'twin']);
 
 type Conversation = Record<string, unknown>;
@@ -41,7 +41,8 @@ function readInitialUrl() {
   const conversation = routeConversation(url);
   const project = url.searchParams.get('project') || savedProject();
   // Preserve existing query-based links while moving the old dashboard landing to chat.
-  if ((!activityRoute && oldView === 'dashboard') || url.pathname !== '/') {
+  const unknownView = !!oldView && oldView !== 'dashboard' && !isViewId(oldView);
+  if ((!activityRoute && oldView === 'dashboard') || unknownView || url.pathname !== '/') {
     url.pathname = '/';
     url.searchParams.set('view', view);
     if (conversation) url.searchParams.set('conversation_id', conversation);
@@ -242,10 +243,10 @@ export default function App() {
         <button className="oa-brand" onClick={newChat} aria-label="OpenAgent home"><span className="oa-brand-mark"><i /></span><strong>OpenAgent</strong></button>
         <button className="oa-icon-button oa-sidebar-dismiss" aria-label="Close navigation" onClick={() => setMobileNav(false)}><X size={17} /></button>
       </div>
-      <button className="oa-new-chat" onClick={newChat} aria-current={view === 'chat' && !new URL(location.href).searchParams.has('conversation_id') ? 'page' : undefined}><MessageSquarePlus size={16} /><span>New chat</span></button>
-      <button className="oa-nav-action" onClick={openPalette}><Search size={16} /><span>Search</span><kbd>⌘ K</kbd></button>
-      <button className={`oa-nav-action ${view === 'agents' ? 'active' : ''}`} onClick={() => commitUrl('agents')}><Bot size={16} /><span>Assistants</span></button>
-      <button className={`oa-nav-action ${view === 'automation' || view === 'calendar' ? 'active' : ''}`} onClick={() => commitUrl('automation')}><CalendarClock size={16} /><span>Scheduled</span></button>
+      <button className="oa-new-chat" onClick={newChat} aria-label="New chat" title="New chat" aria-current={view === 'chat' && !new URL(location.href).searchParams.has('conversation_id') ? 'page' : undefined}><MessageSquarePlus size={16} /><span>New chat</span></button>
+      <button className="oa-nav-action" onClick={openPalette} aria-label="Search" title="Search"><Search size={16} /><span>Search</span><kbd>⌘ K</kbd></button>
+      <button className={`oa-nav-action ${view === 'agents' ? 'active' : ''}`} onClick={() => commitUrl('agents')} aria-label="Assistants" title="Assistants"><Bot size={16} /><span>Assistants</span></button>
+      <button className={`oa-nav-action ${view === 'automation' || view === 'calendar' ? 'active' : ''}`} onClick={() => commitUrl('automation')} aria-label="Scheduled" title="Scheduled"><CalendarClock size={16} /><span>Scheduled</span></button>
 
       <div className="oa-workspace-picker">
         <span className="oa-section-label">Workspace</span>
@@ -262,8 +263,8 @@ export default function App() {
         </section>
       </div>
       <div className="oa-sidebar-bottom">
-        <button className="oa-nav-action" onClick={openPalette}><Wrench size={16} /><span>Tools</span></button>
-        <button className={`oa-nav-action ${view === 'settings' ? 'active' : ''}`} onClick={() => commitUrl('settings')}><Settings2 size={16} /><span>Settings</span></button>
+        <button className="oa-nav-action" onClick={openPalette} aria-label="Tools" title="Tools"><Wrench size={16} /><span>Tools</span></button>
+        <button className={`oa-nav-action ${view === 'settings' ? 'active' : ''}`} onClick={() => commitUrl('settings')} aria-label="Settings" title="Settings"><Settings2 size={16} /><span>Settings</span></button>
       </div>
     </aside>
 

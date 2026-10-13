@@ -73,7 +73,6 @@ DESKTOP_NAVIGATION = (
     "Workspace",
     "Knowledge",
     "Assistant",
-    "PhD Studio",
     "Models",
     "Voice + Media",
     "Automation",
@@ -96,18 +95,6 @@ DESKTOP_MODULES = (
         "id": "assistant",
         "name": "Assistant and Communications",
         "features": ("tasks", "goals", "daily brief", "contacts", "inbox", "calendar", "CRM"),
-    },
-    {
-        "id": "phd_studio",
-        "name": "PhD Application Studio",
-        "features": (
-            "private evidence vault",
-            "position research",
-            "tailored application writing",
-            "grounding review",
-            "versioned deliverables",
-            "application packages",
-        ),
     },
     {
         "id": "models",

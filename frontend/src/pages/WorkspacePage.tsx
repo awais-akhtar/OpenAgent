@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { api, record, records } from '../lib/react/api';
 import { PageFrame } from '../components/PageFrame';
 import './workspace-page.css';
@@ -18,7 +18,10 @@ function Preview({ content, format }: { content: string; format: string }) {
   return <article className="oa-document-preview">{blocks.map((block, i) => block.kind === 'heading' ? <h2 key={i} className={`oa-preview-h${block.level}`}>{block.text}</h2> : block.kind === 'code' ? <pre key={i}><code>{block.text}</code></pre> : block.kind === 'list' ? <p key={i} className="oa-preview-list">• {block.text}</p> : <p key={i}>{block.text}</p>)}</article>;
 }
 export function WorkspacePage() {
+  const activeProject = project();
   const [items, setItems] = useState<Row[]>([]), [selected, setSelected] = useState<Row | null>(null), [query, setQuery] = useState(''), [title, setTitle] = useState(''), [content, setContent] = useState(''), [format, setFormat] = useState('markdown'), [versions, setVersions] = useState<Row[]>([]), [dirty, setDirty] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [pane, setPane] = useState<Pane>('edit');
+  const [selectedProject, setSelectedProject] = useState(activeProject);
+  const visibleSelected = selectedProject === activeProject ? selected : null;
   const [filesWidth, setFilesWidth] = useState(218), [detailsWidth, setDetailsWidth] = useState(210);
   const drag = useRef<{ pane: ResizablePane; pointerId: number; startX: number; startWidth: number } | null>(null);
   function updatePaneWidth(which: ResizablePane, width: number) {
@@ -64,6 +67,14 @@ export function WorkspacePage() {
   const gridStyle = { '--oa-files-list-width': `${filesWidth}px`, '--oa-files-details-width': `${detailsWidth}px` } as CSSProperties;
   const hostTabRef = useRef<HTMLDivElement>(null);
 
+  // The shell keeps this page mounted while switching projects. Clear the old
+  // project's open document before paint so its content cannot linger in the
+  // editor/inspector after the active scope changes.
+  useLayoutEffect(() => {
+    setItems([]); setSelected(null); setSelectedProject(activeProject); setTitle(''); setContent('');
+    setVersions([]); setDirty(false); setError(''); setNotice(''); setPane('edit');
+  }, [activeProject]);
+
   async function load(signal?: AbortSignal) {
     setBusy(true); setError('');
     try {
@@ -77,17 +88,21 @@ export function WorkspacePage() {
   useEffect(() => { const controller = new AbortController(); const timer = window.setTimeout(() => void load(controller.signal), 180); return () => { window.clearTimeout(timer); controller.abort(); }; }, [query, project()]);
 
   async function open(item: Row) {
-    setSelected(item); setTitle(String(item.title ?? '')); setContent(String(item.content ?? '')); setFormat(String(item.format ?? 'markdown')); setDirty(false); setVersions([]); setPane('edit');
+    const openProject = project();
+    setSelected(item); setSelectedProject(openProject); setTitle(String(item.title ?? '')); setContent(String(item.content ?? '')); setFormat(String(item.format ?? 'markdown')); setDirty(false); setVersions([]); setPane('edit');
     if (item._source === 'document') try {
       const r = record(await api.get(`/api/document/${encodeURIComponent(String(item.id))}`)); const d = record(r.document);
+      if (project() !== openProject) return;
       setSelected({ ...d, _source: 'document', id: d.doc_id ?? item.id }); setTitle(String(d.title ?? '')); setContent(String(d.content ?? '')); setFormat(String(d.format ?? 'markdown'));
-      const v = await api.get(`/api/document/${encodeURIComponent(String(item.id))}/versions`); setVersions(records(v, 'versions'));
+      const v = await api.get(`/api/document/${encodeURIComponent(String(item.id))}/versions`); if (project() === openProject) setVersions(records(v, 'versions'));
     } catch (e) { setError(e instanceof Error ? e.message : 'Document could not be opened.'); }
   }
   async function save() {
     if (!title.trim()) return; setBusy(true); setError('');
+    const saveProject = project();
     try {
-      if (!selected) { const r = record(await api.post<unknown>('/api/document', createWorkspaceDocumentPayload(title.trim(), content, format, project()))); setNotice('Document created.'); await load(); const d = record(r.document); if (d.id || d.doc_id) await open({ ...d, _source: 'document', id: d.doc_id ?? d.id }); }
+      if (selectedProject !== saveProject) return;
+      if (!selected) { const r = record(await api.post<unknown>('/api/document', createWorkspaceDocumentPayload(title.trim(), content, format, saveProject))); if (project() !== saveProject) return; setNotice('Document created.'); await load(); const d = record(r.document); if (d.id || d.doc_id) await open({ ...d, _source: 'document', id: d.doc_id ?? d.id }); }
       else if (selected._source === 'document') { const r = record(await api.put<unknown>(`/api/document/${encodeURIComponent(String(selected.id))}`, updateWorkspaceDocumentPayload(title.trim(), content, Number(selected.version)))); setSelected({ ...record(r.document), _source: 'document', id: selected.id }); setNotice('Changes saved.'); setDirty(false); await load(); }
       else { await api.post('/api/workspace/items/update', updateWorkspaceItemPayload(selected.id, title.trim(), content)); setNotice('Workspace item updated.'); setDirty(false); await load(); }
     } catch (e) { setError(e instanceof Error ? e.message : 'Save failed. Your draft remains here.'); } finally { setBusy(false); }
@@ -112,12 +127,12 @@ export function WorkspacePage() {
     <section className="oa-files" aria-label="Project files workspace" style={gridStyle}>
       <nav className="oa-files-list" aria-label="Project files"><div className="oa-files-list-head"><span>Files</span><button className="btn" onClick={startNew} aria-label="New document">＋</button></div><label className="oa-files-search"><span className="sr-only">Search files</span><input className="field" aria-label="Search files" value={query} onChange={e => setQuery(e.target.value)} placeholder="Find a file" /></label><div className="oa-files-rows">{items.map(x => <button type="button" key={`${x._source}:${x.id}`} aria-current={selected?.id === x.id} onClick={() => void open(x)}><span className="oa-file-icon">{x._source === 'document' ? 'MD' : '↗'}</span><span className="oa-file-name"><strong>{val(x, 'title', 'Untitled')}</strong><small>{x._source === 'document' ? `v${val(x, 'version', '1')}` : val(x, 'kind', 'Workspace item')}</small></span></button>)}{!items.length && <p className="oa-files-empty">{busy ? 'Loading files…' : error ? 'Files could not be loaded.' : 'No files in this project yet.'}</p>}</div></nav>
       <div className="oa-file-splitter" role="separator" aria-label="Resize project files pane" aria-orientation="vertical" aria-valuemin={paneLimits.files.min} aria-valuemax={paneLimits.files.max} aria-valuenow={filesWidth} tabIndex={0} onKeyDown={e => onSeparatorKey('files', e)} onPointerDown={e => onSeparatorPointerDown('files', e)} />
-      <section className="oa-file-editor" aria-label="Document editor"><header className="oa-file-toolbar"><div className="oa-file-title"><span className="oa-file-dot" aria-hidden="true" />{selected ? <input aria-label="Document title" value={title} onChange={e => { setTitle(e.target.value); setDirty(true); }} placeholder="Untitled" /> : <input aria-label="Document title" value={title} onChange={e => setTitle(e.target.value)} placeholder="Untitled document" />}{dirty && <span className="oa-file-unsaved">Unsaved</span>}</div><div className="oa-file-actions"><select aria-label="Document format" value={format} onChange={e => { setFormat(e.target.value); setDirty(true); }}><option value="markdown">Markdown</option><option value="text">Plain text</option></select><button className="btn primary" onClick={() => void save()} disabled={busy || !title.trim() || (!!selected && !dirty)}>{busy ? 'Saving…' : selected ? 'Save' : 'Create'}</button><button className="btn" onClick={exportDocument} disabled={!selected}>Download</button><details className="oa-file-more"><summary aria-label="More document actions">•••</summary><div><button onClick={startNew}>New document</button>{selected?._source === 'document' && <button className="danger" onClick={() => void archive()} disabled={busy}>Archive</button>}</div></details></div></header>
+      <section className="oa-file-editor" aria-label="Document editor"><header className="oa-file-toolbar"><div className="oa-file-title"><span className="oa-file-dot" aria-hidden="true" />{visibleSelected ? <input aria-label="Document title" value={title} onChange={e => { setTitle(e.target.value); setDirty(true); }} placeholder="Untitled" /> : <input aria-label="Document title" value={title} onChange={e => setTitle(e.target.value)} placeholder="Untitled document" />}{dirty && <span className="oa-file-unsaved">Unsaved</span>}</div><div className="oa-file-actions"><select aria-label="Document format" value={format} onChange={e => { setFormat(e.target.value); setDirty(true); }}><option value="markdown">Markdown</option><option value="text">Plain text</option></select><button className="btn primary" onClick={() => void save()} disabled={busy || !title.trim() || (!!visibleSelected && !dirty)}>{busy ? 'Saving…' : visibleSelected ? 'Save' : 'Create'}</button><button className="btn" onClick={exportDocument} disabled={!visibleSelected}>Download</button><details className="oa-file-more"><summary aria-label="More document actions">•••</summary><div><button onClick={startNew}>New document</button>{visibleSelected?._source === 'document' && <button className="danger" onClick={() => void archive()} disabled={busy}>Archive</button>}</div></details></div></header>
         <div className="oa-file-mobile-tabs" role="tablist" aria-label="Editor view" ref={hostTabRef}><button type="button" role="tab" data-pane-tab="edit" tabIndex={pane === 'edit' ? 0 : -1} aria-selected={pane === 'edit'} onKeyDown={onMobileTabKeyDown} onClick={() => setPane('edit')}>Edit</button><button type="button" role="tab" data-pane-tab="preview" tabIndex={pane === 'preview' ? 0 : -1} aria-selected={pane === 'preview'} onKeyDown={onMobileTabKeyDown} onClick={() => setPane('preview')}>Preview</button></div>
         <div className={`oa-file-content ${pane === 'preview' ? 'preview-active' : ''}`}><div className="oa-file-edit-pane"><label className="sr-only" htmlFor="oa-file-content">Document content</label><textarea id="oa-file-content" value={content} onChange={e => { setContent(e.target.value); setDirty(true); }} placeholder="Start writing…" /></div><div className="oa-file-preview-pane"><div className="oa-preview-head"><button className="oa-preview-back" onClick={() => setPane('edit')} aria-label="Back to editor">‹ <span>Editor</span></button><span className="oa-preview-label">Preview</span><span>{format === 'text' ? 'Plain text' : 'Markdown'}</span></div><Preview content={content} format={format} /></div></div>
       </section>
       <div className="oa-file-splitter oa-file-splitter-details" role="separator" aria-label="Resize document details pane" aria-orientation="vertical" aria-valuemin={paneLimits.details.min} aria-valuemax={paneLimits.details.max} aria-valuenow={detailsWidth} tabIndex={0} onKeyDown={e => onSeparatorKey('details', e)} onPointerDown={e => onSeparatorPointerDown('details', e)} />
-      <aside className="oa-file-inspector" aria-label="Document details"><div className="oa-inspector-head">Details</div>{selected ? <><dl><dt>Project</dt><dd>{val(selected, 'project', project())}</dd><dt>Type</dt><dd>{selected._source === 'document' ? val(selected, 'format', 'Markdown') : val(selected, 'kind', 'Workspace item')}</dd><dt>Version</dt><dd>{val(selected, 'version', '—')}</dd><dt>Updated</dt><dd>{val(selected, 'updated_at', val(selected, 'created_at'))}</dd></dl>{versions.length > 0 && <div className="oa-file-versions"><span>History</span>{versions.map(v => <div key={String(v.version)}><span>Version {String(v.version)}</span><button className="btn" onClick={() => void restore(Number(v.version))} disabled={busy}>Restore</button></div>)}</div>}</> : <p className="oa-files-empty">Select a file to see its project details and version history.</p>}</aside>
+      <aside className="oa-file-inspector" aria-label="Document details"><div className="oa-inspector-head">Details</div>{visibleSelected ? <><dl><dt>Project</dt><dd>{val(visibleSelected, 'project', activeProject)}</dd><dt>Type</dt><dd>{visibleSelected._source === 'document' ? val(visibleSelected, 'format', 'Markdown') : val(visibleSelected, 'kind', 'Workspace item')}</dd><dt>Version</dt><dd>{val(visibleSelected, 'version', '—')}</dd><dt>Updated</dt><dd>{val(visibleSelected, 'updated_at', val(visibleSelected, 'created_at'))}</dd></dl>{versions.length > 0 && <div className="oa-file-versions"><span>History</span>{versions.map(v => <div key={String(v.version)}><span>Version {String(v.version)}</span><button className="btn" onClick={() => void restore(Number(v.version))} disabled={busy}>Restore</button></div>)}</div>}</> : <p className="oa-files-empty">Select a file to see its project details and version history.</p>}</aside>
     </section>
   </PageFrame>;
 }

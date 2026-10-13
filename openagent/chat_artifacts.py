@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from .models import AuditEvent
-from .phd_documents import render_application_docx, render_application_pdf
+from .document_rendering import render_document_docx, render_document_pdf
 from .storage import OpenAgentStore
 
 
@@ -42,16 +42,9 @@ class ChatArtifactService:
             raise ValueError("Document content is required.")
 
         if file_format == "pdf":
-            try:
-                body = render_application_pdf(title, content, artifact_type="general", profile={}, application={"position_title": title})
-            except ModuleNotFoundError as exc:
-                if exc.name != "reportlab":
-                    raise
-                from .phd_workspace import _pdf_bytes
-
-                body = _pdf_bytes(title, content)
+            body = render_document_pdf(title, content)
         elif file_format == "docx":
-            body = render_application_docx(title, content, artifact_type="general", profile={}, application={"position_title": title})
+            body = render_document_docx(title, content)
         elif file_format == "html":
             paragraphs = "\n".join(f"<p>{html.escape(line)}</p>" for line in content.splitlines() if line.strip())
             body = f"<!doctype html><html><head><meta charset=\"utf-8\"><title>{html.escape(title)}</title></head><body><main><h1>{html.escape(title)}</h1>{paragraphs}</main></body></html>".encode("utf-8")

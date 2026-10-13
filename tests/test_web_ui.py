@@ -40,9 +40,9 @@ class WebUiTests(unittest.TestCase):
         registry_block = navigation.split("export const groups", 1)[1].split("export const views", 1)[0]
         view_ids = re.findall(r"\{ id: '([a-z]+)', label:", registry_block)
         expected = {
-            "dashboard", "chat", "codebase", "voice", "research", "phd", "agents", "knowledge", "workspace", "automation", "assistant", "communications", "models", "security", "developer", "settings", "engine", "science", "calendar", "twin", "vault", "scraper", "finetune",
+            "dashboard", "chat", "codebase", "voice", "research", "agents", "knowledge", "workspace", "automation", "assistant", "communications", "models", "security", "developer", "settings", "engine", "science", "calendar", "twin", "vault", "scraper", "finetune",
         }
-        self.assertEqual(len(view_ids), 23)
+        self.assertEqual(len(view_ids), 22)
         self.assertEqual(set(view_ids), expected)
         self.assertRegex(app, r"view\s*===\s*'chat'\s*\?\s*<ChatPage")
         self.assertRegex(app, r"view\s*===\s*'dashboard'\s*\?\s*<DashboardPage")

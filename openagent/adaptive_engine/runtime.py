@@ -283,7 +283,6 @@ class AdaptiveExecutionEngine:
                     "workflows",
                     "research",
                     "advanced-rag",
-                    "phd-studio",
                     "background-worker",
                     "model-benchmarks",
                 ],

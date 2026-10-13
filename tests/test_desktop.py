@@ -157,7 +157,6 @@ class DesktopTests(unittest.TestCase):
                 "workspace",
                 "knowledge",
                 "assistant",
-                "phd_studio",
                 "models",
                 "voice_media",
                 "automation",
@@ -166,7 +165,6 @@ class DesktopTests(unittest.TestCase):
         )
         features = " ".join(feature for module in modules for feature in module["features"])
         self.assertIn("RAG synthesis", features)
-        self.assertIn("grounding review", features)
         self.assertIn("HTML form simulation", features)
         self.assertIn("optional browser tests", features)
         self.assertIn("SDK", features)

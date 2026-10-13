@@ -8,7 +8,8 @@
     "build:web": "npm run check:web && vite build --config frontend/vite.config.ts",
     "check:web": "tsc -p ./frontend/tsconfig.json --noEmit",
     "test:web": "vitest run --config frontend/vitest.config.ts",
-    "test:e2e": "npm run build:web && playwright test"
+    "test:e2e": "npm run build:web && playwright test",
+    "capture:web:evidence": "node scripts/capture-ui-evidence.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

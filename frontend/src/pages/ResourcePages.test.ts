@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { resourcePageConfigs } from './ResourcePages';
 
-const resourceScreens = ['assistant', 'agents', 'automation', 'calendar', 'communications', 'developer', 'engine', 'finetune', 'science', 'phd', 'scraper', 'twin'];
+const resourceScreens = ['assistant', 'agents', 'automation', 'calendar', 'communications', 'developer', 'engine', 'finetune', 'science', 'scraper', 'twin'];
 
 describe('API-backed resource screens', () => {
-  it('provides named reads for all twelve resource screens', () => {
+  it('provides named reads for all eleven resource screens', () => {
     for (const screen of resourceScreens) {
       const page = resourcePageConfigs[screen];
       expect(page, screen).toBeDefined();

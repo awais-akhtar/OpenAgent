@@ -10,12 +10,10 @@ declarative sandbox runs, signed model endpoint certification, and an enforced
 Playwright CI gate. See [LIFECYCLE_COMPLETION.md](LIFECYCLE_COMPLETION.md) for
 the runnable routes, tests, and privacy boundaries.
 
-The 2026-07-15 PhD Application Studio adds an owner-scoped applicant profile,
-private FTS5/FAISS/Chroma evidence retrieval, a position library, separately
-approved public web research and external model boundaries, local multi-model
-draft/review/finalization, revisioned deliverables, local authenticity review,
-and styled DOCX/PDF/Markdown/ZIP exports. See
-[PHD_APPLICATION_STUDIO.md](PHD_APPLICATION_STUDIO.md).
+The PhD Application Studio was retired from this build: its API routes, desktop
+registration, backend service and frontend destination have been removed.
+Generic chat document rendering remains available through the shared local
+document renderer.
 
 ## Present local surfaces
 
@@ -30,13 +28,6 @@ and styled DOCX/PDF/Markdown/ZIP exports. See
 - Context search and snapshots
 - Persistent conversations
 - Local chat memory
-- Private PhD applicant profile and reusable academic data
-- Local PhD source-document vault with extraction, hashing, and deduplication
-- PhD position library and professor/lab public research with per-run approval
-- Evidence-grounded PhD CV, SOP, motivation letter, cover letter, email, proposal, statement, interview, checklist, and custom generation
-- Owner-isolated PhD RAG with selected-document filtering and source lineage
-- Local multi-model academic drafting, independent review, and finalization trace
-- PhD deliverable revision history, local grounding review, and DOCX/PDF/Markdown/ZIP exports
 - Conversation branching
 - Conversation search
 - Chat export and import

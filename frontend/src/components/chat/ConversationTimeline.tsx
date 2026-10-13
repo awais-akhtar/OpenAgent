@@ -43,7 +43,7 @@ export function ConversationTimeline({ messages, sending, replay, onCloseReplay 
   };
 
   return <div ref={viewport} className={`oa-chat-timeline ${messages.length ? 'has-messages' : 'is-empty'}`} onScroll={handleScroll} aria-label="Conversation messages">
-    {!messages.length ? <div className="oa-chat-welcome"><h1>What would you like to work on?</h1><p>Start a conversation with your local assistant.</p></div> : <div className="oa-chat-reading-column" aria-live={sending ? 'off' : 'polite'} aria-relevant="additions text">
+    {!messages.length ? <div className="oa-chat-welcome"><h1>What would you like to work on?</h1></div> : <div className="oa-chat-reading-column" aria-live={sending ? 'off' : 'polite'} aria-relevant="additions text">
       {messages.map((item, index) => {
         const content = value(item, 'content', value(item, 'message'));
         const user = item.role === 'user';

@@ -17,5 +17,13 @@ const baseConfig = {
 
 export default defineConfig({
   ...baseConfig,
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  projects: [{
+    name: "chromium",
+    use: {
+      browserName: "chromium",
+      ...(process.env.OPENAGENT_E2E_BROWSER_PATH
+        ? { launchOptions: { executablePath: process.env.OPENAGENT_E2E_BROWSER_PATH } }
+        : {}),
+    },
+  }],
 });

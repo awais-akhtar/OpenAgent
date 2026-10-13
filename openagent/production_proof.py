@@ -172,7 +172,7 @@ def run_production_proof(data_dir: str | Path, *, queue_jobs: int = 100) -> dict
             "reuseExistingServer:" in config,
             "OPENAGENT_E2E_PORT" in config,
             "pageErrors" in spec,
-            "all 23 original views open" in spec,
+            "all 22 active views open" in spec,
             "new conversation sends a project-scoped" in spec,
             "conversation search opens a saved result" in spec,
             "representative screen actions preserve API contracts and safety gates" in spec,
