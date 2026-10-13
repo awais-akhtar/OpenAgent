@@ -4,7 +4,7 @@ import { groups, isViewId, migrateLegacyView, titles, views, type ViewId } from 
 import { api, records } from './lib/react/api';
 import { theme } from './state/theme';
 import { specialPageIds } from './pages/specialPageIds';
-import { Dialog, DialogContent } from './components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from './components/ui/dialog';
 import './react-shell.css';
 import './lib/routes/PageFrame.css';
 
@@ -55,8 +55,13 @@ export default function App() {
   const [view, setView] = useState<ViewId>(initial.view);
   const [project, setProject] = useState(initial.project);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [chatDraft, setChatDraft] = useState('');
+  const [chatAttachments, setChatAttachments] = useState<Record<string, Conversation[]>>({});
   const [showArchived, setShowArchived] = useState(false);
   const [historyState, setHistoryState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [historyMutationError, setHistoryMutationError] = useState('');
+  const [editingConversation, setEditingConversation] = useState<Conversation | null>(null);
+  const [conversationTitleDraft, setConversationTitleDraft] = useState('');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -199,11 +204,29 @@ export default function App() {
   const archiveConversation = async (item: Conversation, archived: boolean) => {
     const id = conversationId(item); if (!id) return;
     if (!archived && !window.confirm(`Archive “${value(item.title, 'this conversation')}”? You can restore it later.`)) return;
+    setHistoryMutationError('');
     try {
       await api.post('/api/conversations/bulk', { conversation_ids: [id], action: archived ? 'unarchive' : 'archive', project });
       await refreshConversations();
       window.dispatchEvent(new Event('openagent:conversations-updated'));
-    } catch { setHistoryState('error'); }
+    } catch (cause) { setHistoryMutationError(cause instanceof Error ? cause.message : 'Conversation could not be updated.'); }
+  };
+  const updateConversation = async (item: Conversation, patch: Record<string, unknown>) => {
+    const id = conversationId(item); if (!id) return false;
+    setHistoryMutationError('');
+    try {
+      await api.patch(`/api/conversations/${encodeURIComponent(id)}`, patch);
+      await refreshConversations();
+      window.dispatchEvent(new Event('openagent:conversations-updated'));
+      return true;
+    } catch (cause) {
+      setHistoryMutationError(cause instanceof Error ? cause.message : 'Conversation could not be updated.');
+      return false;
+    }
+  };
+  const renameConversation = async () => {
+    if (!editingConversation || !conversationTitleDraft.trim()) return;
+    if (await updateConversation(editingConversation, { title: conversationTitleDraft.trim() })) setEditingConversation(null);
   };
 
   return <div className={`oa-app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
@@ -229,12 +252,13 @@ export default function App() {
         <label className="oa-project-select"><FolderOpen size={15} /><select aria-label="Project scope" value={project} onChange={event => changeProject(event.currentTarget.value)}>{projectOptions.map(option => <option key={option} value={option}>{option === 'default' ? 'Personal workspace' : option}</option>)}</select><ChevronDown size={13} /></label>
       </div>
       <div className="oa-history-scroll">
-        {!!pinned.length && <section className="oa-history-section" aria-label="Pinned conversations"><div className="oa-section-heading"><span>Pinned</span><Archive size={12} /></div>{pinned.slice(0, 8).map(item => <ConversationRow key={conversationId(item)} item={item} archived={false} active={new URL(location.href).searchParams.get('conversation_id') === conversationId(item)} onClick={() => navigateConversation(conversationId(item))} onArchive={() => void archiveConversation(item, false)} />)}</section>}
+        {historyMutationError && <p className="oa-history-mutation-error" role="alert" style={{ margin: '6px 10px', padding: '7px 8px', border: '1px solid var(--oa-danger)', borderRadius: 6, color: 'var(--oa-danger)', fontSize: 11, overflowWrap: 'anywhere' }}>{historyMutationError}</p>}
+        {!!pinned.length && <section className="oa-history-section" aria-label="Pinned conversations"><div className="oa-section-heading"><span>Pinned</span><Archive size={12} /></div>{pinned.slice(0, 8).map(item => <ConversationRow key={conversationId(item)} item={item} archived={false} active={new URL(location.href).searchParams.get('conversation_id') === conversationId(item)} onClick={() => navigateConversation(conversationId(item))} onArchive={() => void archiveConversation(item, false)} onPin={() => void updateConversation(item, { pinned: false })} onRename={() => { setEditingConversation(item); setConversationTitleDraft(value(item.title)); }} />)}</section>}
         <section className="oa-history-section" aria-label={showArchived ? 'Archived conversations' : 'Recent conversations'}><div className="oa-section-heading"><span>{showArchived ? 'Archived' : 'Recent'}</span><button title={showArchived ? 'Show recent conversations' : 'Show archived conversations'} aria-label={showArchived ? 'Show recent conversations' : 'Show archived conversations'} aria-pressed={showArchived} onClick={() => setShowArchived(value => !value)}><Archive size={13} /></button></div>
           {historyState === 'loading' && <p className="oa-history-note">Loading conversations…</p>}
           {historyState === 'error' && <button className="oa-history-note oa-retry" onClick={() => void refreshConversations()}>History unavailable · Retry</button>}
           {historyState === 'ready' && !recents.length && !pinned.length && <p className="oa-history-note">{showArchived ? 'No archived conversations.' : 'Your conversations will appear here.'}</p>}
-          {recents.map(item => <ConversationRow key={conversationId(item)} item={item} archived={showArchived} active={new URL(location.href).searchParams.get('conversation_id') === conversationId(item)} onClick={() => navigateConversation(conversationId(item))} onArchive={() => void archiveConversation(item, showArchived)} />)}
+          {recents.map(item => <ConversationRow key={conversationId(item)} item={item} archived={showArchived} active={new URL(location.href).searchParams.get('conversation_id') === conversationId(item)} onClick={() => navigateConversation(conversationId(item))} onArchive={() => void archiveConversation(item, showArchived)} onPin={() => void updateConversation(item, { pinned: item.pinned !== true })} onRename={() => { setEditingConversation(item); setConversationTitleDraft(value(item.title)); }} />)}
         </section>
       </div>
       <div className="oa-sidebar-bottom">
@@ -248,7 +272,7 @@ export default function App() {
       <header className="oa-topbar">
         <div className="oa-topbar-start">
           <button className="oa-icon-button oa-sidebar-toggle" aria-label={window.matchMedia('(max-width: 760px)').matches ? 'Open navigation' : collapsed ? 'Open sidebar' : 'Close sidebar'} aria-expanded={window.matchMedia('(max-width: 760px)').matches ? mobileNav : !collapsed} onClick={() => { if (window.matchMedia('(max-width: 760px)').matches) setMobileNav(true); else setCollapsed(value => !value); }}>{window.matchMedia('(max-width: 760px)').matches ? <Menu size={18} /> : collapsed ? <Menu size={18} /> : <PanelLeftClose size={17} />}</button>
-          <span className="oa-page-title" title={title}>{title}</span>
+          {view === 'chat' && <span className="oa-page-title" title={title}>{title}</span>}
           {view === 'chat' && project !== 'default' && <span className="oa-context-project"><FolderOpen size={13} />{project}</span>}
         </div>
         <div className="oa-topbar-actions">
@@ -259,7 +283,7 @@ export default function App() {
       </header>
       <div className="oa-page-stage" id="oa-main-content" tabIndex={-1}>
         <Suspense fallback={<div className="oa-route-loading" role="status" aria-live="polite">Loading {titles[view]}…</div>}>
-          {view === 'chat' ? <ChatPage key={`chat:${project}`} project={project} /> : view === 'dashboard' ? <DashboardPage key={`dashboard:${project}`} project={project} /> : platformWorkspaceIds.has(view) ? <PlatformWorkspaces key={`${view}:${project}`} id={view as import('./pages/PlatformWorkspaces').PlatformWorkspaceId} /> : personalSurfaceIds.has(view) ? <PersonalWorkSurface key={`${view}:${project}`} id={view as import('./pages/PersonalWorkSurfaces').PersonalSurfaceId} /> : specialPageIds.has(view) ? <SpecialPages key={`${view}:${project}`} id={view} /> : <ResourcePages key={`${view}:${project}`} id={view} />}
+          {view === 'chat' ? <ChatPage key={`chat:${project}`} project={project} draft={chatDraft} setDraft={setChatDraft} attachments={chatAttachments[project] ?? []} setAttachments={next => setChatAttachments(current => ({ ...current, [project]: typeof next === 'function' ? next(current[project] ?? []) : next }))} /> : view === 'dashboard' ? <DashboardPage key={`dashboard:${project}`} project={project} /> : platformWorkspaceIds.has(view) ? <PlatformWorkspaces key={`${view}:${project}`} id={view as import('./pages/PlatformWorkspaces').PlatformWorkspaceId} /> : personalSurfaceIds.has(view) ? <PersonalWorkSurface key={`${view}:${project}`} id={view as import('./pages/PersonalWorkSurfaces').PersonalSurfaceId} /> : specialPageIds.has(view) ? <SpecialPages key={`${view}:${project}`} id={view} /> : <ResourcePages key={`${view}:${project}`} id={view} />}
         </Suspense>
       </div>
     </main>
@@ -282,13 +306,23 @@ export default function App() {
         </div>
       </DialogContent>}
     </Dialog>
+    <Dialog open={!!editingConversation} onOpenChange={open => { if (!open) setEditingConversation(null); }}>
+      {editingConversation && <DialogContent className="oa-rename-dialog" aria-label="Rename conversation">
+        <form onSubmit={event => { event.preventDefault(); void renameConversation(); }}>
+          <DialogTitle>Rename conversation</DialogTitle>
+          <DialogDescription>Choose a title for this conversation.</DialogDescription>
+          <input autoFocus value={conversationTitleDraft} onChange={event => setConversationTitleDraft(event.currentTarget.value)} aria-label="Conversation title" maxLength={200} />
+          <div className="oa-rename-actions"><button type="button" onClick={() => setEditingConversation(null)}>Cancel</button><button type="submit" disabled={!conversationTitleDraft.trim()}>Save</button></div>
+        </form>
+      </DialogContent>}
+    </Dialog>
   </div>;
 }
 
-function ConversationRow({ item, active, archived, onClick, onArchive }: { item: Conversation; active: boolean; archived: boolean; onClick: () => void; onArchive: () => void }) {
+function ConversationRow({ item, active, archived, onClick, onArchive, onPin, onRename }: { item: Conversation; active: boolean; archived: boolean; onClick: () => void; onArchive: () => void; onPin: () => void; onRename: () => void }) {
   const title = value(item.title, 'Untitled conversation');
   return <div className={`oa-conversation-entry ${active ? 'active' : ''}`}>
     <button className={`oa-conversation-row ${active ? 'active' : ''}`} onClick={onClick} title={title} aria-current={active ? 'page' : undefined}><MessageSquarePlus size={14} /><span>{title}</span></button>
-    <details className="oa-conversation-menu"><summary aria-label={`Actions for ${title}`}><MoreHorizontal size={15} /></summary><div role="menu"><button role="menuitem" onClick={onArchive}>{archived ? 'Restore conversation' : 'Archive conversation'}</button></div></details>
+    <details className="oa-conversation-menu"><summary aria-label={`Actions for ${title}`}><MoreHorizontal size={15} /></summary><div role="menu"><button role="menuitem" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); onRename(); }}>Rename</button><button role="menuitem" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); onPin(); }}>{item.pinned === true ? 'Unpin conversation' : 'Pin conversation'}</button><button role="menuitem" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); onArchive(); }}>{archived ? 'Restore conversation' : 'Archive conversation'}</button></div></details>
   </div>;
 }

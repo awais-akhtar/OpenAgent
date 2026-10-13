@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type KeyboardEvent, type SetStateAction } from 'react';
 import { Ellipsis, GitBranch, Download, Upload, FileDown, WifiOff, Archive } from 'lucide-react';
 import { api, record, records } from '../lib/react/api';
 import { postEvents } from '../lib/react/stream';
@@ -7,18 +7,25 @@ import { ConversationTimeline } from '../components/chat/ConversationTimeline';
 import './chat-page.css';
 
 type ChatItem = Record<string, unknown>;
-type ChatPageProps = { project: string };
+type ChatPageProps = {
+  project: string;
+  draft?: string;
+  setDraft?: Dispatch<SetStateAction<string>>;
+  attachments?: ChatItem[];
+  setAttachments?: Dispatch<SetStateAction<ChatItem[]>>;
+};
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
 
-export function ChatPage({ project }: ChatPageProps) {
+export function ChatPage(props: ChatPageProps) {
+  const { project } = props;
   const [conversations, setConversations] = useState<ChatItem[]>([]);
   const [messages, setMessages] = useState<ChatItem[]>([]);
-  const [attachments, setAttachments] = useState<ChatItem[]>([]);
+  const [localAttachments, setLocalAttachments] = useState<ChatItem[]>([]);
   const [providers, setProviders] = useState<ChatItem[]>([]);
   const [selectedId, setSelectedId] = useState(() => new URL(location.href).searchParams.get('conversation_id') || '');
   const [selectedProvider, setSelectedProvider] = useState('auto');
   const [selectedModel, setSelectedModel] = useState('');
-  const [draft, setDraft] = useState('');
+  const [localDraft, setLocalDraft] = useState('');
   const [artifactFormat, setArtifactFormat] = useState('pdf');
   const [replay, setReplay] = useState<ChatItem | null>(null);
   const [allowExternal, setAllowExternal] = useState(false);
@@ -28,8 +35,13 @@ export function ChatPage({ project }: ChatPageProps) {
   const [status, setStatus] = useState('');
   const [uploadError, setUploadError] = useState('');
   const controller = useRef<AbortController | null>(null);
+  const openRequest = useRef(0);
   const alive = useRef(true);
   const routeConversation = useRef(new URL(location.href).searchParams.get('conversation_id') || '');
+  const draft = props.draft ?? localDraft;
+  const setDraft = props.setDraft ?? setLocalDraft;
+  const attachments = props.attachments ?? localAttachments;
+  const setAttachments = props.setAttachments ?? setLocalAttachments;
 
   const loadConversations = useCallback(async () => {
     const data = await api.get<unknown>(`/api/conversations/organized?project=${encodeURIComponent(project)}&limit=100&sort=pinned&include_archived=false&archived_only=false`);
@@ -61,7 +73,11 @@ export function ChatPage({ project }: ChatPageProps) {
       const nextId = new URL(location.href).searchParams.get('conversation_id') || '';
       if (nextId === routeConversation.current) return;
       routeConversation.current = nextId;
-      if (!nextId) { controller.current?.abort(); setSending(false); setSelectedId(''); setMessages([]); setError(''); setStatus(''); return; }
+      if (!nextId) {
+        openRequest.current++;
+        const active = controller.current; controller.current = null; active?.abort();
+        setSending(false); setSelectedId(''); setMessages([]); setError(''); setStatus(''); return;
+      }
       void openConversation({ id: nextId });
     };
     // The shell updates the selected conversation in the URL and dispatches popstate.
@@ -76,11 +92,17 @@ export function ChatPage({ project }: ChatPageProps) {
 
   const openConversation = async (item: ChatItem) => {
     const id = text(item.id); if (!id) return;
-    controller.current?.abort(); setSending(false); setError(''); setStatus('Loading saved messages…');
+    const request = ++openRequest.current;
+    const active = controller.current; controller.current = null; active?.abort();
+    setSending(false); setError(''); setStatus('Loading saved messages…');
     try {
       const data = await api.get<unknown>(`/api/conversation/messages?conversation_id=${encodeURIComponent(id)}`);
+      if (request !== openRequest.current) return;
       setMessages(records(data, 'messages')); setSelectedId(id); routeConversation.current = id; setStatus('');
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load this conversation.'); setStatus(''); }
+    } catch (cause) {
+      if (request !== openRequest.current) return;
+      setError(cause instanceof Error ? cause.message : 'Could not load this conversation.'); setStatus('');
+    }
   };
   const reload = async () => {
     setError('');
@@ -158,32 +180,46 @@ export function ChatPage({ project }: ChatPageProps) {
     const content = draft.trim(); if (!content || sending) return;
     setError(''); setUploadError(''); setDraft(''); setMessages(current => [...current, { role: 'user', content }]);
     const aborter = new AbortController(); controller.current = aborter; setSending(true); setStatus('Connecting to the selected provider…');
-    let assistant = ''; let nextConversationId = selectedId;
+    let assistant = ''; let nextConversationId = selectedId; let serverAcknowledged = false;
+    const optimisticMessageId = 'pending-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    setMessages(current => current.map((item, index) => index === current.length - 1 && item.role === 'user' && item.content === content ? { ...item, id: optimisticMessageId } : item));
     const parse = (value: string) => { try { return record(JSON.parse(value)); } catch { return {}; } };
     try {
       const payload = { message: content, project, provider: selectedProvider, model: selectedModel || null, allow_external: !localOnly && allowExternal, conversation_id: selectedId || null, attachments };
       for await (const event of postEvents('/api/chat/stream', payload, aborter.signal)) {
         const data = parse(event.data);
         if (event.event === 'error' || data.type === 'error') throw new Error(text(data.error ?? data.message, 'Chat stream failed.'));
-        if (data.type === 'conversation' && record(data.conversation).id) { nextConversationId = text(record(data.conversation).id); setSelectedId(nextConversationId); routeConversation.current = nextConversationId; const url = new URL(location.href); url.searchParams.set('conversation_id', nextConversationId); history.replaceState({}, '', url); }
+        if (data.type === 'conversation' && record(data.conversation).id) { serverAcknowledged = true; nextConversationId = text(record(data.conversation).id); setSelectedId(nextConversationId); routeConversation.current = nextConversationId; const url = new URL(location.href); url.searchParams.set('conversation_id', nextConversationId); history.replaceState({}, '', url); }
         else if (data.type === 'status') setStatus(`Working${data.model ? ` with ${text(data.model)}` : ''}…`);
-        else if (data.type === 'chunk' && typeof data.content === 'string') { assistant += data.content; if (data.conversation_id) nextConversationId = text(data.conversation_id); setStatus('Generating response…'); }
-        else if (data.type === 'message') assistant = text(record(data.message).content, assistant);
-        else if (typeof data.content === 'string') assistant += data.content;
+        else if (data.type === 'chunk' && typeof data.content === 'string') { serverAcknowledged = true; assistant += data.content; if (data.conversation_id) nextConversationId = text(data.conversation_id); setStatus('Generating response…'); }
+        else if (data.type === 'message') { serverAcknowledged = true; assistant = text(record(data.message).content, assistant); }
+        else if (typeof data.content === 'string') { serverAcknowledged = true; assistant += data.content; }
         if (assistant) setMessages(current => [...current.filter(item => item.role !== 'streaming'), { role: 'streaming', content: assistant }]);
       }
+      if (!serverAcknowledged) throw new Error('The local service closed the stream before confirming the message.');
       setMessages(current => assistant ? [...current.filter(item => item.role !== 'streaming'), { role: 'assistant', content: assistant }] : current.filter(item => item.role !== 'streaming'));
       setSelectedId(nextConversationId); routeConversation.current = nextConversationId; if (nextConversationId) { const url = new URL(location.href); url.searchParams.set('conversation_id', nextConversationId); history.replaceState({}, '', url); }
       setStatus(''); setAttachments([]); await loadConversations();
-      if (nextConversationId) { const saved = await api.get<unknown>(`/api/conversation/messages?conversation_id=${encodeURIComponent(nextConversationId)}`); setMessages(records(saved, 'messages')); }
+      if (controller.current !== aborter) return;
+      if (nextConversationId) {
+        const saved = await api.get<unknown>(`/api/conversation/messages?conversation_id=${encodeURIComponent(nextConversationId)}`);
+        if (controller.current !== aborter) return;
+        setMessages(records(saved, 'messages'));
+      }
     } catch (cause) {
+      // A route change owns the transcript now; only an explicit Stop button
+      // keeps this request current and should render its partial result.
+      if (controller.current !== aborter) return;
       const partial = assistant ? { role: 'interrupted', content: assistant } : null;
-      setMessages(current => [...current.filter(item => item.role !== 'streaming'), ...(partial ? [partial] : [])]);
+      setMessages(current => [...current.filter(item => item.role !== 'streaming' && (serverAcknowledged || item.id !== optimisticMessageId)), ...(partial ? [partial] : [])]);
+      if (!serverAcknowledged) setDraft(current => current || content);
       if (aborter.signal.aborted) {
         setStatus('Generation stopped. Earlier messages remain saved.');
         if (nextConversationId) { setSelectedId(nextConversationId); try { const saved = await api.get<unknown>(`/api/conversation/messages?conversation_id=${encodeURIComponent(nextConversationId)}`); const persisted = records(saved, 'messages'); const hasPartial = partial && persisted.some(item => item.role === 'assistant' && item.content === partial.content); setMessages([...persisted, ...(partial && !hasPartial ? [partial] : [])]); await loadConversations(); } catch { /* Preserve partial output until saved messages can be reloaded. */ } }
       } else { setError(cause instanceof Error ? cause.message : 'The stream was interrupted.'); setStatus('Partial output is marked unfinished. Reload saved messages before retrying to avoid duplicating a request.'); }
-    } finally { setSending(false); controller.current = null; }
+    } finally {
+      if (controller.current === aborter) { setSending(false); controller.current = null; }
+    }
   };
   const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget; setUploadError('');
@@ -195,12 +231,9 @@ export function ChatPage({ project }: ChatPageProps) {
     input.value = '';
   };
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } };
-  const currentTitle = text(conversations.find(item => item.id === selectedId)?.title, 'Conversation');
-
   return <main className="oa-chat-page" aria-label="Chat">
     <section className={`oa-chat-surface ${messages.length ? 'conversation-active' : 'conversation-home'}`} aria-label="Chat conversation">
       <div className="oa-chat-topline">
-        {selectedId && <span className="oa-chat-title" title={currentTitle}>{currentTitle}</span>}
         {selectedId && <details className="oa-chat-menu"><summary aria-label="Conversation actions" title="Conversation actions"><Ellipsis size={19}/></summary><div className="oa-chat-menu-popover">
           <button onClick={() => void branchConversation()}><GitBranch size={15}/> Branch at last message</button><button onClick={() => void inspectReplay()}>View saved replay</button><button onClick={() => void exportConversation()}><Download size={15}/> Export conversation</button>
           <button onClick={() => void archiveCurrentConversation()}><Archive size={15}/> Archive conversation</button>

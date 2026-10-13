@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, CircleAlert, Clock3, Play, Plus, RefreshCw, Search, ShieldCheck, Workflow } from 'lucide-react';
 import { api, record, records } from '../lib/react/api';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../components/ui/dialog';
@@ -31,12 +31,14 @@ function useProjectData(paths: Array<[string, string, string?]>) {
   return { data, loading, error, reload };
 }
 function useMutation(reload: () => void) {
-  const [busy, setBusy] = useState(false); const [feedback, setFeedback] = useState(''); const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false); const busyRef = useRef(false); const [feedback, setFeedback] = useState(''); const [error, setError] = useState('');
   const run = async (call: () => Promise<unknown>, done: string) => {
+    if (busyRef.current) return false;
+    busyRef.current = true;
     setBusy(true); setFeedback(''); setError('');
     try { await call(); setFeedback(done); reload(); return true; }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'The request did not complete.'); return false; }
-    finally { setBusy(false); }
+    finally { busyRef.current = false; setBusy(false); }
   };
   return { busy, feedback, error, setError, setFeedback, run };
 }
@@ -50,7 +52,7 @@ function selectedDetails(item: Item | undefined, fallback: string) {
 
 export function AgentsWorkspace() {
   const { data, loading, error, reload } = useProjectData([
-    ['agents', '/api/agents'], ['marketplace', '/api/agents/marketplace'], ['approvals', '/api/agents/approvals'], ['permissions', '/api/agents/permissions'],
+    ['agents', '/api/agents'], ['marketplace', '/api/agents/marketplace'], ['approvals', '/api/agents/approvals?status=pending'], ['permissions', '/api/agents/permissions'],
   ]);
   const mutation = useMutation(reload);
   const [tab, setTab] = useState<AgentTab>('agents'); const [selected, setSelected] = useState(0); const [query, setQuery] = useState('');
@@ -63,7 +65,7 @@ export function AgentsWorkspace() {
   useEffect(() => { setSelected(0); }, [tab, query]);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); if (!action) return;
-    if (['run', 'delegate', 'grant', 'live'].includes(action) && !confirm) { setConfirm(true); return; }
+    if (['run', 'delegate', 'grant', 'live', 'resolve'].includes(action) && !confirm) { setConfirm(true); return; }
     const p = project(); const v = values;
     const ok = await mutation.run(async () => {
       if (action === 'run') return api.post('/api/agents/run-checked', { agent: text(target ?? {}, 'id') || text(target ?? {}, 'name') || 'executive', goal: v.goal, project: p, require_approval: true, verify: true });
@@ -75,7 +77,7 @@ export function AgentsWorkspace() {
     }, `${action === 'resolve' ? 'Approval decision' : action[0].toUpperCase() + action.slice(1)} sent to the server.`);
     if (ok) { setAction(null); setConfirm(false); }
   };
-  const approvalAction = (item: Item, approved: boolean) => { setTarget(item); setValues({ approved: String(approved) }); setAction('resolve'); setConfirm(true); void mutation.run(() => api.post('/api/agents/approvals/resolve', { approval_id: text(item, 'id'), approved }), `${approved ? 'Approval granted' : 'Approval denied'} by the server.`); };
+  const approvalAction = (item: Item, approved: boolean) => { setTarget(item); setValues({ approved: String(approved) }); setAction('resolve'); setConfirm(false); mutation.setError(''); };
   const title = action === 'run' ? 'Run assistant' : action === 'delegate' ? 'Delegate work' : action === 'request' ? 'Request approval' : action === 'grant' ? 'Grant project access' : action === 'resolve' ? 'Resolve approval' : 'Agent action';
   return <section className="specialist-page oa-ops-page" aria-label="Agent workspace" aria-busy={loading}>
     <header className="specialist-header"><div><span className="specialist-eyebrow">Assistants</span><h1>Agents</h1></div><div className="specialist-header-actions"><span className="specialist-project" title="Active project">{project()}</span><button className="specialist-icon-button" type="button" onClick={reload} aria-label="Refresh agents" disabled={loading}><RefreshCw size={15}/></button></div></header>
@@ -111,7 +113,7 @@ export function AgentsWorkspace() {
         {!confirm && action === 'delegate' && <label className="specialist-field"><span>Receiving assistant</span><select required value={values.to_agent ?? ''} onChange={event => setValues({ ...values, to_agent: event.target.value })}><option value="">Choose assistant</option>{listFor(data.agents, 'agents').map((agent, index) => <option key={text(agent, 'id') || index} value={text(agent, 'id') || text(agent, 'name')}>{label(agent)}</option>)}</select></label>}
         {!confirm && action === 'request' && <><label className="specialist-field"><span>Requested action</span><input required value={values.action ?? ''} onChange={event => setValues({ ...values, action: event.target.value })}/></label><label className="specialist-field"><span>Reason and scope</span><textarea required rows={3} value={values.reason ?? ''} onChange={event => setValues({ ...values, reason: event.target.value })}/></label></>}
         {!confirm && action === 'grant' && <label className="specialist-field"><span>Permission scope</span><input required placeholder="e.g. files:read" value={values.scope ?? ''} onChange={event => setValues({ ...values, scope: event.target.value })}/></label>}
-        {confirm && <div className="specialist-confirmation"><CircleAlert size={17}/><span>{action === 'run' ? 'Run through the checked agent path. The service can still require approval.' : action === 'grant' ? `Grant the selected assistant access for ${project()}?` : action === 'delegate' ? 'Delegate the task to the chosen assistant?' : 'Submit this action for server authorization?'}</span></div>}
+        {confirm && <div className="specialist-confirmation"><CircleAlert size={17}/><span>{action === 'run' ? 'Run through the checked agent path. The service can still require approval.' : action === 'grant' ? `Grant the selected assistant access for ${project()}?` : action === 'delegate' ? 'Delegate the task to the chosen assistant?' : action === 'resolve' ? `${values.approved === 'true' ? 'Approve' : 'Deny'} this pending request? The decision will be recorded by the server.` : 'Submit this action for server authorization?'}</span></div>}
         {mutation.error && <p className="specialist-feedback error" role="alert">{mutation.error}</p>}
         <div className="specialist-dialog-actions">{confirm && <button type="button" className="specialist-secondary" onClick={() => setConfirm(false)} disabled={mutation.busy}>Back</button>}<button type="button" className="specialist-secondary" onClick={() => setAction(null)} disabled={mutation.busy}>Cancel</button><button className="specialist-primary" type="submit" disabled={mutation.busy}>{mutation.busy ? 'Working…' : confirm ? 'Confirm' : ['run','delegate','grant'].includes(action ?? '') ? 'Review' : 'Submit'}</button></div>
       </form>
@@ -120,6 +122,7 @@ export function AgentsWorkspace() {
 }
 
 type WorkflowAction = { label: string; category?: string; requires_network?: boolean };
+type WorkflowStep = { action: string; values: Record<string, string> };
 const stepFields: Record<string, { key: string; label: string }[]> = {
   add_event: [{ key: 'title', label: 'Event title' }, { key: 'content', label: 'Content' }], run_agent: [{ key: 'agent', label: 'Assistant ID' }, { key: 'goal', label: 'Goal' }], search_context: [{ key: 'query', label: 'Search query' }], chat: [{ key: 'message', label: 'Message' }], file_read: [{ key: 'path', label: 'Project file path' }], file_write: [{ key: 'path', label: 'Project file path' }, { key: 'content', label: 'File content' }], file_list: [{ key: 'path', label: 'Project folder path' }], report_generate: [{ key: 'title', label: 'Report title' }, { key: 'content', label: 'Report content' }], audit: [{ key: 'event', label: 'Audit event' }], browser_fetch: [{ key: 'url', label: 'URL' }], api_request: [{ key: 'url', label: 'API URL' }], alert: [{ key: 'message', label: 'Alert message' }], monitor_check: [{ key: 'target', label: 'Monitor target' }], database_query: [{ key: 'path', label: 'Database path' }, { key: 'query', label: 'Read-only SQL query' }], spreadsheet_read: [{ key: 'path', label: 'CSV file path' }], spreadsheet_write: [{ key: 'path', label: 'CSV file path' }, { key: 'content', label: 'CSV content' }], condition: [{ key: 'field', label: 'Context field' }, { key: 'value', label: 'Expected value' }],
 };
@@ -127,21 +130,26 @@ function workflowLabel(item: Item) { return label(item); }
 export function AutomationWorkspace() {
   const { data, loading, error, reload } = useProjectData([['workflows', '/api/workflows'], ['builder', '/api/workflows/builder'], ['runs', '/api/workflow-runs?limit=60']]);
   const mutation = useMutation(reload);
-  const [tab, setTab] = useState<'workflows' | 'runs'>('workflows'); const [selected, setSelected] = useState(0); const [query, setQuery] = useState(''); const [action, setAction] = useState<ActionKind | null>(null); const [target, setTarget] = useState<Item>(); const [confirm, setConfirm] = useState(false); const [values, setValues] = useState<Record<string, string>>({}); const [stepAction, setStepAction] = useState('run_agent');
+  const [tab, setTab] = useState<'workflows' | 'runs'>('workflows'); const [selected, setSelected] = useState(0); const [query, setQuery] = useState(''); const [action, setAction] = useState<ActionKind | null>(null); const [target, setTarget] = useState<Item>(); const [confirm, setConfirm] = useState(false); const [values, setValues] = useState<Record<string, string>>({}); const [steps, setSteps] = useState<WorkflowStep[]>([{ action: 'run_agent', values: {} }]); const [triggerType, setTriggerType] = useState('manual');
   const allWorkflows = records(data.workflows, 'workflows'); const workflows = allWorkflows.filter(item => workflowLabel(item).toLowerCase().includes(query.toLowerCase())); const runs = records(data.runs, 'runs'); const rows = tab === 'workflows' ? workflows : runs; const current = rows[selected] ?? rows[0];
   const builder = record(data.builder); const builderActions = record(builder.actions) as Record<string, WorkflowAction>;
+  const triggerEntries = Object.entries(record(builder.triggers)) as Array<[string, unknown]>;
   useEffect(() => { setSelected(0); }, [tab, query]);
-  const open = (kind: ActionKind, item?: Item) => { setTarget(item); setAction(kind); setConfirm(false); setValues({}); mutation.setError(''); };
+  const open = (kind: ActionKind, item?: Item) => { setTarget(item); setAction(kind); setConfirm(false); setValues({}); if (kind === 'create') { const firstAction = Object.keys(builderActions)[0] ?? 'run_agent'; setSteps([{ action: firstAction, values: {} }]); setTriggerType(triggerEntries.some(([key]) => key === 'manual') ? 'manual' : triggerEntries[0]?.[0] ?? 'manual'); } mutation.setError(''); };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); if (!action) return;
     if (['live', 'rename'].includes(action) && !confirm) { setConfirm(true); return; }
     const p = project(); const v = values; const selectedWorkflow = target ?? current;
     let ok = false;
     if (action === 'create') {
-      const fields = stepFields[stepAction] ?? [];
-      const step: Record<string, string> = { action: stepAction };
-      fields.forEach(field => { if (v[field.key]?.trim()) step[field.key] = v[field.key].trim(); });
-      ok = await mutation.run(() => api.post('/api/workflows', { name: v.name?.trim(), description: v.description?.trim() || '', project: p, trigger_type: 'manual', steps: [step] }), 'Workflow created from the selected builder action.');
+      const configuredSteps = steps.map(step => {
+        const values = Object.fromEntries(Object.entries(step.values).map(([key, value]) => [key, value.trim()]));
+        return { action: step.action, ...values };
+      });
+      const trigger = triggerType === 'scheduled'
+        ? { interval_seconds: Math.max(60, Number(v.interval_seconds || 3600)) }
+        : triggerType === 'event' ? { event_name: v.event_name?.trim() } : {};
+      ok = await mutation.run(() => api.post('/api/workflows', { name: v.name?.trim(), description: v.description?.trim() || '', project: p, trigger_type: triggerType, trigger, steps: configuredSteps }), 'Workflow created and registered with the selected trigger.');
     } else if (action === 'rename' && selectedWorkflow) {
       ok = await mutation.run(() => api.put(`/api/workflows/${encodeURIComponent(text(selectedWorkflow, 'id'))}`, { name: v.name?.trim() || text(selectedWorkflow, 'name'), description: v.description ?? text(selectedWorkflow, 'description'), project: p }), 'Workflow updated.');
     } else if (action === 'live' && selectedWorkflow) {
@@ -172,7 +180,7 @@ export function AutomationWorkspace() {
     </div>
     <Dialog open={!!action} onOpenChange={openState => { if (!openState && !mutation.busy) { setAction(null); setConfirm(false); } }}><DialogContent className="specialist-dialog oa-ops-dialog"><DialogTitle>{action === 'create' ? 'New workflow' : action === 'rename' ? 'Edit workflow' : action === 'dry' ? 'Dry run' : 'Run workflow'}</DialogTitle><DialogDescription>{confirm ? 'This workflow can execute its configured steps. Network access remains disabled for this run.' : `Changes apply to ${project()}.`}</DialogDescription>
       <form onSubmit={event => void submit(event)}>
-        {!confirm && action === 'create' && <><label className="specialist-field"><span>Name</span><input required value={values.name ?? ''} onChange={event => setValues({ ...values, name: event.target.value })}/></label><label className="specialist-field"><span>Purpose</span><textarea rows={2} value={values.description ?? ''} onChange={event => setValues({ ...values, description: event.target.value })}/></label><label className="specialist-field"><span>First step</span><select value={stepAction} onChange={event => setStepAction(event.target.value)}>{Object.entries(builderActions).map(([key, item]) => <option key={key} value={key}>{item.label || key}{item.requires_network ? ' · network' : ''}</option>)}</select></label>{(stepFields[stepAction] ?? []).map(field => <label className="specialist-field" key={field.key}><span>{field.label}</span><input required value={values[field.key] ?? ''} onChange={event => setValues({ ...values, [field.key]: event.target.value })}/></label>)}</>}
+        {!confirm && action === 'create' && <><label className="specialist-field"><span>Name</span><input required value={values.name ?? ''} onChange={event => setValues({ ...values, name: event.target.value })}/></label><label className="specialist-field"><span>Purpose</span><textarea rows={2} value={values.description ?? ''} onChange={event => setValues({ ...values, description: event.target.value })}/></label><label className="specialist-field"><span>Trigger</span><select aria-label="Workflow trigger" value={triggerType} onChange={event => setTriggerType(event.target.value)}>{(triggerEntries.length ? triggerEntries : [['manual', { label: 'Manual' }]] as Array<[string, unknown]>).map(([key, item]) => <option key={key} value={key}>{text(record(item), 'label') || key}</option>)}</select></label>{triggerType === 'scheduled' && <label className="specialist-field"><span>Repeat every (seconds)</span><input aria-label="Repeat every seconds" type="number" min={60} required value={values.interval_seconds ?? '3600'} onChange={event => setValues({ ...values, interval_seconds: event.target.value })}/></label>}{triggerType === 'event' && <label className="specialist-field"><span>Event name</span><input required value={values.event_name ?? ''} onChange={event => setValues({ ...values, event_name: event.target.value })}/></label>}<div className="oa-workflow-steps"><div className="oa-workflow-steps-head"><strong>Steps</strong><button type="button" onClick={() => setSteps(current => [...current, { action: Object.keys(builderActions)[0] ?? 'run_agent', values: {} }])}><Plus size={13}/>Add step</button></div>{steps.map((step, index) => <fieldset className="oa-workflow-step-editor" key={index}><legend>Step {index + 1}</legend><div className="oa-workflow-step-controls"><label className="specialist-field"><span>Action</span><select aria-label={`Step ${index + 1} action`} value={step.action} onChange={event => setSteps(current => current.map((item, itemIndex) => itemIndex === index ? { action: event.target.value, values: {} } : item))}>{Object.entries(builderActions).map(([key, item]) => <option key={key} value={key}>{item.label || key}{item.requires_network ? ' · network' : ''}</option>)}</select></label><div className="oa-workflow-step-order"><button type="button" aria-label={`Move step ${index + 1} up`} disabled={index === 0} onClick={() => setSteps(current => { const next = [...current]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return next; })}>↑</button><button type="button" aria-label={`Move step ${index + 1} down`} disabled={index === steps.length - 1} onClick={() => setSteps(current => { const next = [...current]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; return next; })}>↓</button><button type="button" aria-label={`Remove step ${index + 1}`} disabled={steps.length === 1} onClick={() => setSteps(current => current.filter((_, itemIndex) => itemIndex !== index))}>×</button></div></div>{(stepFields[step.action] ?? []).map(field => <label className="specialist-field" key={field.key}><span>{field.label}</span><input required={field.key !== 'agent'} aria-label={`Step ${index + 1} ${field.label}`} value={step.values[field.key] ?? ''} onChange={event => setSteps(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, values: { ...item.values, [field.key]: event.target.value } } : item))}/></label>)}</fieldset>)}</div></>}
         {!confirm && action === 'rename' && <><label className="specialist-field"><span>Name</span><input required defaultValue={text(target ?? current ?? {}, 'name')} onChange={event => setValues({ ...values, name: event.target.value })}/></label><label className="specialist-field"><span>Purpose</span><textarea rows={2} defaultValue={text(target ?? current ?? {}, 'description')} onChange={event => setValues({ ...values, description: event.target.value })}/></label></>}
         {confirm && <div className="specialist-confirmation"><CircleAlert size={17}/><span>{action === 'dry' ? 'Evaluate this workflow in dry-run mode. No network access is allowed.' : 'Start a live workflow run? Side effects in its steps will be governed by server policy.'}</span></div>}
         {mutation.error && <p className="specialist-feedback error" role="alert">{mutation.error}</p>}<div className="specialist-dialog-actions">{confirm && <button className="specialist-secondary" type="button" onClick={() => setConfirm(false)} disabled={mutation.busy}>Back</button>}<button className="specialist-secondary" type="button" onClick={() => setAction(null)} disabled={mutation.busy}>Cancel</button><button className="specialist-primary" type="submit" disabled={mutation.busy}>{mutation.busy ? 'Working…' : confirm ? 'Confirm run' : action === 'live' ? 'Review live run' : action === 'dry' ? 'Start dry run' : action === 'create' ? 'Create workflow' : 'Save changes'}</button></div>

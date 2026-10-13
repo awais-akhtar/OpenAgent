@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, CircleAlert, Play, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, CircleAlert, Copy, Eye, EyeOff, Play, RefreshCw, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../components/ui/dialog';
 import { api, record, records } from '../lib/react/api';
 import type { ResourceAction, ResourceRead } from '../lib/react/contracts';
@@ -13,6 +13,7 @@ type Snapshot = { data?: unknown; error?: string; loading: boolean };
 const currentProject = () => new URL(location.href).searchParams.get('project') || (() => { try { return localStorage.getItem('oa-project') || 'default'; } catch { return 'default'; } })();
 const scoped = (path: string, project: string) => path.replaceAll('{project}', encodeURIComponent(project));
 const visibleValue = (item: unknown) => typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean' ? String(item) : '';
+const text = (item: Record<string, unknown>, key: string) => typeof item[key] === 'string' ? item[key] as string : '';
 const title = (key: string) => key.replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 function Facts({ value }: { value: unknown }) {
@@ -34,6 +35,24 @@ export function PlatformWorkspaces({ id }: { id: PlatformWorkspaceId }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [result, setResult] = useState<unknown>();
+  const [oneTimeKey, setOneTimeKey] = useState('');
+  const [keyRevealed, setKeyRevealed] = useState(false);
+  const [keyCopyState, setKeyCopyState] = useState('');
+  const keyExpiry = useRef<number | undefined>(undefined);
+
+  const clearOneTimeKey = useCallback(() => {
+    if (keyExpiry.current !== undefined) window.clearTimeout(keyExpiry.current);
+    keyExpiry.current = undefined;
+    setOneTimeKey(''); setKeyRevealed(false); setKeyCopyState('');
+  }, []);
+  const copyOneTimeKey = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable.');
+      await navigator.clipboard.writeText(oneTimeKey);
+      setKeyCopyState('Copied to clipboard.');
+    } catch { setKeyCopyState('Clipboard access is unavailable; reveal the key and select it to copy.'); }
+  };
+  useEffect(() => () => { if (keyExpiry.current !== undefined) window.clearTimeout(keyExpiry.current); }, []);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setData(reads.map(() => ({ loading: true })));
@@ -58,10 +77,17 @@ export function PlatformWorkspaces({ id }: { id: PlatformWorkspaceId }) {
     if (action.confirmText && !confirm) { setConfirm(true); return; }
     setBusy(true); setError(''); setNotice('');
     try {
-      const path = scoped(action.path(values), project);
-      const payload = action.payload(values);
+      const fieldValues = Object.fromEntries(action.fields.map(field => [field.name, values[field.name] ?? '']));
+      const path = scoped(action.path(fieldValues), project);
+      const payload = action.payload(fieldValues);
       const response = action.method === 'GET' ? await api.get<unknown>(path) : action.method === 'PUT' ? await api.put<unknown>(path, payload) : action.method === 'PATCH' ? await api.patch<unknown>(path, payload) : action.method === 'DELETE' ? await api.delete<unknown>(path) : await api.post<unknown>(path, payload);
-      setResult(response); setNotice(`${action.label} completed.`); setAction(null); setValues({}); setConfirm(false); await load();
+      const generatedKey = action.label === 'Create scoped API key' ? text(record(record(response).api_key), 'key') : '';
+      if (generatedKey) {
+        clearOneTimeKey(); setOneTimeKey(generatedKey); setKeyRevealed(true); setKeyCopyState('');
+        keyExpiry.current = window.setTimeout(clearOneTimeKey, 60_000);
+        setResult(undefined); setNotice('API key created. Copy it now; it will be cleared from this page after one minute.');
+      } else { setResult(response); setNotice(`${action.label} completed.`); }
+      setAction(null); setValues({}); setConfirm(false); await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'The request did not complete.'); setConfirm(false); }
     finally { setBusy(false); }
   };
@@ -80,6 +106,7 @@ export function PlatformWorkspaces({ id }: { id: PlatformWorkspaceId }) {
     <header className="specialist-header"><div><span className="specialist-eyebrow">{config.eyebrow}</span><h1>{config.title}</h1></div><div className="specialist-header-actions"><span className="specialist-project">{project}</span><button type="button" className="specialist-icon-button" aria-label="Refresh data" disabled={data.some(item => item.loading)} onClick={() => void load()}><RefreshCw size={15}/></button></div></header>
     {error && !action && <div className="specialist-feedback error" role="alert"><CircleAlert size={15}/>{error}<button type="button" onClick={() => setError('')}>×</button></div>}
     {notice && <div className="specialist-feedback success" role="status"><Check size={15}/>{notice}<button type="button" onClick={() => setNotice('')}>×</button></div>}
+    {oneTimeKey && <section className="platform-one-time-key" aria-label="One-time API key"><div><strong>Copy this API key now</strong><p>It is held in page memory only. Clear it when finished; it also clears when you leave this view or after one minute.</p></div><output aria-label={keyRevealed ? 'Generated API key' : 'Generated API key concealed'}>{keyRevealed ? oneTimeKey : '•'.repeat(Math.min(oneTimeKey.length, 32))}</output><div className="platform-one-time-key-actions"><button type="button" onClick={() => void copyOneTimeKey()}><Copy size={14}/>{keyCopyState || 'Copy key'}</button><button type="button" onClick={() => setKeyRevealed(value => !value)} aria-label={keyRevealed ? 'Conceal key' : 'Reveal key'}>{keyRevealed ? <EyeOff size={14}/> : <Eye size={14}/>} {keyRevealed ? 'Conceal' : 'Reveal'}</button><button type="button" onClick={clearOneTimeKey} aria-label="Dismiss and clear generated key"><X size={14}/>Clear</button></div>{keyCopyState.startsWith('Clipboard') && <p role="status">{keyCopyState}</p>}</section>}
     <div className="platform-frame">
       <nav className="platform-nav" aria-label="Platform inventories"><span className="platform-nav-label">INVENTORY</span>{reads.map((item, index) => <button key={item.label} type="button" className={index === active ? 'selected' : ''} aria-current={index === active ? 'page' : undefined} onClick={() => { setActive(index); setSelected(0); setResult(undefined); }}><span>{item.label}</span><small>{data[index]?.loading ? '…' : data[index]?.error ? '!' : Array.isArray(data[index]?.data) || item.key ? records(data[index]?.data, item.key).length : '•'}</small></button>)}{actions.length > 0 && <><span className="platform-nav-label platform-ops-label">OPERATIONS</span>{actions.map(item => <button key={item.label} type="button" className="platform-operation" onClick={() => { setAction(item); setValues({}); setConfirm(false); setError(''); }}><Play size={12}/><span>{item.label}</span></button>)}</>}</nav>
       <main className="platform-main" aria-live="polite"><div className="platform-main-heading"><div><span>{read?.label}</span><h2>{detail ? String(record(detail).name ?? record(detail).title ?? record(detail).label ?? read?.label ?? config.title) : read?.label ?? config.title}</h2></div><span className="platform-scope">{project}</span></div>

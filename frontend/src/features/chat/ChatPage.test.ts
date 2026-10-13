@@ -27,7 +27,7 @@ describe('ChatPage conversation experience', () => {
     get.mockImplementation(async (path: string) => {
       if (path.startsWith('/api/conversations/organized')) return { conversations: [] };
       if (path === '/api/models') return { providers: [{ id: 'local-provider', label: 'Local model', default_model: 'small', installed_models: ['small', 'large'] }] };
-      if (path.startsWith('/api/conversation/messages')) return { messages: [{ id: 'saved-1', role: 'assistant', content: path.includes('conversation-1') ? 'A real streamed response.' : 'Saved assistant response' }] };
+      if (path.startsWith('/api/conversation/messages')) return { messages: [{ id: 'saved-1', role: 'assistant', content: path.includes('target-conversation') ? 'Target conversation message' : path.includes('conversation-1') ? 'A real streamed response.' : 'Saved assistant response' }] };
       return {};
     });
     post.mockResolvedValue({});
@@ -67,12 +67,49 @@ describe('ChatPage conversation experience', () => {
     expect(host.textContent).toContain('A real streamed response.');
   });
 
+  it('restores text when the stream fails before the server acknowledges the message', async () => {
+    postEvents.mockImplementationOnce(async function* () { throw new Error('Connection refused'); });
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    await act(async () => {
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, 'Keep this prompt');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value).toBe('Keep this prompt');
+    expect(host.textContent).toContain('Connection refused');
+    expect(host.querySelector('.oa-chat-message.user')).toBeNull();
+  });
+
+  it('offers jump-to-latest when the reader scrolls away and jumps instantly on activation', async () => {
+    const { ConversationTimeline } = await import('../../components/chat/ConversationTimeline');
+    await act(async () => { root.render(createElement(ConversationTimeline, { messages: [{ role: 'assistant', content: 'Answer' }], sending: true, replay: null, onCloseReplay: vi.fn() })); });
+    const viewport = host.querySelector<HTMLElement>('.oa-chat-timeline');
+    expect(viewport).toBeTruthy();
+    if (!viewport) return;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 100 });
+    viewport.scrollTop = 0;
+    await act(async () => { viewport.dispatchEvent(new Event('scroll', { bubbles: true })); });
+    const jump = host.querySelector<HTMLButtonElement>('.oa-chat-jump-latest');
+    expect(jump?.textContent).toBe('Jump to latest');
+    await act(async () => { jump?.click(); });
+    expect(viewport.scrollTop).toBe(1000);
+    expect(host.querySelector('.oa-chat-jump-latest')).toBeNull();
+  });
+
   it('loads a selected conversation from the shell query parameter', async () => {
     history.replaceState({}, '', '/?view=chat&conversation_id=saved-conversation');
     const { ChatPage } = await import('../../pages/ChatPage');
     await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(get).toHaveBeenCalledWith('/api/conversation/messages?conversation_id=saved-conversation');
     expect(host.textContent).toContain('Saved assistant response');
+    expect(host.querySelector('.oa-chat-title')).toBeNull();
+    expect(host.querySelector('.oa-chat-menu summary[aria-label="Conversation actions"]')).toBeTruthy();
   });
 
   it('sends allow_external only after the user explicitly opts into external access', async () => {
@@ -105,6 +142,32 @@ describe('ChatPage conversation experience', () => {
     });
     expect(get).toHaveBeenCalledWith('/api/conversation/messages?conversation_id=next-conversation');
     expect(host.textContent).toContain('Saved assistant response');
+  });
+
+  it('does not let an aborted prior stream overwrite the newly selected conversation', async () => {
+    postEvents.mockImplementationOnce(async function* (_path: string, _payload: unknown, signal: AbortSignal) {
+      yield { event: 'message', data: JSON.stringify({ type: 'conversation', conversation: { id: 'old-conversation' } }) };
+      await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+    });
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    await act(async () => {
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, 'Start a slow response');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => {
+      history.pushState({}, '', '/?view=chat&conversation_id=target-conversation');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(host.textContent).toContain('Target conversation message');
+    expect(host.textContent).not.toContain('Start a slow response');
+    expect(host.textContent).not.toContain('Aborted');
   });
 
   it('renders response Markdown without injecting HTML or unsafe link targets', async () => {
