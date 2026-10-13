@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import UnoCSS from 'unocss/vite';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
@@ -33,7 +34,7 @@ function serviceWorkerCacheFingerprint() {
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   base: '/',
-  plugins: [react(), serviceWorkerCacheFingerprint()],
+  plugins: [UnoCSS(fileURLToPath(new URL('./uno.config.ts', import.meta.url))), react(), serviceWorkerCacheFingerprint()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   esbuild: { loader: 'tsx', include: /frontend\/src\/.*\.tsx?$/ },
   server: { proxy: { '/api': 'http://127.0.0.1:8765' } },

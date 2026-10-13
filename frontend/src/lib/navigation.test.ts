@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groups, isViewId, titles, views } from './navigation';
+import { groups, isViewId, migrateLegacyView, primaryNavigation, titles, views } from './navigation';
 
 describe('navigation registry', () => {
   it('exposes every original route exactly once', () => {
@@ -13,5 +13,12 @@ describe('navigation registry', () => {
     for (const { id } of views) { expect(isViewId(id)).toBe(true); expect(titles[id]).toBeTruthy(); }
     expect(isViewId(null)).toBe(false);
     expect(isViewId('missing')).toBe(false);
+  });
+
+  it('keeps specialist destinations compact while mapping the old dashboard landing to chat', () => {
+    expect(primaryNavigation.map(item => item.id)).toEqual(['agents', 'automation']);
+    expect(migrateLegacyView(null)).toBe('chat');
+    expect(migrateLegacyView('dashboard')).toBe('chat');
+    for (const { id } of views) expect(migrateLegacyView(id)).toBe(id === 'dashboard' ? 'chat' : id);
   });
 });

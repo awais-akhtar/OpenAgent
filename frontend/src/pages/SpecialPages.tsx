@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { CodebasePage } from './CodebasePage';
+import { AgentsWorkspace, AutomationWorkspace } from './OperationalSpecialists';
 import { KnowledgePage } from './KnowledgePage';
 import { ModelsPage } from './ModelsPage';
 import { ResearchPage } from './ResearchPage';
@@ -11,6 +12,8 @@ import { WorkspacePage } from './WorkspacePage';
 export { specialPageIds } from './specialPageIds';
 
 const pages: Record<string, () => ReactNode> = {
+  agents: AgentsWorkspace,
+  automation: AutomationWorkspace,
   codebase: CodebasePage,
   knowledge: KnowledgePage,
   models: ModelsPage,

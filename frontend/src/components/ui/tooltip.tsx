@@ -1,17 +1,9 @@
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import type { ReactElement, ReactNode } from 'react';
+import { cloneElement, type ReactElement, type ReactNode } from 'react';
 
-export function TooltipProvider({ children }: { children: ReactNode }) {
-  return <TooltipPrimitive.Provider delayDuration={350} skipDelayDuration={120}>{children}</TooltipPrimitive.Provider>;
-}
+/** Tooltips use the browser's native title behavior; labels remain available to assistive technology. */
+export function TooltipProvider({ children }: { children: ReactNode }) { return <>{children}</>; }
 
 export function Tooltip({ label, children }: { label: string; children: ReactElement }) {
-  return <TooltipPrimitive.Root>
-    <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
-    <TooltipPrimitive.Portal>
-      <TooltipPrimitive.Content className="ui-tooltip-content" side="right" sideOffset={7}>
-        {label}<TooltipPrimitive.Arrow className="ui-tooltip-arrow" />
-      </TooltipPrimitive.Content>
-    </TooltipPrimitive.Portal>
-  </TooltipPrimitive.Root>;
+  // Native title is intentionally used here: it needs no global portal or runtime.
+  return cloneElement(children, { title: label } as Partial<unknown>);
 }

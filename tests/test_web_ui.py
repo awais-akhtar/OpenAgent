@@ -22,10 +22,13 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('href="/styles.css"', index)
         self.assertIn('"react":', package)
         self.assertIn('"vite":', package)
-        self.assertIn("createRoot", (ROOT / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8"))
-        self.assertIn("aria-label=\"Command search\"", app)
-        self.assertIn("aria-label=\"Dark theme\"", app)
-        self.assertIn("aria-label=\"Light theme\"", app)
+        self.assertIn('"@arco-design/web-react":', package)
+        self.assertIn('"unocss":', package)
+        main = (ROOT / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
+        self.assertIn("createRoot", main)
+        self.assertIn("ConfigProvider", main)
+        self.assertIn('aria-label="Search OpenAgent"', app)
+        self.assertIn("aria-label={`Use ${themeMode", app)
         self.assertIn("specialPageIds", app)
         self.assertRegex(service_worker, r"CACHE_VERSION\s*=\s*['\"]openagent-vite-[a-f0-9]{16,}")
 
@@ -34,15 +37,16 @@ class WebUiTests(unittest.TestCase):
         app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
         registry = (ROOT / "frontend" / "src" / "pages" / "SpecialPages.tsx").read_text(encoding="utf-8")
         resources = (ROOT / "frontend" / "src" / "pages" / "ResourcePages.tsx").read_text(encoding="utf-8")
-        view_ids = re.findall(r"\{ id: '([a-z]+)', label:", navigation)
+        registry_block = navigation.split("export const groups", 1)[1].split("export const views", 1)[0]
+        view_ids = re.findall(r"\{ id: '([a-z]+)', label:", registry_block)
         expected = {
             "dashboard", "chat", "codebase", "voice", "research", "phd", "agents", "knowledge", "workspace", "automation", "assistant", "communications", "models", "security", "developer", "settings", "engine", "science", "calendar", "twin", "vault", "scraper", "finetune",
         }
         self.assertEqual(len(view_ids), 23)
         self.assertEqual(set(view_ids), expected)
-        self.assertIn("view==='chat'?<ChatPage", app)
-        self.assertIn("view==='dashboard'?<DashboardPage", app)
-        self.assertIn("specialPageIds.has(view)?<SpecialPages", app)
+        self.assertRegex(app, r"view\s*===\s*'chat'\s*\?\s*<ChatPage")
+        self.assertRegex(app, r"view\s*===\s*'dashboard'\s*\?\s*<DashboardPage")
+        self.assertRegex(app, r"specialPageIds\.has\(view\)\s*\?\s*<SpecialPages")
         for view_id in view_ids:
             if view_id in {"chat", "dashboard"}:
                 continue

@@ -1,6 +1,6 @@
-import * as SeparatorPrimitive from '@radix-ui/react-separator';
 import type { ComponentProps } from 'react';
 
-export function Separator({ className = '', ...props }: ComponentProps<typeof SeparatorPrimitive.Root>) {
-  return <SeparatorPrimitive.Root className={`ui-separator ${className}`.trim()} {...props} />;
+type SeparatorProps = Omit<ComponentProps<'div'>, 'role'> & { orientation?: 'horizontal' | 'vertical'; decorative?: boolean };
+export function Separator({ className = '', orientation = 'horizontal', decorative = true, ...props }: SeparatorProps) {
+  return <div {...props} className={`ui-separator ${className}`.trim()} role={decorative ? undefined : 'separator'} aria-orientation={decorative ? undefined : orientation} data-orientation={orientation} />;
 }

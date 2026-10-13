@@ -1,22 +1,184 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, CircleAlert, Plus, RefreshCw } from 'lucide-react';
 import { api, record, records } from '../lib/react/api';
 import type { ResourceAction, ResourceRead } from '../lib/react/contracts';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog';
+import { SpecialistInspector } from '../features/specialists/SpecialistInspector';
+import '../features/specialists/specialist-workspace.css';
 
-export function ResourcePage({ title, eyebrow, description, reads, actions = [] }: { title: string; eyebrow: string; description: string; reads: ResourceRead[]; actions?: ResourceAction[] }) {
-  const [panels, setPanels] = useState<{ label: string; path: string; data?: unknown; error?: string; loading: boolean }[]>([]);
-  const [busyAction, setBusyAction] = useState(''); const [notice, setNotice] = useState(''); const [actionError, setActionError] = useState(''); const [values, setValues] = useState<Record<string, string>>({}); const [lastUpdated, setLastUpdated] = useState('');
-  const project = new URL(location.href).searchParams.get('project') || localStorage.getItem('oa-project') || 'default';
-  const scopedReads = reads.map(item => ({ ...item, path: item.path.replaceAll('{project}', encodeURIComponent(project)) }));
-  const refresh = useCallback(async () => {
-    setPanels(scopedReads.map(item => ({ label: item.label, path: item.path, loading: true })));
-    await Promise.all(scopedReads.map(async (item, index) => { try { const data = await api.get<unknown>(item.path); setPanels(current => current.map((panel, i) => i === index ? { label: item.label, path: item.path, data: item.key ? record(data)[item.key] : data, loading: false } : panel)); } catch (cause) { setPanels(current => current.map((panel, i) => i === index ? { label: item.label, path: item.path, error: cause instanceof Error ? cause.message : 'Could not load this data.', loading: false } : panel)); } }));
-    setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-  }, [project]);
-  useEffect(() => { void refresh(); }, [refresh]);
-  async function submit(event: React.FormEvent<HTMLFormElement>, action: ResourceAction) { event.preventDefault(); if (action.confirmText && !window.confirm(action.confirmText)) return; setBusyAction(action.label); setActionError(''); setNotice(''); try { const body = action.payload(values); const path = action.path(values); const result = action.method === 'GET' ? await api.get<unknown>(path) : action.method === 'PUT' ? await api.put<unknown>(path, body) : action.method === 'PATCH' ? await api.patch<unknown>(path, body) : action.method === 'DELETE' ? await api.delete<unknown>(path) : await api.post<unknown>(path, body); const output = record(result); await refresh(); if (Object.keys(output).length) setPanels(old => [...old, { label: 'Latest result', path, data: output, loading: false }]); setNotice(`${action.label} completed successfully.`); setValues(old => { const next = { ...old }; for (const field of action.fields) delete next[field.name]; return next; }); } catch (cause) { setActionError(cause instanceof Error ? cause.message : 'The request did not complete.'); } finally { setBusyAction(''); } }
-  return <section className="resource-page" aria-busy={panels.some(panel => panel.loading)}><header className="resource-head"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="intro">{description}</p></div><div className="head-meta"><span>OpenAgent · local workspace</span><button className="quiet-button" onClick={() => void refresh()} disabled={panels.some(panel => panel.loading)}>Refresh</button></div></header>
-    {actionError && <div className="feedback error" role="alert">{actionError}</div>}{notice && <div className="feedback success" role="status">{notice}</div>}
-    <div className="workspace-grid"><div className="data-column">{panels.map((panel, i) => <article className="data-panel" key={`${panel.path}${panel.label}${i}`}><div className="panel-heading"><div><span className="panel-index">{String(i + 1).padStart(2, '0')}</span><h2>{panel.label}</h2></div><span className={`state ${panel.error ? 'warning' : ''}`}>{panel.loading ? 'Loading' : panel.error ? 'Unavailable' : 'Server data'}</span></div>
-      {panel.loading ? <div className="skeleton" aria-label={`Loading ${panel.label}`}><i/><i/><i/></div> : panel.error ? <div className="panel-error"><p>{panel.error}</p><button className="text-button" onClick={() => void refresh()}>Try again</button></div> : records(panel.data).length ? <div className="record-list">{records(panel.data).slice(0, 16).map((item, rowIndex) => { const title = item.name ?? item.title ?? item.label ?? item.id ?? `Record ${rowIndex + 1}`; const summary = item.status ?? item.state ?? item.description ?? item.type ?? 'Available'; const hidden = new Set(['name','title','label','id','status','state','description','type']); const details = Object.entries(item).filter(([name, value]) => !hidden.has(name) && ['string','number','boolean'].includes(typeof value) && String(value).trim()).slice(0, 3); return <div className="record-row" key={String(item.id ?? item.name ?? item.title ?? rowIndex)}><div><strong>{String(title)}</strong><span>{String(summary)}</span>{details.length > 0 && <small>{details.map(([name, value]) => `${name.replaceAll('_', ' ')}: ${String(value)}`).join(' · ')}</small>}</div></div>; })}</div> : Array.isArray(panel.data) ? <div className="empty"><span className="empty-mark">—</span><strong>No records yet</strong><p>OpenAgent returned an empty collection for this area.</p></div> : panel.data && typeof panel.data === 'object' ? <dl className="facts">{Object.entries(record(panel.data)).slice(0, 14).map(([name, value]) => <div key={name}><dt>{name.replaceAll('_', ' ')}</dt><dd>{typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : Array.isArray(value) ? `${value.length} items` : value === null ? '—' : 'Available'}</dd></div>)}</dl> : <div className="empty"><span className="empty-mark">—</span><strong>No data returned</strong><p>This endpoint did not return a displayable record.</p></div>}<footer className="source-note"><code>{panel.path}</code></footer></article>)}{lastUpdated && <p className="updated">Last checked at {lastUpdated}</p>}</div>
-      {!!actions.length && <aside className="actions-column"><div className="aside-title"><span className="eyebrow">Workspace actions</span><span className="aside-rule"/></div>{actions.map(action => <form className="action-panel" key={action.label} onSubmit={event => void submit(event, action)}><div className="action-title"><h2>{action.label}</h2><span className="action-type">{action.method ?? 'POST'}</span></div>{action.fields.map(field => <label className="field" key={field.name}><span>{field.label}{field.required && <b aria-hidden="true"> · required</b>}</span>{field.type === 'textarea' ? <textarea name={field.name} required={field.required} placeholder={field.hint ?? ''} rows={3} value={values[field.name] ?? ''} onChange={e => { const value = e.currentTarget.value; setValues(old => ({ ...old, [field.name]: value })); }}/> : field.type === 'select' ? <select name={field.name} required={field.required} value={values[field.name] ?? ''} onChange={e => { const value = e.currentTarget.value; setValues(old => ({ ...old, [field.name]: value })); }}><option value="">Choose…</option>{(field.options ?? []).map(option => <option key={option}>{option}</option>)}</select> : <input name={field.name} type={field.type ?? 'text'} required={field.required} placeholder={field.hint ?? ''} value={values[field.name] ?? ''} onChange={e => { const value = e.currentTarget.value; setValues(old => ({ ...old, [field.name]: value })); }}/>}</label>)}<button className="submit-button" type="submit" disabled={!!busyAction}>{busyAction === action.label ? 'Working…' : action.label}</button></form>)}<div className="trust-note"><span className="trust-dot"/><p>Actions are sent to the configured local OpenAgent service. Results below reflect its response.</p></div></aside>}</div></section>;
+type Snapshot = { data?: unknown; error?: string; loading: boolean };
+type Props = { title: string; eyebrow: string; description: string; reads: ResourceRead[]; actions?: ResourceAction[] };
+
+function activeProject() {
+  const queryProject = new URL(location.href).searchParams.get('project');
+  try { return queryProject || localStorage.getItem('oa-project') || 'default'; } catch { return queryProject || 'default'; }
+}
+
+function actionRequest(action: ResourceAction, path: string, values: Record<string, string>) {
+  const method = action.method ?? 'POST';
+  if (method === 'GET') return api.get<unknown>(path);
+  if (method === 'PUT') return api.put<unknown>(path, action.payload(values));
+  if (method === 'PATCH') return api.patch<unknown>(path, action.payload(values));
+  if (method === 'DELETE') return api.delete<unknown>(path);
+  return api.post<unknown>(path, action.payload(values));
+}
+
+export function ResourcePage({ title, eyebrow, reads, actions = [] }: Props) {
+  const project = activeProject();
+  const scopedReads = useMemo(() => reads.map(read => ({
+    ...read,
+    path: read.path.replaceAll('{project}', encodeURIComponent(project)),
+  })), [reads, project]);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>(() => reads.map(() => ({ loading: true })));
+  const [selectedRead, setSelectedRead] = useState(0);
+  const [selectedRecord, setSelectedRecord] = useState(0);
+  const [dialogAction, setDialogAction] = useState<ResourceAction | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setSnapshots(scopedReads.map(() => ({ loading: true })));
+    const results = await Promise.all(scopedReads.map(async read => {
+      try { return { data: await api.get<unknown>(read.path, signal), loading: false } satisfies Snapshot; }
+      catch (cause) {
+        if (signal?.aborted) return { loading: false } satisfies Snapshot;
+        return { error: cause instanceof Error ? cause.message : 'Could not load this information.', loading: false } satisfies Snapshot;
+      }
+    }));
+    if (!signal?.aborted) setSnapshots(results);
+  }, [scopedReads]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  const snapshot = snapshots[selectedRead] ?? { loading: true };
+  const read = scopedReads[selectedRead];
+  const rows = snapshot.data === undefined ? [] : records(snapshot.data, read?.key);
+  const isCollection = Array.isArray(snapshot.data) || (read?.key ? Array.isArray(record(snapshot.data)[read.key]) : false);
+  const selectedRow = rows[selectedRecord] ?? rows[0];
+  const detail = selectedRow ?? snapshot.data;
+  const displayData = selectedRow ? { [read?.key ?? 'items']: [selectedRow] } : snapshot.data;
+  const lookupOptions = useCallback((label: string) => {
+    const sourceIndex = scopedReads.findIndex(item => item.label === label);
+    if (sourceIndex < 0) return [] as Array<{ value: string; label: string }>;
+    return records(snapshots[sourceIndex]?.data, scopedReads[sourceIndex]?.key)
+      .map(row => {
+        const value = row.id ?? row.agent_id ?? row.workflow_id ?? row.application_id ?? row.calendar_id ?? row.provider_id ?? row.conflict_id ?? row.task_id ?? row.dataset_id ?? row.device_id ?? row.adapter_id ?? row.approval_id;
+        if (typeof value !== 'string' && typeof value !== 'number') return null;
+        const labelValue = row.name ?? row.title ?? row.label ?? row.subject ?? row.filename ?? row.event ?? row.email ?? value;
+        const status = row.status ?? row.state;
+        return { value: String(value), label: `${String(labelValue)}${typeof status === 'string' ? ` · ${status}` : ''}` };
+      }).filter((option): option is { value: string; label: string } => option !== null);
+  }, [scopedReads, snapshots]);
+
+  function openAction(action: ResourceAction) {
+    setDialogAction(action);
+    setConfirming(false);
+    setValues({});
+    setError('');
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!dialogAction) return;
+    if (dialogAction.confirmText && !confirming) { setConfirming(true); return; }
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const path = dialogAction.path(values);
+      await actionRequest(dialogAction, path, values);
+      await load();
+      setNotice(`${dialogAction.label}: request acknowledged by the service.`);
+      setDialogAction(null);
+      setConfirming(false);
+      setValues({});
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The request did not complete.');
+      setConfirming(false);
+    } finally { setBusy(false); }
+  }
+
+  return <section className="specialist-page" aria-label={title} aria-busy={snapshot.loading}>
+    <header className="specialist-header">
+      <div><span className="specialist-eyebrow">{eyebrow}</span><h1>{title}</h1></div>
+      <div className="specialist-header-actions">
+        <span className="specialist-project" title="Active project">{project}</span>
+        <button type="button" className="specialist-icon-button" aria-label="Refresh data" onClick={() => void load()} disabled={snapshots.some(item => item.loading)}><RefreshCw size={15}/></button>
+      </div>
+    </header>
+
+    {error && !dialogAction && <div className="specialist-feedback error" role="alert"><CircleAlert size={16}/>{error}</div>}
+    {notice && <div className="specialist-feedback success" role="status">{notice}<button type="button" aria-label="Dismiss notification" onClick={() => setNotice('')}>×</button></div>}
+
+    <div className="specialist-workspace">
+      <nav className="specialist-list" aria-label={`${title} data and actions`}>
+        <div className="specialist-list-heading"><span>Workspace</span><ChevronDown size={14}/></div>
+        <div className="specialist-source-list" role="tablist" aria-label="Data sources">
+          {scopedReads.map((item, index) => {
+            const current = snapshots[index] ?? { loading: true };
+            const itemRows = current.data === undefined ? [] : records(current.data, item.key);
+            const collection = Array.isArray(current.data) || (item.key ? Array.isArray(record(current.data)[item.key]) : false);
+            return <button type="button" role="tab" aria-selected={selectedRead === index} className={`specialist-source ${selectedRead === index ? 'active' : ''}`} key={`${item.label}:${item.path}`} onClick={() => { setSelectedRead(index); setSelectedRecord(0); }}>
+              <span className="specialist-source-name">{item.label}</span>
+              <span className={`specialist-source-state ${current.error ? 'error' : ''}`}>{current.loading ? '…' : current.error ? '!' : collection ? itemRows.length : '•'}</span>
+            </button>;
+          })}
+        </div>
+        {!!actions.length && <details className="specialist-action-menu">
+          <summary className="specialist-action-summary"><span>Actions</span><span className="specialist-action-count">{actions.length}</span><ChevronDown size={14}/></summary>
+          <div className="specialist-action-list" aria-label="Available actions">{actions.map(action => <button className="specialist-action-link" key={action.label} type="button" onClick={() => openAction(action)}><Plus size={14}/><span>{action.label}</span></button>)}</div>
+        </details>}
+      </nav>
+
+      <main className="specialist-detail" aria-live="polite">
+        <div className="specialist-detail-head">
+          <div><span className="specialist-context">{read?.label ?? title}</span><h2>{selectedRow ? String(selectedRow.name ?? selectedRow.title ?? selectedRow.label ?? 'Details') : read?.label ?? title}</h2></div>
+          {read && <span className="specialist-scope">{project}</span>}
+        </div>
+        {snapshot.loading ? <div className="specialist-loading" role="status" aria-label={`Loading ${read?.label ?? title}`}><i/><i/><i/></div>
+          : snapshot.error ? <div className="specialist-state-panel error"><CircleAlert size={20}/><strong>Couldn’t load this view</strong><p>{snapshot.error}</p><button type="button" onClick={() => void load()}>Try again</button></div>
+          : isCollection && !rows.length ? <div className="specialist-state-panel"><strong>No {read?.label.toLowerCase() ?? 'items'} yet</strong><p>The service returned an empty collection for this project.</p></div>
+          : isCollection ? <div className="specialist-record-layout">
+            <div className="specialist-record-list" aria-label={read?.label}>
+              {rows.map((row, index) => {
+                const label = row.name ?? row.title ?? row.label ?? row.subject ?? row.filename ?? row.id ?? 'Untitled item';
+                const status = row.status ?? row.state;
+                return <button type="button" key={String(row.id ?? `${label}-${index}`)} className={`specialist-record ${selectedRecord === index ? 'selected' : ''}`} aria-current={selectedRecord === index ? 'true' : undefined} onClick={() => setSelectedRecord(index)}>
+                  <span className="specialist-record-copy"><strong>{String(label)}</strong>{typeof status === 'string' && <small>{status}</small>}</span><ChevronRight size={15}/>
+                </button>;
+              })}
+            </div>
+            <SpecialistInspector value={detail} emptyLabel="No additional details are available." />
+          </div>
+          : snapshot.data === null || snapshot.data === undefined ? <div className="specialist-state-panel"><strong>No data returned</strong><p>This endpoint returned no content.</p></div>
+          : <SpecialistInspector value={displayData} emptyLabel="The service responded without displayable summary fields." />}
+      </main>
+    </div>
+
+    <Dialog open={!!dialogAction} onOpenChange={open => { if (!open && !busy) { setDialogAction(null); setConfirming(false); setError(''); } }}>
+      {dialogAction && <DialogContent className="specialist-dialog" aria-describedby="specialist-dialog-description">
+        <div className="specialist-dialog-head"><div><DialogTitle>{confirming ? 'Confirm action' : dialogAction.label}</DialogTitle><DialogDescription id="specialist-dialog-description">{confirming ? dialogAction.confirmText : `This action will be sent to the local ${title} service.`}</DialogDescription></div></div>
+        <form onSubmit={event => void submit(event)}>
+          {!confirming && dialogAction.fields.map(field => { const options: Array<{ value: string; label: string }> = field.optionsFrom ? lookupOptions(field.optionsFrom) : (field.options ?? []).map(option => ({ value: option, label: option })); return <label className="specialist-field" key={field.name}>
+            <span>{field.label}{field.required && <b>Required</b>}</span>
+            {field.type === 'textarea' ? <textarea name={field.name} rows={4} required={field.required} placeholder={field.hint ?? ''} value={values[field.name] ?? ''} onChange={event => setValues(old => ({ ...old, [field.name]: event.currentTarget.value }))}/>
+              : field.type === 'select' || field.optionsFrom ? <select name={field.name} required={field.required} value={values[field.name] ?? ''} onChange={event => setValues(old => ({ ...old, [field.name]: event.currentTarget.value }))}><option value="">{field.optionsFrom && !options.length ? `No ${field.optionsFrom.toLowerCase()} available` : 'Choose…'}</option>{options.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select>
+              : <input name={field.name} type={field.type ?? 'text'} required={field.required} placeholder={field.hint ?? ''} value={values[field.name] ?? ''} onChange={event => setValues(old => ({ ...old, [field.name]: event.currentTarget.value }))}/>}
+          </label>;})}
+          {confirming && <div className="specialist-confirmation"><CircleAlert size={17}/><span>{dialogAction.confirmText}</span></div>}
+          {error && <p className="specialist-feedback error" role="alert">{error}</p>}
+          <div className="specialist-dialog-actions">
+            {confirming && <button type="button" className="specialist-secondary" onClick={() => setConfirming(false)} disabled={busy}>Back</button>}
+            <button type="button" className="specialist-secondary" onClick={() => setDialogAction(null)} disabled={busy}>Cancel</button>
+            <button type="submit" className="specialist-primary" disabled={busy}>{busy ? 'Working…' : confirming ? 'Confirm and continue' : dialogAction.confirmText ? 'Review action' : 'Continue'}</button>
+          </div>
+        </form>
+      </DialogContent>}
+    </Dialog>
+  </section>;
 }
