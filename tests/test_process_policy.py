@@ -51,7 +51,9 @@ class ProcessPolicyTests(unittest.TestCase):
     def test_timeout_output_cap_and_cancellation_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:
             policy = ProcessPolicy(
-                timeout_seconds=0.15,
+                # Allow Python interpreter startup before testing the output
+                # cap; the child then sleeps long enough to trigger timeout.
+                timeout_seconds=2.0,
                 max_output_bytes=1_000,
                 allowed_cwd_roots=(Path(workspace),),
                 allowed_executables=(sys.executable,),

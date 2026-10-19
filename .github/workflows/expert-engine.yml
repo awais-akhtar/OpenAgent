@@ -1,0 +1,28 @@
+name: Expert engine correctness (optional accelerated subsystems)
+on:
+  push:
+    paths: ['openagent/adaptive_engine/**', 'tests/test_*olmoe*', 'tests/test_native_*', '.github/workflows/expert-engine.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  execution-contracts:
+    runs-on: ubuntu-latest
+    env:
+      KIMI_LINEAR_ORACLE_DIR: .tmp-kimi-oracle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[engine-torch]' 
+      - run: python -m tests.prepare_kimi_oracle .tmp-kimi-oracle
+      - run: |
+          python -m unittest -q \
+            tests.test_q4_0_olmoe tests.test_q4_1_olmoe tests.test_q8_0_olmoe \
+            tests.test_q5_0_olmoe tests.test_q5_1_olmoe tests.test_q5_0_integration_adversarial \
+            tests.test_native_segment_executor tests.test_native_olmoe_segments tests.test_native_segment_adversarial \
+            tests.test_family_conformance tests.test_native_checkpoint tests.test_native_glm5_next \
+            tests.test_native_deepseek_v4 tests.test_native_inkling tests.test_native_kimi \
+            tests.test_native_mixtral_decoder tests.test_native_qwen35_vision \
+            tests.test_native_deepseek_v41_csa2 tests.test_native_kimi_k3_attnres

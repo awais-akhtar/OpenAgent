@@ -1,0 +1,88 @@
+name: CI and local product release gates
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  static-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -e '.[security,media]' pyyaml
+      - run: python -m compileall -q openagent
+      - run: python -m unittest discover -s tests -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend-second/package-lock.json
+      - working-directory: frontend-second
+        run: npm ci --no-audit --no-fund
+      - working-directory: frontend-second
+        run: npm run check && npm test -- --reporter=dot && npm run build
+  security-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[security]' pyyaml
+      - run: python -m unittest tests.test_deployment_config tests.test_security_acceptance tests.test_agent_run_access -q
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend-second/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend-second
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend-second
+      - run: npm run test:e2e -- --workers=1 --retries=0
+        working-directory: frontend-second
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distribution
+          path: dist/*
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Kubernetes schema with kubeconform
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          find . -path '*k8s*.yaml' -o -path '*kubernetes*.yaml' | xargs -r ./kubeconform -summary
+      - name: Build non-root runtime image
+        run: docker build -t openagent:ci .
+      - name: Verify non-root authenticated runtime
+        run: |
+          test "$(docker image inspect openagent:ci --format '{{.Config.User}}')" = '10001:10001'
+          docker image inspect openagent:ci --format '{{json .Config.Env}}' | grep -q OPENAGENT_AUTH_ENFORCED=1
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: openagent:ci
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+      - uses: anchore/sbom-action@v0
+        with:
+          image: openagent:ci

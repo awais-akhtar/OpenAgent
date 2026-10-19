@@ -14,21 +14,19 @@ from pathlib import Path
 from uuid import uuid4
 
 
-def _failure_summary(error):
-    """P0-05: Bounded non-stringifying failure-summary for distributed cleanup.
-
-    Converts an exception to a safe string representation without recursively
-    stringifying nested exception chains, which can cause runaway memory use
-    in failure-recovery scenarios.
-    """
-    if error is None:
-        return None
-    error_type = type(error).__name__
-    error_msg = str(error) if error else ""
-    # Limit message to 256 chars to prevent unbounded growth in error chains
-    if len(error_msg) > 256:
-        error_msg = error_msg[:253] + "..."
-    return f"{error_type}: {error_msg}"
+def _failure_summary(failure, *, limit=1024):
+    """Bounded diagnostic safe even when exception __str__/__repr__ are hostile."""
+    try:
+        name = type(failure).__name__
+    except BaseException:
+        name = "BaseException"
+    if type(name) is not str or not name or len(name) > 128:
+        name = "BaseException"
+    try:
+        bound = max(1, min(int(limit), 4096))
+    except (TypeError, ValueError, OverflowError):
+        bound = 1024
+    return (name + ": failure details omitted")[:bound]
 
 
 def _history_digest(tokens):
