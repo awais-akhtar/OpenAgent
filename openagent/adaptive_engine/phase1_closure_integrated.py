@@ -1220,6 +1220,19 @@ if __name__ == '__main__':
     obs = ObservationBindingManager()
     print("✓ ObservationBindingManager initialized")
 
+    # Import and test P13/P14/P15 components
+    try:
+        from .phase1_p13_p14_p15_complete import (
+            P13EvidenceCaptureManager,
+            P14ServingLifecycleManager,
+            Phase1ClosureValidator,
+        )
+        print("\n✓ P13EvidenceCaptureManager available")
+        print("✓ P14ServingLifecycleManager available")
+        print("✓ Phase1ClosureValidator available")
+    except ImportError:
+        print("\n⚠ P13/P14/P15 components not yet loaded")
+
     # Test Phase 1 Validator
     validator = Phase1ValidatorComplete()
     result = validator.validate_all()
