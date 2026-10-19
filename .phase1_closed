@@ -1,0 +1,19 @@
+{
+  "phase1_closed": true,
+  "closure_timestamp": "1792434339.947333",
+  "total_cases_converted": 1205,
+  "families_complete": [
+    "deepseek-v41",
+    "glm-dsa",
+    "glm5-next",
+    "inkling",
+    "kimi-k3",
+    "mixtral",
+    "olmoe",
+    "qwen35",
+    "qwen4"
+  ],
+  "all_p02_p15_satisfied": true,
+  "receipt_present": true,
+  "blockers": []
+}
