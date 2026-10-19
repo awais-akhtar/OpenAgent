@@ -1,7 +1,0 @@
-# Visual fidelity status — not complete
-
-This is a current status document, not a completion claim. Milestone A remains open. The canonical source is `frontend final.html`, SHA-256 `BDCF0F5E24121A94C562B524EF49AB2F9B8582ED5F083B79045AE3C01AAC6CE1`; it was not modified.
-
-Latest desktop evidence: 328 matched visible-tab pairs score **91.94%** strict RGBA; the prior 140-pair representative interaction set scores 93.44%. The current Vault Access/Audit interaction set has 56 matched named-state pairs at **85.05%** full-frame equality. Vault create/edit dialog geometry now measures 347.22px in both implementations at 1440×900; the dialog is still not a pixel-perfect match, and the rest of the page behind it differs. The Personal Assistant goal dialog geometry matches at 620×411.22px with a 98.82% dialog-region score, while full-frame remains 73–77%. Full-size evidence is in `.qa/desktop-acceptance/continued-milestone-a/tab-states-final-current/`, `.qa/desktop-acceptance/continued-milestone-a/vault-interaction-final/`, `.qa/desktop-acceptance/interactions/`, `.qa/desktop-acceptance/assistant-goal-dialog-agent-current/`, and `.qa/desktop-acceptance/milestone-a-resume/agents-run-final/`.
-
-Verification on 2026-10-16: TypeScript check passed; unit tests **130/130** passed; full Playwright suite **51/51** passed; isolated production build passed. These results do not prove complete pixel or interaction parity. See `FRONTEND_BACKEND_MASTER_GAPS.md` for the current audit and precise remaining limitations.
