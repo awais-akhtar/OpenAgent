@@ -121,6 +121,8 @@ check BLUEPRINT .md
 
 # Local review bundles and generated audit evidence. The source HTML and
 # application assets remain trackable; only disposable review material is ignored.
+/.qa/batch1-package-staging/
+/.qa/batch1-package-verify/
 /frontend-second/audit/
 /frontend-second/.qa/
 /frontend-second/visual-evidence/
@@ -128,6 +130,8 @@ check BLUEPRINT .md
 /docs/FRONTEND_DESIGN_AUDIT.md
 **/audit/
 **/audits/
+!/docs/audits/
+!/docs/audits/**
 **/screenshots/
 **/screenshot-evidence/
 **/visual-comparisons/

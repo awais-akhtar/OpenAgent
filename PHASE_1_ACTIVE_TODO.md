@@ -1,30 +1,239 @@
 # Phase 1 — active completion queue
 
-Updated 2026-10-19 (rechecked). This is the short list of **remaining work**, not a record of past edits. The detailed requirements and audit history remain in [PHASE_1_SOURCE_CHECKLIST.md](PHASE_1_SOURCE_CHECKLIST.md). Phase 1 and P15 are **OPEN**.
+Updated 2026-10-19 (full static audit revision 3). This is the short list of **remaining work**, not a record of past edits. The detailed requirements and audit history remain in [the Phase 1 source checklist](docs/audits/phase1/source-checklist.md). Phase 1 and P15 are **OPEN**.
 
-## 2026-10-19 source-only audit
+## Claimed-fix verification — 2026-10-19
 
-The desktop repair is source-complete for its narrow scope: the Windows launcher prefers the checked-out runtime, uses writable data/runtime directories, stale directory-server ownership was removed, and the workbench keeps serving after a browser process is reused. The live endpoint was observed separately as `OpenAgent/0.1` HTML, but this is desktop smoke evidence only and does not close Phase 1.
+The seven reported fixes are **not present in this checkout**. Git reports no
+staged changes, no untracked files, and no modifications to
+`universal_engine.py` or `runtime.py`. The only current product changes are the
+assistant CRUD/UI files already audited. The sole stash contains only two
+frontend integration-support edits and none of the claimed engine fixes.
 
-The repository does **not** contain the claimed `unified_execution.py` implementation or commit `96b5007`. The universal layer currently present is `universal_engine.py` (`UniversalEngine`, `UniversalSession`, `ModelRoute`, and `ModelManifest`), wired through the adaptive-engine package/runtime. No audit claim should treat the absent unified-execution work as complete.
+| Claimed fix | Verification result | Current source evidence |
+| --- | --- | --- |
+| Production universal caller/adapters | NOT FIXED | `register_universal_adapter()` and `open_universal_model()` occur only as method definitions; there are no production registrations, callers, or universal-engine tests. Checking whether an adapter is registered inside the open helper would not create the missing registrations or serving caller. |
+| Exact source-route admission | NOT FIXED | `UniversalEngine.inspect()` still checks only `route.model_type == config.model_type`; `require_source_route_admission` does not exist in the working tree. |
+| Warm-session option identity | NOT FIXED | The session key remains model directory plus six route fields; `**options` are still omitted and silently ignored when a warm session exists. |
+| Cancellation rollback | NOT FIXED | `generate()` still raises after post-dispatch cancellation without rollback; `stream()` still has no pre-dispatch cancellation check or transactional restore. No new `rollback()` integration exists. |
+| Foreign/stale restore rejection | NOT FIXED | `snapshot()` still returns the raw adapter receipt and `restore()` still forwards it without route/session/epoch/freshness validation. Checking only a route would also be insufficient to establish receipt ownership. |
+| Retryable failed cleanup | NOT FIXED | Session pools are still cleared/popped before close; `_closed` is still assigned only after owner close returns. Merely setting `_closed=True` before re-raising would prevent retry rather than preserve cleanup ownership. |
+| Task goal validation | NOT FIXED | `create_task()` still inserts the supplied `goal_id` without querying `assistant_goals`; the database schema still has no foreign key. Only `update_task()` performs a separate pre-update query. |
 
-Recheck result: the closure decision is unchanged. The working tree has additional assistant/route/test edits, but no new canonical route matrix, runtime receipt, ABI execution receipt, placement observation, or P15 reconciliation was identified; those edits therefore do not change the Phase 1 status.
+**Verified total: 0 of 7.** These claims must not be marked complete or staged.
+If the fixes exist in another checkout or patch, they must be brought into
+`D:\openagent` and then audited again. The existing BUG-01 through BUG-10
+register remains active.
 
-### 2026-10-19 code audit result
+## Project structure audit — 2026-10-19
 
-Source inspection confirms the existing admission guards, universal engine/session layer, queue/stream cleanup, speculative rollback boundaries, distributed poisoning/cleanup, format restrictions, and capability disclosures are present. It also confirms the remaining blockers: `unified_execution.py` is absent, route tuples are not all fully traced, family-wide media/speculative/distributed/recovery/ABI closure is incomplete, and P13 evidence fields remain structural (`not-captured`, `executed=false`, `phase1_closed=false`). The newly modified assistant/route files are outside the unresolved engine-route matrix and do not close any P02–P15 package. Status remains unchanged: Phase 1 **OPEN**, P15 **OPEN**.
+The source layout and local workspace were carrying avoidable duplication.
+Tracked organizational files were moved without changing their contents, and
+duplicated QA package copies were removed from the Git index while preserved
+locally under ignored paths.
 
-Repeat audit (2026-10-19): `source_scope.py` still emits candidate-unverified rows and `phase1_closed=False`; `wholemodel_validation/runner.py` still rejects absent/candidate/restricted execution contracts; `unified_execution.py` remains absent while `universal_engine.py` remains present. No source change qualifies a package for closure, so no status transition was made.
+### Canonical source boundaries
 
-Latest delta audit (2026-10-19): only assistant/route and support-test files are newly modified in the working tree; no adaptive-engine route, source-matrix, evidence, ABI, or recovery closure changed. The same gates remain visible in source (`candidate-unverified`, `not-captured`, `completion_claim=False`, and `phase1_closed=False`). Phase 1 and P15 remain **OPEN**.
+- Python product source: `openagent/` (664 tracked files).
+- Current React application: `frontend-second/` (158 tracked files); root npm
+  `dev:web`, `build:web`, `check:web`, `test:web`, and `test:e2e` target it.
+- Legacy React application: `frontend/` (87 tracked files), retained only by
+  explicit `*:legacy` scripts. It should be formally deprecated or removed in
+  a separate compatibility change, not silently mixed with the current UI.
+- Tests: `tests/` (280 tracked files).
+- Product documentation and operations: `docs/`, `scripts/`, `installers/`,
+  and `deploy/`.
+- `web/` mixes tracked source/static files with ignored generated bundles.
+  Old generated assets already tracked remain tracked despite `.gitignore`, so
+  the source-versus-build boundary is ambiguous.
 
-Audit refresh (2026-10-19): current source still has no `unified_execution.py`; `universal_engine.py` is the available universal layer. The modified assistant files do not touch the Phase 1 route matrix or evidence gates. No package status changed.
+### Repository hygiene defects
 
-Claim review (2026-10-19): the proposed summary is only partially accurate. P04/P05/P06 have substantial source implementations and safeguards, but the checklist still correctly classifies them as **IN PROGRESS** because cross-family/caller closure, atomic publication, full distributed-bank consensus, and transparent process-loss recovery are not complete. The source matrix still contains candidate-unverified rows; exact totals differ by matrix view (the active baseline records 1,334 expanded tuples / 1,133 canonical route items, not a verified-admitted conversion). P13 receipts remain uncaptured, P11 family ABI closure remains partial, P12 distributed physical-state/recovery remains partial, P14 lifecycle/parity remains partial, and P15 remains open. Evidence requirements are enforced by source gates; hardware absence is one blocker for A10 receipts, but not the only remaining closure gap.
+1. `.qa/` previously contained 386 tracked files, including two separately
+   tracked 174-file package snapshots under `batch1-package-staging` and
+   `batch1-package-verify`. Those duplicate snapshots are now staged for index
+   removal and ignored while their local files remain available. Future QA
+   evidence must use manifests rather than parallel source trees.
+2. The older `PHASE1_CHECKLIST.md` remains ignored as obsolete local material.
+   The detailed current checklist has now moved to
+   `docs/audits/phase1/source-checklist.md`, where it can be versioned beside
+   its audit index. `PHASE_1_ACTIVE_TODO.md` remains the stable root entrypoint.
+3. The root `modelsdebug.png` asset has moved to
+   `docs/assets/models-debug.png`; future audit images must live under a
+   documented evidence directory or outside source control.
+4. Root npm dependencies duplicate part of `frontend-second`'s dependency
+   ownership. The workspace has no declared npm-workspaces structure, so two
+   lock/dependency contexts can drift.
+5. Several very large modules (`frontend-second/src/screens/AdvancedScreen.tsx`,
+   `web/src/app.ts`, `openagent/routes/runtime.py`, and Phase 1 catalog/factory
+   modules) concentrate unrelated responsibilities and make ownership audits
+   difficult. Split them by route/domain with explicit public boundaries.
 
-Full audit refresh (2026-10-19): source gates and package states were rechecked across the route matrix, universal engine, validation runner, serving routes, distributed/recovery modules, ABI owners, and Colibri capability boundaries. Existing implementations and explicit restrictions are confirmed, but no package is promoted: candidate rows remain non-admitted, evidence remains `receipt_present=False`, and the catalog remains `phase1_closed=False`. P02, P04–P07, P09–P14 remain partial/in progress; P15 remains open.
+### Local disk clutter (ignored, not Git source)
 
-Current closure status remains: P01 complete; bounded P03 inventory contracts complete; P02, P04–P07, P09–P14 in progress; P15 open. Structural source guards and explicit restrictions are implemented in several paths, but they do not substitute for family-wide route traces, caller lifecycle closure, runtime placement, numerical comparisons, native ABI execution, or pinned P13 receipts.
+- Local model directory: approximately 41.4 GB.
+- Root `.tmp*` directories: 14,094 files and approximately 3.35 GB.
+- `.accelerator-venv`, `.venv`, and `.python312`: approximately 2.63 GB total.
+- Root ignored archives, Codex transcripts, and temporary captures: 38 files,
+  1,384,352,458 bytes, including multiple 90–392 MB frontend/evidence archives.
+- Duplicate root and frontend `node_modules`: approximately 533 MB.
+
+These ignored objects do not affect commits, but they make the checkout hard
+to navigate and consume substantial disk space. Cleanup must be a separate,
+explicitly approved destructive operation after preserving any required local
+models/evidence.
+
+### Applied target structure
+
+1. Keep only canonical editable trees at root: `openagent/`,
+   `frontend-second/`, `tests/`, `docs/`, `scripts/`, `installers/`, and
+   `deploy/`.
+2. Durable Phase 1 audit documents now live under `docs/audits/phase1/`;
+   release audits live under `docs/audits/releases/`. Bulky binary evidence
+   remains a release-artifact concern with tracked hashes/manifests.
+3. The two tracked package-copy trees under `.qa/` have been removed from the
+   Git index without deleting their local files. `.gitignore` prevents them
+   from being recommitted.
+4. Decide whether `frontend/` is supported; if not, remove its legacy scripts
+   and source together in one reviewed change.
+5. Make `web/` either a source directory or a generated distribution target,
+   not both. Generated hashed assets should not be tracked.
+6. Keep model weights, virtual environments, runtime data, build outputs,
+   archives, and temporary evidence outside the repository root where
+   practical.
+
+## Deep re-audit revision 2 — newest working tree
+
+The entire current working-tree delta was re-read. It contains 174 lines of
+new product implementation across assistant goal/task CRUD, scoped assistant
+HTTP routes, frontend edit/delete controls, integration-server authentication,
+browser smoke coverage, and focused route/UI checks. Together with checklist
+edits, the working-tree diff is 243 insertions and 25 deletions across eight
+files. There are no untracked files.
+
+None of the seven product-code/test files is under `openagent/adaptive_engine`,
+and `openagent/routes/adaptive_engine_routes.py` is unchanged. There is no new
+family route, loader, logits consumer, tensor inventory owner, cache/TP owner,
+media path, speculative state transition, distributed bank, persisted-format
+consumer, device placement owner, ABI symbol, recovery path, evidence adapter,
+or inference-serving caller in this delta. It therefore changes **zero**
+P02–P15 closure decisions.
+
+The source-of-truth gates were inspected again and remain explicit:
+
+- `source_scope_matrix()` returns `phase1_closed=False`, `executed=False`,
+  `numerical_parity_verified=False`, and `platform_certified=False`.
+- Row evidence defaults to `source-obligation-unverified`,
+  `evidence_state='not-captured'`, `completion_claim=False`, and
+  `receipt_present=False`.
+- The whole-model runner rejects absent, candidate-unverified, and restricted
+  execution contracts before treating them as evidence.
+- `phase1_closure_report.md` and
+  `phase1_complete_route_summary.json` remain absent.
+- `unified_execution.py` remains absent; the implemented shared session layer
+  remains `universal_engine.py`.
+
+**Revision-2 conclusion:** the newly changed application functionality is
+implemented outside the Phase 1 engine boundary. The completion table and
+A01–A11 queue below remain authoritative and unchanged.
+
+## Confirmed static bug register — 2026-10-19
+
+These are concrete source defects found during the full audit. They are not
+runtime-certified because this pass deliberately did not execute code.
+
+| ID | Severity | Affected requirements | Confirmed defect | Required correction |
+| --- | --- | --- | --- | --- |
+| BUG-01 | CRITICAL | P02, P11, P14, P15 | `AdaptiveExecutionEngine` constructs a `UniversalEngine` and exposes registration/open helpers, but no production code registers a family adapter and no route or service caller invokes `open_universal_model()`. Repository-wide references are limited to the method definitions. The advertised universal path is therefore not a reachable serving path. | Register every admitted family through exact resolvers during runtime construction, expose a bounded service/gateway caller, and fail startup/admission when a required adapter is absent. |
+| BUG-02 | CRITICAL | P02, P09, P10, P15 | `UniversalEngine.inspect()` validates only that `route.model_type` matches `config.json`. It does not validate route family, backend, arithmetic, source format, or persisted format against the Phase 1 source catalog. A caller-supplied `ModelRoute` can therefore describe an unverified tuple and reach an adapter opener. | Bind universal admission to the exact source-scope route decision and reject candidate/restricted/unadmitted tuples before invoking the opener. |
+| BUG-03 | HIGH | P10, P12, P14 | Warm-session identity uses only model directory plus six route fields. `open()` options are passed to the first opener but omitted from the session key, so later calls with different device, placement, cache, isolation, or adapter options silently receive the existing session. | Define and validate a canonical immutable option/isolation identity and include it in the key, or reject option changes while a session is warm. |
+| BUG-04 | HIGH | P05, P12, P14 | `UniversalSession.generate()` checks cancellation after adapter execution but does not snapshot/restore state before raising. `stream()` has no cancellation check before adapter dispatch and likewise has no rollback. A cancelled request can mutate warm KV/RNG/continuation state without publishing a valid result. | Add transactional snapshot/restore or require an adapter transaction contract; check cancellation before dispatch, during iteration, and before commit/publication. |
+| BUG-05 | HIGH | P12, P15 | Universal snapshots are returned as raw adapter receipts and `restore()` forwards any receipt without model/session/route identity, epoch, freshness, or replay validation. The shared layer cannot reject stale or foreign restores. | Wrap receipts in an immutable identity/epoch envelope and verify exact session, route, checkpoint identity, and freshness before adapter restore. |
+| BUG-06 | HIGH | P12, P14 | `close_model()` pops sessions and `close_all()` clears the pool before closing them. `UniversalSession.close()` sets `_closed` only after owner close succeeds. When owner close raises, the still-open owner is no longer reachable through the engine for retry. | Retain failed-close sessions in an explicit cleanup registry (or reinsert them), aggregate errors safely, and expose deterministic cleanup retry/status. |
+| BUG-07 | MEDIUM | P14 | `stream()` holds the session lock for the complete generator lifetime. If a consumer abandons an iterator without closing it, later generate/snapshot/restore/close operations can remain blocked indefinitely; there is no lease timeout or engine-owned iterator registry. | Introduce an owned stream lease with explicit cancellation/close tracking and bounded teardown on request disconnect and engine shutdown. |
+| BUG-08 | MEDIUM | Product data integrity (outside P02–P15) | `AssistantManager.create_task()` stores any supplied `goal_id` without verifying that the goal exists in the same project, and the schema has no foreign key. `update_task()` performs that validation in a separate transaction. Dangling/cross-project goal links and validation/update races are possible. | Validate and mutate in one transaction and enforce a project-aware relational invariant or trigger. |
+| BUG-09 | MEDIUM | Product mutation semantics (outside P02–P15) | New update/delete operations commit their database mutation before writing the audit event. If audit persistence fails, the API can report failure after the mutation has committed, making retries ambiguous. | Commit the domain mutation and audit record atomically in one transaction, or return an explicit committed-with-audit-failure result with idempotency handling. |
+| BUG-10 | MEDIUM | Product state integrity (outside P02–P15) | Goal horizon/status and task priority/status are accepted as arbitrary strings by manager and HTTP mutation paths; the schema has no checks. Invalid values can disappear from `active`/`open` queries and break priority/coaching semantics without an error. | Define canonical enums, validate them in one shared manager boundary, and add database checks or a compatible migration guard. |
+
+BUG-01 and BUG-02 invalidate any claim that the universal layer currently
+provides end-to-end family admission. BUG-03 through BUG-07 keep warm-session,
+cancellation, recovery, and serving lifecycle closure open even after adapters
+are wired. BUG-08 through BUG-10 concern the newest assistant changes and do not
+change Phase 1 status, but they must be fixed for reliable product behavior.
+
+## Latest changed-tree delta audit — 2026-10-19
+
+The latest uncommitted product changes add assistant goal/task update and
+delete operations, their HTTP routes, frontend controls, smoke coverage, and
+route tests. The changed files are `openagent/assistant.py`,
+`openagent/routes/assistant_routes.py`, the corresponding frontend/test
+files, and this queue. No adaptive-engine implementation, loader, tensor
+consumer, cache/TP owner, family ABI, format/device path, distributed owner,
+recovery owner, whole-model evidence adapter, or source closure gate changed.
+
+Consequently this delta closes **none** of P02–P15. It is valid product work,
+but it is outside the Phase 1 inference-engine closure boundary. The source
+still explicitly reports `phase1_closed=False`; candidate-unverified routes
+remain representable; evidence remains `not-captured` with
+`receipt_present=False`; and the whole-model runner rejects candidate,
+restricted, or absent execution contracts. No generated closure report or
+route-summary receipt is present in the checkout.
+
+This delta audit was source-only. No tests, imports, builds, benchmarks,
+device probes, compiler invocation, model loading, or runtime evidence capture
+was performed.
+
+## 2026-10-19 deep source audit
+
+This audit inspected the current route catalog and admission gates, loader and
+execution owners, media/speculative/distributed/recovery modules, public ABI
+owners, serving routes, whole-model tooling, Colibri capability restrictions,
+and the universal session layer. It was source-only: no tests, imports, builds,
+benchmarks, device probes, or model execution were performed.
+
+The two referenced generated reports, `phase1_closure_report.md` and
+`phase1_complete_route_summary.json`, are not present in this checkout and
+therefore cannot provide closure evidence. The claimed `unified_execution.py`
+is also absent. The implemented shared layer is `universal_engine.py`. It is
+instantiated by `AdaptiveExecutionEngine` and exposes helper methods for
+registration/open, warm sessions, serialized generation/streaming,
+cancellation, snapshot/restore, and teardown while leaving model arithmetic to
+family adapters. The deep bug audit found no production adapter registrations
+and no serving caller of the open helper, so this is currently a library
+boundary rather than an end-to-end engine path. Its route validation and
+lifecycle defects are tracked above.
+
+| Requirement | Confirmed implemented source | Remaining before closure | Status |
+| --- | --- | --- | --- |
+| P01 | Separate admission/recovery/publication budgets and bounded execution ownership. | No open P01 source item identified. | DONE |
+| P02 | Nine-family catalog, exact route records, source-reviewed bindings for selected tuples, fail-closed admission, backend/format/media restrictions, factory/CLI guards. | Reconcile every canonical tuple through loader, logits consumer, cache/TP owner, ABI, factory, CLI, gateway, recovery and tooling. Required candidate rows must become verified-admitted or concretely rejected/restricted. | IN PROGRESS |
+| P03 | Bounded inventory planners, dtype/shape/name checks, conditional-family preflight, explicit rejection of unowned MTP/media banks. | Finish family-wide optional/shared/MTP/expert/media tensor-to-consumer reconciliation and prove no alternate factory/CLI bypasses the planner. | BOUNDED DONE; FAMILY CLOSURE OPEN |
+| P04 | Selected Qwen3.5/Qwen4/GLM5/Inkling/V4.1/K3 media ordering, placeholder, geometry, ownership and cleanup checks; mixed unsupported media fails closed. | Complete every family/caller media-to-logits chain, temporal/video continuation, borrowed-owner lifetime, cancellation and recovery. | IN PROGRESS |
+| P05 | Transactional target/draft/cache/RNG snapshots, rejected-suffix RNG rewind, reset/quarantine, cancellation checkpoints and selected publication restrictions. | Reconcile accept/reject/bonus/EOS/context-limit/cancel/restore for every serving caller and provide atomic publication guarantees or enforce exclusions. | IN PROGRESS |
+| P06 | Distributed preflight, agreement descriptors, rank failure synchronization, poisoning, cleanup attempts and selected bank validation. | Map every bank and shard layout to collective consumers; close operation failures, cancellation, process/transport loss, cache ownership and recovery consensus. | IN PROGRESS |
+| P07 | K3 input/media position checks, rollback, checkpoint/recovery owners and explicit Metal/FLA/nonuniform-video restrictions. | Finish temporal/video semantics, native/continuation ownership and all serving consumers. | IN PROGRESS |
+| P08 | Exact evidence schema selection/persistence contracts. | Execution observations remain obligations of P07/P13. | DONE (SOURCE SCHEMA) |
+| P09 | Format catalog, bounded decoders, scale/geometry validation, conversion cleanup, E8/IQ3 transforms and explicit unsupported encodings. | Bind every admitted persisted format to the real family/backend consumer and prove packing/scale/rotation behavior per tuple. | IN PROGRESS |
+| P10 | Backend discovery/admission, selected device owners, no-fallback restrictions and cancellable staging for selected paths. | Prove actual placement and operation-level no-host-fallback for every admitted backend; registry capability is not placement evidence. | IN PROGRESS |
+| P11 | Segment/Edge ABI owners, selected family ranges/schemas, callback guards, immutable identities, snapshot ownership and rollback/quarantine. | Complete family-wide symbol/range/head/cache schema, callback reentry/ownership, close order and factory/CLI/service wiring; capture native compile/execute receipts. | IN PROGRESS |
+| P12 | Transactional restore, stale/foreign checks in selected paths, quarantine, rank cleanup and durable/session recovery owners. | Close all-family physical-state ownership, serving publication order, cancellation/reentry, distributed rollback and process-loss consensus. | IN PROGRESS |
+| P13 | Exact evidence obligations, artifact-pin/placement/comparison owners, structural validators, media adapter restrictions and false-certification gates. | Produce actual pinned observations, cache leaves, placement receipts, native ABI receipts and numerical comparison reports for every applicable admitted row. | IN PROGRESS / A10 BLOCKED-ENV |
+| P14 | Local OpenAI/Anthropic text subsets, SSE terminal/error handling, bounded queue/429/wait headers/metrics, cancellation and iterator cleanup, explicit unsupported-feature admission. | Close caller-by-caller stream/backpressure/stop/media/recovery/warm-session/error behavior and either implement or explicitly scope remaining compatibility/Colibri features. | IN PROGRESS |
+| P15 | Source validators prevent unsupported completion claims. | Reconcile every P02–P14 row as implemented, restricted/rejected, or missing; attach all mandatory evidence before setting the closure gate. | OPEN |
+
+Authoritative closure gates remain unchanged in source:
+
+- `source_scope.py` still emits candidate-unverified rows.
+- Evidence obligations still declare `evidence_state='not-captured'`,
+  `completion_claim=False`, and `receipt_present=False`.
+- The generated catalog still declares `phase1_closed=False`, `executed=false`,
+  `numerical_parity_verified=false`, and `platform_certified=false`.
+- `wholemodel_validation/runner.py` rejects absent, candidate-unverified, or
+  restricted execution contracts instead of treating them as evidence.
+
+Phase 1 is therefore **not complete**. P01 and the P08 source schema are done;
+P03 is done only for its bounded inventory contract; P02, P04–P07 and P09–P14
+remain in progress; P15 remains open.
 
 Remaining work must be tracked as concrete rows, not percentages:
 

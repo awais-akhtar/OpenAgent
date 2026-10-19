@@ -6,6 +6,22 @@ The repository contains a runnable local-first implementation: a native desktop 
 
 The source tree includes optional and experimental integrations alongside the local runtime. See [modernization status](docs/MODERNIZATION_STATUS.md) for what has been checked locally and what still needs work before a commercial server deployment.
 
+## Repository layout
+
+- `openagent/` — Python application, services, routes, and adaptive engine.
+- `frontend-second/` — canonical React desktop/web application.
+- `frontend/` — legacy frontend retained only for explicit legacy commands.
+- `tests/` — Python and integration checks.
+- `docs/` — maintained architecture, feature, audit, and operations documents.
+- `scripts/` — repository maintenance and evidence tooling.
+- `installers/` and `deploy/` — packaging and deployment assets.
+- `web/` — served web resources; generated hashed bundles are not source.
+- `.qa/` — local QA workspace and selected small evidence fixtures, never a
+  duplicate source checkout.
+
+Start with the [documentation index](docs/README.md). Phase 1 engine closure is
+tracked in [PHASE_1_ACTIVE_TODO.md](PHASE_1_ACTIVE_TODO.md).
+
 ## Principles
 
 - Self-hosted and local by default
