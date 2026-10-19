@@ -24,6 +24,7 @@ ROUTES = (
     ("POST", "/api/tasks/parse"),
     ("POST", "/api/tasks/run-due"),
     ("POST", "/api/tasks/notifications"),
+    ("POST", "/api/tasks/notifications/{id}/read"),
     ("POST", "/api/tasks/{id}/pause"),
     ("POST", "/api/tasks/{id}/resume"),
     ("POST", "/api/tasks/{id}/stop"),
@@ -151,6 +152,11 @@ def handle_post(path: str, deps: SchedulerRouteDependencies) -> JsonRouteResult 
                 level=str(payload.get("level", "info")).strip() or "info",
             )
             return JsonRouteResult({"notification": notification}, HTTPStatus.CREATED)
+        if path.startswith("/api/tasks/notifications/") and path.endswith("/read"):
+            notification_id = unquote(path.removeprefix("/api/tasks/notifications/").removesuffix("/read")).strip("/")
+            return JsonRouteResult({"notification": deps.scheduler.mark_notification_read(
+                notification_id, project=project, owner=owner if owner != "local" else "",
+            )})
         if path.startswith("/api/tasks/") and path.endswith("/pause"):
             task_id = unquote(path.removeprefix("/api/tasks/").removesuffix("/pause")).strip("/")
             return JsonRouteResult({"task": deps.scheduler.pause(task_id, owner=owner if owner != "local" else "")})

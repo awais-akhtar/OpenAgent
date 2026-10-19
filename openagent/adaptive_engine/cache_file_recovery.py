@@ -31,8 +31,11 @@ class _DigestWriter:
 
 
 class _StableReader:
-    def __init__(self, stream, path, stamp, cancelled=None):
+    def __init__(self, stream, path, stamp, cancelled=None, expected_receipt=None):
         self.stream,self.path,self.stamp,self.cancelled=stream,path,stamp,cancelled
+        self.expected_receipt=expected_receipt
+        self.digest=hashlib.sha256()
+        self.total=0
 
     def read(self, count):
         if self.cancelled is not None and self.cancelled():
@@ -42,11 +45,21 @@ class _StableReader:
         value=self.stream.read(count)
         if type(value) is not bytes or len(value) > count:
             raise ValueError('cache reader returned invalid bounded bytes')
+        if value:
+            self.total+=len(value)
+            if self.expected_receipt is not None and self.total>self.expected_receipt['bytes']:
+                raise ValueError('service cache grew beyond its distributed receipt')
+            self.digest.update(value)
         if value==b'':
             _path(self.path)
             if (_stamp(os.fstat(self.stream.fileno()))!=self.stamp or
                     _stamp(self.path.stat())!=self.stamp):
                 raise ValueError('service cache file changed during restoration')
+            if (self.expected_receipt is not None and
+                    (self.total!=self.expected_receipt['bytes'] or
+                     not hmac.compare_digest(self.digest.hexdigest(),
+                                             self.expected_receipt['sha256']))):
+                raise ValueError('service cache content differs from its distributed receipt')
         return value
 
     def require_complete(self):
@@ -73,11 +86,8 @@ def save_service_cache(service, session_id, destination, *, max_bytes):
         raise ValueError('regular service cache destination required')
     descriptor,temporary=tempfile.mkstemp(prefix='.session-cache-',dir=path.parent)
     try:
-        try:
-            output=os.fdopen(descriptor,'wb')
-        except BaseException:
-            os.close(descriptor)
-            raise
+        from .owned_file_descriptor import fdopen_owned
+        output=fdopen_owned(descriptor,'wb',owner='service cache publication')
         with output:
             writer=_DigestWriter(output)
             size=service.write_session_cache(session_id,writer,max_bytes=max_bytes)
@@ -104,11 +114,20 @@ def save_service_cache(service, session_id, destination, *, max_bytes):
             pass
 
 
-def load_service_cache(service, session_id, source, *, max_bytes,history_receipt=None,cancelled=None):
+def load_service_cache(service, session_id, source, *, max_bytes,history_receipt=None,
+                       cancelled=None,expected_file_receipt=None):
     """Admit regular-file extent and detect replacement before state commit."""
     _limit(max_bytes)
     if cancelled is not None and not callable(cancelled):
         raise TypeError('cache restoration cancellation must be callable')
+    if expected_file_receipt is not None and (
+            type(expected_file_receipt) is not dict or
+            type(expected_file_receipt.get('bytes')) is not int or
+            not 88<=expected_file_receipt['bytes']<=max_bytes or
+            type(expected_file_receipt.get('sha256')) is not str or
+            len(expected_file_receipt['sha256'])!=64 or
+            any(value not in '0123456789abcdef' for value in expected_file_receipt['sha256'])):
+        raise ValueError('valid expected service cache receipt required')
     path=_path(source)
     descriptor=os.open(path,os.O_RDONLY|getattr(os,'O_BINARY',0)|
                        getattr(os,'O_NONBLOCK',0)|getattr(os,'O_NOFOLLOW',0))
@@ -118,13 +137,17 @@ def load_service_cache(service, session_id, source, *, max_bytes,history_receipt
             raise ValueError('regular service cache source required')
         if not 88<=info.st_size<=max_bytes:
             raise MemoryError('service cache file extent exceeds admission')
-        stream=os.fdopen(descriptor,'rb')
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        from .owned_file_descriptor import close_after_failure
+        close_after_failure(descriptor,primary,owner='service cache input')
         raise
+    from .owned_file_descriptor import fdopen_owned
+    stream=fdopen_owned(descriptor,'rb',owner='service cache input')
     with stream:
         options={} if history_receipt is None else dict(history_receipt=history_receipt)
-        reader = _StableReader(stream, path, _stamp(info), cancelled)
+        if expected_file_receipt is not None and info.st_size!=expected_file_receipt['bytes']:
+            raise ValueError('service cache extent differs from distributed receipt')
+        reader = _StableReader(stream, path, _stamp(info), cancelled, expected_file_receipt)
         result = service.restore_session_cache(session_id, reader,
             max_bytes=max_bytes, **options)
         reader.require_complete()

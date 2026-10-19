@@ -212,6 +212,12 @@ class SegmentBridge:
         return self._objects[handle]
 
     def _dispatch(self, backend, errors, context, op, rows, src, size, dst, capacity, written):
+        # The native caller is required to pass this out-parameter, but it is
+        # still an ABI boundary: never dereference a null ctypes pointer while
+        # trying to report the actual callback error.
+        if not written:
+            errors[:] = [ValueError('native callback omitted the written-length output')]
+            return CALLBACK_ERROR
         written[0] = 0
         try:
             # Native callbacks may provide malformed pointers even when the
@@ -229,8 +235,10 @@ class SegmentBridge:
                 if (self._cancelled is not None and
                         (self._cancelled() if callable(self._cancelled) else self._cancelled.is_set())):
                     raise InterruptedError('native ABI operation cancelled before dispatch')
-                width = backend._engine.config.hidden_size if op == FORWARD else backend.config.hidden_size
-                out_width = backend.config.vocab_size if op == HEAD else width
+                owner = (backend._engine if op == FORWARD and
+                         isinstance(backend, self.session_types) else backend)
+                width = owner.config.hidden_size
+                out_width = owner.config.vocab_size if op == HEAD else width
                 expected = rows * (8 if op == EMBED else width * 4)
                 if not rows or size != expected:
                     raise ValueError('invalid tensor byte length')
@@ -334,6 +342,30 @@ class SegmentBridge:
                 self._status(status, record[2][0] if record[2] else None)
                 if written.value > capacity:
                     raise SegmentABIError(LIMIT)
+                if operation in (FORWARD, EMBED, HEAD):
+                    backend = record[0]
+                    owner = (backend._engine if operation == FORWARD and
+                             isinstance(backend, self.session_types) else backend)
+                    width = (owner.config.vocab_size if operation == HEAD
+                             else owner.config.hidden_size)
+                    expected = rows * width * 4
+                    if written.value != expected:
+                        # The C bridge guarantees only that count <= capacity.
+                        # These three public operations have fixed tensor
+                        # extents, so a successful short write is a backend
+                        # contract violation, not a valid partial result. A
+                        # forward may already have advanced physical KV state.
+                        if operation == FORWARD and isinstance(
+                                backend, self.session_types):
+                            self._quarantined.add(handle)
+                        raise SegmentABIError(CALLBACK_ERROR)
+                elif operation in (RESET, RESTORE) and written.value:
+                    # Lifecycle operations have no result payload; accepting
+                    # one would make the ABI's written-count semantics
+                    # ambiguous to callers.
+                    raise SegmentABIError(CALLBACK_ERROR)
+                elif operation == SNAPSHOT and not written.value:
+                    raise SegmentABIError(CALLBACK_ERROR)
                 return dst.raw[:written.value] if dst else b''
             finally:
                 self._active.remove(handle)
@@ -359,7 +391,7 @@ class SegmentBridge:
 
     def hidden(self, handle, value, *, final_head=False, cancelled=None):
         array = np.asarray(value)
-        if array.ndim != 2 or array.dtype != np.dtype('float32') or not np.isfinite(array).all():
+        if array.ndim != 2 or array.dtype != np.dtype('float32'):
             raise ValueError('expected finite float32 matrix')
         with self.lock:
             backend = self._record(handle)[0]
@@ -369,6 +401,8 @@ class SegmentBridge:
             width = config.vocab_size if final_head else config.hidden_size
             if array.size * 4 > self.max_bytes or len(array)*width*4 > self.max_bytes:
                 raise SegmentABIError(LIMIT)
+            if not np.isfinite(array).all():
+                raise ValueError('expected finite float32 matrix')
             data = self.call(handle, HEAD if final_head else FORWARD,
                 array.astype('<f4', copy=False).tobytes(), rows=len(array),
                 capacity=len(array)*width*4, cancelled=cancelled)

@@ -1,6 +1,7 @@
 """Bounded, checksummed transport for an atomic group of owned decoder caches."""
 import hashlib
 import hmac
+import inspect
 import json
 import struct
 import tempfile
@@ -69,6 +70,19 @@ class _CancellableReader:
         # ``fileno``) without bypassing the read/seek/tell guards above.
         return getattr(self._stream, name)
 
+class _CancellationEvent:
+    """Adapt a group cancellation callback to event-style owner scopes."""
+    def __init__(self,cancelled): self._cancelled=cancelled
+    def is_set(self): return self._cancelled is not None and self._cancelled()
+
+def _accepts_keyword(function,name):
+    try:
+        parameters=inspect.signature(function).parameters.values()
+        return any(parameter.name==name or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                   for parameter in parameters)
+    except (TypeError,ValueError):
+        return False
+
 def write_components(output,components,*,identity,max_bytes,cancelled=None):
     """Spool component frames on disk, admitting their aggregate before publication."""
     if type(max_bytes) is not int or max_bytes<128 or not 1<=len(components)<=64:
@@ -80,7 +94,16 @@ def write_components(output,components,*,identity,max_bytes,cancelled=None):
         for component in components:
             boundary();stream=stack.enter_context(tempfile.TemporaryFile(mode='w+b'))
             writer=_BoundedWriter(stream,max_bytes-total)
-            component.write_cache(writer,max_bytes=max_bytes-total)
+            write=component.write_cache
+            scope=getattr(component,'cancellation_scope',None)
+            with ExitStack() as component_scope:
+                if callable(scope) and cancelled is not None:
+                    component_scope.enter_context(scope(_CancellationEvent(cancelled)))
+                if _accepts_keyword(write,'cancelled'):
+                    write(writer,max_bytes=max_bytes-total,cancelled=cancelled)
+                else:
+                    write(writer,max_bytes=max_bytes-total)
+            boundary()
             if not writer.size: raise ValueError('empty component cache frame')
             frames.append((stream,writer.size));total+=writer.size
         header=json.dumps(dict(identity=identity,lengths=[size for _,size in frames]),
@@ -121,19 +144,33 @@ def restore_components(source,components,*,identity,max_bytes,cancelled=None,val
             while size:
                 boundary();chunk=_read(source,min(size,1024**2));digest.update(chunk);_write(stream,chunk);size-=len(chunk)
             stream.seek(0)
-        if (not hmac.compare_digest(digest.digest(), _read(source, 32)) or
-                _read(source, 1) != b''):
+        if not hmac.compare_digest(digest.digest(), _read(source, 32)):
+            raise ValueError('compound cache checksum or EOF differs')
+        boundary()
+        trailing=source.read(1)
+        boundary()
+        if not isinstance(trailing,bytes) or trailing:
             raise ValueError('compound cache checksum or EOF differs')
         receipts=[]
         try:
             for component in components: boundary();receipts.append(component.snapshot())
             try:
                 for component,stream,size in zip(components,frames,lengths):
-                    boundary();component.restore_cache(_CancellableReader(stream,boundary),max_bytes=size)
+                    boundary()
+                    restore=component.restore_cache
+                    reader=_CancellableReader(stream,boundary)
+                    if _accepts_keyword(restore,'cancelled'):
+                        restore(reader,max_bytes=size,cancelled=cancelled)
+                    else:
+                        restore(reader,max_bytes=size)
+                    boundary()
                 if validate is not None: validate()
                 boundary()
             except BaseException as error:
-                for component,receipt in zip(components,receipts):
+                # Components may share dependent physical state. Undo in the
+                # reverse order of publication, just like unwinding a staged
+                # constructor, while still attempting every rollback.
+                for component,receipt in reversed(tuple(zip(components,receipts))):
                     try: component.restore(receipt)
                     except BaseException as failure: error.add_note('compound cache rollback failed: '+str(failure))
                 raise

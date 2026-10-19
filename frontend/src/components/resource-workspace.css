@@ -1,0 +1,23 @@
+.resource-page{--resource-canvas:var(--oa-bg);padding-top:17px}
+.resource-page .specialist-header{max-width:1240px;margin-bottom:13px}
+.resource-page .specialist-header h1{font-size:19px;letter-spacing:-.035em}
+.resource-page .specialist-header-actions{gap:8px}
+.resource-page .resource-primary-action{min-height:32px;display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:550}
+.resource-page .specialist-workspace{max-width:1240px;min-height:min(720px,calc(100vh - 148px));grid-template-columns:226px minmax(0,1fr);border-radius:9px}
+.resource-page .specialist-list{padding:11px 9px}
+.resource-page .specialist-list-heading{height:30px;text-transform:uppercase;letter-spacing:.055em;font-size:9px;font-weight:650}
+.resource-page .specialist-source{min-height:32px;border-radius:5px;padding:5px 8px}
+.resource-page .specialist-source.active{box-shadow:inset 2px 0 0 var(--oa-text);background:var(--oa-surface-muted)}
+.resource-page .specialist-source-state{min-width:18px;text-align:right;font-variant-numeric:tabular-nums}
+.resource-page .specialist-action-menu{margin-top:10px;padding-top:6px}
+.resource-page .specialist-detail{padding:21px 25px}
+.resource-page .specialist-detail-head{padding-bottom:13px}
+.resource-page .specialist-detail-head h2{font-size:15px}
+.resource-page .specialist-record-layout{grid-template-columns:minmax(220px,32%) minmax(0,1fr);gap:22px;padding-top:12px}
+.resource-page .specialist-record{min-height:43px;border-bottom:1px solid var(--oa-border);border-radius:5px;padding:6px 8px}
+.resource-page .specialist-record.selected{border-color:var(--oa-border);background:var(--oa-surface-muted)}
+.resource-page .specialist-state-panel{min-height:300px}
+.resource-page .specialist-loading{max-width:540px;padding:32px 0}
+.resource-page .specialist-dialog{border-radius:10px}
+@media(max-width:780px){.resource-page .specialist-workspace{min-height:calc(100vh - 146px);grid-template-columns:minmax(165px,34%) minmax(0,1fr)}.resource-page .specialist-detail{padding:17px 16px}.resource-page .specialist-record-layout{grid-template-columns:1fr;gap:12px}}
+@media(max-width:520px){.resource-page{padding:12px 10px 20px}.resource-page .specialist-header{align-items:flex-start}.resource-page .specialist-header-actions{gap:6px}.resource-page .specialist-project{display:none}.resource-page .resource-primary-action{min-height:31px;max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.resource-page .specialist-workspace{min-height:unset}.resource-page .specialist-source-list{grid-template-columns:repeat(2,minmax(0,1fr))}.resource-page .specialist-action-list{grid-template-columns:repeat(2,minmax(0,1fr))}.resource-page .specialist-detail{min-height:360px}}

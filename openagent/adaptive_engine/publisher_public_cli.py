@@ -127,6 +127,10 @@ class PublisherSession(_TextPublisherSession):
                 from .k3_execution.exact_admission import load_exact_evidence
                 checkpoint=PublisherCheckpoint.open(root,family=self.family,
                     max_metadata_bytes=args.metadata_mib*mib,max_tensors=args.max_tensors,max_shards=args.max_shards)
+                from .source_scope import require_source_family_backend_admission
+                require_source_family_backend_admission(
+                    family='kimi-k3', model_type='kimi_k3', backend='public-range',
+                    arithmetic='fp32-approximate')
                 packed=checkpoint.config.get('quantization_config',{}).get('quant_method')=='mxfp4'
                 payload=checkpoint.load_k3_execution_payload(capacity=args.context,
                     max_weight_bytes=args.resident_mib*mib,max_chunk_bytes=args.chunk_mib*mib,

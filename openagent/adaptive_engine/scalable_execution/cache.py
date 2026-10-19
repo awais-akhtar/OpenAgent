@@ -16,6 +16,7 @@ from .resources import Budget, LeasePool, check_cancel, positive
 from ..session_recovery import _path
 from ..native_library_identity import _stamp
 from ..directory_ownership import DirectoryOwnership
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 def _tokens(values, limit):
@@ -162,7 +163,7 @@ class DurablePagedCache:
             try:self.close()
             except BaseException as cleanup:
                 primary.cleanup=self.close
-                primary.add_note('paged cache construction cleanup retained: '+repr(cleanup))
+                add_failure_note(primary, 'paged cache construction cleanup retained: '+failure_summary(cleanup))
             raise
 
     def _unlock(self):
@@ -322,7 +323,7 @@ class DurablePagedCache:
                         else:self._quarantined=True
                     except BaseException as rollback:
                         self._quarantined=True
-                        primary.add_note('paged cache rollback failed; owner quarantined: '+repr(rollback))
+                        add_failure_note(primary, 'paged cache rollback failed; owner quarantined: '+failure_summary(rollback))
                     raise
             finally:
                 self._active = False
@@ -514,7 +515,7 @@ class DurablePagedCache:
                 try:cleanup_snapshot()
                 except BaseException as cleanup:
                     primary.cleanup=cleanup_snapshot
-                    primary.add_note('cache snapshot staging cleanup retained: '+repr(cleanup))
+                    add_failure_note(primary, 'cache snapshot staging cleanup retained: '+failure_summary(cleanup))
                 raise
             else:
                 try:cleanup_snapshot()
@@ -568,7 +569,7 @@ class DurablePagedCache:
                 except BaseException as cleanup:
                     self._quarantined=True
                     if primary is None:raise
-                    primary.add_note('cache recovery database detach failed; owner quarantined: '+repr(cleanup))
+                    add_failure_note(primary, 'cache recovery database detach failed; owner quarantined: '+failure_summary(cleanup))
 
     def close(self):
         with self._lock:

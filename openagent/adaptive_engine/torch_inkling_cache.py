@@ -58,20 +58,26 @@ def restore_cache(model,source,*,max_bytes):
             size=sum(math.prod(shape)*4 for shape in header['shapes'])
             if 44+length+size>max_bytes: raise MemoryError('Inkling cache payload exceeds transport admission')
             model._admit(2*size+3*1024**2)
-            digest=hashlib.sha256(prefix+encoded);host=[]
-            for shape in header['shapes']:
-                array=np.empty(shape,dtype='<f4');flat=array.reshape(-1)
-                for begin in range(0,flat.size,262144):
-                    model._cancel();end=min(flat.size,begin+262144);raw=_read(source,(end-begin)*4)
-                    digest.update(raw);flat[begin:end]=np.frombuffer(raw,'<f4')
-                if not np.isfinite(array).all(): raise ValueError('nonfinite Inkling cache payload')
-                host.append(array)
-            if not hmac.compare_digest(_read(source,32),digest.digest()) or source.read(1):
-                raise ValueError('Inkling cache digest or trailing bytes differ')
-            validator=getattr(model,'_validate_recovered_state',None)
-            if callable(validator):validator(tuple(host),position)
-            model._cancel();pending=tuple(model.torch.tensor(value,device=model.device) for value in host)
-            model._cancel();model._cache,model.position=pending,position
+            digest=hashlib.sha256(prefix+encoded);host=[];pending=();array=flat=raw=values=None
+            committed=False
+            try:
+                for shape in header['shapes']:
+                    array=np.empty(shape,dtype='<f4');flat=array.reshape(-1)
+                    for begin in range(0,flat.size,262144):
+                        model._cancel();end=min(flat.size,begin+262144);raw=_read(source,(end-begin)*4)
+                        digest.update(raw);values=np.frombuffer(raw,'<f4');flat[begin:end]=values
+                    if not np.isfinite(array).all(): raise ValueError('nonfinite Inkling cache payload')
+                    host.append(array);array=flat=raw=values=None
+                if not hmac.compare_digest(_read(source,32),digest.digest()) or source.read(1):
+                    raise ValueError('Inkling cache digest or trailing bytes differ')
+                validator=getattr(model,'_validate_recovered_state',None)
+                if callable(validator):validator(tuple(host),position)
+                model._cancel();pending=tuple(model.torch.tensor(value,device=model.device) for value in host)
+                model._cancel();model._cache,model.position=pending,position;committed=True
+            finally:
+                if not committed:
+                    host.clear();pending=()
+                array=flat=raw=values=None
         finally:
             model._busy=False
 

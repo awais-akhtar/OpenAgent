@@ -51,6 +51,38 @@ class Executor:
         self.closed = True
 
 
+class CancelAtCommitExecutor(Executor):
+    def __init__(self, cancel):
+        super().__init__()
+        self.cancel = cancel
+
+    @property
+    def position(self):
+        if len(self.tokens) == 2:
+            self.cancel.set()
+        return len(self.tokens)
+
+
+class _UnprintableRecoveryError(RuntimeError):
+    def __repr__(self):
+        raise RuntimeError('repr must not be called')
+
+    def __str__(self):
+        raise RuntimeError('str must not be called')
+
+
+class RestoreFailsTwiceExecutor(Executor):
+    def __init__(self):
+        super().__init__()
+        self.restore_calls = 0
+
+    def restore(self, snapshot):
+        self.restore_calls += 1
+        if self.restore_calls == 1:
+            raise ValueError('original restore failure')
+        raise _UnprintableRecoveryError()
+
+
 class DurableEvictionTests(unittest.TestCase):
     def service(self):
         service = NativeExecutionService(Executor, ExecutionLimits(
@@ -101,6 +133,19 @@ class DurableEvictionTests(unittest.TestCase):
         self.assertEqual(service.runtime_status()['sessions'], 0)
         self.assertEqual(service.runtime_status()['active_generations'], 0)
 
+    def test_cancellation_during_final_position_validation_rolls_back(self):
+        cancel = threading.Event()
+        service = NativeExecutionService(lambda: CancelAtCommitExecutor(cancel), ExecutionLimits(
+            vocabulary=8, context=32, max_new_tokens=1, max_sessions=1,
+            prefill_chunk_tokens=2))
+        self.addCleanup(service.close)
+        session = service.open_session()
+        with self.assertRaises(ExecutionCancelled):
+            service.generate(session,[1],max_new_tokens=1,cancel=cancel)
+        self.assertEqual(service.history(session),())
+        self.assertEqual(service.status(session).context_tokens,0)
+        self.assertEqual(service._session(session).model.tokens,())
+
     def test_corruption_rejected_before_executor_creation(self):
         service = self.service()
         with tempfile.TemporaryDirectory() as directory:
@@ -109,3 +154,19 @@ class DurableEvictionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.open_recovered_session(path)
         self.assertEqual(service.runtime_status()['sessions'], 0)
+
+    def test_unprintable_restore_rollback_does_not_mask_primary_error(self):
+        service = NativeExecutionService(RestoreFailsTwiceExecutor, ExecutionLimits(
+            vocabulary=8, context=32, max_new_tokens=4, max_sessions=1,
+            prefill_chunk_tokens=2))
+        self.addCleanup(service.close)
+        session = service.open_session()
+        service.generate(session, [1], max_new_tokens=1)
+        snapshot = service.snapshot(session)
+
+        with self.assertRaisesRegex(ValueError, 'original restore failure') as caught:
+            service.restore(session, snapshot)
+
+        self.assertTrue(service.status(session).closed)
+        self.assertTrue(any('executor restore rollback failed' in note
+                            for note in getattr(caught.exception, '__notes__', ())))

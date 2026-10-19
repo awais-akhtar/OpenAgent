@@ -6,11 +6,51 @@ import unittest
 
 from openagent.communication import CommunicationHub
 from openagent.routes.communication_routes import ROUTES
-from openagent.routes.communication_routes import CommunicationRouteDependencies, handle_post
+from openagent.routes.communication_routes import CommunicationRouteDependencies, handle_get, handle_post
 from openagent.storage import OpenAgentStore
 
 
 class CommunicationMailboxLifecycleTests(unittest.TestCase):
+    def test_draft_and_sent_lists_are_project_and_owner_scoped(self) -> None:
+        with TemporaryDirectory() as temp:
+            hub = CommunicationHub(OpenAgentStore(temp))
+            own = hub.create_draft(platform="email", recipients=["a@example.test"], subject="Own", body="Private", project="core", owner="alice")
+            hub.create_draft(platform="email", recipients=["b@example.test"], subject="Other", body="Other user's content", project="core", owner="bob")
+            approval = hub.request_send_approval(own["id"], project="core", owner="alice")
+            hub.resolve_send_approval(approval["id"], approved=True, owner="alice")
+            hub.send_draft(own["id"], approval_id=approval["id"], owner="alice")
+
+            self.assertEqual([draft["id"] for draft in hub.list_drafts(project="core", owner="alice")], [own["id"]])
+            sent = hub.list_sent_messages(project="core", owner="alice")
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0]["draft_id"], own["id"])
+            self.assertEqual(sent[0]["status"], "simulated_local")
+            self.assertEqual(hub.list_sent_messages(project="other", owner="alice"), [])
+
+    def test_routes_cover_sent_and_draft_reads(self) -> None:
+        paths = {path for _, path in ROUTES}
+        self.assertIn("/api/communication/sent", paths)
+        self.assertIn("/api/communication/drafts", paths)
+
+    def test_sent_and_draft_read_routes_forward_project_owner_and_limit(self) -> None:
+        class FakeCommunication:
+            def list_drafts(self, *, project, owner, limit):
+                return [{"project": project, "owner": owner, "limit": limit}]
+
+            def list_sent_messages(self, *, project, owner, limit):
+                return [{"project": project, "owner": owner, "limit": limit}]
+
+        deps = CommunicationRouteDependencies(
+            communication=FakeCommunication(), first=lambda params, key: (params.get(key) or [None])[0],
+            parse_bool=lambda value, default=False: default, parse_int=lambda value, default=0: int(value) if value else default,
+            query_owner=lambda params: (params.get("owner") or [""])[0], payload_owner=lambda payload, default="local": default,
+            read_json=lambda: {},
+        )
+        drafts = handle_get("/api/communication/drafts", "project=core&owner=alice&limit=7", deps)
+        sent = handle_get("/api/communication/sent", "project=core&owner=alice&limit=9", deps)
+        self.assertEqual(drafts.payload["drafts"], [{"project": "core", "owner": "alice", "limit": 7}])
+        self.assertEqual(sent.payload["sent"], [{"project": "core", "owner": "alice", "limit": 9}])
+
     def test_mailbox_mutations_approvals_and_scheduled_send(self) -> None:
         with TemporaryDirectory() as temp:
             hub = CommunicationHub(OpenAgentStore(temp))

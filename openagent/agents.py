@@ -308,7 +308,9 @@ class AgentRegistry:
             for agent in self._agents.values()
         ]
 
-    def run(self, agent_id: str, goal: str, *, project: str = "default") -> dict[str, object]:
+    def run(
+        self, agent_id: str, goal: str, *, project: str = "default", owner: str | None = None,
+    ) -> dict[str, object]:
         agent = self._agents.get(agent_id)
         if agent is None:
             known = ", ".join(sorted(self._agents))
@@ -320,7 +322,7 @@ class AgentRegistry:
         # and usable on CPU-only machines.
         if self.gateway is not None and agent_id != "scientific":
             response = self._run_through_engine(agent, response, project=project)
-        run = self.store.save_agent_run(response, project=project)
+        run = self.store.save_agent_run(response, project=project, owner=owner)
         self.store.add_audit_event(
             AuditEvent(
                 actor=f"agent:{agent_id}",

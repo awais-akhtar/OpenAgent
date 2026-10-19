@@ -38,6 +38,11 @@ class TwinRouteTests(unittest.TestCase):
             second_interaction = handle_post("/api/twin/interaction", deps)
             self.assertEqual(first_interaction.status, HTTPStatus.CREATED)
             self.assertNotEqual(first_interaction.payload["id"], second_interaction.payload["id"])
+            sources = handle_get("/api/twin/sources", "project=core", deps).payload["sources"]
+            self.assertEqual(len(sources), 3)
+            self.assertEqual(sources[0]["kind"], "chat")
+            self.assertNotIn("content", sources[0])
+            self.assertNotIn("context", sources[0])
             self.assertEqual(handle_get("/api/twin/status", "project=core", deps).payload["project"], "core")
             self.assertTrue(handle_get("/api/twin/goals", "project=core", deps).payload["goals"])
             self.assertIsNone(handle_get("/api/chat", "", deps))

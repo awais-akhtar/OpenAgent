@@ -9,6 +9,7 @@ import numpy as np
 
 from .mtp_cache import _read, _write, _unique, _budget
 from ..checkpoint_stream import CheckpointStream
+from ..failure_reporting import add_failure_note, failure_summary
 
 _PREFIX = struct.Struct('<8sI')
 _MAGIC = b'OADSP001'
@@ -95,7 +96,7 @@ def transport_backbone_cache(backbone, stream, *, max_bytes, restoring=False):
                             model.restore(old)
                         except BaseException as rollback:
                             backbone._quarantined = True
-                            failure.add_note('DSpark target recovery rollback failed: '+str(rollback))
+                            add_failure_note(failure,'DSpark target recovery rollback failed: '+failure_summary(rollback))
                         raise
                     finally:
                         try:
@@ -103,7 +104,7 @@ def transport_backbone_cache(backbone, stream, *, max_bytes, restoring=False):
                         except BaseException as cleanup:
                             backbone._quarantined = True
                             if primary_failure is not None:
-                                primary_failure.add_note('DSpark recovery rollback snapshot cleanup failed: '+str(cleanup))
+                                add_failure_note(primary_failure,'DSpark recovery rollback snapshot cleanup failed: '+failure_summary(cleanup))
                             else:
                                 raise RuntimeError('DSpark recovery rollback snapshot cleanup failed') from cleanup
                     backbone.hidden, backbone.logits = tuple(hidden), logits

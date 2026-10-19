@@ -369,16 +369,25 @@ class WebScraper:
         return {"ran": ran, "errors": errors, "total_due": len(rows)}
 
     def get_scrape_history(
-        self, url: str, *, project: str = "default", limit: int = 20
+        self, url: str = "", *, project: str = "default", limit: int = 20
     ) -> list[dict[str, Any]]:
-        """Return scrape history for a URL."""
+        """Return recent scrape history for a project, optionally narrowed to a URL."""
+        limit = max(1, min(int(limit), 500))
         with self.store.session() as conn:
-            rows = conn.execute(
-                "SELECT id,url,status_code,title,content_hash,word_count,changed,"
-                "knowledge_doc_id,error,created_at "
-                "FROM scrape_results WHERE project=? AND url=? ORDER BY created_at DESC LIMIT ?",
-                (project, url, limit),
-            ).fetchall()
+            if url:
+                rows = conn.execute(
+                    "SELECT id,url,status_code,title,content_hash,word_count,changed,"
+                    "knowledge_doc_id,error,created_at "
+                    "FROM scrape_results WHERE project=? AND url=? ORDER BY created_at DESC LIMIT ?",
+                    (project, url, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id,url,status_code,title,content_hash,word_count,changed,"
+                    "knowledge_doc_id,error,created_at "
+                    "FROM scrape_results WHERE project=? ORDER BY created_at DESC LIMIT ?",
+                    (project, limit),
+                ).fetchall()
         return [
             {"id": r[0], "url": r[1], "status_code": r[2], "title": r[3],
              "content_hash": r[4], "word_count": r[5], "changed": bool(r[6]),

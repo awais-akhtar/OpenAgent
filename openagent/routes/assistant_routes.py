@@ -100,7 +100,12 @@ def handle_post(path: str, deps: AssistantRouteDependencies) -> JsonRouteResult 
             )
             return JsonRouteResult({"task": task}, HTTPStatus.CREATED)
         if path == "/api/assistant/tasks/complete":
-            task = assistant.complete_task(str(payload.get("task_id", "")).strip())
+            if not str(payload.get("project", "")).strip():
+                return JsonRouteResult({"error": "Project is required to complete a task."}, HTTPStatus.BAD_REQUEST)
+            task = assistant.complete_task(
+                str(payload.get("task_id", "")).strip(),
+                project=str(payload["project"]).strip(),
+            )
             return JsonRouteResult({"task": task})
         if path == "/api/assistant/meeting/brief":
             brief = assistant.create_meeting_brief(

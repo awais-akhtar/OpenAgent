@@ -14,8 +14,14 @@ from ._contracts import route_contract
 ROUTE_GROUP = "agents"
 ROUTES = (
     ("GET", "/api/agents"),
+    ("GET", "/api/agent-runs"),
+    ("GET", "/api/agents/jobs"),
+    ("GET", "/api/agents/jobs/{id}"),
     ("POST", "/api/agents/run"),
     ("POST", "/api/agents/run-checked"),
+    ("POST", "/api/agents/jobs"),
+    ("POST", "/api/agents/jobs/{id}/cancel"),
+    ("POST", "/api/agents/jobs/{id}/retry"),
     ("POST", "/api/agents/delegate"),
     ("POST", "/api/agents/parallel"),
     ("GET", "/api/agents/marketplace"),
@@ -35,14 +41,64 @@ def contract() -> dict[str, object]:
 class AgentRouteDependencies:
     agents: Any
     multi_agent: Any
+    store: Any
+    owner: str
     first: Callable[..., str | None]
     parse_bool: Callable[..., bool]
     read_json: Callable[[], dict[str, Any]]
+    auth_enforced: bool = False
 
 
 def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRouteResult | None:
     if path == "/api/agents":
         return JsonRouteResult({"agents": deps.agents.specs()})
+    if path == "/api/agent-runs":
+        params = parse_qs(query, keep_blank_values=True)
+        project = deps.first(params, "project")
+        if not project or not project.strip():
+            return JsonRouteResult({"error": "project is required."}, HTTPStatus.BAD_REQUEST)
+        project = project.strip()
+
+        def bounded_integer(key: str, default: int, minimum: int, maximum: int) -> int:
+            raw = deps.first(params, key)
+            try:
+                value = default if raw is None else int(raw)
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(value, maximum))
+
+        limit = bounded_integer("limit", 20, 1, 100)
+        offset = bounded_integer("offset", 0, 0, 2**31 - 1)
+        owner = deps.owner if deps.auth_enforced else None
+        if deps.auth_enforced and (
+            not owner or not deps.store.agent_run_project_is_owned(project, owner)
+        ):
+            return JsonRouteResult({"error": "Project not found."}, HTTPStatus.NOT_FOUND)
+        return JsonRouteResult({
+            "runs": deps.store.list_agent_runs(
+                limit=limit, project=project, owner=owner, offset=offset,
+            ),
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total": deps.store.count_agent_runs(project, owner=owner),
+            },
+        })
+    if path == "/api/agents/jobs" or path.startswith("/api/agents/jobs/"):
+        params = parse_qs(query, keep_blank_values=True)
+        project = (deps.first(params, "project") or "").strip()
+        if path == "/api/agents/jobs":
+            if not project:
+                return JsonRouteResult({"error": "project is required."}, HTTPStatus.BAD_REQUEST)
+            limit_raw = deps.first(params, "limit")
+            try:
+                limit = int(limit_raw) if limit_raw is not None else 50
+            except (TypeError, ValueError):
+                limit = 50
+            return JsonRouteResult({"jobs": deps.multi_agent.jobs(project=project, owner=deps.owner, limit=limit)})
+        job_id = path.removeprefix("/api/agents/jobs/").strip("/")
+        job = deps.multi_agent.get_job(job_id, owner=deps.owner)
+        return JsonRouteResult({"job": job} if job else {"error": "Agent job not found."}, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND)
     if path == "/api/agents/marketplace":
         return JsonRouteResult({"agents": deps.multi_agent.marketplace()})
     if path not in {"/api/agents/permissions", "/api/agents/approvals"}:
@@ -57,7 +113,7 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
 
 
 def handle_post(path: str, deps: AgentRouteDependencies) -> JsonRouteResult | None:
-    if path not in {route for method, route in ROUTES if method == "POST"}:
+    if path not in {route for method, route in ROUTES if method == "POST"} and not path.startswith("/api/agents/jobs/"):
         return None
     payload = deps.read_json()
     project = str(payload.get("project", "default")).strip() or "default"
@@ -67,20 +123,46 @@ def handle_post(path: str, deps: AgentRouteDependencies) -> JsonRouteResult | No
             goal = str(payload.get("goal", "")).strip()
             if not goal:
                 return JsonRouteResult({"error": "A goal is required."}, HTTPStatus.BAD_REQUEST)
+            project = str(payload.get("project", "default")).strip() or "default"
+            if not deps.store.claim_agent_run_project(project, deps.owner):
+                return JsonRouteResult({"error": "Project not found."}, HTTPStatus.NOT_FOUND)
             run = deps.agents.run(
                 str(payload.get("agent", "executive")).strip() or "executive",
-                goal, project=project,
+                goal, project=project, owner=deps.owner,
             )
             return JsonRouteResult({"run": run}, HTTPStatus.CREATED)
         if path == "/api/agents/run-checked":
+            goal = str(payload.get("goal", "")).strip()
+            if not goal:
+                return JsonRouteResult({"error": "A goal is required."}, HTTPStatus.BAD_REQUEST)
+            if not deps.store.claim_agent_run_project(project, deps.owner):
+                return JsonRouteResult({"error": "Project not found."}, HTTPStatus.NOT_FOUND)
             result = multi_agent.run_agent(
                 str(payload.get("agent", "executive")).strip() or "executive",
-                str(payload.get("goal", "")).strip(), project=project,
+                goal, project=project, owner=deps.owner,
                 require_approval=deps.parse_bool(payload.get("require_approval"), default=False),
                 approval_id=str(payload.get("approval_id", "")).strip() or None,
                 verify=deps.parse_bool(payload.get("verify"), default=True),
             )
             return JsonRouteResult(result, HTTPStatus.CREATED)
+        if path == "/api/agents/jobs":
+            if deps.parse_bool(payload.get("require_approval"), default=False) and not multi_agent.approval_is_approved(
+                str(payload.get("approval_id", "")).strip() or None
+            ):
+                return JsonRouteResult({"error": "An approved agent run approval is required."}, HTTPStatus.BAD_REQUEST)
+            job = multi_agent.start_job(
+                str(payload.get("agent", "executive")).strip() or "executive",
+                str(payload.get("goal", "")).strip(), project=project, owner=deps.owner,
+            )
+            return JsonRouteResult({"job": job}, HTTPStatus.ACCEPTED)
+        if path.startswith("/api/agents/jobs/"):
+            remainder = path.removeprefix("/api/agents/jobs/").strip("/")
+            if remainder.endswith("/cancel"):
+                job = multi_agent.cancel_job(remainder.removesuffix("/cancel").strip("/"), owner=deps.owner)
+                return JsonRouteResult({"job": job})
+            if remainder.endswith("/retry"):
+                job = multi_agent.retry_job(remainder.removesuffix("/retry").strip("/"), owner=deps.owner)
+                return JsonRouteResult({"job": job}, HTTPStatus.ACCEPTED)
         if path == "/api/agents/delegate":
             result = multi_agent.delegate(
                 str(payload.get("from_agent", "executive")).strip() or "executive",
@@ -116,5 +198,7 @@ def handle_post(path: str, deps: AgentRouteDependencies) -> JsonRouteResult | No
             approved=deps.parse_bool(payload.get("approved"), default=False),
         )
         return JsonRouteResult({"approval": approval})
+    except KeyError as exc:
+        return JsonRouteResult({"error": str(exc).strip("'")}, HTTPStatus.NOT_FOUND)
     except (ApprovalRequired, PermissionDenied, ValueError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

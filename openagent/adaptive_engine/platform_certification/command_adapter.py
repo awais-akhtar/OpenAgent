@@ -26,6 +26,33 @@ class DecoderUnavailable(RuntimeError):
     """The supplied runner explicitly could not execute the requested backend."""
 
 
+_INLINE_CODE_FLAGS = {
+    'python': {'-c', '-m'}, 'python3': {'-c', '-m'}, 'python3.12': {'-c', '-m'},
+    'python3.11': {'-c', '-m'}, 'python3.10': {'-c', '-m'}, 'py': {'-c', '-m'},
+    'pypy': {'-c', '-m'},
+    'node': {'-e', '--eval', '--print', '-p'}, 'nodejs': {'-e', '--eval', '--print', '-p'},
+    'bun': {'-e', '--eval'}, 'deno': {'eval'},
+    'powershell': {'-command', '-c', '-encodedcommand'},
+    'pwsh': {'-command', '-c', '-encodedcommand'},
+    'cmd': {'/c', '/k'}, 'sh': {'-c'}, 'bash': {'-c'},
+    'zsh': {'-c'}, 'dash': {'-c'}, 'perl': {'-e'}, 'ruby': {'-e'},
+    'php': {'-r'}, 'lua': {'-e'}, 'r': {'-e'}, 'rscript': {'-e'},
+}
+
+
+def _require_file_backed_runner(command):
+    """Reject interpreter modes whose executed source cannot be pinned by argv."""
+    if not isinstance(command, list) or not command or not isinstance(command[0], str):
+        raise ValueError('runner command must identify a file-backed executable')
+    executable = Path(command[0].replace('\\', '/')).name.lower()
+    if executable.endswith('.exe'):
+        executable = executable[:-4]
+    forbidden = _INLINE_CODE_FLAGS.get(executable, set())
+    if any(isinstance(argument, str) and argument.lower() in forbidden
+           for argument in command[1:]):
+        raise ValueError('inline or module runner code cannot be source-pinned; use an explicit pinned runner file')
+
+
 class CommandAdapter:
     def __init__(self, root, options):
         self.root = Path(root).resolve()
@@ -38,6 +65,7 @@ class CommandAdapter:
         if (not isinstance(self.command, list) or not self.command or
                 any(not isinstance(x, str) or not x or '\0' in x for x in self.command)):
             raise ValueError('runner command must be an explicit nonempty argv list')
+        _require_file_backed_runner(self.command)
         if type(options['timeout']) is not int or options['timeout'] <= 0:
             raise ValueError('positive command timeout required')
         pins = {str((self.root / row['path']).resolve()): row
@@ -169,7 +197,10 @@ class CommandAdapter:
         for key in ('skipped', 'failures', 'errors', 'expected_failures', 'unexpected_successes'):
             if type(evidence.get(key)) is not int or evidence[key] != 0:
                 raise ValueError('missing or unsuccessful decoder execution counters')
-        self.evidence.append(evidence)
+        # Do not publish placement evidence here.  The observation artifact is
+        # part of the same forward receipt and may still fail path, digest, or
+        # schema validation in CommandSession.forward().
+        return dict(evidence)
 
 
 class CommandSession:
@@ -185,7 +216,7 @@ class CommandSession:
             raise RuntimeError('session already closed')
         response = self.adapter.invoke('forward', Path(self.directory.name),
                                        dict(seed=self.seed, tokens=list(token_ids), position=self.position))
-        self.adapter.placement(response, self.position + len(token_ids))
+        placement_evidence = self.adapter.placement(response, self.position + len(token_ids))
         path = (Path(self.directory.name) / response['observation_artifact']).resolve()
         if not path.is_relative_to(Path(self.directory.name).resolve()) or not path.is_file():
             raise ValueError('observation NPZ must be inside the fresh session directory')
@@ -195,9 +226,11 @@ class CommandSession:
         shutil.copyfile(path, captured)
         if digest_file(captured) != response['observation_sha256']:
             raise ValueError('observation changed during capture')
-        self.adapter.evidence[-1] = dict(self.adapter.evidence[-1],
-            observation_artifact=dict(path=str(captured), sha256=response['observation_sha256']))
-        with np.load(path, allow_pickle=False) as arrays:
+        # Read the captured copy whose digest was just verified, not the
+        # runner-owned path.  The latter can be replaced between the digest
+        # check and np.load(), making the validated receipt differ from the
+        # arrays consumed by the comparison runner.
+        with np.load(captured, allow_pickle=False) as arrays:
             expected = {'logits'} | {'cache.' + key for key in self.adapter.meta['cache_schema']} | {
                 'evidence.' + key for key in self.adapter.meta.get('evidence_schema', {})}
             if set(arrays.files) != expected:
@@ -206,6 +239,11 @@ class CommandSession:
                 {key: np.array(arrays['cache.' + key], copy=True) for key in self.adapter.meta['cache_schema']},
                 {key: np.array(arrays['evidence.' + key], copy=True)
                  for key in self.adapter.meta.get('evidence_schema', {})})
+        # Publish evidence only after runtime placement, artifact provenance,
+        # and the complete observation schema have all passed.  A malformed
+        # forward response must not leave a success-shaped evidence record.
+        self.adapter.evidence.append(dict(placement_evidence,
+            observation_artifact=dict(path=str(captured), sha256=response['observation_sha256'])))
         self.position += len(token_ids)
         return observation
 

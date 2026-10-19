@@ -9,6 +9,12 @@ import math
 import pickle
 
 
+def _cleanup_failure_message(failures):
+    """Build bounded teardown diagnostics without invoking exception __str__."""
+    from .distributed_execution import _failure_summary
+    return '; '.join(_failure_summary(failure, limit=1024) for failure in failures)
+
+
 def _worker(rank, world_size, service_factory, root_driver, init_method,
             projection_backend, device_ids, timeout_seconds, max_control_bytes,max_recovery_boundary_bytes):
     import torch
@@ -45,7 +51,8 @@ def _worker(rank, world_size, service_factory, root_driver, init_method,
                     except BaseException as error:
                         if driver_error is None:
                             raise
-                        driver_error.add_note('ordered rank shutdown failed: '+str(error))
+                        driver_error.add_note(
+                            'ordered rank shutdown failed: '+_cleanup_failure_message((error,)))
         else:
             coordinator.serve()
     except BaseException as error:
@@ -76,7 +83,7 @@ def _worker(rank, world_size, service_factory, root_driver, init_method,
             except BaseException as error:
                 failures.append(error)
         if failures:
-            message = '; '.join(str(error) or type(error).__name__ for error in failures)
+            message = _cleanup_failure_message(failures)
             if primary_error is not None:
                 primary_error.add_note('rank shutdown failures: '+message)
             else:

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .segment_snapshot import _read, _write, _pairs
+from .v41_execution.speculative import _same_receipt_state
 
 _PREFIX = struct.Struct('<8sIQQ')
 _MAGIC = b'OAV4GN01'
@@ -131,9 +132,9 @@ def _publish_locked(sink, header, logits, owner, *, model, tokenizer, max_bytes,
         raise ValueError('V4.1 envelope differs from live cache continuation')
     if frozen['dspark'] and (tuple(owner.history)!=tuple(frozen['prompt_ids']+frozen['generated_ids'])
             or not np.array_equal(owner.next_logits,logits)
-            or owner.rng.bit_generator.state!=frozen['rng']
+            or not _same_receipt_state(owner.rng.bit_generator.state, frozen['rng'])
             or getattr(getattr(owner.proposer, 'rng', None), 'bit_generator', None) is None
-            or owner.proposer.rng.bit_generator.state!=frozen['proposal_rng']):
+            or not _same_receipt_state(owner.proposer.rng.bit_generator.state, frozen['proposal_rng'])):
         raise ValueError('V4.1 envelope differs from committed speculative verifier state')
     row = np.asarray(logits, dtype='<f8').tobytes()
     active, consumed, written = True, False, False

@@ -44,6 +44,17 @@ def publisher_contract(config,*,repository,revision):
 def admit_mixtral_inventory(config, inventory, *, context_tokens=None):
     from .native_mixtral_decoder import configuration, GLOBAL_NAMES, LAYER_NAMES
     settings, capacity = configuration(config, context_tokens)
+    raw_config = dict(config.to_dict() if hasattr(config, 'to_dict') else config)
+    dtype_fields = [raw_config[name] for name in ('dtype', 'torch_dtype')
+                    if name in raw_config and raw_config[name] is not None]
+    if any(type(value) is not str for value in dtype_fields):
+        raise ValueError('declared Mixtral source dtype must be a string')
+    if len(set(dtype_fields)) > 1:
+        raise ValueError('Mixtral dtype and torch_dtype declarations disagree')
+    declared_dtype = dtype_fields[0] if dtype_fields else None
+    source_dtype = {'float32': 'F32', 'float16': 'F16', 'bfloat16': 'BF16'}
+    if declared_dtype is not None and declared_dtype not in source_dtype:
+        raise ValueError('unsupported declared Mixtral source dtype')
     h,m,e,d = (settings[name] for name in
                ('hidden_size','intermediate_size','num_local_experts','head_dim'))
     q,k = settings['num_attention_heads']*d,settings['num_key_value_heads']*d
@@ -69,6 +80,22 @@ def admit_mixtral_inventory(config, inventory, *, context_tokens=None):
     else:
         raise ValueError('exact complete fused or split Mixtral source inventory required')
     for name,shape in expected.items():
-        if tuple(inventory[name]['shape']) != shape or inventory[name].get('dtype') not in ('F32','F16','BF16'):
+        dtype = inventory[name].get('dtype')
+        if (tuple(inventory[name]['shape']) != shape or dtype not in ('F32','F16','BF16')
+                or (declared_dtype is not None and dtype != source_dtype[declared_dtype])):
             raise ValueError('Mixtral checkpoint tensor shape or dtype mismatch: '+name)
+    # When the source declares tied embeddings, the runtime aliases the output
+    # head to the input embedding (and checks value equality after loading).
+    # Reject incompatible source metadata here, before any selected payload is
+    # materialized, just as the other resident-family planners do.
+    if settings['tie_word_embeddings']:
+        embedding_name='model.embed_tokens.weight'
+        head_name='lm_head.weight'
+        if embedding_name not in inventory:
+            raise ValueError('tied Mixtral inventory is missing input embeddings')
+        if head_name in inventory:
+            embedding,head=inventory[embedding_name],inventory[head_name]
+            if (tuple(embedding['shape'])!=tuple(head['shape']) or
+                    embedding.get('dtype')!=head.get('dtype')):
+                raise ValueError('tied Mixtral embedding/head source metadata differs')
     return settings,capacity,layout,global_shapes

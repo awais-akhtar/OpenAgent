@@ -97,6 +97,13 @@ def decode_expert(payload, hidden_size, intermediate_size):
     with memoryview(payload) as view:
         if not view.c_contiguous or view.nbytes != payload_size(hidden_size, intermediate_size):
             raise ValueError("Q5_0 payload must be contiguous with exact size")
+        # Validate every block scale before allocating any decoded projection.
+        # The format's signed FP16 scale is applied algebraically; packers emit
+        # non-negative scales, but readers must preserve valid signed records.
+        for address in range(0, view.nbytes, BLOCK_BYTES):
+            delta = _BLOCK.unpack_from(view, address)[0]
+            if not math.isfinite(delta):
+                raise ValueError("Q5_0 deltas must be finite")
         output = []
         address = 0
         for shape in shapes:
@@ -104,8 +111,6 @@ def decode_expert(payload, hidden_size, intermediate_size):
             flat = matrix.reshape(-1)
             for begin in range(0, flat.size, BLOCK_WIDTH):
                 delta, high, *packed = _BLOCK.unpack_from(view, address)
-                if not math.isfinite(delta):
-                    raise ValueError("Q5_0 deltas must be finite")
                 for lane in range(BLOCK_WIDTH):
                     low = (packed[lane] & 15) if lane < 16 else (packed[lane - 16] >> 4)
                     code = low + 16 * ((high >> lane) & 1) - 16
@@ -131,7 +136,8 @@ def _dot(payload, address, vector, columns):
 
 def _scalar_expert(payload, vector, h, i, route_weight, activation, output):
     for address in range(0, payload.nbytes, BLOCK_BYTES):
-        if not math.isfinite(struct.unpack_from("<e", payload, address)[0]):
+        delta = struct.unpack_from("<e", payload, address)[0]
+        if not math.isfinite(delta):
             return 1
     row_bytes = h // BLOCK_WIDTH * BLOCK_BYTES
     extent = row_bytes * i

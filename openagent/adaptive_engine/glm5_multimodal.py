@@ -40,16 +40,20 @@ class Glm5MultimodalDecoder:
         reader=PublisherTensorReader(inventory,max_work_bytes=max_conversion_bytes,block_shape=blocks)
         reader.admit_fp8_inventory()
         try:
-            admit_publisher_glm5_inventory(inventory,self.components)
+            backend=('public-range' if segment_runtime_library is not None else
+                     'device' if text_device is not None else 'native')
+            admit_publisher_glm5_inventory(inventory,self.components,backend=backend)
             bindings=[]
             for name,record in inventory.tensors.items():
-                if not name.startswith(('model.visual.','mtp.','model.mtp.','model.language_model.mtp.')): continue
+                if not name.startswith('model.visual.'): continue
                 if name.endswith(('.weight_scale_inv','_scale_inv')): continue
                 bindings.append(WeightBinding(name,(TensorSlice(name,record.shape),),record.shape))
             media=materialize(reader,bindings,max_bytes=min(max_weight_bytes,max_bytes//2))
-            auxiliary={name:value for name,value in media.items() if not name.startswith('model.visual.')}
-            auxiliary_bytes=sum(value.nbytes for value in auxiliary.values())
-            if 2*auxiliary_bytes>=max_bytes: raise MemoryError('GLM auxiliary checkpoint staging exceeds admission')
+            # GLM5 MTP is explicitly rejected by inventory admission until a
+            # corresponding draft consumer exists; this owner therefore only
+            # retains the visual component here.
+            auxiliary={}
+            auxiliary_bytes=0
             self.auxiliary=auxiliary;available=max_bytes-auxiliary_bytes
             self.vision=Glm5VisionEncoder(self.components.vision_config,media,library=library,max_bytes=available//2)
             del media
@@ -99,6 +103,21 @@ class Glm5MultimodalDecoder:
             c=getattr(self.text,'contract',self.text.config)
             if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=c.vocab_size):
                 raise ValueError('expanded unpadded batch-one GLM processor ids required')
+            capacity=getattr(self.text,'max_tokens',None)
+            position=getattr(self.text,'position',None)
+            if (type(capacity) is not int or type(position) is not int or position<0 or
+                    ids.shape[1]>capacity-position):
+                # Reject an impossible continuation before embedding lookup or
+                # running the potentially expensive vision tower. The text
+                # decoder repeats this check at its own mutation boundary.
+                raise ValueError('GLM multimodal prompt exceeds remaining text context')
+            image_id=self.config.get('image_token_id',154854)
+            start_id=self.config.get('video_start_token_id',154832)
+            end_id=self.config.get('video_end_token_id',154833)
+            if (any(type(value) is not int or not 0<=value<c.vocab_size
+                    for value in (image_id,start_id,end_id)) or
+                    len({image_id,start_id,end_id})!=3):
+                raise ValueError('GLM image placeholder and video span delimiters require distinct in-vocabulary token IDs')
             if ids.size*c.hidden_size*16>min(self.text.max_bytes,self.vision.max_bytes):
                 raise MemoryError('GLM embedding and media insertion exceeds staging admission')
             self._busy=True
@@ -111,9 +130,9 @@ class Glm5MultimodalDecoder:
                         embeds=self.text.weights['embed_tokens.weight'][self.text.torch.tensor(ids.astype(np.int64),device=self.text.device)].detach().cpu().numpy().copy()
                 else:
                     embeds=np.array(self.text.weights['embed_tokens.weight'][ids],order='C',copy=True)
-                image_id=self.config.get('image_token_id',154854);start_id=self.config.get('video_start_token_id',154832);end_id=self.config.get('video_end_token_id',154833)
                 spans=np.zeros(ids.shape,bool);inside=False
                 for index,token in enumerate(ids[0]):
+                    if index%1024==0: _cancel(cancelled)
                     if token==start_id:
                         if inside: raise ValueError('nested GLM video spans are not admitted')
                         inside=True
@@ -129,6 +148,10 @@ class Glm5MultimodalDecoder:
                         if grids is not None or count: raise ValueError('GLM media placeholders require matching processor patches')
                         continue
                     if grids is None: raise ValueError('GLM processor media requires explicit grids')
+                    if not count:
+                        # Do not materialize an otherwise orphaned image/video
+                        # tower result only to reject its feature count below.
+                        raise ValueError('GLM processor media has no matching expanded-token placeholders')
                     if video:
                         grid=np.asarray(grids)
                         if grid.ndim!=2 or grid.shape[1]!=3 or grid.dtype.kind not in 'iu' or np.any(grid<=0) or np.any(grid>65536):
@@ -136,7 +159,8 @@ class Glm5MultimodalDecoder:
                         frames=sum(int(row[0]) for row in grid)
                         if frames>65536: raise MemoryError('GLM video frame grid expansion exceeds admission')
                         expanded=np.empty((frames,3),np.int64);offset=0
-                        for temporal,height,width in grid:
+                        for grid_index,(temporal,height,width) in enumerate(grid):
+                            if grid_index%1024==0: _cancel(cancelled)
                             end=offset+int(temporal);expanded[offset:end]=(1,int(height),int(width));offset=end
                         grids=expanded
                     features=np.concatenate(self.vision.forward(pixels,grids,cancelled=cancelled),axis=0)

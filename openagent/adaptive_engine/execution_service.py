@@ -15,6 +15,8 @@ import time
 
 import numpy as np
 
+from .failure_reporting import add_failure_note, failure_summary
+
 
 # ============================================================================
 # PHASE 1 CLOSURE: Evidence capture for P13 (integrated directly)
@@ -439,7 +441,7 @@ class NativeExecutionService:
                 except BaseException as cleanup_error:
                     with self._lock:
                         self._orphaned[id(model)] = model
-                    error.add_note('executor cleanup is pending: '+str(cleanup_error))
+                    add_failure_note(error, 'executor cleanup is pending: '+failure_summary(cleanup_error))
             raise
         finally:
             with self._lock:
@@ -581,7 +583,7 @@ class NativeExecutionService:
                         self._model_position(session, session.tokens)
                     except BaseException as recovery:
                         session.closed = True
-                        error.add_note('executor restore rollback failed; session quarantined: '+repr(recovery))
+                        add_failure_note(error, 'executor restore rollback failed; session quarantined: '+failure_summary(recovery))
                     raise
                 session.tokens = snapshot.token_ids
             finally:
@@ -662,7 +664,7 @@ class NativeExecutionService:
                         self._model_position(session, previous)
                     except BaseException as recovery:
                         session.closed = True
-                        error.add_note('prefill rollback failed; session quarantined: ' + repr(recovery))
+                        add_failure_note(error, 'prefill rollback failed; session quarantined: ' + failure_summary(recovery))
                 raise
             finally:
                 self._release_transaction_snapshot(session, boundary, primary)
@@ -784,7 +786,7 @@ class NativeExecutionService:
                         restored = True
                     except BaseException as recovery:
                         session.closed = True
-                        error.add_note('scoring rollback failed; session quarantined: ' + repr(recovery))
+                        add_failure_note(error, 'scoring rollback failed; session quarantined: ' + failure_summary(recovery))
                 raise
             finally:
                 cleanup = None
@@ -797,7 +799,7 @@ class NativeExecutionService:
                         if cleanup is None:
                             cleanup = error
                         else:
-                            cleanup.add_note('additional scoring snapshot cleanup failed: ' + repr(error))
+                            add_failure_note(cleanup, 'additional scoring snapshot cleanup failed: ' + failure_summary(error))
                 if primary is None and cleanup is not None:
                     raise cleanup
 
@@ -949,7 +951,7 @@ class NativeExecutionService:
                         restored = True
                     except BaseException as recovery:
                         session.closed = True
-                        error.add_note('group scoring rollback failed; session quarantined: ' + repr(recovery))
+                        add_failure_note(error, 'group scoring rollback failed; session quarantined: ' + failure_summary(recovery))
                 raise
             finally:
                 cleanup = None
@@ -962,7 +964,7 @@ class NativeExecutionService:
                         if cleanup is None:
                             cleanup = error
                         else:
-                            cleanup.add_note('additional group scoring snapshot cleanup failed: ' + repr(error))
+                            add_failure_note(cleanup, 'additional group scoring snapshot cleanup failed: ' + failure_summary(error))
                 if primary is None and cleanup is not None:
                     raise cleanup
 
@@ -983,7 +985,7 @@ class NativeExecutionService:
         try:self._release_snapshot(session,snapshot)
         except BaseException as cleanup:
             if primary is None:raise
-            primary.add_note('transaction snapshot cleanup retained; session quarantined: '+repr(cleanup))
+            add_failure_note(primary, 'transaction snapshot cleanup retained; session quarantined: '+failure_summary(cleanup))
 
     def _admit_media(self, session, media, cancel):
         """P04: Validate and setup media ownership before prefill."""
@@ -1170,6 +1172,11 @@ class NativeExecutionService:
                 committed = session.tokens + incoming + tuple(generated)
                 self._history(committed)
                 self._model_position(session, committed)
+                # Keep this final cancellation boundary inside the rollback
+                # protected block.  A cancellation raised from the ``else``
+                # clause would bypass the exception handler and leave the
+                # physical executor advanced while logical history stayed old.
+                self._cancelled(cancel)
                 result = GenerationResult(session_id, tuple(generated), len(committed), reason)
             except ExecutionCancelled as cancel_error:
                 primary = cancel_error
@@ -1193,7 +1200,7 @@ class NativeExecutionService:
                     self._model_position(session, session.tokens)
                 except BaseException as recovery:
                     session.closed = True
-                    error.add_note('executor rollback failed; session quarantined: '+repr(recovery))
+                    add_failure_note(error, 'executor rollback failed; session quarantined: '+failure_summary(recovery))
                 raise
             else:
                 session.tokens = committed
@@ -1281,7 +1288,7 @@ class NativeExecutionService:
                         session.tokens=previous
                     except BaseException as recovery:
                         session.closed=True
-                        error.add_note('generation recovery rollback failed; session quarantined: '+repr(recovery))
+                        add_failure_note(error, 'generation recovery rollback failed; session quarantined: '+failure_summary(recovery))
                 raise
             finally:
                 failed=primary is not None
@@ -1296,14 +1303,14 @@ class NativeExecutionService:
                         if primary is None:
                             primary=cleanup
                         else:
-                            primary.add_note('generation recovery staged-cache cleanup failed: '+repr(cleanup))
+                            add_failure_note(primary, 'generation recovery staged-cache cleanup failed: '+failure_summary(cleanup))
                 if rollback is not None:
                     try:self._release_snapshot(session,rollback)
                     except BaseException as cleanup:
                         if primary is None:
                             primary=cleanup
                         else:
-                            primary.add_note('generation recovery receipt cleanup retained: '+repr(cleanup))
+                            add_failure_note(primary, 'generation recovery receipt cleanup retained: '+failure_summary(cleanup))
                 if primary is not None and not failed:
                     raise primary
 
@@ -1416,6 +1423,14 @@ class NativeExecutionService:
                 if trailing:
                     raise ValueError('session cache contains trailing bytes')
                 self._model_position(session,tokens,required=True)
+                # Stable file-backed readers can perform a final descriptor /
+                # path identity check. Keep that check inside this transaction:
+                # the outer file adapter may repeat it after return, but a
+                # failure there must not report restore failure after history
+                # and physical cache have already committed.
+                require_complete = getattr(source, 'require_complete', None)
+                if callable(require_complete):
+                    require_complete()
             except BaseException as error:
                 primary=error
                 try:
@@ -1423,7 +1438,7 @@ class NativeExecutionService:
                     self._model_position(session,session.tokens)
                 except BaseException as recovery:
                     session.closed = True
-                    error.add_note('cache recovery rollback failed; session quarantined: '+repr(recovery))
+                    add_failure_note(error, 'cache recovery rollback failed; session quarantined: '+failure_summary(recovery))
                 raise
             else:
                 session.tokens = tokens
@@ -1435,20 +1450,24 @@ class NativeExecutionService:
         from .cache_file_recovery import save_service_cache
         return save_service_cache(self, session_id, destination, max_bytes=max_bytes)
 
-    def load_session_cache(self, session_id, source, *, max_bytes,history_receipt=None):
+    def load_session_cache(self, session_id, source, *, max_bytes,history_receipt=None,
+                           expected_file_receipt=None):
         from .cache_file_recovery import load_service_cache
-        return load_service_cache(self, session_id, source, max_bytes=max_bytes,history_receipt=history_receipt)
+        return load_service_cache(self, session_id, source, max_bytes=max_bytes,
+                                  history_receipt=history_receipt,
+                                  expected_file_receipt=expected_file_receipt)
 
-    def recover_cached_session(self, source, *, max_bytes):
+    def recover_cached_session(self, source, *, max_bytes, expected_file_receipt=None):
         session_id = self.open_session()
         try:
-            self.load_session_cache(session_id, source, max_bytes=max_bytes)
+            self.load_session_cache(session_id, source, max_bytes=max_bytes,
+                                    expected_file_receipt=expected_file_receipt)
             return session_id
         except BaseException as error:
             try:
                 self.close_session(session_id)
             except BaseException as cleanup:
-                error.add_note('cache recovery cleanup pending for '+session_id+': '+str(cleanup))
+                add_failure_note(error, 'cache recovery cleanup pending for '+session_id+': '+failure_summary(cleanup))
             raise
 
     def evict_cached_session(self, session_id, destination, *, max_bytes):
@@ -1530,7 +1549,7 @@ class NativeExecutionService:
                     self._model_position(session, session.tokens)
                 except BaseException as recovery:
                     session.closed = True
-                    error.add_note('replay rollback failed; session quarantined: '+repr(recovery))
+                    add_failure_note(error, 'replay rollback failed; session quarantined: '+failure_summary(recovery))
                 raise
             else:
                 session.tokens = checkpoint.token_ids
@@ -1590,7 +1609,7 @@ class NativeExecutionService:
             try:
                 self.close_session(session_id)
             except BaseException as cleanup:
-                error.add_note('recovery executor cleanup pending for '+session_id+': '+str(cleanup))
+                add_failure_note(error, 'recovery executor cleanup pending for '+session_id+': '+failure_summary(cleanup))
             raise
 
     def close_session(self, session_id):

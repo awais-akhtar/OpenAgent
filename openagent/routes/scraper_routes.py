@@ -15,6 +15,7 @@ ROUTE_GROUP = "scraper"
 ROUTES = (
     ("GET", "/api/scraper/status"),
     ("GET", "/api/scraper/jobs"),
+    ("GET", "/api/scraper/history"),
     ("POST", "/api/scraper/scrape"),
     ("POST", "/api/scraper/schedule"),
     ("POST", "/api/scraper/run-due"),
@@ -34,12 +35,22 @@ class ScraperRouteDependencies:
 
 
 def handle_get(path: str, query: str, deps: ScraperRouteDependencies) -> JsonRouteResult | None:
-    if path not in {"/api/scraper/status", "/api/scraper/jobs"}:
+    if path not in {"/api/scraper/status", "/api/scraper/jobs", "/api/scraper/history"}:
         return None
     params = parse_qs(query)
     project = deps.first(params, "project") or "default"
     if path == "/api/scraper/status":
         return JsonRouteResult(deps.scraper.status(project=project))
+    if path == "/api/scraper/history":
+        try:
+            limit = int(deps.first(params, "limit") or 100)
+        except (TypeError, ValueError):
+            limit = 100
+        return JsonRouteResult({"results": deps.scraper.get_scrape_history(
+            deps.first(params, "url") or "",
+            project=project,
+            limit=limit,
+        )})
     return JsonRouteResult({"jobs": deps.scraper.list_scheduled(project=project)})
 
 

@@ -11,6 +11,7 @@ from threading import RLock
 
 import numpy as np
 from .session_recovery import _path
+from .owned_file_descriptor import close_after_failure,fdopen_owned
 
 from .text_decoder_registry import _DECODERS, decoder_owner
 
@@ -110,10 +111,10 @@ def _open_local(root, path, stack):
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError('regular opened checkpoint file required')
-        source=os.fdopen(descriptor,'rb')
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        close_after_failure(descriptor,primary,owner='native checkpoint input')
         raise
+    source=fdopen_owned(descriptor,'rb',owner='native checkpoint input')
     source=stack.enter_context(source)
     identity = _stamp(source)
     before_birthtime = getattr(before, "st_birthtime_ns", before.st_ctime_ns)
@@ -229,15 +230,55 @@ def _read_tensor(source, tensor, base, *, chunk_bytes=1024*1024, cancel=None):
 
 
 def read_native_text_checkpoint(directory, *, model_type, max_weight_bytes,
-                                read_limits=None,cancel=None,tensor_selection=None,context_tokens=None):
+                                read_limits=None,cancel=None,tensor_selection=None,context_tokens=None,
+                                source_backend='native'):
     """Read an exact registered text checkpoint, without wrapper reinterpretation."""
-    decoder_owner(model_type)
+    try:
+        decoder_owner(model_type)
+    except ValueError as exc:
+        raise ValueError(f'unsupported exact native text identity: {model_type!r}') from exc
+    from .resident_family_inventory import FAMILIES,admit_resident_inventory
+    if model_type not in FAMILIES:
+        raise ValueError(
+            'native text checkpoint has no complete resident inventory planner: '
+            +model_type)
     admission=None
+    if source_backend not in ('native','device','public-range'):
+        raise ValueError('exact native text source backend required')
+    # Whole-model reads use the shared complete resident planner. Selected
+    # range/edge loaders provide their own complete-header selector because
+    # their source inventory can intentionally exceed the selected residency
+    # budget (for example streamed experts).
     if tensor_selection is None:
-        from .resident_family_inventory import FAMILIES,admit_resident_inventory
-        if model_type in FAMILIES:
-            def admission(config,inventory,resident):
-                admit_resident_inventory(config,inventory,family=model_type,max_bytes=max_weight_bytes,context_tokens=context_tokens)
+        def admission(config,inventory,resident):
+            admit_resident_inventory(config,inventory,family=model_type,
+                                     max_bytes=max_weight_bytes,
+                                     context_tokens=context_tokens,
+                                     backend=source_backend)
+            # Whole-model resident loaders have enough information here to
+            # bind the actual SafeTensors encodings to one exact native P02
+            # tuple before any tensor payload is read.  A family planner
+            # proves geometry, not the complete backend/format route.
+            from .source_scope import (require_source_inventory_admission,
+                                       source_family_for_identity)
+            source_family=source_family_for_identity(model_type)
+            require_source_inventory_admission(
+                family=source_family,model_type=model_type,backend=source_backend,
+                arithmetic='fp32',persisted_format='float32',inventory=inventory)
+    else:
+        # Selected-range loaders still receive the complete source header map
+        # before selecting tensors.  Their family selectors prove geometry,
+        # but must not silently turn candidate public-range tuples into
+        # callable routes.  Enforce exact tuple admission at this shared
+        # pre-payload boundary as well.
+        from .source_scope import (require_source_inventory_admission,
+                                   source_family_for_identity)
+        source_family=source_family_for_identity(model_type)
+        def admission(config,inventory,resident):
+            require_source_inventory_admission(
+                family=source_family,model_type=model_type,
+                backend=source_backend,arithmetic='fp32',
+                persisted_format='float32',inventory=inventory)
     return _read_native_checkpoint(directory,model_type=model_type,max_weight_bytes=max_weight_bytes,
                                    read_limits=read_limits, cancel=cancel,
                                    tensor_selection=tensor_selection,metadata_admission=admission)
@@ -245,11 +286,103 @@ def read_native_text_checkpoint(directory, *, model_type, max_weight_bytes,
 
 def read_native_multimodal_checkpoint(directory, *, model_type, max_weight_bytes,
                                       read_limits=None, cancel=None):
-    """Read the explicit Qwen3.5 wrapper; constructor validates vision geometry."""
-    if model_type not in ('qwen3_5_moe','qwen4_exp','inkling_mm_model','glm5_next') or type(model_type) is not str:
+    """Read only the bounded Qwen3.5 wrapper after complete header admission.
+
+    Qwen4, Inkling, and GLM5 have conditional/component inventories that this
+    resident reader cannot prove. Keep those routes on their family planners;
+    an exact model_type string alone is not an inventory contract.
+    """
+    if type(model_type) is not str or model_type != 'qwen3_5_moe':
         raise ValueError(f'unsupported exact native multimodal identity: {model_type!r}')
+    if type(max_weight_bytes) is not int or max_weight_bytes <= 0:
+        raise ValueError('max_weight_bytes must be a positive integer')
+
+    def metadata_admission(config, inventory, resident):
+        _admit_qwen35_multimodal_source(
+            config, inventory, resident, max_bytes=max_weight_bytes)
+
     return _read_native_checkpoint(directory, model_type=model_type, max_weight_bytes=max_weight_bytes,
-                                   read_limits=read_limits, cancel=cancel)
+                                   read_limits=read_limits, cancel=cancel,
+                                   metadata_admission=metadata_admission)
+
+
+def _admit_qwen35_multimodal_source(config, inventory, resident, *, max_bytes):
+    """Prove both family geometry and exact P02 format before payload reads."""
+    _admit_qwen35_multimodal_inventory(config, inventory, resident, max_bytes=max_bytes)
+    from .source_scope import require_source_inventory_admission
+    require_source_inventory_admission(
+        family='qwen35', model_type='qwen3_5_moe', backend='native',
+        arithmetic='fp32', persisted_format='float32', inventory=inventory)
+
+
+def _admit_qwen35_multimodal_inventory(config, inventory, resident, *, max_bytes):
+    """Validate both text and vision source headers before any payload read."""
+    from .native_qwen35_vision import NativeQwen35Vision
+    from .independent_qwen35 import IndependentQwen35TextDecoder
+
+    # The native wrapper currently composes only image/video vision features.
+    # Do not accept an audio declaration and then silently ignore it while
+    # constructing a decoder whose output path has no audio tower consumer.
+    # This runs during metadata admission, before any checkpoint payload read.
+    audio_tensors = tuple(name for name in inventory if name.startswith((
+        'audio_tower.', 'model.audio_tower.', 'model.language_model.audio_tower.',
+        'model.audio.', 'audio.')))
+    if config.get('audio_config') is not None or audio_tensors:
+        raise ValueError('Qwen3.5 native multimodal reader rejects audio_config/audio tensors: audio execution is not implemented')
+
+    vision, text, _, _ = NativeQwen35Vision.validate_config(config, max_bytes=max_bytes)
+    block_shapes = {
+        'norm1.weight': (8,), 'norm1.bias': (8,),
+        'norm2.weight': (8,), 'norm2.bias': (8,),
+        'attn.qkv.weight': (24, 8), 'attn.qkv.bias': (24,),
+        'attn.proj.weight': (8, 8), 'attn.proj.bias': (8,),
+        'mlp.linear_fc1.weight': (16, 8), 'mlp.linear_fc1.bias': (16,),
+        'mlp.linear_fc2.weight': (8, 16), 'mlp.linear_fc2.bias': (8,),
+    }
+    expected_vision = dict(NativeQwen35Vision._shapes)
+    for layer in range(vision['depth']):
+        expected_vision.update({f'blocks.{layer}.{name}': shape
+                                for name, shape in block_shapes.items()})
+    vision_prefix = 'model.visual.'
+    actual_vision = {
+        name[len(vision_prefix):]: record
+        for name, record in inventory.items() if name.startswith(vision_prefix)
+    }
+    if set(actual_vision) != set(expected_vision):
+        raise ValueError('Qwen3.5 wrapper vision header inventory differs')
+    for name, shape in expected_vision.items():
+        record = actual_vision[name]
+        if tuple(record['shape']) != tuple(shape) or record['dtype'] not in ('F32', 'F16', 'BF16'):
+            raise ValueError('Qwen3.5 wrapper vision header differs: '+name)
+
+    text_config = dict(text)
+    text_config.setdefault('model_type', 'qwen3_5_moe_text')
+    planner = IndependentQwen35TextDecoder(text_config, {}, _inventory_only=True)
+    expected_text = dict(planner.tensor_shapes)
+    text_prefix = 'model.language_model.'
+    actual_text = {}
+    for name, record in inventory.items():
+        if name.startswith(vision_prefix):
+            continue
+        canonical = ('model.'+name[len(text_prefix):]
+                     if name.startswith(text_prefix) else name)
+        if canonical in actual_text:
+            raise ValueError('duplicate canonical Qwen3.5 text header: '+canonical)
+        actual_text[canonical] = record
+    actual_names = set(actual_text)
+    expected_names = set(expected_text)
+    tied_head_may_be_absent = bool(text_config.get('tie_word_embeddings', False))
+    if (actual_names != expected_names and not
+            (tied_head_may_be_absent and
+             actual_names == expected_names - {'lm_head.weight'})):
+        raise ValueError('Qwen3.5 wrapper text header inventory differs')
+    for name in actual_names:
+        shape = expected_text[name]
+        record = actual_text[name]
+        if tuple(record['shape']) != tuple(shape) or record['dtype'] not in ('F32', 'F16', 'BF16'):
+            raise ValueError('Qwen3.5 wrapper text header differs: '+name)
+    if type(resident) is not int or resident < 0 or resident * 2 > max_bytes:
+        raise MemoryError('Qwen3.5 multimodal resident inventory exceeds admission')
 
 
 def _read_native_checkpoint(directory, *, model_type, max_weight_bytes, runtime_budget=None,
@@ -259,10 +392,14 @@ def _read_native_checkpoint(directory, *, model_type, max_weight_bytes, runtime_
 
     The weight budget covers loaded arrays plus one decoder-owned copy and the
     largest source conversion. KV, inference scratch and Python metadata have
-    separate limits. This is not a total process-RSS bound.
+    separate limits. This is not a total process-RSS bound. Every caller must
+    supply a family/fixture metadata admission callback; this private low-level
+    reader must not become an inventory-planner bypass.
     """
     if type(max_weight_bytes) is not int or max_weight_bytes <= 0:
         raise ValueError('max_weight_bytes must be a positive integer')
+    if not callable(metadata_admission):
+        raise ValueError('exact checkpoint metadata admission callback required before payload reads')
     limits = CheckpointReadLimits() if read_limits is None else read_limits
     if type(limits) is not CheckpointReadLimits:
         raise TypeError('CheckpointReadLimits required')
@@ -375,8 +512,10 @@ def load_native_text_decoder(directory, *, model_type, library,
                              max_weight_bytes, max_bytes=512 * 1024 * 1024,
                              context_tokens=None, read_limits=None, cancel=None,
                              expert_provider=None, max_snapshots=None,
-                             retain_diagnostics=None):
+                             retain_diagnostics=None, source_backend='native'):
     """Load an exact native text family without downloads or model fallback."""
+    if source_backend not in ('native', 'public-range'):
+        raise ValueError('native text loader requires an explicit supported source backend')
     cleanup = retry_checkpoint_cleanup()
     if cleanup['pending']:
         raise RuntimeError('previous cancelled decoder cleanup is still pending: '
@@ -384,6 +523,11 @@ def load_native_text_decoder(directory, *, model_type, library,
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError('max_bytes must be a positive integer')
     decoder_owner(model_type)
+    from .resident_family_inventory import FAMILIES
+    if model_type not in FAMILIES:
+        raise ValueError(
+            'generic native text loading is restricted without a complete '
+            'resident inventory planner: '+model_type)
     options = {}
     if max_snapshots is not None:
         if model_type not in ('glm_moe_dsa','qwen3_5_moe_text'):
@@ -392,7 +536,8 @@ def load_native_text_decoder(directory, *, model_type, library,
             raise ValueError('bounded Qwen3.5 retained snapshot inventory required')
         options['max_snapshots']=max_snapshots
     if retain_diagnostics is not None:
-        if model_type!='glm_moe_dsa':raise ValueError('native diagnostics policy requires the DSA owner')
+        if model_type != 'glm_moe_dsa':
+            raise ValueError('native diagnostics policy requires the DSA owner')
         options['retain_diagnostics']=retain_diagnostics
     context_options = {'glm5_next_text': 'max_tokens', 'deepseek_v4': 'max_context',
                        'kimi_linear':'capacity','mixtral':'max_context','qwen3_5_moe_text':'context_tokens'}
@@ -408,6 +553,8 @@ def load_native_text_decoder(directory, *, model_type, library,
     if not library.is_file():
         raise ValueError('library must be an explicit local file')
     if expert_provider is not None:
+        if source_backend != 'native':
+            raise ValueError('streamed expert loading has no admitted public-range source binding')
         if model_type == 'glm_moe_dsa':
             from .native_glm_dsa import NativeGlmDsaDecoder
             return NativeGlmDsaDecoder.from_streamed_directory(directory,library=library,
@@ -420,14 +567,45 @@ def load_native_text_decoder(directory, *, model_type, library,
             library=library, expert_provider=expert_provider,
             max_weight_bytes=max_weight_bytes, max_bytes=max_bytes,
             max_context=context_tokens, read_limits=read_limits, cancel=cancel)
+    # Keep decoder provenance for every whole-model family, not only the
+    # original public-text adapters. Public ABI composition must be able to
+    # prove that its decoder was built from the exact checkpoint snapshot it
+    # is about to expose; otherwise another family's or a replaced checkpoint
+    # could be paired with a superficially compatible tensor schema.
+    from .publisher_checkpoint.storage import snapshot
+    from .source_scope import source_family_for_identity
+    from .family_source_binding import bind_decoder_to_snapshot
+    limits = CheckpointReadLimits() if read_limits is None else read_limits
+    if type(limits) is not CheckpointReadLimits:
+        raise ValueError('explicit native checkpoint read-limit schema required')
+    source_snapshot = snapshot(directory,
+        max_metadata_bytes=limits.max_metadata_bytes,
+        max_tensors=limits.max_tensors, max_shards=limits.max_shards)
+    source_identity = source_family_for_identity(model_type)
     config, weights = read_native_text_checkpoint(
         directory, model_type=model_type, max_weight_bytes=max_weight_bytes,
-        read_limits=read_limits,cancel=cancel,context_tokens=context_tokens)
+        read_limits=read_limits,cancel=cancel,context_tokens=context_tokens,
+        source_backend=source_backend)
     _cancelled(cancel)
     module, name = _DECODERS[model_type]
     factory = getattr(import_module(f'{__package__}.{module}'), name)
     decoder = factory(config, weights, library=library, max_bytes=max_bytes, **options)
-    return _finish_decoder(decoder, cancel)
+    try:
+        if source_snapshot is not None:
+            source_snapshot.assert_unchanged()
+            bind_decoder_to_snapshot(decoder, source_snapshot,
+                family=source_identity, model_type=model_type)
+        return _finish_decoder(decoder, cancel)
+    except BaseException as error:
+        try:
+            decoder.close()
+        except BaseException as cleanup:
+            with _CLEANUP_LOCK:
+                _PENDING_DECODERS[id(decoder)] = decoder
+            from .failure_reporting import add_failure_note, failure_summary
+            add_failure_note(error, 'family snapshot binding cleanup retained: '
+                             + failure_summary(cleanup))
+        raise
 
 
 def load_native_multimodal_decoder(directory, *, model_type, library, text_library,
@@ -461,32 +639,9 @@ def load_native_multimodal_decoder(directory, *, model_type, library, text_libra
         libraries.append(resolved)
     metadata_admission = None
     if model_type == 'qwen3_5_moe':
-        # The direct native Qwen3.5 wrapper is the explicitly bounded tiny
-        # vision vertical slice. Validate its complete vision namespace from
-        # SafeTensors headers before _read_native_checkpoint materializes any
-        # payload. The general publisher conditional loader has its own full
-        # producer/consumer planner and is intentionally unaffected.
         def metadata_admission(config, inventory, resident):
-            from .native_qwen35_vision import NativeQwen35Vision
-            NativeQwen35Vision.validate_config(config, max_bytes=max_bytes)
-            vision = config['vision_config']
-            expected = dict(NativeQwen35Vision._shapes)
-            block_shapes = {
-                'norm1.weight': (8,), 'norm1.bias': (8,),
-                'norm2.weight': (8,), 'norm2.bias': (8,),
-                'attn.qkv.weight': (24, 8), 'attn.qkv.bias': (24,),
-                'attn.proj.weight': (8, 8), 'attn.proj.bias': (8,),
-                'mlp.linear_fc1.weight': (16, 8), 'mlp.linear_fc1.bias': (16,),
-                'mlp.linear_fc2.weight': (8, 16), 'mlp.linear_fc2.bias': (8,),
-            }
-            for layer in range(vision['depth']):
-                expected.update({f'blocks.{layer}.{name}': shape
-                                 for name, shape in block_shapes.items()})
-            prefix = 'model.visual.'
-            actual = {name[len(prefix):]: tuple(tensor['shape'])
-                      for name, tensor in inventory.items() if name.startswith(prefix)}
-            if actual != expected:
-                raise ValueError('Qwen3.5 native wrapper vision header inventory differs')
+            _admit_qwen35_multimodal_source(
+                config, inventory, resident, max_bytes=max_bytes)
     config, weights = _read_native_checkpoint(
         directory, model_type=model_type, max_weight_bytes=max_weight_bytes,
         runtime_budget=max_bytes if model_type=='qwen3_5_moe' else None,

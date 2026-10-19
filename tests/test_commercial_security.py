@@ -354,11 +354,16 @@ class HttpBoundaryTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                for request_origin, expected in ((origin, 204), ("https://untrusted.example", 403)):
-                    with self.subTest(origin=request_origin):
+                cases = (
+                    ("/api/document/example", origin, 204),
+                    ("/v1/messages", origin, 204),
+                    ("/api/document/example", "https://untrusted.example", 403),
+                )
+                for path, request_origin, expected in cases:
+                    with self.subTest(path=path, origin=request_origin):
                         connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
                         try:
-                            connection.request("OPTIONS", "/api/document/example", headers={
+                            connection.request("OPTIONS", path, headers={
                                 "Origin": request_origin, "Access-Control-Request-Method": "PUT",
                             })
                             response = connection.getresponse()
@@ -367,10 +372,69 @@ class HttpBoundaryTests(unittest.TestCase):
                             if expected == 204:
                                 self.assertIn("PUT", response.getheader("Access-Control-Allow-Methods").split(", "))
                                 self.assertEqual(response.getheader("Access-Control-Allow-Origin"), origin)
+                                allowed_headers = response.getheader("Access-Control-Allow-Headers").lower()
+                                if path == "/v1/messages":
+                                    self.assertIn("x-api-key", allowed_headers)
+                                    self.assertIn("anthropic-version", allowed_headers)
+                                else:
+                                    self.assertNotIn("x-api-key", allowed_headers)
                             else:
                                 self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
                         finally:
                             connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_anthropic_version_header_reaches_compatibility_route(self) -> None:
+        payload = json.dumps({"model": "local", "messages": [
+            {"role": "user", "content": "hello"}], "max_tokens": 2})
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"OPENAGENT_AUTH_ENFORCED": "0"}):
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(Path(tmp)))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for headers, expected, error_type in (
+                    ({"Content-Type": "application/json"}, 400, "invalid_request_error"),
+                    ({"Content-Type": "application/json", "anthropic-version": "2023-06-01"},
+                     503, "api_error"),
+                ):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", server.server_address[1], timeout=10)
+                    try:
+                        connection.request("POST", "/v1/messages", body=payload, headers=headers)
+                        response = connection.getresponse()
+                        body = json.loads(response.read().decode("utf-8"))
+                        self.assertEqual(response.status, expected)
+                        self.assertEqual(body["type"], "error")
+                        self.assertEqual(body["error"]["type"], error_type)
+                    finally:
+                        connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_anthropic_auth_gate_uses_anthropic_error_envelope(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict(os.environ, {"OPENAGENT_AUTH_ENFORCED": "1"}):
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(Path(tmp)))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for credential_headers in ({}, {"x-api-key": "invalid-local-token"}):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", server.server_address[1], timeout=10)
+                    try:
+                        connection.request("POST", "/v1/messages", body="{}",
+                            headers={"Content-Type": "application/json", **credential_headers})
+                        response = connection.getresponse()
+                        body = json.loads(response.read().decode("utf-8"))
+                        self.assertEqual(response.status, 401)
+                        self.assertEqual(body["type"], "error")
+                        self.assertEqual(body["error"]["type"], "authentication_error")
+                    finally:
+                        connection.close()
             finally:
                 server.shutdown()
                 server.server_close()

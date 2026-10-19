@@ -14,6 +14,8 @@ from .torch_qwen35_decoder import TorchQwen35Decoder
 from .device_qwen4_forward import qwen4_device_forward
 from .device_execution_policy import admit_no_fallback,admit_fp32
 
+_SOURCE_ADMISSION = object()
+
 
 @dataclass(frozen=True)
 class TorchQwen4Snapshot:
@@ -27,7 +29,10 @@ class TorchQwen4Decoder(TorchQwen35Decoder):
     implementation = 'torch-qwen4-device-fp32'
 
     def __init__(self,config,tensors,*,device,max_bytes,max_snapshots=4,
-                 max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,projection_provider=None):
+                 max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,projection_provider=None,
+                 _source_admission=None):
+        if _source_admission is not _SOURCE_ADMISSION:
+            raise ValueError('Qwen4 device construction requires metadata-admitted source tensors')
         admit_no_fallback(device)
         inventory = IndependentQwen4TextDecoder(config,{},_inventory_only=True)
         self.config = inventory.config
@@ -133,6 +138,10 @@ class TorchQwen4Decoder(TorchQwen35Decoder):
     def from_directory(cls,directory,*,device,max_weight_bytes,max_bytes,read_limits=None,cancel=None,expert_provider=None,projection_provider=None,
                        max_projection_bytes=None,max_projection_host_bytes=None,max_projection_cache_bytes=0,**options):
         from .native_checkpoint import read_native_text_checkpoint,_finish_decoder
+        if expert_provider is not None:
+            raise ValueError('Qwen4 external experts are disabled until packed/source tensor content identity is bound')
+        if projection_provider is not None:
+            raise ValueError('Qwen4 streamed projections require verified checkpoint source-content identity')
         owned=False
         if max_projection_bytes is not None:
             if projection_provider is not None:
@@ -140,6 +149,11 @@ class TorchQwen4Decoder(TorchQwen35Decoder):
             from .publisher_checkpoint.storage import snapshot,thaw
             from .device_publisher_projections import DevicePublisherProjections
             metadata=snapshot(directory,max_metadata_bytes=16*1024**2,max_tensors=200000,max_shards=8192)
+            from .source_scope import require_source_inventory_admission
+            require_source_inventory_admission(
+                family='qwen4',model_type='qwen4_exp_text',backend='device',
+                arithmetic='fp32',persisted_format='float32',
+                inventory=metadata.tensors)
             inventory=IndependentQwen4TextDecoder(thaw(metadata.config),{},_inventory_only=True)
             names=tuple(name for name,shape in inventory.tensor_shapes.items()
                         if len(shape)==2
@@ -168,12 +182,45 @@ class TorchQwen4Decoder(TorchQwen35Decoder):
             shapes.update((name,value.shape) for name,value in admitted.integer_metadata.items())
             if config.get('tie_word_embeddings',False) and 'lm_head.weight' not in inventory:
                 del shapes['lm_head.weight']
-            if set(shapes)!=set(inventory) or any(tuple(inventory[name]['shape'])!=tuple(shape) for name,shape in shapes.items()):
+            if set(shapes)!=set(inventory) or any(
+                    tuple(inventory[name]['shape'])!=tuple(shape) or
+                    inventory[name].get('dtype') not in (
+                        ('I64',) if name in admitted.integer_metadata else ('F32','F16','BF16'))
+                    for name,shape in shapes.items()):
                 raise ValueError('exact full Qwen4 checkpoint inventory required')
+            from .source_scope import require_source_inventory_admission
+            require_source_inventory_admission(
+                family='qwen4',model_type='qwen4_exp_text',backend='device',
+                arithmetic='fp32',persisted_format='float32',inventory=inventory)
             names = tuple(sorted(shapes))
             if expert_provider is not None:
+                from .torch_qwen4_experts import TorchQwen4Experts
+                from .device_qwen4_publisher_experts import DeviceQwen4PublisherExperts
+                from .qwen4_streamed_experts import qwen4_metadata_fingerprint
+                provider_fingerprint=(expert_provider.manifest.fingerprint
+                    if type(expert_provider) is TorchQwen4Experts else
+                    getattr(expert_provider,'fingerprint',None))
+                provider_architecture=(expert_provider.manifest.architecture
+                    if type(expert_provider) is TorchQwen4Experts else 'qwen4_exp_text')
+                if (type(expert_provider) not in (TorchQwen4Experts,DeviceQwen4PublisherExperts)
+                        or provider_architecture!='qwen4_exp_text'
+                        or provider_fingerprint!=qwen4_metadata_fingerprint(config)
+                        or len(expert_provider.layers)!=config['num_hidden_layers']
+                        or (expert_provider.hidden_size,expert_provider.intermediate_size,
+                            expert_provider.expert_count,expert_provider.selected_experts)!=
+                           (config['hidden_size'],config['moe_intermediate_size'],
+                            config['num_experts'],config['num_experts_per_tok'])):
+                    raise ValueError('Qwen4 expert manifest/config identity must be admitted before checkpoint payload reads')
                 names = tuple(name for name in names if not name.endswith(('mlp.experts.gate_up_proj','mlp.experts.down_proj')))
             if projection_provider is not None:
+                from .publisher_checkpoint.storage import freeze
+                snapshot=projection_provider.reader.snapshot
+                snapshot.assert_unchanged()
+                if snapshot.config!=freeze(config):
+                    raise ValueError('projection checkpoint configuration differs before Qwen4 payload loading')
+                for name,value in projection_provider.matrices.items():
+                    if name not in shapes or tuple(value.shape)!=tuple(shapes[name]):
+                        raise ValueError('Qwen4 streamed projection is outside the admitted inventory: '+name)
                 names=tuple(name for name in names if name not in projection_provider.matrices)
             size = sum(math.prod(shapes[name])*(8 if name in admitted.integer_metadata else 4) for name in names)
             if 4*size+getattr(expert_provider,'max_bytes',0)+getattr(projection_provider,'max_bytes',0)>max_bytes:
@@ -181,13 +228,14 @@ class TorchQwen4Decoder(TorchQwen35Decoder):
             return names
         try:
             config,weights = read_native_text_checkpoint(directory,model_type='qwen4_exp_text',max_weight_bytes=max_weight_bytes,
-                read_limits=read_limits,cancel=cancel,tensor_selection=select)
+                read_limits=read_limits,cancel=cancel,tensor_selection=select,source_backend='device')
             if projection_provider is not None:
                 from .publisher_checkpoint.storage import freeze
                 projection_provider.reader.snapshot.assert_unchanged()
                 if projection_provider.reader.snapshot.config!=freeze(config):
                     raise ValueError('projection checkpoint configuration differs from decoder source')
-            decoder=cls(config,weights,device=device,max_bytes=max_bytes,expert_provider=expert_provider,projection_provider=projection_provider,**options)
+            decoder=cls(config,weights,device=device,max_bytes=max_bytes,expert_provider=expert_provider,
+                projection_provider=projection_provider,_source_admission=_SOURCE_ADMISSION,**options)
             decoder._owns_projection_provider=owned
             return _finish_decoder(decoder,cancel)
         except BaseException:

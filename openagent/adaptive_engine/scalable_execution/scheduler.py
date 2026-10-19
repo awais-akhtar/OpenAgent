@@ -8,6 +8,7 @@ import sys
 from typing import Callable, Iterable
 
 from .resources import check_cancel, positive
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,7 @@ class DispatchContext:
             try:leave()
             except BaseException as cleanup:
                 self._cleanup_callbacks.append(leave)
-                primary.add_note('dispatch cancellation scope release retained: '+repr(cleanup))
+                add_failure_note(primary, 'dispatch cancellation scope release retained: '+failure_summary(cleanup))
             raise
 
     def _cleanup(self):
@@ -150,7 +151,7 @@ class ScalableExecutor:
                         self._pending_cleanup.append((context,reservation))
                         self._quarantined=True
                     if primary is None:raise
-                    primary.add_note('scratch reservation release requires retry: '+repr(cleanup))
+                    add_failure_note(primary, 'scratch reservation release requires retry: '+failure_summary(cleanup))
 
     def retry_cleanup(self):
         """Release only successfully disposed resources and their reservations.
@@ -279,7 +280,7 @@ class ScalableExecutor:
                                 except BaseException as cleanup:
                                     context._cleanup_callbacks.append(close)
                                     if failure is None:raise
-                                    failure.add_note('dispatch iterator close requires retry: '+repr(cleanup))
+                                    add_failure_note(failure, 'dispatch iterator close requires retry: '+failure_summary(cleanup))
                         finally:
                             if failure is None:failure = sys.exc_info()[1]
                             try:
@@ -288,7 +289,7 @@ class ScalableExecutor:
                                 with self._lock:self._quarantined=True
                                 if failure is None:
                                     raise
-                                failure.add_note('request disposal requires retry: '+str(cleanup_failure))
+                                add_failure_note(failure, 'request disposal requires retry: '+failure_summary(cleanup_failure))
                 return result
         finally:
             if context is not None:

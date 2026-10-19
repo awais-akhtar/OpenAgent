@@ -4,7 +4,7 @@
  * so a stopped historical port cannot look like a running OpenAgent instance.
  */
 
-const CACHE_VERSION = "openagent-vite-c321b153669c0016";
+const CACHE_VERSION = "openagent-vite-d96fa73def354e36";
 const SHELL_ASSETS = [
   "/styles.css",
   "/app.js",

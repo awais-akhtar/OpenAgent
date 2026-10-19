@@ -34,15 +34,19 @@ class BackendRegistry:
             for backend in device.backends:
                 if backend == "openvino":
                     formats = ("onnx", "openvino")
+                    phases = ("prefill", "decode")
                     notes = "Vendor compiler and runtime; model compilation must succeed before use."
                 elif backend.startswith("llama-"):
                     formats = ("gguf",)
+                    phases = ("prefill", "decode")
                     notes = "llama.cpp runtime; model load and generation must be validated separately."
                 elif backend == "onnxruntime":
                     formats = ("onnx",)
+                    phases = ("prefill", "decode")
                     notes = "ONNX Runtime provider available in the main OpenAgent process."
                 else:
                     formats = ()
+                    phases = ()
                     notes = "Discovered backend with no registered model frontend."
                 result.append(
                     BackendCapability(
@@ -50,7 +54,12 @@ class BackendRegistry:
                         device_id=device.id,
                         device_name=device.name,
                         model_formats=formats,
-                        phases=("prefill", "decode", "embedding", "vision", "audio"),
+                        # Discovery is not proof that a backend has a model
+                        # frontend for embedding or media execution. Advertise
+                        # only the text-generation phases represented by these
+                        # registered format frontends; unknown backends remain
+                        # discoverable but are not admitted for any phase.
+                        phases=phases,
                         measured=device.estimate_source.startswith("measured"),
                         available=device.available,
                         notes=notes,
@@ -99,11 +108,18 @@ class OpenVINOBackend:
 
 
 def openvino_device_id(device: DeviceProfile) -> str:
+    if "openvino" not in device.backends:
+        return ""
     details = device.capabilities.get("openvino", {})
-    if isinstance(details, dict) and details.get("id"):
-        return str(details["id"])
-    if "openvino" in device.backends:
-        return device.kind.upper()
+    if isinstance(details, dict):
+        target = details.get("id")
+        if isinstance(target, str) and target.strip():
+            return target.strip()
+    # CPU is a singleton in the OpenVINO device namespace. GPU/NPU kind names
+    # are not identities: synthesizing "GPU" from a profile such as gpu:1 can
+    # silently execute on GPU.0 (or another provider-selected device).
+    if device.kind == "cpu" and "openvino" in device.backends:
+        return "CPU"
     return ""
 
 

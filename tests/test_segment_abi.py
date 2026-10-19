@@ -270,7 +270,10 @@ class SegmentABITests(unittest.TestCase):
         handles = []
         with self.bridge.lock:
             try:
-                for _ in range(256):
+                # Registry storage is a documented 65,536 live-handle bound;
+                # page size is an implementation detail, not a capacity
+                # contract. Exercise the maximum through the public constant.
+                for _ in range(65536):
                     handle = U64()
                     self.assertEqual(lib.oa_segment_register(VERSION, EDGE, 0, 16, cb, None, C.byref(handle)), OK)
                     handles.append(handle.value)

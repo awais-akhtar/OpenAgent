@@ -32,6 +32,9 @@ class NativeMixtralRange:
                        max_weight_bytes, max_bytes, batch_size=1, read_limits=None, cancel=None,
                        expert_provider=None):
         """Admit the whole source inventory, then read only selected layers."""
+        if expert_provider is not None:
+            raise ValueError(
+                'Mixtral packed experts are restricted until source-content identity is bound')
         from .native_checkpoint import read_native_text_checkpoint, _finish_decoder
         selection_layout = []
         def select(config, inventory):
@@ -84,7 +87,8 @@ class NativeMixtralRange:
             selection_layout.append(layout)
             return tuple(sorted(selected))
         config,weights = read_native_text_checkpoint(directory,model_type='mixtral',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='public-range')
         if selection_layout != ['fused']:
             c,_ = configuration(config,context_tokens)
             e,m,h = c['num_local_experts'],c['intermediate_size'],c['hidden_size']
@@ -113,6 +117,9 @@ class NativeMixtralRange:
 
     def __init__(self, config, tensors, *, begin, end, library, context_tokens,
                  max_bytes, batch_size=1, expert_provider=None):
+        if expert_provider is not None:
+            raise ValueError(
+                'Mixtral packed experts are restricted until source-content identity is bound')
         self.config, self.capacity = configuration(config, context_tokens)
         c = self.config
         if (type(begin) is not int or type(end) is not int or

@@ -7,10 +7,38 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from openagent.adaptive_engine.hf_moe import HFMoeAdapter, HFMoeManifest, expert_module_names
+from openagent.adaptive_engine.hf_moe import (
+    HFMoeAdapter, HFMoeManifest, SUPPORTED_MODEL_TYPES,
+    expert_module_names,
+)
 
 
 class ManifestTests(unittest.TestCase):
+    def test_transformers_execution_requires_an_exact_phase1_route(self):
+        from openagent.adaptive_engine.hf_moe import require_hf_moe_execution_admission
+
+        for model_type in sorted(SUPPORTED_MODEL_TYPES):
+            manifest = HFMoeManifest(Path("."), model_type, json.dumps({"model_type": model_type}))
+            with self.subTest(model_type=model_type), self.assertRaisesRegex(
+                    ValueError, "P02 HF MoE execution is restricted"):
+                require_hf_moe_execution_admission(manifest)
+
+    def test_adapter_rejects_unadmitted_hf_route_before_library_or_checkpoint_access(self):
+        from openagent.adaptive_engine.hf_moe import require_hf_moe_execution_admission
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "config.json").write_text(json.dumps({
+                "model_type": "mixtral", "hidden_size": 8,
+                "intermediate_size": 12, "num_hidden_layers": 1,
+                "num_attention_heads": 2, "num_key_value_heads": 1,
+                "vocab_size": 16, "num_local_experts": 2,
+                "num_experts_per_tok": 1,
+            }))
+            with patch("openagent.adaptive_engine.hf_moe._validate_checkpoint",
+                       side_effect=AssertionError("unadmitted checkpoint accessed")):
+                with self.assertRaisesRegex(ValueError, "P02 HF MoE execution is restricted"):
+                    HFMoeAdapter.load(directory)
+
     def test_exact_expert_inventory(self):
         base = dict(hidden_size=16, intermediate_size=24, num_hidden_layers=4,
                     num_attention_heads=4, num_key_value_heads=4, vocab_size=32,
@@ -78,6 +106,7 @@ AVAILABLE = all(importlib.util.find_spec(name) for name in ("torch", "transforme
 
 
 @unittest.skipUnless(AVAILABLE, "optional real-model dependencies unavailable")
+@unittest.skip("P02 has no admitted Transformers/Accelerate route; differential execution is restricted")
 class DifferentialTests(unittest.TestCase):
     def test_dense_glm_name_collision_is_not_sparse_support(self):
         from transformers import AutoConfig, AutoModelForCausalLM

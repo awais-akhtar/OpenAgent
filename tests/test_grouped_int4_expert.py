@@ -1,6 +1,7 @@
 """Group geometry, signed nibble policy, partial groups and publication tests."""
 
 import hashlib
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -146,6 +147,31 @@ class GroupedFormatTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     convert_experts({"a": matrices}, root / "fail", hidden_size=3, intermediate_size=5)
             self.assertEqual(list(root.iterdir()), [path])
+
+    def test_converter_closes_raw_descriptor_when_fdopen_fails(self):
+        matrices = [np.full((5, 3), .1), np.full((5, 3), -.1), np.full((3, 5), .2)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_mkstemp = tempfile.mkstemp
+            opened = {}
+
+            def capture_descriptor(*args, **kwargs):
+                descriptor, name = real_mkstemp(*args, **kwargs)
+                opened.update(descriptor=descriptor, path=Path(name))
+                return descriptor, name
+
+            with patch('openagent.adaptive_engine.grouped_int4_conversion.tempfile.mkstemp',
+                       side_effect=capture_descriptor), \
+                 patch('openagent.adaptive_engine.grouped_int4_conversion.os.fdopen',
+                       side_effect=OSError('fdopen failed')):
+                with self.assertRaisesRegex(OSError, 'fdopen failed'):
+                    convert_experts({'a': matrices}, root / 'weights.gi4',
+                                    hidden_size=3, intermediate_size=5)
+
+            with self.assertRaises(OSError):
+                os.fstat(opened['descriptor'])
+            self.assertFalse(opened['path'].exists())
+            self.assertEqual(list(root.iterdir()), [])
 
 
 if __name__ == "__main__":

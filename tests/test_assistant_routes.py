@@ -16,6 +16,31 @@ from openagent.storage import OpenAgentStore
 
 
 class AssistantRouteTests(unittest.TestCase):
+    def test_task_completion_requires_matching_project_scope(self) -> None:
+        with TemporaryDirectory() as tmp:
+            assistant = AssistantManager(OpenAgentStore(tmp))
+            task = assistant.create_task(title="Project task", project="alpha")
+            payload: dict[str, object] = {"task_id": task["id"]}
+            deps = AssistantRouteDependencies(
+                assistant=assistant,
+                first=lambda params, key: params.get(key, [None])[0],
+                parse_int=lambda value, default=0: default if value is None else int(value),
+                read_json=lambda: payload,
+            )
+
+            missing_scope = handle_post("/api/assistant/tasks/complete", deps)
+            self.assertEqual(missing_scope.status, HTTPStatus.BAD_REQUEST)
+            payload["project"] = "beta"
+            wrong_project = handle_post("/api/assistant/tasks/complete", deps)
+            self.assertEqual(wrong_project.status, HTTPStatus.BAD_REQUEST)
+            self.assertEqual(assistant.tasks(project="alpha")[0]["status"], "open")
+
+            payload["project"] = "alpha"
+            completed = handle_post("/api/assistant/tasks/complete", deps)
+            self.assertEqual(completed.status, HTTPStatus.OK)
+            self.assertEqual(completed.payload["task"]["project"], "alpha")
+            self.assertEqual(completed.payload["task"]["status"], "completed")
+
     def test_declared_routes_are_handled_and_keep_payloads(self) -> None:
         with TemporaryDirectory() as tmp:
             payload: dict[str, object] = {

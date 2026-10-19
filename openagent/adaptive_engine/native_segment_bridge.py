@@ -82,6 +82,10 @@ class NativeSegmentBridge(SegmentBridge):
                     self.restore(session, snapshot)
                 except BaseException as restore_error:
                     error.add_note('native cache rollback failed: '+str(restore_error))
+                    # If release itself fails, keep the registered callback
+                    # reachable for retry but never permit reuse of physical
+                    # state whose rollback could not be established.
+                    self._quarantined.add(session)
                     try:
                         self.release(session)
                     except BaseException as close_error:

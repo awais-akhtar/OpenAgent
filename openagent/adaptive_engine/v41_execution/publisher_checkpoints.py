@@ -27,6 +27,7 @@ from .publisher_cache import PackedPublisherRow, packed_nbytes
 from ..session_recovery import _path as _safe_path
 from ..native_library_identity import _stamp
 from ..generation_checkpoint_files import _remove_staging
+from ..owned_file_descriptor import close_after_failure,fdopen_owned
 
 
 _MAGIC = b'OAP41S03'
@@ -454,10 +455,10 @@ def load_publisher_v41_checkpoint(model, source, *, max_payload_bytes):
             raise ValueError('publisher checkpoint replaced during opening')
         if info.st_size > _PREFIX.size + _HEADER_LIMIT + maximum + 32:
             raise MemoryError('publisher checkpoint file exceeds admission')
-        stream = os.fdopen(descriptor, 'rb', buffering=0)
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        close_after_failure(descriptor,primary,owner='V4.1 publisher checkpoint')
         raise
+    stream=fdopen_owned(descriptor,'rb',buffering=0,owner='V4.1 publisher checkpoint')
     with stream:
         stream = _CancelledReader(stream, model._cancel_rows)
         def read_exact(count):

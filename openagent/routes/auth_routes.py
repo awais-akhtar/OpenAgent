@@ -8,6 +8,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, unquote
 
 from ..auth import AuthError
+from ..config import deployment_mode, is_loopback_host
 from . import JsonRouteResult
 from ._contracts import route_contract
 
@@ -49,6 +50,7 @@ class AuthRouteDependencies:
     bootstrap_token: Callable[[], str]
     request_ip: Callable[[], str]
     user_agent: Callable[[], str]
+    request_origin: Callable[[], str] | None = None
 
 
 def _required_user(deps: AuthRouteDependencies) -> tuple[dict[str, Any] | None, JsonRouteResult | None]:
@@ -103,6 +105,17 @@ def handle_post(path: str, deps: AuthRouteDependencies) -> JsonRouteResult | Non
     payload = deps.read_json()
 
     if path == "/api/auth/register":
+        personal_remote = deployment_mode() == "personal_remote"
+        if personal_remote:
+            # Owner bootstrap is an operator action performed directly from
+            # the local machine with a one-time secret. Do not accept a token
+            # in JSON or allow an Origin-bearing browser request to bootstrap.
+            if not is_loopback_host(deps.request_ip()) or deps.request_ip().strip().lower() in {"", "unknown"}:
+                return JsonRouteResult({"error": "owner bootstrap is available only from the local machine"}, HTTPStatus.FORBIDDEN)
+            if deps.request_origin is not None and deps.request_origin().strip():
+                return JsonRouteResult({"error": "owner bootstrap must be performed by a local operator"}, HTTPStatus.FORBIDDEN)
+            if not deps.bootstrap_token():
+                return JsonRouteResult({"error": "X-OpenAgent-Bootstrap-Token is required for local owner setup"}, HTTPStatus.FORBIDDEN)
         registering_user = deps.auth.resolve_bearer(deps.bearer_token())
         try:
             user = deps.auth.register(
@@ -110,10 +123,16 @@ def handle_post(path: str, deps: AuthRouteDependencies) -> JsonRouteResult | Non
                 str(payload.get("email", "")),
                 str(payload.get("password", "")),
                 display_name=str(payload.get("display_name", "")),
-                bootstrap_token=deps.bootstrap_token() or str(payload.get("bootstrap_token", "")),
+                bootstrap_token=(
+                    deps.bootstrap_token()
+                    if personal_remote
+                    else deps.bootstrap_token() or str(payload.get("bootstrap_token", ""))
+                ),
                 authorized=bool(registering_user and registering_user.get("role") == "owner"),
             )
-        except (ValueError, AuthError) as exc:
+        except AuthError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.FORBIDDEN if personal_remote else HTTPStatus.BAD_REQUEST)
+        except ValueError as exc:
             return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult({"user": user}, HTTPStatus.CREATED)
 

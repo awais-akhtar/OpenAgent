@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 from .auxiliary_attention import attention_rows
 from .owner_scope import arithmetic_scope
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 def _exclusive(operation):
@@ -178,7 +179,7 @@ class PublisherV41MTP:
                     self.rng.bit_generator.state = old_rng
                 except BaseException as rollback:
                     self._quarantined = True
-                    primary.add_note('MTP restore RNG rollback failed: '+repr(rollback))
+                    add_failure_note(primary,'MTP restore RNG rollback failed: '+failure_summary(rollback))
                 raise
             self.windows, self.position = restored, snapshot.position
 
@@ -194,9 +195,21 @@ class PublisherV41MTP:
 
     @staticmethod
     def _array(value, shape):
-        x = np.array(value, dtype=np.float32, copy=True)
-        if x.size != math.prod(shape) or not np.isfinite(x).all():
+        # Validate the provider's borrowed result before making the owned
+        # activation copy, so a malformed oversized row cannot escape the
+        # shape-derived MTP workspace admission.
+        source = np.asarray(value)
+        if source.size != math.prod(shape) or source.dtype.kind != 'f':
             raise ValueError('invalid MTP extent or arithmetic')
+        try:
+            finite = np.isfinite(source).all()
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            raise ValueError('invalid MTP extent or arithmetic')
+        x = np.array(source, dtype=np.float32, order='C', copy=True)
+        if not np.isfinite(x).all():
+            raise ValueError('MTP arithmetic is not representable as FP32')
         return x.reshape(shape)
 
     def _cast(self, x):
@@ -438,5 +451,5 @@ class PublisherV41MTP:
                 self.rng.bit_generator.state = rng_state
             except BaseException as rollback:
                 self._quarantined = True
-                primary.add_note('MTP proposal RNG rollback failed: '+repr(rollback))
+                add_failure_note(primary,'MTP proposal RNG rollback failed: '+failure_summary(rollback))
             raise

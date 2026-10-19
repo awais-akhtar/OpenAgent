@@ -57,6 +57,7 @@ class ScraperRouteTests(TestCase):
         self.scraper = Mock()
         self.scraper.status.return_value = {"project": "core", "scheduled_jobs": 1}
         self.scraper.list_scheduled.return_value = [{"id": "job-1"}]
+        self.scraper.get_scrape_history.return_value = [{"id": "result-1", "url": "https://example.org"}]
         self.scraper.scrape_url.return_value = {"url": "https://example.com", "status": "ok"}
         self.scraper.schedule_scrape.return_value = {"job_id": "job-1"}
         self.scraper.run_due_jobs.return_value = {"ran": 0, "errors": 0, "total_due": 0}
@@ -90,6 +91,14 @@ class ScraperRouteTests(TestCase):
         self.assertEqual(jobs.status, HTTPStatus.OK)
         self.assertEqual(jobs.payload, {"jobs": [{"id": "job-1"}]})
         self.scraper.list_scheduled.assert_called_once_with(project="default")
+
+        history = handle_get("/api/scraper/history", "project=core&url=https%3A%2F%2Fexample.org&limit=12", self.deps)
+        self.assertEqual(history.payload, {"results": [{"id": "result-1", "url": "https://example.org"}]})
+        self.scraper.get_scrape_history.assert_called_once_with("https://example.org", project="core", limit=12)
+
+        self.scraper.get_scrape_history.reset_mock()
+        handle_get("/api/scraper/history", "limit=invalid", self.deps)
+        self.scraper.get_scrape_history.assert_called_once_with("", project="default", limit=100)
 
     def test_scrape_preserves_boolean_defaults_and_explicit_values(self) -> None:
         self.payload = {"url": " https://example.com ", "project": " core "}

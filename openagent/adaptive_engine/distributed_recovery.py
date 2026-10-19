@@ -19,6 +19,17 @@ def _pin(value):
     return type(value) is str and len(value)==64 and all(c in '0123456789abcdef' for c in value)
 
 
+def _failure_summary(failure):
+    """Describe cleanup failures without invoking exception formatting hooks."""
+    try:
+        name = type(failure).__name__
+    except BaseException:
+        name = 'BaseException'
+    if type(name) is not str or not name or len(name) > 128:
+        name = 'BaseException'
+    return name + ': failure details omitted'
+
+
 @dataclass(frozen=True)
 class RankRecoveryCheckpoint:
     key: str
@@ -29,7 +40,7 @@ class RankRecoveryCheckpoint:
     def admit(self,world_size):
         if type(world_size) is not int or not 1<=world_size<=64:
             raise ValueError('one to 64 explicitly admitted recovery ranks required')
-        if (type(self.key) is not str or not 0<len(self.key)<=256 or
+        if (type(self.key) is not str or not 0<len(self.key)<=256 or '\x00' in self.key or
                 type(self.manifest_path) is not str or not 0<len(self.manifest_path)<=4096 or not _pin(self.manifest_sha256) or
                 type(self.max_rank_bytes) is not int or not 88<=self.max_rank_bytes<=2**63-1):
             raise ValueError('explicit named and pinned distributed recovery checkpoint required')
@@ -47,7 +58,8 @@ class RankRecoveryCheckpoint:
                 or type(value['world_size']) is not int or value['world_size']!=world_size
                 or type(value['context_tokens']) is not int or not 0<=value['context_tokens']<=2**63-1
                 or not _pin(value['history_sha256']) or type(value['model_identity']) is not str
-                or not 0<len(value['model_identity'])<=4096 or type(value['ranks']) is not list
+                or not 0<len(value['model_identity'])<=4096 or '\x00' in value['model_identity']
+                or type(value['ranks']) is not list
                 or len(value['ranks'])!=world_size):
             raise ValueError('committed distributed rank geometry differs')
         names=set()
@@ -59,7 +71,7 @@ class RankRecoveryCheckpoint:
                     or row['filename'] in ('.','..') or ':' in row['filename']
                     or type(row['bytes']) is not int or not 88<=row['bytes']<=self.max_rank_bytes
                     or not _pin(row['sha256']) or type(row['identity']) is not str
-                    or not 0<len(row['identity'])<=4096):
+                    or not 0<len(row['identity'])<=4096 or '\x00' in row['identity']):
                 raise ValueError('exact per-rank checkpoint receipt required')
             names.add(row['filename'])
         return path,value
@@ -73,11 +85,13 @@ class RankGenerationRecoveryCheckpoint(RankRecoveryCheckpoint):
         from .distributed_generation_checkpoint import admit_manifest,read_manifest
         if type(world_size) is not int or not 1<=world_size<=64:
             raise ValueError('one to 64 explicitly admitted recovery ranks required')
-        if (type(self.key) is not str or not 0<len(self.key)<=256 or
+        if (type(self.key) is not str or not 0<len(self.key)<=256 or '\x00' in self.key or
                 type(self.manifest_path) is not str or not 0<len(self.manifest_path)<=4096 or
                 not Path(self.manifest_path).is_absolute() or not _pin(self.manifest_sha256) or
                 type(self.max_rank_bytes) is not int or not 128<=self.max_rank_bytes<=2**63-1 or
-                type(self.application_identity) is not str or len(self.application_identity)>8192):
+                type(self.application_identity) is not str or
+                not 0<len(self.application_identity)<=8192 or
+                '\x00' in self.application_identity):
             raise ValueError('explicit named, pinned distributed generation checkpoint required')
         path,value=admit_manifest(self.manifest_path,world_size=world_size,
             max_rank_bytes=self.max_rank_bytes,context=2**63-1,
@@ -125,7 +139,17 @@ class _RecoveryDriver:
                 try:
                     coordinator.close_session(session)
                 except BaseException as cleanup:
-                    primary.add_note('replacement recovery session cleanup retained: '+repr(cleanup))
+                    # Cleanup exceptions are arbitrary user/application
+                    # objects. Calling repr() here can raise and abort this
+                    # loop, leaving older opened sessions unclosed while
+                    # masking the restore/driver failure that triggered it.
+                    try:
+                        primary.add_note('replacement recovery session cleanup retained: '+
+                                         _failure_summary(cleanup))
+                    except BaseException:
+                        # A custom BaseException may also reject notes. Keep
+                        # attempting teardown for the remaining owners.
+                        pass
             raise
 
 

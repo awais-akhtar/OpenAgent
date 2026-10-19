@@ -17,6 +17,7 @@ import sys
 import threading
 from typing import TextIO
 
+from .failure_reporting import add_failure_note, failure_summary
 from .olmoe_service import ChatMessage, OlmoeChatDecoder, OlmoeService
 
 
@@ -39,8 +40,19 @@ class JsonlServer:
             self.output.flush()
 
     def _events(self, handle) -> None:
-        for event in handle.events():
-            self.emit({"type": "event", **asdict(event)})
+        try:
+            for event in handle.events():
+                self.emit({"type": "event", **asdict(event)})
+        except BaseException as primary:
+            # A failed JSONL consumer (for example, a closed stdout pipe)
+            # must stop generation instead of leaving a request producing
+            # events that can no longer be delivered.
+            try:
+                handle.cancel()
+            except BaseException as cleanup:
+                if hasattr(primary, "add_note"):
+                    add_failure_note(primary, "request cancellation after event output failure failed: " + failure_summary(cleanup))
+            raise
 
     def _reap(self) -> None:
         for rid, reader in list(self._readers.items()):
@@ -76,9 +88,23 @@ class JsonlServer:
                 reader = threading.Thread(target=self._events, args=(handle,),
                                           name=f"olmoe-events-{handle.request_id}")
                 self._readers[handle.request_id] = reader
-                self.emit({**response, "ok": True, "request_id": handle.request_id,
-                           "session_id": handle.session_id})
-                reader.start()
+                try:
+                    # Acknowledge before starting the event reader so the
+                    # response is ordered ahead of request events. If the
+                    # output fails (or the reader cannot start), the already
+                    # submitted request must not remain generating without a
+                    # consumer.
+                    self.emit({**response, "ok": True, "request_id": handle.request_id,
+                               "session_id": handle.session_id})
+                    reader.start()
+                except BaseException as primary:
+                    self._readers.pop(handle.request_id, None)
+                    try:
+                        handle.cancel()
+                    except BaseException as cleanup:
+                        if hasattr(primary, "add_note"):
+                            add_failure_note(primary, "request cancellation after submit acknowledgement failure failed: " + failure_summary(cleanup))
+                    raise
                 return True
             if action == "cancel":
                 result = self.service.cancel(_text(command.get("request_id"), "request_id"))

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from uuid import uuid4
 import threading
+from .failure_reporting import add_failure_note, failure_summary
 
 @dataclass(frozen=True)
 class GroupedSnapshot:
@@ -32,7 +33,7 @@ class GroupedContinuation:
                 try: self.release_snapshot(receipt)
                 except BaseException as failure:
                     error.cleanup=lambda:self.release_snapshot(receipt)
-                    error.add_note('grouped partial snapshot cleanup remains pending: '+str(failure))
+                    add_failure_note(error, 'grouped partial snapshot cleanup remains pending: '+failure_summary(failure))
                 raise
             self._receipts[key]=values
             return GroupedSnapshot(self._owner,self.identity,key,self.components[0].position)
@@ -62,13 +63,13 @@ class GroupedContinuation:
                 primary=error
                 for component,value in zip(self.components,self._owned(rollback)):
                     try: component.restore(value)
-                    except BaseException as failure: error.add_note('grouped rollback failed: '+str(failure))
+                    except BaseException as failure: add_failure_note(error, 'grouped rollback failed: '+failure_summary(failure))
                 raise
             finally:
                 try: self.release_snapshot(rollback)
                 except BaseException as cleanup:
                     if primary is None: raise
-                    primary.add_note('grouped rollback snapshot cleanup remains pending: '+repr(cleanup))
+                    add_failure_note(primary, 'grouped rollback snapshot cleanup remains pending: '+failure_summary(cleanup))
 
     def reset(self):
         with self._lock:
@@ -79,23 +80,25 @@ class GroupedContinuation:
             except BaseException as error:
                 primary=error
                 try: self.restore(rollback)
-                except BaseException as recovery: error.add_note('grouped reset rollback failed: '+repr(recovery))
+                except BaseException as recovery: add_failure_note(error, 'grouped reset rollback failed: '+failure_summary(recovery))
                 raise
             finally:
                 try: self.release_snapshot(rollback)
                 except BaseException as cleanup:
                     if primary is None: raise
-                    primary.add_note('grouped reset snapshot cleanup remains pending: '+repr(cleanup))
+                    add_failure_note(primary, 'grouped reset snapshot cleanup remains pending: '+failure_summary(cleanup))
 
-    def write_cache(self,output,*,max_bytes):
+    def write_cache(self,output,*,max_bytes,cancelled=None):
         from .compound_cache import write_components
         with self._lock:
-            return write_components(output,self.components,identity=self.identity,max_bytes=max_bytes)
+            return write_components(output,self.components,identity=self.identity,max_bytes=max_bytes,
+                                    cancelled=cancelled)
 
-    def restore_cache(self,source,*,max_bytes):
+    def restore_cache(self,source,*,max_bytes,cancelled=None):
         from .compound_cache import restore_components
         with self._lock:
-            return restore_components(source,self.components,identity=self.identity,max_bytes=max_bytes)
+            return restore_components(source,self.components,identity=self.identity,max_bytes=max_bytes,
+                                      cancelled=cancelled)
 
     def release_all(self):
         with self._lock:

@@ -100,6 +100,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args) -> int:
     try:
+        if args.command in ('tune','verify','generate','benchmark'):
+            raise ValueError(
+                'the Python OLMoE reference CLI is not an admitted P02 execution backend; '
+                'use native_olmoe_cli for the source-bound native route')
         if args.command == "tune":
             from .olmoe_autotune import tune_olmoe_threads, save_profile
 

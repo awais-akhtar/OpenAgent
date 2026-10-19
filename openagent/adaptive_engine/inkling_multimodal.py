@@ -8,6 +8,8 @@ from .flat_native_session import FlatNativeSession
 from .inkling_media import InklingMediaEncoder
 from .qwen4_vision import _cancel
 
+_PUBLISHER_DEVICE_ADMISSION = object()
+
 class InklingMultimodalDecoder:
     implementation='native-c-inkling-conditional-fp32'
     native_range_execution=True
@@ -15,7 +17,11 @@ class InklingMultimodalDecoder:
                  max_snapshots=4,arithmetic='fp32',mtp_max_bytes=0,mtp_work_bytes=0,
                  expert_provider=None,own_expert_provider=False,text_device=None,
                  projection_provider=None,own_projection_provider=False,
-                 segment_runtime_library=None,segment_work_bytes=0,model_directory=None,segment_layer_span=0):
+                 segment_runtime_library=None,segment_work_bytes=0,model_directory=None,segment_layer_span=0,
+                 _checkpoint_inventory=None,
+                 _publisher_device_admission=None):
+        if text_device is not None and _publisher_device_admission is not _PUBLISHER_DEVICE_ADMISSION:
+            raise ValueError('device Inkling construction requires publisher inventory and format admission')
         self.components=component_contract(config,arithmetic=arithmetic)
         if self.components.variant.wrapper!='inkling_mm_model': raise ValueError('exact Inkling multimodal wrapper required')
         self.config=self.components.original_config
@@ -24,33 +30,46 @@ class InklingMultimodalDecoder:
         if type(max_bytes) is not int or max_bytes<=0 or type(context_tokens) is not int or not 1<=context_tokens<=min(65536,self.components.text_config['max_position_embeddings']):
             raise ValueError('explicit bounded Inkling aggregate memory and resident context capacity required')
         self._lock=threading.RLock();self._busy=False;self._closed=False
-        self.max_bytes=max_bytes;self.max_snapshots=max_snapshots;self.text=self.media=self.session=None
+        self.max_bytes=max_bytes;self.max_snapshots=max_snapshots;self.context_tokens=context_tokens
+        self.text=self.media=self.session=None
         self.mtp=None;self.continuation=None
+        self.auxiliary={}
         self._expert_provider=expert_provider;self._own_expert_provider=own_expert_provider
         self._projection_provider=projection_provider;self._own_projection_provider=own_projection_provider
-        if segment_runtime_library is not None and (model_directory is None or text_device is not None or
-                type(segment_work_bytes) is not int or segment_work_bytes<=0):
-            raise ValueError('public Inkling execution requires a checkpoint root, CPU text execution and explicit work admission')
-        if type(mtp_max_bytes) is not int or mtp_max_bytes<0 or type(mtp_work_bytes) is not int or mtp_work_bytes<0:
-            raise ValueError('explicit nonnegative MTP admission required')
-        if bool(mtp_max_bytes)!=bool(mtp_work_bytes) or (mtp_max_bytes and mtp_work_bytes>=mtp_max_bytes):
-            raise ValueError('Inkling MTP component and smaller work budgets must be supplied together')
-        text,vision,audio,auxiliary=partition_weights(tensors,self.components)
-        from .inkling_mtp import admit_mtp_inventory
-        headers={}
-        for name,value in auxiliary.items():
-            value=np.asarray(value)
-            if value.dtype!=np.float32 or not np.isfinite(value).all():
-                raise ValueError('finite converted Inkling auxiliary weights required: '+name)
-            headers[name]=(value.shape,'F32')
-        admit_mtp_inventory(self.components.text_config,self.components.auxiliary_config,headers)
-        auxiliary_bytes=sum(np.asarray(value).nbytes for value in auxiliary.values())
-        if 2*auxiliary_bytes>=max_bytes: raise MemoryError('Inkling auxiliary staging exceeds admission')
-        self.auxiliary={name:np.frombuffer(np.asarray(value).tobytes(),dtype=np.asarray(value).dtype).reshape(np.asarray(value).shape)
-                        for name,value in auxiliary.items()}
-        available=max_bytes-auxiliary_bytes-mtp_max_bytes
-        if available<=0: raise MemoryError('Inkling MTP and auxiliary reservations exhaust aggregate admission')
-        text_config=dict(self.components.text_config);text_config['max_position_embeddings']=context_tokens
+        try:
+            if segment_runtime_library is not None and (model_directory is None or text_device is not None or
+                    type(segment_work_bytes) is not int or segment_work_bytes<=0):
+                raise ValueError('public Inkling execution requires a checkpoint root, CPU text execution and explicit work admission')
+            if type(mtp_max_bytes) is not int or mtp_max_bytes<0 or type(mtp_work_bytes) is not int or mtp_work_bytes<0:
+                raise ValueError('explicit nonnegative MTP admission required')
+            if bool(mtp_max_bytes)!=bool(mtp_work_bytes) or (mtp_max_bytes and mtp_work_bytes>=mtp_max_bytes):
+                raise ValueError('Inkling MTP component and smaller work budgets must be supplied together')
+            text,vision,audio,auxiliary=partition_weights(tensors,self.components)
+            from .inkling_mtp import admit_mtp_inventory
+            headers={}
+            for name,value in auxiliary.items():
+                value=np.asarray(value)
+                if value.dtype!=np.float32 or not np.isfinite(value).all():
+                    raise ValueError('finite converted Inkling auxiliary weights required: '+name)
+                headers[name]=(value.shape,'F32')
+            admit_mtp_inventory(self.components.text_config,self.components.auxiliary_config,headers,
+                max_total_bytes=mtp_max_bytes if mtp_max_bytes else None)
+            auxiliary_bytes=sum(np.asarray(value).nbytes for value in auxiliary.values())
+            if 2*auxiliary_bytes>=max_bytes: raise MemoryError('Inkling auxiliary staging exceeds admission')
+            self.auxiliary={name:np.frombuffer(np.asarray(value).tobytes(),dtype=np.asarray(value).dtype).reshape(np.asarray(value).shape)
+                            for name,value in auxiliary.items()}
+            available=max_bytes-auxiliary_bytes-mtp_max_bytes
+            if available<=0: raise MemoryError('Inkling MTP and auxiliary reservations exhaust aggregate admission')
+            text_config=dict(self.components.text_config);text_config['max_position_embeddings']=context_tokens
+        except BaseException as primary:
+            # Ownership of caller-supplied providers was accepted above. If
+            # inventory or MTP admission fails before child construction, do
+            # not leak providers that this wrapper was explicitly asked to own.
+            try:self.close()
+            except BaseException as failure:
+                primary.cleanup=self.close
+                primary.add_note('Inkling admission cleanup remains pending: '+repr(failure))
+            raise
         try:
             self.media=InklingMediaEncoder(self.components.vision_config,self.components.audio_config,
                 dict(vision,**audio),library=library,text_hidden=text_config['hidden_size'],max_bytes=available//2)
@@ -62,9 +81,11 @@ class InklingMultimodalDecoder:
                     self.session=FlatNativeSession(self.text,family='inkling_text',max_bytes=available-available//2,max_snapshots=max_snapshots)
             else:
                 from .torch_inkling_decoder import TorchInklingDecoder
+                from .torch_inkling_decoder import _SOURCE_ADMISSION as _TEXT_SOURCE_ADMISSION
                 self.text=TorchInklingDecoder(text_config,text,device=text_device,
                     max_bytes=available-available//2,max_snapshots=max_snapshots,
-                    expert_provider=expert_provider,projection_provider=projection_provider)
+                    expert_provider=expert_provider,projection_provider=projection_provider,
+                    _source_admission=_TEXT_SOURCE_ADMISSION)
                 self.session=self.text
                 self.implementation='torch-inkling-conditional-fp32';self.native_range_execution=False
             if mtp_max_bytes:
@@ -79,6 +100,12 @@ class InklingMultimodalDecoder:
                 from .native_family_public_text import NativeFamilyPublicTextDecoder
                 # MTP has captured its shared immutable globals before native
                 # registration transfers and closes the original text owner.
+                if type(self.text) is NativeInklingDecoder:
+                    from .family_source_binding import bind_decoder_to_snapshot
+                    if _checkpoint_inventory is None:
+                        raise ValueError('Inkling public ABI requires its admitted source checkpoint snapshot')
+                    bind_decoder_to_snapshot(self.text,_checkpoint_inventory,family='inkling',
+                                             model_type='inkling_text')
                 self.text=NativeFamilyPublicTextDecoder(segment_runtime_library,self.text,directory=model_directory,
                     max_bytes=available-available//2,max_work_bytes=segment_work_bytes,max_snapshots=max_snapshots,
                     layer_ranges=None if not segment_layer_span else tuple((begin,min(begin+segment_layer_span,
@@ -119,6 +146,8 @@ class InklingMultimodalDecoder:
                 c=self.text.config
                 if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=c['vocab_size']):
                     raise ValueError('expanded unpadded batch-one Inkling processor ids required')
+                if ids.shape[1]>self.context_tokens-self.text.position:
+                    raise ValueError('Inkling multimodal prompt exceeds remaining text context')
                 width=c['hidden_size'];staging=ids.size*width*16
                 if staging>min(self.media.max_bytes,self.text.max_bytes):
                     raise MemoryError('Inkling media insertion staging exceeds component admission')
@@ -133,12 +162,22 @@ class InklingMultimodalDecoder:
                     embeds=self.media.ops.norm(np.ascontiguousarray(self.text.weights['model.embed_tokens.weight'][ids]),
                         self.text.weights['model.embed_norm.weight'],rms=True,epsilon=c['rms_norm_eps'])
                 image_id=self.config.get('image_token_id',200054);audio_id=self.config.get('audio_token_id',200053)
-                if image_id==audio_id: raise ValueError('media placeholder token identities overlap')
+                if (any(type(value) is not int or not 0<=value<c['vocab_size']
+                        for value in (image_id,audio_id)) or image_id==audio_id):
+                    raise ValueError('distinct in-vocabulary image and audio placeholder IDs required')
+                if audio_input_ids is None and audio_input_ids_mask is not None:
+                    raise ValueError('Inkling audio frame mask requires audio input IDs')
                 for token_id,value,kind in ((image_id,pixel_values,'image'),(audio_id,audio_input_ids,'audio')):
                     selected=ids==token_id;count=int(selected.sum())
                     if value is None:
                         if count: raise ValueError('Inkling placeholder has no '+kind+' features')
                         continue
+                    if not count:
+                        # Reject orphan payloads before tower admission and
+                        # compute. Otherwise a valid but unreferenced media
+                        # item can consume bounded scratch and invoke native
+                        # kernels before the feature-count check below fails.
+                        raise ValueError('Inkling '+kind+' payload has no matching expanded-token placeholder')
                     features=(self.media.vision(value,cancelled=cancelled) if kind=='image' else
                         self.media.audio(value,mask=audio_input_ids_mask,cancelled=cancelled))
                     if features.shape!=(count,width): raise ValueError('Inkling '+kind+' features and placeholders differ')
@@ -158,10 +197,26 @@ class InklingMultimodalDecoder:
         with self._lock: self._check();return self.continuation.release_snapshot(receipt)
     def reset(self):
         with self._lock: self._check();return self.continuation.reset()
-    def write_cache(self,output,*,max_bytes):
-        with self._lock: self._check();return self.continuation.write_cache(output,max_bytes=max_bytes)
-    def restore_cache(self,source,*,max_bytes):
-        with self._lock: self._check();return self.continuation.restore_cache(source,max_bytes=max_bytes)
+    def write_cache(self,output,*,max_bytes,cancelled=None):
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError('Inkling continuation export cancellation callback required')
+        with self._lock:
+            self._check()
+            self._busy=True
+            try:
+                return self.continuation.write_cache(output,max_bytes=max_bytes,cancelled=cancelled)
+            finally:
+                self._busy=False
+    def restore_cache(self,source,*,max_bytes,cancelled=None):
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError('Inkling continuation restore cancellation callback required')
+        with self._lock:
+            self._check()
+            self._busy=True
+            try:
+                return self.continuation.restore_cache(source,max_bytes=max_bytes,cancelled=cancelled)
+            finally:
+                self._busy=False
 
     def draft(self,shifted_ids,previous_hidden,*,cancelled=None):
         with self._lock:

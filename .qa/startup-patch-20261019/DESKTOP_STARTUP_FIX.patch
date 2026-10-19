@@ -1,0 +1,366 @@
+--- a/openagent/workbench.py
++++ b/openagent/workbench.py
+@@ -8,6 +8,7 @@
+ 
+ import argparse
+ import hashlib
++from html.parser import HTMLParser
+ import json
+ import os
+ from pathlib import Path
+@@ -16,6 +17,8 @@
+ import sys
+ import threading
+ import time
++from urllib.parse import unquote, urlsplit
++from urllib.request import urlopen
+ from typing import Any
+ import webbrowser
+ 
+@@ -99,10 +102,98 @@
+     return selected
+ 
+ 
+-def ui_build_token() -> str:
++class DesktopAssetError(RuntimeError):
++    """The shipped desktop UI is incomplete or cannot be loaded."""
++
++
++class _UiReferences(HTMLParser):
++    def __init__(self) -> None:
++        super().__init__()
++        self.paths: list[str] = []
++
++    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
++        attributes = dict(attrs)
++        value = attributes.get('src') if tag == 'script' else attributes.get('href') if tag == 'link' and attributes.get('rel') in {'stylesheet', 'modulepreload'} else None
++        if not value:
++            return
++        parsed = urlsplit(value)
++        if parsed.scheme or parsed.netloc or value.startswith('//') or value.startswith('data:'):
++            return
++        self.paths.append(unquote(parsed.path).lstrip('/'))
++
++
++def validate_desktop_ui(ui_root: Path) -> list[str]:
++    """Reject missing or unbuilt frontend assets before displaying an empty window."""
++    root = ui_root.resolve()
++    index = root / 'index.html'
++    if not index.is_file():
++        raise DesktopAssetError(
++            f'Desktop UI is missing index.html in {root}. '
++            'The Python desktop launcher needs built static UI assets, not React source. '
++            'Build frontend-second with `npm ci` and `npm run build` first.'
++        )
++    try:
++        html = index.read_text(encoding='utf-8')
++    except (UnicodeError, OSError) as exc:
++        raise DesktopAssetError(f'Desktop index.html is unreadable: {index}: {exc}') from exc
++    parser = _UiReferences()
++    parser.feed(html)
++    if any(path.lower().endswith(('.tsx', '.jsx', '.ts')) or path.startswith('src/') for path in parser.paths):
++        raise DesktopAssetError(
++            f'{index} points to uncompiled React source files. '
++            'Run `npm ci` and `npm run build` in frontend-second, then use frontend-second/dist.'
++        )
++    if not parser.paths:
++        raise DesktopAssetError(
++            f'Desktop index.html references no scripts or styles: {index}. '
++            'Check the built frontend assets.'
++        )
++    missing: list[str] = []
++    for relative in parser.paths:
++        candidate = (root / relative).resolve()
++        if not relative or not candidate.is_relative_to(root) or not candidate.is_file():
++            missing.append(relative)
++    if missing:
++        raise DesktopAssetError(
++            f'Desktop UI has missing startup resources in {root}: {", ".join(missing)}. '
++            'Restore a complete UI build before launching.'
++        )
++    return parser.paths
++
++
++def _wait_for_ui_server(base_url: str, paths: list[str], timeout_seconds: float = 12.0) -> None:
++    """Make initial HTML, script and stylesheet HTTP requests before app-window launch."""
++    until = time.monotonic() + timeout_seconds
++    paths_to_check = ['/api/health', '/', *['/' + name for name in paths]]
++    last_error = ''
++    while time.monotonic() < until:
++        try:
++            for request_path in paths_to_check:
++                with urlopen(base_url + request_path, timeout=2) as response:
++                    if response.status != 200:
++                        raise RuntimeError(f'{request_path}: HTTP {response.status}')
++            return
++        except Exception as exc:
++            last_error = str(exc)
++            time.sleep(0.2)
++    raise DesktopAssetError(f'Local desktop UI server did not become ready at {base_url}: {last_error}')
++
++
++def show_desktop_launch_error(message: str) -> None:
++    """Surface failures with a Windows dialog because installed launchers use pythonw."""
++    print(message, file=sys.stderr)
++    if sys.platform == 'win32':
++        try:
++            import ctypes
++            ctypes.windll.user32.MessageBoxW(None, message[:3500], 'OpenAgent desktop could not start', 0x10)
++        except Exception:
++            pass
++
++
++def ui_build_token(root: Path | None = None) -> str:
+     """Fingerprint UI assets so an old desktop shell cannot hide an update."""
+ 
+-    root = web_root()
++    root = root or web_root()
+     digest = hashlib.sha256()
+     found = False
+     assets = [root / name for name in ("index.html", "app.js", "styles.css", "sw.js", "manifest.json")]
+@@ -305,6 +396,7 @@
+         help="Directory for local OpenAgent data. Windows desktop launches share %%LOCALAPPDATA%%\\OpenAgent\\data.",
+     )
+     parser.add_argument("--no-open", action="store_true", help="Start the local workbench server without opening a window.")
++    parser.add_argument("--ui-root", default=None, help="Explicit path to a built frontend directory for local acceptance testing; does not change production web/.")
+     parser.add_argument("--status-json", action="store_true", help="Print workbench status as JSON without launching.")
+     return parser
+ 
+@@ -316,6 +408,7 @@
+     host: str = "127.0.0.1",
+     port: int = DEFAULT_WORKBENCH_PORT,
+     open_window: bool = True,
++    ui_root: Path | str | None = None,
+ ) -> int:
+     from .server import build_http_server
+ 
+@@ -329,6 +422,12 @@
+             open_app_window(existing_url, data_path, profile_dir=runtime_path / "browser-reconnect")
+         print(existing_url or "OpenAgent Workbench is already running for this data directory.")
+         return 0
++    selected_ui_root = (Path(ui_root).expanduser() if ui_root else web_root()).resolve()
++    try:
++        referenced_assets = validate_desktop_ui(selected_ui_root)
++    except Exception:
++        instance_lock.release()
++        raise
+     store = OpenAgentStore(data_path)
+     managed_accelerator = configure_managed_accelerator()
+     managed_openvino_model = configure_managed_openvino_model(data_path)
+@@ -337,9 +436,9 @@
+     server = None
+     server_thread: threading.Thread | None = None
+     try:
+-        server = build_http_server(host, port, store, warm_openvino=bool(managed_openvino_model))
++        server = build_http_server(host, port, store, web_root=selected_ui_root, warm_openvino=bool(managed_openvino_model))
+         address = f"http://{host}:{server.server_address[1]}"
+-        build_token = ui_build_token()
++        build_token = ui_build_token(selected_ui_root)
+         launch_url = f"{address}/?openagent_version={__version__}&ui_build={build_token}&ui=core"
+         state_path.write_text(
+             json.dumps(
+@@ -375,6 +474,12 @@
+         print(f"OpenAgent Workbench running at {launch_url}")
+         print(f"Data directory: {store.data_dir}")
+ 
++        # Serve the local site before Chromium navigates. Otherwise a cold
++        # app-window may display an empty page and never recover.
++        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
++        server_thread.start()
++        _wait_for_ui_server(address, referenced_assets)
++
+         process: subprocess.Popen[Any] | None = None
+         if open_window:
+             warm_event = getattr(server, "openvino_warm_event", None)
+@@ -384,12 +489,13 @@
+             process = open_app_window(launch_url, data_path, profile_dir=browser_profile)
+ 
+         if process is not None:
+-            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+-            server_thread.start()
+             while process.poll() is None:
+                 time.sleep(0.4)
+         else:
+-            server.serve_forever()
++            # For headless/background launches the server thread keeps running;
++            # wait here until interrupted rather than calling serve_forever twice.
++            while server_thread.is_alive():
++                server_thread.join(timeout=0.5)
+     except KeyboardInterrupt:
+         print("\nStopping OpenAgent Workbench.")
+     finally:
+@@ -521,8 +627,13 @@
+         host=args.host,
+         port=args.port,
+         open_window=not args.no_open,
++        ui_root=args.ui_root,
+     )
+ 
+ 
+ if __name__ == "__main__":
+-    raise SystemExit(main())
++    try:
++        raise SystemExit(main())
++    except (DesktopAssetError, OSError) as exc:
++        show_desktop_launch_error(f'{type(exc).__name__}: {exc}')
++        raise SystemExit(2) from None
+--- a/openagent/desktop.py
++++ b/openagent/desktop.py
+@@ -31,7 +31,7 @@
+ from .semantic_memory import SemanticMemoryManager
+ from .storage import OpenAgentStore
+ from .voice import VoiceRuntime, synthesize_tone_wav
+-from .workbench import configured_workbench_port, launch_workbench, maybe_reexec_project_venv, workbench_status
++from .workbench import configured_workbench_port, launch_workbench, maybe_reexec_project_venv, show_desktop_launch_error, workbench_status
+ from .workflows import WorkflowEngine
+ from .workspace import WorkspaceManager
+ 
+@@ -335,6 +335,7 @@
+         help="Stable localhost port. Installed desktop launches always default to 8765.",
+     )
+     parser.add_argument("--no-open", action="store_true", help="Start the modern workbench server without opening an app window.")
++    parser.add_argument("--ui-root", default=None, help="Built static UI folder for local desktop test; leaves the existing web/ untouched.")
+     parser.add_argument("--legacy-tk", action="store_true", help="Open the legacy Tk desktop shell instead of the modern workbench.")
+     parser.add_argument(
+         "--status-json",
+@@ -1425,9 +1426,10 @@
+             host=args.host,
+             port=args.port,
+             open_window=not args.no_open,
+-        )
+-    except RuntimeError as exc:
+-        print(str(exc), file=sys.stderr)
++            ui_root=args.ui_root,
++        )
++    except (RuntimeError, OSError) as exc:
++        show_desktop_launch_error(f'{type(exc).__name__}: {exc}')
+         return 2
+ 
+ 
+--- a/frontend-second/src/main.tsx
++++ b/frontend-second/src/main.tsx
+@@ -9,6 +9,30 @@
+ import './execution-trace.css';
+ import './app.css';
+ import { useWorkspaceState } from './state';
++
++class StartupErrorBoundary extends React.Component<
++  { children: React.ReactNode },
++  { failed: boolean }
++> {
++  state = { failed: false };
++
++  static getDerivedStateFromError() { return { failed: true }; }
++
++  componentDidCatch(error: Error) {
++    console.error('OpenAgent interface failed to render:', error);
++  }
++
++  render() {
++    if (this.state.failed) {
++      return <main role="alert" style={{ padding: 32, maxWidth: 760, margin: '64px auto', fontFamily: 'system-ui, sans-serif' }}>
++        <h1>OpenAgent could not load its interface</h1>
++        <p>The local application started, but a frontend error prevented the workspace from rendering.</p>
++        <p>Try reloading. If this continues, check the browser developer console and the desktop startup logs.</p>
++      </main>;
++    }
++    return this.props.children;
++  }
++}
+ 
+ const queryClient = new QueryClient({
+   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+@@ -25,6 +49,6 @@
+ 
+ ReactDOM.createRoot(document.getElementById('root')!).render(
+   <React.StrictMode>
+-    <Root />
++    <StartupErrorBoundary><Root /></StartupErrorBoundary>
+   </React.StrictMode>,
+ );
+--- a/frontend-second/index.html
++++ b/frontend-second/index.html
+@@ -8,7 +8,18 @@
+     <title>OpenAgent</title>
+   </head>
+   <body>
+-    <div id="root"></div>
++    <div id="root">
++      <div id="openagent-startup-placeholder" role="status" style="min-height:100vh;display:grid;place-items:center;font:16px system-ui,sans-serif;color:#374151;background:#f6f8fc;padding:32px;text-align:center">Opening OpenAgent…</div>
++    </div>
++    <script>
++      window.setTimeout(function () {
++        var placeholder = document.getElementById('openagent-startup-placeholder');
++        if (placeholder) {
++          placeholder.setAttribute('role', 'alert');
++          placeholder.textContent = 'OpenAgent could not load its interface. Check that the desktop UI files are installed and open the browser developer console for details.';
++        }
++      }, 12000);
++    </script>
+     <script type="module" src="/src/main.tsx"></script>
+   </body>
+ </html>
+--- a/tests/test_desktop_ui_startup.py
++++ b/tests/test_desktop_ui_startup.py
+@@ -0,0 +1,61 @@
++"""Safety regression for the installed desktop launcher startup assets."""
++from pathlib import Path
++from tempfile import TemporaryDirectory
++import threading
++import unittest
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from openagent.workbench import DesktopAssetError, validate_desktop_ui, _wait_for_ui_server
++
++class DesktopUIStartupTests(unittest.TestCase):
++    def test_missing_ui_is_a_clear_error(self):
++        with TemporaryDirectory() as folder:
++            with self.assertRaisesRegex(DesktopAssetError, 'missing index.html'):
++                validate_desktop_ui(Path(folder))
++
++    def test_rejects_missing_frontend_chunks(self):
++        with TemporaryDirectory() as folder:
++            root = Path(folder)
++            (root / 'index.html').write_text('<script type="module" src="/app.js"></script><link rel="stylesheet" href="/styles.css">')
++            (root / 'app.js').write_text('// app')
++            with self.assertRaisesRegex(DesktopAssetError, 'styles.css'):
++                validate_desktop_ui(root)
++
++    def test_accepts_complete_hashed_ui_and_ignores_remote_resources(self):
++        with TemporaryDirectory() as folder:
++            root = Path(folder); (root / 'assets').mkdir()
++            (root / 'index.html').write_text('<script type="module" src="/assets/app-abc.js"></script><link rel="modulepreload" href="/assets/react.js"><link rel="stylesheet" href="/assets/style-abc.css"><script src="https://example.com/nope.js"></script>')
++            for file in ['app-abc.js', 'react.js', 'style-abc.css']:
++                (root / 'assets' / file).write_text('// asset')
++            self.assertEqual(len(validate_desktop_ui(root)), 3)
++
++    def test_rejects_uncompiled_react_source(self):
++        with TemporaryDirectory() as folder:
++            root = Path(folder); (root / 'src').mkdir()
++            (root / 'index.html').write_text('<script type="module" src="/src/main.tsx"></script>')
++            (root / 'src' / 'main.tsx').write_text('// source')
++            with self.assertRaisesRegex(DesktopAssetError, 'uncompiled React source'):
++                validate_desktop_ui(root)
++
++    def test_rejects_root_escape(self):
++        with TemporaryDirectory() as folder:
++            root = Path(folder)
++            (root / 'index.html').write_text('<script src="/../not-in-ui.js"></script>')
++            with self.assertRaises(DesktopAssetError):
++                validate_desktop_ui(root)
++
++    def test_server_readiness_checks_real_http_routes(self):
++        class Handler(BaseHTTPRequestHandler):
++            def do_GET(self):
++                if self.path in {'/', '/api/health', '/app.js', '/styles.css'}:
++                    self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
++                else:
++                    self.send_error(404)
++            def log_message(self, *_args): pass
++        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
++            worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
++            try:
++                _wait_for_ui_server(f'http://127.0.0.1:{server.server_port}', ['app.js', 'styles.css'], timeout_seconds=2)
++            finally:
++                server.shutdown(); worker.join(timeout=2)
++
++if __name__ == '__main__': unittest.main()

@@ -148,6 +148,12 @@ class NativeKimiLinearDecoder(IndependentKimiLinearDecoder):
         No registry changes, remote code, downloads, tensor renaming or wrappers.
         Conversion of F16/BF16 weights to resident FP32 is explicit.
         """
+        if type(max_bytes) is not int or max_bytes<=0:
+            raise ValueError('positive Kimi Linear checkpoint admission required')
+        from .source_scope import require_checkpoint_inventory_admission
+        require_checkpoint_inventory_admission(
+            directory,family='kimi-k3',model_type='kimi_linear',backend='native',
+            arithmetic='fp32-approximate',max_metadata_bytes=max_bytes)
         from .native_checkpoint import _open_local, _json, _header, _read_tensor, _stamp
         root = Path(directory).resolve(strict=True)
         with ExitStack() as stack:

@@ -8,7 +8,8 @@ import time
 
 from ..model_gateway import BaseProvider, ModelResult, ProviderConfigurationError, ProviderUnavailableError
 from .expert_packing import _scan_directory
-from .hf_moe import HFMoeAdapter, HFMoeManifest
+from .hf_moe import (HFMoeAdapter, HFMoeManifest,
+                     require_hf_moe_execution_admission)
 from .hf_moe_cli import expert_placement
 
 
@@ -38,6 +39,7 @@ class HFMoeProvider(BaseProvider):
             return False
         try:
             manifest = HFMoeManifest.read(self.model_path)
+            require_hf_moe_execution_admission(manifest)
             _scan_directory(manifest.model_directory)
             return (manifest.model_directory / "tokenizer_config.json").is_file()
         except (OSError, ValueError, TypeError, KeyError):

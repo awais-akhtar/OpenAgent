@@ -7,6 +7,8 @@ import wave
 import numpy as np
 from .session_recovery import _path
 from .native_library_identity import _stamp
+from .publisher_media_inputs import normalize_video_fps
+from .owned_file_descriptor import close_after_failure,fdopen_owned
 
 def _pairs(items):
     result={}
@@ -27,9 +29,10 @@ def read_regular(path,*,max_bytes):
         opened=os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or _stamp(opened)!=_stamp(before):
             raise ValueError('media file changed during opening')
-        stream=os.fdopen(descriptor,'rb')
-    except BaseException:
-        os.close(descriptor);raise
+    except BaseException as primary:
+        close_after_failure(descriptor,primary,owner='publisher media input')
+        raise
+    stream=fdopen_owned(descriptor,'rb',owner='publisher media input')
     with stream:
         raw=stream.read(before.st_size+1)
         if _stamp(os.fstat(stream.fileno()))!=_stamp(before):
@@ -75,8 +78,11 @@ def read_selected_video(path,*,max_bytes,max_frame_bytes,max_frames=4096,cancell
     if type(frames) is not list or not 1<=len(frames)<=max_frames or type(metadata) is not dict:
         raise ValueError('bounded frame inventory and publisher video metadata required')
     indices=metadata.get('frames_indices');total=metadata.get('total_num_frames');fps=metadata.get('fps')
+    try:
+        fps=normalize_video_fps(fps)
+    except ValueError:
+        raise ValueError('ordered explicit selected frame indices, total frame count and FPS required') from None
     if (type(indices) is not list or len(indices)!=len(frames) or type(total) is not int or total<=0 or
-            type(fps) not in (int,float) or not np.isfinite(fps) or fps<=0 or
             any(type(value) is not int or not 0<=value<total for value in indices) or
             any(a>=b for a,b in zip(indices,indices[1:]))):
         raise ValueError('ordered explicit selected frame indices, total frame count and FPS required')
@@ -96,6 +102,7 @@ def read_selected_video(path,*,max_bytes,max_frame_bytes,max_frames=4096,cancell
             raise MemoryError('selected video frame inventory exceeds media admission')
         value=read_regular(target,max_bytes=min(max_frame_bytes,max_bytes-extent))
         extent+=len(value);decoded.append(value)
+    metadata['fps']=fps
     return decoded,metadata
 
 __all__=['read_regular','read_pcm_audio','read_selected_video']

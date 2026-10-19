@@ -339,22 +339,54 @@ class ResearchEngine:
         final_provider = provider
         final_model = model or ""
         final_metadata: dict[str, Any] = {}
-        for chunk in self.gateway.stream_complete(
+        stream = self.gateway.stream_complete(
             messages,
             provider_id=provider,
             model=model,
             allow_external=allow_external,
             max_output_tokens=max_output_tokens,
-        ):
-            metadata = dict(chunk.metadata or {})
-            if metadata.get("fallback_from") and not fallback_seen:
-                parts.clear()
-                fallback_seen = True
-            final_provider = chunk.provider
-            final_model = chunk.model
-            final_metadata = metadata
-            if chunk.content:
-                parts.append(chunk.content)
+        )
+        iterator = None
+        primary: BaseException | None = None
+        try:
+            iterator = iter(stream)
+            for chunk in iterator:
+                metadata = dict(chunk.metadata or {})
+                if metadata.get("fallback_from") and not fallback_seen:
+                    parts.clear()
+                    fallback_seen = True
+                final_provider = chunk.provider
+                final_model = chunk.model
+                final_metadata = metadata
+                if chunk.content:
+                    parts.append(chunk.content)
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            cleanup_errors: list[BaseException] = []
+            owners = (iterator, stream) if iterator is not stream else (stream,)
+            for owner in owners:
+                close = getattr(owner, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except BaseException as cleanup:
+                        cleanup_errors.append(cleanup)
+            if primary is not None:
+                for cleanup in cleanup_errors:
+                    try:
+                        primary.add_note("research provider stream cleanup failed: " + repr(cleanup))
+                    except BaseException:
+                        pass
+            elif cleanup_errors:
+                first = cleanup_errors[0]
+                for cleanup in cleanup_errors[1:]:
+                    try:
+                        first.add_note("additional research stream cleanup failure: " + repr(cleanup))
+                    except BaseException:
+                        pass
+                raise first
         return ModelResult(
             provider=final_provider,
             model=final_model,

@@ -47,7 +47,8 @@ class OlmoeValidationTests(unittest.TestCase):
         # This checks wiring, not nontrivial attention/routing or public weights.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = dict(model_type="olmoe", hidden_size=2, intermediate_size=2,
+            config = dict(model_type="olmoe", architectures=["OlmoeForCausalLM"],
+                          hidden_size=2, intermediate_size=2,
                           num_hidden_layers=1, num_attention_heads=1, num_key_value_heads=1,
                           num_experts=1, num_experts_per_tok=1, vocab_size=3,
                           max_position_embeddings=4, rms_norm_eps=1e-5,

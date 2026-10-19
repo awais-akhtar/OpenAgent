@@ -10,6 +10,7 @@ import time
 import threading
 
 import numpy as np
+from .failure_reporting import add_failure_note, failure_summary
 from .session_recovery import _path
 from .publisher_media_files import read_regular
 
@@ -19,6 +20,17 @@ def positive(value):
     if result <= 0:
         raise argparse.ArgumentTypeError('positive integer required')
     return result
+
+
+def _finish_reason(generated, eos_tokens, stop_prefixes):
+    """Return the V4.1 terminal reason from the committed token boundary."""
+    if generated and generated[-1] in eos_tokens:
+        return 'eos'
+    if any(len(generated)>=len(prefix) and
+           tuple(generated[-len(prefix):])==tuple(prefix)
+           for prefix in stop_prefixes):
+        return 'stop_prefix'
+    return 'length'
 
 
 def parser():
@@ -67,15 +79,14 @@ def parser():
 
 
 def _sample(logits, temperature, rng, *, max_bytes=128*1024**2):
+    from .v41_execution.speculative import normalize_temperature
+    temperature = normalize_temperature(temperature)
     observed = np.asarray(logits)
     if (observed.ndim != 1 or not observed.size or observed.dtype.kind != 'f' or
             type(max_bytes) is not int or max_bytes <= 0):
         raise ValueError('floating vocabulary logits and explicit sampling budget required')
     if observed.size*32 > max_bytes:
         raise MemoryError('vocabulary sampling exceeds byte budget')
-    if (type(temperature) not in (int, float) or
-            not np.isfinite(temperature) or temperature < 0):
-        raise ValueError('finite nonnegative sampling temperature required')
     row = np.array(observed, dtype=np.float64, copy=True)
     if not np.isfinite(row).all():
         raise ValueError('finite target vocabulary logits required')
@@ -95,14 +106,29 @@ def _sample(logits, temperature, rng, *, max_bytes=128*1024**2):
 def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=None,
                  max_checkpoint_bytes=0):
     from .execution_service import ExecutionCancelled
+    from .v41_execution.speculative import normalize_temperature
+    temperature = normalize_temperature(args.temperature)
     def check_cancelled():
         if cancelled is not None and cancelled():
             raise ExecutionCancelled('native generation cancelled')
     check_cancelled()
     from .v41_execution.dspark import create_dspark_decoder
 
-    if not np.isfinite(args.temperature) or args.temperature < 0 or args.seed < 0:
+    if args.seed < 0:
         raise ValueError('finite nonnegative temperature and seed required')
+    if emit is not None and checkpoint_sink is not None:
+        # These are independent caller-owned sinks. A durable checkpoint can
+        # commit before `emit` fails (or the reverse if the order changes), so
+        # this API cannot promise an atomic generation boundary for either
+        # ordinary or speculative decoding.
+        raise ValueError('V4.1 streaming with a separate checkpoint sink is not admitted without an atomic publication owner')
+    if emit is not None and args.dspark:
+        # A later speculative transaction, cancellation, or callback failure
+        # resets the request's target and draft state.  The plain callback
+        # protocol cannot retract provisional events already consumed by an
+        # arbitrary caller, so do not expose a stream that can diverge from
+        # the ultimately committed request state.
+        raise ValueError('V4.1 speculative streaming is not admitted without a transactional event sink')
     tokenizer, checkpoint = session.tokenizer, session.checkpoint
     vocab = checkpoint.config['text_config']['vocab_size']
     raw = args.prompt if args.prompt is not None else args.token_ids
@@ -134,6 +160,12 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
         stop_prefixes.append(prefix)
     if len(stop_prefixes) > 64 or len(set(stop_prefixes)) != len(stop_prefixes):
         raise ValueError('bounded unique stop-prefix inventory required')
+    if emit is not None and stop_prefixes:
+        # This callback has no token-level withholding buffer. A multi-token
+        # stop prefix could be partially published before a later token (or
+        # speculative transaction) completes it; do not claim stop-string
+        # suppression on any V4.1 streaming route.
+        raise ValueError('V4.1 streaming with stop prefixes is not admitted without a token-boundary output filter')
     mib = 1024**2
     started = time.perf_counter()
     generated, accepted, proposed = [], 0, 0
@@ -173,7 +205,7 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
                 header = dict(schema='openagent.v41-generation-boundary.v2',
                     identity=model.identity, tokenizer=session._tokenizer_identity,
                     position=model.length, prompt_ids=list(prompt), generated_ids=list(generated),
-                    temperature=float(args.temperature), rng=copy.deepcopy(target_rng.bit_generator.state),
+                    temperature=temperature, rng=copy.deepcopy(target_rng.bit_generator.state),
                     proposal_rng=(None if not args.dspark else
                         copy.deepcopy(decoder.proposer.rng.bit_generator.state)),
                     stops=sorted(stop_tokens), stop_prefixes=[list(prefix) for prefix in stop_prefixes],
@@ -189,15 +221,26 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             generated.extend(tokens)
             checkpoint_boundary()
             if emit is not None:
-                emit(dict(event='tokens', token_ids=list(tokens), **details))
+                # A checkpoint sink can block or invoke caller code. Recheck
+                # immediately before publishing the corresponding stream event
+                # so a request cancelled during that work does not dispatch a
+                # post-cancellation chunk.
+                check_cancelled()
+                # A later sink/callback error may restore target and draft
+                # state, but cannot retract bytes already delivered.
+                emit(dict(event='tokens', token_ids=list(tokens), committed=False, **details))
 
         if args.dspark:
             draft = session._draft(args, draft_rng)
-            decoder = create_dspark_decoder(model, draft, temperature=args.temperature,
+            decoder = create_dspark_decoder(model, draft, temperature=temperature,
                 max_bytes=args.sampling_mib*mib, evidence_max_bytes=args.evidence_mib*mib,
                 target_rng=target_rng, proposal_rng=draft_rng)
             check_cancelled()
-            decoder.prefill(prompt, **image_options)
+            # The decoder owns cancellation scopes for both target and draft
+            # state during prefill; passing the request predicate through lets
+            # it roll back a partially evaluated prompt instead of observing
+            # cancellation only after the full target forward has returned.
+            decoder.prefill(prompt, cancelled=cancelled, **image_options)
             check_cancelled()
             checkpoint_boundary()
             for step in decoder.generate(args.max_tokens, stop_tokens=stop_tokens,
@@ -218,20 +261,22 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             checkpoint_boundary()
             for _ in range(args.max_tokens):
                 check_cancelled()
-                token = _sample(logits, args.temperature, target_rng,
+                token = _sample(logits, temperature, target_rng,
                     max_bytes=args.sampling_mib*mib-(len(prompt)+args.max_tokens)*32)
                 # Commit the emitted token before reporting it to the caller.
                 logits = model.forward([token])[-1]
                 check_cancelled()
                 record((token,))
                 if (token in stop_tokens or any(
-                        len(generated) >= len(prefix) and
-                        tuple(generated[-len(prefix):]) == prefix
+                        len(prompt + generated) >= len(prefix) and
+                        tuple((prompt + generated)[-len(prefix):]) == prefix
                         for prefix in stop_prefixes)):
                     break
         check_cancelled()
         return dict(schema='openagent.publisher-v41-generation.v1',
             prompt_ids=prompt, generated_ids=generated, text=tokenizer.decode(generated),
+            prompt_tokens=len(prompt),expanded_prompt_tokens=len(prompt),
+            finish_reason=_finish_reason(generated,stop_tokens,stop_prefixes),
             dspark=args.dspark, accepted_draft_tokens=accepted, proposed_draft_tokens=proposed,
             load_ms=0.0, session_load_ms=session.load_ms,
             request_setup_ms=(loaded-started)*1000, first_token_ms=first_token_ms,
@@ -255,12 +300,16 @@ class PublisherSession:
 
     @staticmethod
     def _validate(args):
+        from .v41_execution.speculative import normalize_temperature
         for name in PublisherSession._budgets+('context', 'max_tokens', 'prefill_chunk', 'image_max_tokens'):
             value=getattr(args,name,0) if name=='bf16_projection_mib' else getattr(args,name)
             if type(value) is not int or (value<0 if name=='bf16_projection_mib' else value<=0):
                 raise ValueError('positive integer request budget required: '+name)
-        if (type(args.seed) is not int or args.seed < 0 or
-                not np.isfinite(args.temperature) or args.temperature < 0):
+        try:
+            normalize_temperature(args.temperature)
+        except ValueError:
+            raise ValueError('finite nonnegative temperature and integer seed required') from None
+        if type(args.seed) is not int or args.seed < 0:
             raise ValueError('finite nonnegative temperature and integer seed required')
         if sum(value is not None for value in (args.prompt,args.token_ids,getattr(args,'resume_generation',None)))!=1:
             raise ValueError('exactly one prompt or token-id input required')
@@ -428,43 +477,85 @@ class PublisherSession:
             try:self._owned.close()
             except BaseException as cleanup_error:
                 error.cleanup=self._owned.close
-                error.add_note('publisher session ownership release remains pending: '+str(cleanup_error))
+                add_failure_note(error, 'publisher session ownership release remains pending: '+failure_summary(cleanup_error))
             raise
         self.load_ms = (time.perf_counter()-started)*1000
 
     def _vision(self, args):
         if self._vision_model is None or self._vision_budget != args.vision_mib:
-            if self._vision_model is not None:
-                self._vision_model.close()
-            self._vision_model = self._auxiliary.vision(
-                max_bytes=args.vision_mib*1024**2)
+            # Build the replacement before retiring a warm child.  A bad
+            # changed budget/configuration must not destroy a still-usable
+            # vision executor.  The auxiliary owner also tracks the candidate
+            # from construction, so a failed close remains retryable there.
+            candidate = self._auxiliary.vision(max_bytes=args.vision_mib*1024**2)
+            previous = self._vision_model
+            if previous is not None:
+                try:
+                    previous.close()
+                except BaseException as primary:
+                    try:
+                        candidate.close()
+                    except BaseException as cleanup_error:
+                        add_failure_note(primary, 'staged publisher vision cleanup failed: '+failure_summary(cleanup_error))
+                    raise
+            self._vision_model = candidate
             self._vision_budget = args.vision_mib
         return self._vision_model
 
     def _draft(self, args, rng):
         if self._draft_model is None or self._draft_budget != args.draft_mib:
-            if self._draft_model is not None:
-                self._draft_model.close()
-            self._draft_model = self._auxiliary.mtp(
-                max_bytes=args.draft_mib*1024**2, rng=rng)
+            # Prepare the new draft, including its per-request reset/RNG
+            # ownership, before retiring the previous warm draft.
+            candidate = self._auxiliary.mtp(max_bytes=args.draft_mib*1024**2, rng=rng)
+            try:
+                candidate.reset()
+                candidate.rng = rng
+            except BaseException as primary:
+                try:
+                    candidate.close()
+                except BaseException as cleanup_error:
+                    add_failure_note(primary, 'staged publisher draft cleanup failed: '+failure_summary(cleanup_error))
+                raise
+            previous = self._draft_model
+            if previous is not None:
+                try:
+                    previous.close()
+                except BaseException as primary:
+                    try:
+                        candidate.close()
+                    except BaseException as cleanup_error:
+                        add_failure_note(primary, 'staged publisher draft cleanup failed: '+failure_summary(cleanup_error))
+                    raise
+            self._draft_model = candidate
             self._draft_budget = args.draft_mib
-        self._draft_model.reset()
-        self._draft_model.rng = rng
+        else:
+            self._draft_model.reset()
+            self._draft_model.rng = rng
         return self._draft_model
 
     def _reset_request(self):
-        try:
-            self.model.reset()
-            if self._draft_model is not None:
-                self._draft_model.reset()
-        except BaseException as primary:
+        errors = []
+        # Target and draft own separate physical histories.  Always attempt
+        # both resets: a target reset failure must not leave draft KV/RNG
+        # state silently live while the request lease is being torn down.
+        for owner in (self.model, self._draft_model):
+            if owner is None:
+                continue
+            try:
+                owner.reset()
+            except BaseException as error:
+                errors.append(error)
+        if errors:
             # A failed reset must never leave a reusable contaminated session.
             self._closed = True
+            primary = errors[0]
+            for error in errors[1:]:
+                add_failure_note(primary, 'additional publisher request reset failure: '+failure_summary(error))
             try:
                 self._owned.close()
             except BaseException as cleanup_error:
-                primary.add_note('publisher owner cleanup after failed request reset remains pending: '+repr(cleanup_error))
-            raise
+                add_failure_note(primary, 'publisher owner cleanup after failed request reset remains pending: '+failure_summary(cleanup_error))
+            raise primary
 
     def run(self, args, emit=None, cancelled=None, *, checkpoint_sink=None, max_checkpoint_bytes=0):
         from .execution_service import ExecutionCancelled
@@ -499,7 +590,7 @@ class PublisherSession:
                 try:
                     self._reset_request()
                 except BaseException as cleanup_error:
-                    primary.add_note('publisher request rollback/reset failed: '+repr(cleanup_error))
+                    add_failure_note(primary, 'publisher request rollback/reset failed: '+failure_summary(cleanup_error))
                 raise
             else:
                 self._reset_request()
@@ -522,6 +613,7 @@ class PublisherSession:
         from .execution_service import ExecutionCancelled
         from .v41_generation_recovery import read, publish
         from .v41_execution.dspark import create_dspark_decoder
+        from .v41_execution.speculative import _same_receipt_state
         if not self._lock.acquire(blocking=False):
             raise RuntimeError('publisher session is busy or reentrant')
         def check():
@@ -544,6 +636,12 @@ class PublisherSession:
                         tokenizer=self._tokenizer_identity, max_bytes=max_bytes,
                         host_bytes=args.sampling_mib*1024**2, cancelled=cancelled)
                     try:
+                        if emit is not None and header['dspark']:
+                            raise ValueError('V4.1 speculative recovery streaming is not admitted without a transactional event sink')
+                        if emit is not None and checkpoint_sink is not None:
+                            raise ValueError('V4.1 recovery streaming with a separate checkpoint sink is not admitted without an atomic publication owner')
+                        if emit is not None and header['stop_prefixes']:
+                            raise ValueError('V4.1 recovery streaming with stop prefixes is not admitted without a token-boundary output filter')
                         if header['position'] + limit > args.context:
                             raise ValueError('recovered V4.1 continuation exceeds context')
                         if (header['position'] + limit)*128 + self.model.profile.vocabulary*32 > args.sampling_mib*1024**2:
@@ -568,21 +666,22 @@ class PublisherSession:
                             raise ValueError('recovered V4.1 physical cache extent differs')
                         if tuple(self.model.snapshot().tokens) != tuple(header['prompt_ids'] + header['generated_ids']):
                             raise ValueError('recovered V4.1 token history differs')
+                        recovered_ids = header['prompt_ids'] + header['generated_ids']
                         if decoder is not None and (decoder.history != tuple(header['prompt_ids'] + header['generated_ids'])
                                 or not np.array_equal(decoder.next_logits, logits)
                                 or decoder._stopped != bool(header['generated_ids'] and
                                     (header['generated_ids'][-1] in header['stops'] or any(
-                                        len(header['generated_ids']) >= len(prefix) and
-                                        tuple(header['generated_ids'][-len(prefix):]) == tuple(prefix)
+                                        len(recovered_ids) >= len(prefix) and
+                                        tuple(recovered_ids[-len(prefix):]) == tuple(prefix)
                                         for prefix in header['stop_prefixes'])))
-                                or decoder.rng.bit_generator.state != header['rng']
-                                or decoder.proposer.rng.bit_generator.state != header['proposal_rng']):
+                                or not _same_receipt_state(decoder.rng.bit_generator.state, header['rng'])
+                                or not _same_receipt_state(decoder.proposer.rng.bit_generator.state, header['proposal_rng'])):
                             raise ValueError('compound DSpark verifier boundary differs from envelope')
                     except BaseException as primary:
                         try:
                             cache.close()
                         except BaseException as cleanup_error:
-                            primary.add_note('staged V4.1 generation frame close failed: '+repr(cleanup_error))
+                            add_failure_note(primary, 'staged V4.1 generation frame close failed: '+failure_summary(cleanup_error))
                         raise
                     else:
                         cache.close()
@@ -594,6 +693,10 @@ class PublisherSession:
                     if not set(eos) <= stops:
                         raise ValueError('V4.1 checkpoint omitted configured EOS boundaries')
                     if emit is not None:
+                        # Cache restoration and boundary validation may be
+                        # lengthy. Do not publish the recovered event if the
+                        # caller disconnected while those checks were running.
+                        check()
                         emit(dict(event='recovered', text=self.tokenizer.decode(generated), position=self.model.length))
                     def record(tokens, accepted=0, proposed=0):
                         nonlocal logits
@@ -610,11 +713,15 @@ class PublisherSession:
                                 tokenizer=self._tokenizer_identity, max_bytes=max_checkpoint_bytes,
                                 host_bytes=args.sampling_mib*1024**2, cancelled=cancelled)
                         if emit is not None:
-                            emit(dict(event='tokens', token_ids=list(tokens), text=self.tokenizer.decode(generated)))
+                            # Durable checkpoint publication may have taken
+                            # long enough for the consumer to disconnect.
+                            check()
+                            emit(dict(event='tokens', token_ids=list(tokens), text=self.tokenizer.decode(generated),
+                                committed=False))
                     recovered_stopped = bool(generated and (
                         generated[-1] in stops or any(
-                            len(generated) >= len(prefix) and
-                            tuple(generated[-len(prefix):]) == tuple(prefix)
+                            len(header['prompt_ids'] + generated) >= len(prefix) and
+                            tuple((header['prompt_ids'] + generated)[-len(prefix):]) == tuple(prefix)
                             for prefix in stop_prefixes)))
                     if not recovered_stopped:
                         if decoder is not None:
@@ -629,14 +736,17 @@ class PublisherSession:
                                 logits = self.model.forward([token])[-1]
                                 check(); record((token,))
                                 if (token in stops or any(
-                                        len(generated) >= len(prefix) and
-                                        tuple(generated[-len(prefix):]) == prefix
+                                        len(header['prompt_ids'] + generated) >= len(prefix) and
+                                        tuple((header['prompt_ids'] + generated)[-len(prefix):]) == prefix
                                         for prefix in stop_prefixes)):
                                     break
                     check()
                     self._requests += 1
                     return dict(schema='openagent.publisher-v41-generation.v1',
                         prompt_ids=header['prompt_ids'], generated_ids=generated,
+                        prompt_tokens=len(header['prompt_ids']),
+                        expanded_prompt_tokens=len(header['prompt_ids']),
+                        finish_reason=_finish_reason(generated,stops,stop_prefixes),
                         text=self.tokenizer.decode(generated), dspark=header['dspark'],
                         accepted_draft_tokens=header['accepted'], proposed_draft_tokens=header['proposed'],
                         recovered=True, implementation=self.model.implementation,
@@ -649,7 +759,7 @@ class PublisherSession:
                 try:
                     self._reset_request()
                 except BaseException as cleanup_error:
-                    primary.add_note('publisher recovery rollback/reset failed: '+repr(cleanup_error))
+                    add_failure_note(primary, 'publisher recovery rollback/reset failed: '+failure_summary(cleanup_error))
                 raise
             else:
                 self._reset_request()
@@ -660,21 +770,36 @@ class PublisherSession:
         if not self._lock.acquire(blocking=False):
             raise RuntimeError('cannot close an active publisher session')
         try:
+            # Prevent further use before touching any warm model or provider.
+            # The shared dependency stack must remain alive while a warm
+            # draft/vision owner still fails to close because it may borrow
+            # providers retained by that stack.
+            self._closed = True
             errors = []
-            for owner in (self._draft_model, self._vision_model):
+            for attribute in ('_draft_model', '_vision_model'):
+                owner = getattr(self, attribute)
+                if owner is None:
+                    continue
                 close = getattr(owner, 'close', None)
                 if callable(close):
                     try:
                         close()
                     except BaseException as error:
                         errors.append(error)
+                    else:
+                        setattr(self, attribute, None)
+                else:
+                    setattr(self, attribute, None)
+            # Do not dismantle borrowed dependencies while any external warm
+            # owner remains live. A later close() retries these owners first.
+            if errors:
+                raise RuntimeError('publisher warm-owner cleanup remains pending') from errors[0]
             try:
                 self._owned.close()
             except BaseException as error:
                 errors.append(error)
             if errors:
                 raise RuntimeError('publisher session cleanup remains pending') from errors[0]
-            self._closed = True
             self._vision_model = self._draft_model = None
         finally:
             self._lock.release()

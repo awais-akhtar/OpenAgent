@@ -129,18 +129,26 @@ class PublisherTensorReader:
             raise ValueError('positive row block required')
         x=np.asarray(inputs)
         rows,columns=binding.shape
-        if x.dtype!=np.float32 or x.ndim<2 or x.shape[-1]!=columns:
+        if (x.dtype!=np.float32 or x.ndim<2 or x.shape[-1]!=columns or
+                not np.isfinite(x).all()):
             raise ValueError('FP32 inputs must match streamed matrix width')
         if (x.size+math.prod(x.shape[:-1])*rows)*8+min(row_block,rows)*columns*128>self.max_bytes:
             raise MemoryError('streamed native projection exceeds admission')
-        if bias is not None and (bias.shape!=(rows,) or bias.dtype!=np.float32):
+        if bias is not None and (bias.shape!=(rows,) or bias.dtype!=np.float32 or
+                                 not np.isfinite(bias).all()):
             raise ValueError('projection bias differs from output rows')
         output=np.empty(x.shape[:-1]+(rows,),np.float32)
         for begin in range(0,rows,row_block):
             if cancelled is not None and cancelled(): raise InterruptedError('streamed publisher projection cancelled')
             end=min(rows,begin+row_block)
             weights=self.read(TensorSlice(binding.source,(end-begin,columns),binding.element_offset+begin*columns))
-            output[...,begin:end]=ops.linear(x,weights,None if bias is None else bias[begin:end])
+            block=ops.linear(x,weights,None if bias is None else bias[begin:end])
+            if (block.shape!=output[...,begin:end].shape or block.dtype!=np.float32 or
+                    not np.isfinite(block).all()):
+                raise ArithmeticError('streamed publisher projection returned invalid output')
+            output[...,begin:end]=block
+        if cancelled is not None and cancelled():
+            raise InterruptedError('streamed publisher projection cancelled')
         return output
 
     def close(self): self._closed=True

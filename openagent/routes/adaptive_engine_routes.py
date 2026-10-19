@@ -167,11 +167,35 @@ def handle_post(path: str, deps: AdaptiveEngineRouteDependencies) -> JsonRouteRe
                 project=project,
             )
         elif path == "/api/adaptive-engine/direct/generate":
+            generation = _dict(payload.get("generation"))
+            # The direct OpenVINO generation adapter currently constructs only
+            # a plain GenerationConfig; accepting a grammar/schema here would
+            # silently generate unconstrained text. Fail closed until a real
+            # constrained decoder and target verification owner are wired.
+            constrained_keys = {
+                "grammar", "gbnf", "guided_decoding", "guided_json", "json_schema",
+                "response_format",
+            }
+            requested_constraints = sorted(constrained_keys.intersection(generation))
+            if requested_constraints:
+                from ..adaptive_engine.colibri_capabilities import require_colibri_capability
+                try:
+                    require_colibri_capability("gbnf_constrained_generation",
+                                               operation="direct constrained generation")
+                except ValueError as exc:
+                    return JsonRouteResult({
+                        "error": str(exc),
+                        "unsupported_fields": requested_constraints,
+                    }, HTTPStatus.BAD_REQUEST)
+                return JsonRouteResult({
+                    "error": "constrained generation is not supported by the direct adapter",
+                    "unsupported_fields": requested_constraints,
+                }, HTTPStatus.BAD_REQUEST)
             result = deps.engine.generate_direct(
                 str(payload.get("model_id", "openagent-direct-chat")),
                 messages=_messages(payload.get("messages")),
                 prompt=str(payload.get("prompt", "")),
-                generation=_dict(payload.get("generation")),
+                generation=generation,
                 project=project,
             )
         elif path == "/api/adaptive-engine/direct/benchmark":

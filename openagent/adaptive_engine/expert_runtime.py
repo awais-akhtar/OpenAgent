@@ -378,8 +378,35 @@ class SparseExpertRuntime:
         allow_kernel_fallback: bool = True,
     ) -> None:
         manifest.validate()
+        # The generic kernel registry is intentionally broader than the
+        # per-family admitted format matrix. For families with native sparse
+        # execution routes, bind every layer to its family/native consumer
+        # policy before creating DiskExpertStore (which opens artifact paths).
+        source_family = {'mixtral':'mixtral', 'olmoe':'olmoe'}.get(manifest.architecture)
+        if source_family is not None:
+            from .source_scope import require_format_execution_consumer
+            for layer in manifest.layers:
+                require_format_execution_consumer(
+                    family=source_family, backend='native',
+                    persisted_format=layer.dtype)
         for layer in manifest.layers:
             self._check_contract(layer, kernels, preferred_kernel, allow_kernel_fallback)
+            # Resolve the exact format/backend pair before DiskExpertStore
+            # opens any expert container.  Previously only lattice contract
+            # metadata was preflighted here; ordinary registered formats such
+            # as block-FP8 or MXFP4 could pass manifest admission, open and map
+            # every expert region, and only fail when the first routed token
+            # reached the provider.  Keep the normal fallback policy explicit,
+            # but require that the selected execution policy can actually
+            # consume every admitted layer format up front.
+            from .expert_store import DEFAULT_EXPERT_KERNELS
+
+            registry = kernels or DEFAULT_EXPERT_KERNELS
+            registry.resolve(
+                dtype=layer.dtype,
+                preferred=preferred_kernel,
+                allow_fallback=allow_kernel_fallback,
+            )
         self.manifest = manifest
         self.layers = {layer.id: layer for layer in manifest.layers}
         regions = {

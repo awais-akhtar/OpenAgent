@@ -39,7 +39,8 @@ def _packed_dot(bytes_view, position, x, columns):
 def _kernel(bytes_view, x, hidden, intermediate, weight, activation, output):
     # Validate even blocks whose route weight is zero, before any arithmetic.
     for position in range(0, bytes_view.size, 22):
-        if not math.isfinite(_read_half(bytes_view, position)):
+        delta = _read_half(bytes_view, position)
+        if not math.isfinite(delta):
             return 1
     stride = hidden // 32 * 22
     matrix_size = intermediate * stride

@@ -13,15 +13,18 @@
 static Q4_THREAD_LOCAL char q4_observation_identity[65];
 static Q4_THREAD_LOCAL oa_q4_routing_observer q4_observer;
 static Q4_THREAD_LOCAL void *q4_observer_context;
+static Q4_THREAD_LOCAL uint64_t q4_observer_generation;
 int oa_qwen4_public_observation_begin(const char *identity,oa_q4_routing_observer observer,void *context){
     size_t i;
     if(!identity||!observer||q4_observer||strlen(identity)!=64)return -1;
     for(i=0;i<64;i++)if(!((identity[i]>='0'&&identity[i]<='9')||(identity[i]>='a'&&identity[i]<='f')))return -1;
-    memcpy(q4_observation_identity,identity,65);q4_observer_context=context;q4_observer=observer;return 0;
+    memcpy(q4_observation_identity,identity,65);q4_observer_context=context;q4_observer=observer;
+    q4_observer_generation++;return 0;
 }
 int oa_qwen4_public_observation_end(const char *identity,oa_q4_routing_observer observer,void *context){
     if(!identity||!q4_observer||observer!=q4_observer||context!=q4_observer_context||strcmp(identity,q4_observation_identity))return -1;
-    q4_observer=NULL;q4_observer_context=NULL;memset(q4_observation_identity,0,65);return 0;
+    q4_observer=NULL;q4_observer_context=NULL;memset(q4_observation_identity,0,65);
+    q4_observer_generation++;return 0;
 }
 typedef struct {oa_q4_tensor cache[3],history;int64_t *previous;uint64_t previous_count;} q4_state;
 struct oa_q4_public_session {
@@ -33,7 +36,8 @@ static int q4_error(char *e,size_t n,const char *s){if(e&&n)snprintf(e,n,"%s",s)
 static void q4_lock(oa_q4_public_model *m){while(atomic_flag_test_and_set(&m->guard)){} }
 static void q4_unlock(oa_q4_public_model *m){atomic_flag_clear(&m->guard);}
 static int q4_add(uint64_t *used,uint64_t count,unsigned width,uint64_t limit){
-    if(count>SIZE_MAX/width||count>UINT64_MAX/width||count*width>limit-*used)return 0;
+    if(!used||!width||*used>limit||count>SIZE_MAX/width||count>UINT64_MAX/width||
+        count*width>limit-*used)return 0;
     *used+=count*width;return 1;
 }
 static uint64_t q4_count(const oa_q4_public_model *m,uint32_t layer,unsigned slot,uint64_t position){
@@ -85,8 +89,10 @@ invalid:q4_free(state,(uint32_t)m->config.layers);return NULL;
 int oa_qwen4_public_session_create(oa_q4_public_model *m,uint32_t begin,uint32_t end,uint64_t maximum,
     oa_q4_public_session **out,char *error,size_t bytes){
     oa_q4_public_session *s;uint64_t charge;
+    /* A failed constructor must never leave a stale caller-owned handle behind. */
+    if(out)*out=NULL;
     if(!m||!out||begin>=end||end>m->config.layers||oa_qwen4_public_model_retain(m))return q4_error(error,bytes,"admitted Qwen4 layer range required");
-    *out=NULL;charge=sizeof(*s)+m->config.layers*sizeof(q4_state)+m->work;
+    charge=sizeof(*s)+m->config.layers*sizeof(q4_state)+m->work;
     q4_lock(m);if(charge>maximum||charge>m->limit-m->used){q4_unlock(m);oa_qwen4_public_model_release(m);return q4_error(error,bytes,"Qwen4 session aggregate admission exhausted");}
     m->used+=charge;q4_unlock(m);
     s=(oa_q4_public_session *)calloc(1,sizeof(*s));
@@ -102,9 +108,12 @@ int oa_qwen4_public_session_close(oa_q4_public_session *s){
 int oa_qwen4_public_session_run(oa_q4_public_session *s,const oa_se_run *r,char *error,size_t error_bytes){
     oa_q4_public_model *m;oa_q4_compose_layer *layers=NULL;oa_q4_compose_trace *traces=NULL;
     q4_state *pending=NULL;uint8_t *mask=NULL;int64_t *positions=NULL;float *output=NULL;
-    uint64_t width,stride,end,extent,charge,rows,i,j,k;oa_q4_compose_config config;int status=-1;
+    uint64_t width,stride,end,extent,charge,rows,i,j,k,observer_generation=0;
+    oa_q4_routing_observer observer=NULL;void *observer_context=NULL;
+    oa_q4_compose_config config;oa_q4_cancel_guard cancel_state;int status=-1;
     if(!s||!r||atomic_flag_test_and_set(&s->busy))return q4_error(error,error_bytes,"Qwen4 session unavailable");
     m=s->model;rows=r->rows;end=s->position+rows;width=m->config.streams*m->config.text.hidden;stride=width+5;
+    cancel_state=(oa_q4_cancel_guard){r->cancel,r->cancel_data,0};
     if(!rows||rows>m->rows||r->position!=s->position||end>m->config.text.capacity||!r->input||!r->output||
         r->input_bytes!=rows*stride*4||r->output_bytes<rows*stride*4||!q4_extent(s,end,&extent))goto finish;
     charge=s->state_bytes;
@@ -149,17 +158,24 @@ int oa_qwen4_public_session_run(oa_q4_public_session *s,const oa_se_run *r,char 
     status=m->wire(&config,layers,traces,rows,s->position,s->begin,s->end,
         (oa_q4_tensor){(float *)r->input,rows*stride},(oa_q4_tensor){output,rows*stride},mask,end,
         positions,end*(config.mrope_enabled?3:1),m->experts?oa_original_expert_evaluate_counted64:NULL,m->experts,
-        m->ple?oa_original_rows_lookup:NULL,NULL,r->cancel,r->cancel_data);
+        m->ple?oa_original_rows_lookup:NULL,NULL,
+        r->cancel?oa_q4_checked_cancel:NULL,r->cancel?&cancel_state:NULL);
     /* The kernel selects the row callback only for layers carrying an owned
        native table context; resident PLE layers retain their ordinary table. */
-    if(status|| (r->cancel&&r->cancel(r->cancel_data))) {status=-1;goto finish;}
-    if(q4_observer&&!strcmp(q4_observation_identity,m->identity))for(i=s->begin;i<s->end;i++){
-        if((r->cancel&&r->cancel(r->cancel_data))||q4_observer(q4_observer_context,(uint32_t)i,rows,
-            m->config.text.experts,m->config.text.topk,traces[i].router.data,traces[i].selected,traces[i].scores.data)){
-            status=-1;goto finish;
+    if(status||oa_q4_checked_cancel(&cancel_state)) {status=-1;goto finish;}
+    observer=q4_observer;observer_context=q4_observer_context;
+    if(observer&&!strcmp(q4_observation_identity,m->identity)){
+        observer_generation=q4_observer_generation;
+        for(i=s->begin;i<s->end;i++){
+            if(oa_q4_checked_cancel(&cancel_state)||observer(observer_context,(uint32_t)i,rows,
+                m->config.text.experts,m->config.text.topk,traces[i].router.data,traces[i].selected,traces[i].scores.data)||
+                q4_observer_generation!=observer_generation||q4_observer!=observer||q4_observer_context!=observer_context||
+                strcmp(q4_observation_identity,m->identity)){
+                status=-1;goto finish;
+            }
         }
     }
-    if(r->cancel&&r->cancel(r->cancel_data)){status=-1;goto finish;}
+    if(oa_q4_checked_cancel(&cancel_state)){status=-1;goto finish;}
     q4_free(s->state,(uint32_t)m->config.layers);free(s->mask);free(s->positions);
     s->state=pending;pending=NULL;s->mask=mask;mask=NULL;s->positions=positions;positions=NULL;
     s->position=end;s->state_bytes=extent;memcpy(r->output,output,(size_t)rows*stride*4);status=0;

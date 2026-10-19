@@ -18,6 +18,7 @@ from ..session_recovery import _path as _safe_path
 from ..native_library_identity import _stamp
 from ..segment_snapshot import _write
 from ..generation_checkpoint_files import _remove_staging
+from ..owned_file_descriptor import close_after_failure,fdopen_owned
 
 
 _MAGIC = b'OAK3S001'
@@ -335,10 +336,10 @@ def load_k3_checkpoint(model, source, *, max_payload_bytes,
                 raise ValueError('K3 checkpoint replaced during opening')
             if info.st_size > _PREFIX.size + header_limit + maximum + 32:
                 raise MemoryError('K3 checkpoint file exceeds admission')
-            stream = os.fdopen(descriptor, 'rb')
-        except BaseException:
-            os.close(descriptor)
+        except BaseException as primary:
+            close_after_failure(descriptor,primary,owner='K3 checkpoint input')
             raise
+        stream=fdopen_owned(descriptor,'rb',owner='K3 checkpoint input')
         with stream:
             def read_exact(size):
                 model._check_cancelled()

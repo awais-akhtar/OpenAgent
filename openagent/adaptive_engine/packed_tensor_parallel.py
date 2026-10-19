@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 import numpy as np
 
-from .tensor_parallel import TensorParallelProjections, shard_bounds
+from .tensor_parallel import TensorParallelProjections, shard_bounds, _failure_type_name
 
 
 def block_row_bounds(rows, rank, world_size):
@@ -69,6 +69,8 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
         with self._lock:
             error, descriptor = None, None
             try:
+                if type(source) is not str or not source:
+                    raise ValueError('non-empty exact packed source name required')
                 if self._closed or self._active or source in self._packed:
                     raise RuntimeError('open idle packed bank and unique source required')
                 shape = self.provider.tensor_shapes[source]
@@ -78,13 +80,22 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
                 self._tile_rows(source)
                 descriptor = (source,tuple(shape),self.checkpoint_identity,self._kernel_identity,self.backend,
                               self.torch_version,self.device.type)
-            except Exception as failure:
-                error = str(failure) or type(failure).__name__
+            except BaseException as failure:
+                message=_failure_type_name(failure)
+                error=(message+': cooperative interruption'
+                       if isinstance(failure,(InterruptedError,KeyboardInterrupt)) else message)
             self._agree(descriptor,error)
-            providers = [None]*self.world_size
+            with self.local_stage((descriptor,'source-pin-allocation')):
+                providers = [None]*self.world_size
             self._collective('all_gather_object',providers,self._provider_identity,group=self.group)
-            self._packed[source] = tuple(shape)
-            self._pins[source] = tuple(providers)
+            try:
+                with self.local_stage((descriptor,'source-registration-publish')):
+                    self._packed[source] = tuple(shape)
+                    self._pins[source] = tuple(providers)
+            except BaseException:
+                self._packed.pop(source,None);self._pins.pop(source,None)
+                self._poisoned=True;self._closed=True
+                raise
 
     def handles(self, source):
         return not self._closed and source in self._packed
@@ -111,6 +122,8 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
         with self._lock:
             error, vector, descriptor = None, None, None
             try:
+                if type(source) is not str or not source:
+                    raise ValueError('non-empty exact packed source name required')
                 if self._closed or self._active:
                     raise RuntimeError('packed projection bank closed or active')
                 if self.provider.identity != self._provider_identity:
@@ -143,10 +156,15 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
                     raise MemoryError('packed rank projection and gather exceed admission')
                 vector = np.array(observed,dtype=np.float32,order='C',copy=True)
                 descriptor = (source,observed.shape,groups,self.identity)
-            except Exception as failure:
-                error = str(failure) or type(failure).__name__
+            except BaseException as failure:
+                message=_failure_type_name(failure)
+                error=(message+': cooperative interruption'
+                       if isinstance(failure,(InterruptedError,KeyboardInterrupt)) else message)
             self._agree(descriptor,error)
-            self._agree((descriptor,hashlib.sha256(vector.tobytes()).hexdigest()))
+            input_digest=None
+            with self.local_stage((descriptor,'packed-input-fingerprint')):
+                input_digest=hashlib.sha256(vector.tobytes()).hexdigest()
+            self._agree((descriptor,input_digest))
             self._active = True
             try:
                 local,error = None,None
@@ -173,8 +191,10 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
                                     local[index,begin-start:right-start] = result
                             begin = right
                     self._check_stage_cancelled()
-                except Exception as failure:
-                    error = str(failure) or type(failure).__name__
+                except BaseException as failure:
+                    message=_failure_type_name(failure)
+                    error=(message+': cooperative interruption'
+                           if isinstance(failure,(InterruptedError,KeyboardInterrupt)) else message)
                 self._agree(descriptor,error)
                 torch = self.torch
                 with torch.inference_mode():

@@ -24,23 +24,28 @@ from ..native_library_identity import _stamp
 
 
 def digest_file(path):
-    path=_path(path);before=path.stat()
-    if not stat.S_ISREG(before.st_mode):raise ValueError('regular pinned artifact required')
+    path=_path(path)
+    before=path.stat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError('regular pinned artifact required')
     digest = hashlib.sha256()
     descriptor=os.open(path,os.O_RDONLY|getattr(os,'O_BINARY',0)|
         getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0))
     try:
         if _stamp(os.fstat(descriptor))!=_stamp(before):
             raise ValueError('pinned artifact changed during opening')
-        stream=os.fdopen(descriptor,'rb')
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        from ..owned_file_descriptor import close_after_failure
+        close_after_failure(descriptor,primary,owner='pinned artifact input')
         raise
+    from ..owned_file_descriptor import fdopen_owned
+    stream=fdopen_owned(descriptor,'rb',owner='pinned artifact input')
     with stream:
         count=0
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             count+=len(block)
-            if count>before.st_size:raise ValueError('pinned artifact grew during hashing')
+            if count>before.st_size:
+                raise ValueError('pinned artifact grew during hashing')
             digest.update(block)
         if count!=before.st_size or _stamp(os.fstat(stream.fileno()))!=_stamp(before):
             raise ValueError('pinned artifact changed during hashing')
@@ -54,10 +59,10 @@ def pinned_artifacts(spec, root):
     rows = spec['artifacts']
     if (not isinstance(rows, list) or not rows or
             any(not isinstance(r, dict) or
-                not {'kind', 'path', 'sha256'} <= set(r) for r in rows) or
-            not {'source', 'config', 'weights', 'tokenizer'} <=
+                set(r) != {'kind', 'path', 'sha256'} for r in rows) or
+            not {'source', 'config', 'weights', 'tokenizer', 'dependency'} <=
             {r.get('kind') for r in rows if isinstance(r, dict)}):
-        raise ValueError('source/config/weights/tokenizer pins required')
+        raise ValueError('source/config/weights/tokenizer/dependency pins required')
     observed = []
     entries = set()
     paths = set()
@@ -88,6 +93,197 @@ def checkpoint_identity(spec):
     """Match the complete checkpoint, not a metadata-selected single shard."""
     return {kind: sorted(row['sha256'] for row in spec['artifacts'] if row['kind'] == kind)
             for kind in ('config', 'weights', 'tokenizer')}
+
+
+def validate_execution_binding(manifest):
+    """Verify exact-row, callable and complete artifact-pin manifest binding.
+
+    This structural check is performed before adapter code is imported. Its
+    digest is not a signed receipt and does not certify the model/backend.
+    """
+    binding = manifest.get('execution_binding')
+    if binding is None:
+        raise ValueError('exact P13 execution-row/artifact-pin binding is required')
+    required = {'contract', 'oracle_factory', 'candidate_factory',
+                'artifact_pins', 'binding_sha256', 'receipt_required'}
+    if (type(binding) is not dict or set(binding) != required
+            or binding.get('receipt_required') is not True
+            or binding.get('oracle_factory') != manifest.get('oracle', {}).get('factory')
+            or binding.get('candidate_factory') != manifest.get('candidate', {}).get('factory')):
+        raise ValueError('invalid exact execution-row callable/artifact binding')
+    contract = binding.get('contract')
+    fields = {'family', 'model_type', 'backend', 'arithmetic',
+              'source_format', 'persisted_format', 'media'}
+    if (type(contract) is not dict or set(contract) != fields
+            or any(type(contract[key]) is not str or not contract[key]
+                   for key in fields - {'media'})
+            or type(contract['media']) is not bool):
+        raise ValueError('invalid exact execution-row contract')
+    # A self-consistent manifest digest only proves that the manifest has not
+    # drifted from its own declared tuple. Join it to the source catalog before
+    # importing adapter code, otherwise a caller could bind arbitrary labels
+    # (or an explicitly restricted route) and have adapters echo them back.
+    from ..source_scope import (source_scope_matrix, validate_source_scope,
+                                validate_source_references)
+    catalog = source_scope_matrix()
+    validate_source_scope(catalog)
+    # Resolve every source-bearing P02/P13 owner against this checkout before
+    # importing adapter code.  This is a filesystem/source audit only: it does
+    # not instantiate adapters or claim that a receipt exists.
+    validate_source_references(root=Path(__file__).resolve().parents[2],
+                               scope=catalog)
+    matches = [row for row in catalog.get('execution_cases', ())
+               if all(row.get(key) == contract[key] for key in
+                      ('family', 'model_type', 'backend', 'arithmetic',
+                       'source_format', 'persisted_format'))
+               and row.get('evidence_binding', {}).get('row_binding', {}).get('media')
+                   is contract['media']]
+    # A comparison manifest is an executable caller, not a planning/catalog
+    # surface.  Candidate rows may be listed for route triage, but allowing
+    # them here bypasses the exact loader/consumer admission gate and turns a
+    # source-only claim into an unverified runtime attempt.
+    candidate_match = (not matches or any(
+        row.get('admission') != 'verified-admitted' or
+        row.get('combination_status') != 'verified-admitted'
+        for row in matches))
+    if contract['media']:
+        missing_media = next((row for row in matches
+            if row.get('evidence_binding', {}).get('media_adapter_missing') is not False
+            or not isinstance(row.get('evidence_binding', {}).get('media_adapter'), str)
+            or not row.get('evidence_binding', {}).get('media_adapter')
+            or not row.get('evidence_binding', {}).get('comparison_report_schema')), None)
+        if missing_media is not None:
+            evidence = missing_media.get('evidence_binding', {})
+            reason = evidence.get('media_restriction')
+            detail = ': '+reason if isinstance(reason, str) and reason else ''
+            raise ValueError(
+                'media execution contract lacks a row-bound media adapter/report obligation'+detail)
+    if candidate_match:
+        raise ValueError(
+            'execution contract is absent from, candidate-unverified, or restricted by the source catalog')
+    pin_records = {
+        role: sorted((dict(row) for row in manifest[role].get('artifacts', [])),
+                     key=lambda row: (row.get('kind', ''), row.get('path', ''),
+                                      row.get('sha256', '')))
+        for role in ('oracle', 'candidate')
+    }
+    if binding.get('artifact_pins') != pin_records:
+        raise ValueError('execution binding artifact pins differ from manifest selections')
+    payload = dict(contract=contract,
+                   oracle_factory=binding['oracle_factory'],
+                   candidate_factory=binding['candidate_factory'],
+                   artifact_pins=pin_records)
+    expected = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(',', ':'),
+        allow_nan=False).encode('utf-8')).hexdigest()
+    if binding.get('binding_sha256') != expected:
+        raise ValueError('execution-row and artifact-pin binding digest mismatch')
+    return binding
+
+
+def observation_receipt_binding(*, artifact_sha256, manifest_sha256,
+                                execution_binding_sha256):
+    """Bind an observation archive to its exact manifest and execution row.
+
+    This digest detects accidental cross-run/archive mixups. It is not signed,
+    does not establish adapter correctness, and is not placement evidence.
+    """
+    values = (artifact_sha256, manifest_sha256, execution_binding_sha256)
+    if any(type(value) is not str or len(value) != 64 or
+           any(char not in '0123456789abcdef' for char in value)
+           for value in values):
+        raise ValueError('lowercase SHA-256 observation binding inputs required')
+    payload = dict(schema='openagent.wholemodel-observation-binding.v1',
+                   artifact_sha256=artifact_sha256,
+                   manifest_sha256=manifest_sha256,
+                   execution_binding_sha256=execution_binding_sha256)
+    digest = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(',', ':'),
+        allow_nan=False).encode('utf-8')).hexdigest()
+    return dict(payload, binding_sha256=digest, certification=False,
+                placement_evidence=False)
+
+
+def report_receipt_binding(report):
+    """Bind the finalized report payload to its observation artifact receipt.
+
+    This unsigned digest helps detect accidental report/archive mixups. It is
+    not an attestation, runtime-evidence verifier, or certification signal.
+    """
+    if not isinstance(report, dict):
+        raise ValueError('whole-model report object required')
+    artifact = report.get('observation_artifact')
+    receipt = artifact.get('execution_binding') if isinstance(artifact, dict) else None
+    manifest_sha256 = report.get('manifest_sha256')
+    execution_sha256 = report.get('execution_binding', {}).get('binding_sha256')
+    artifact_sha256 = artifact.get('sha256') if isinstance(artifact, dict) else None
+    values = (manifest_sha256, execution_sha256, artifact_sha256)
+    if any(type(value) is not str or len(value) != 64 or
+           any(char not in '0123456789abcdef' for char in value)
+           for value in values):
+        raise ValueError('report, execution, and observation SHA-256 bindings required')
+    if (not isinstance(receipt, dict) or
+            set(receipt) != {'schema', 'artifact_sha256', 'manifest_sha256',
+                             'execution_binding_sha256', 'binding_sha256',
+                             'certification', 'placement_evidence'} or
+            receipt.get('schema') != 'openagent.wholemodel-observation-binding.v1' or
+            receipt.get('certification') is not False or
+            receipt.get('placement_evidence') is not False or
+            receipt.get('manifest_sha256') != manifest_sha256 or
+            receipt.get('execution_binding_sha256') != execution_sha256 or
+            receipt.get('artifact_sha256') != artifact_sha256):
+        raise ValueError('observation receipt does not match report bindings')
+    receipt_payload = dict(schema=receipt['schema'],
+                           artifact_sha256=receipt['artifact_sha256'],
+                           manifest_sha256=receipt['manifest_sha256'],
+                           execution_binding_sha256=receipt['execution_binding_sha256'])
+    expected_receipt_sha256 = hashlib.sha256(json.dumps(
+        receipt_payload, sort_keys=True, separators=(',', ':'),
+        allow_nan=False).encode('utf-8')).hexdigest()
+    if receipt.get('binding_sha256') != expected_receipt_sha256:
+        raise ValueError('observation receipt digest mismatch')
+    execution = report.get('execution_binding')
+    execution_fields = {'contract', 'oracle_factory', 'candidate_factory',
+                        'artifact_pins', 'binding_sha256', 'receipt_required',
+                        'receipt_present', 'executed', 'certification'}
+    if (not isinstance(execution, dict) or set(execution) != execution_fields or
+            execution.get('receipt_required') is not True or
+            execution.get('receipt_present') is not False or
+            execution.get('executed') is not False or
+            execution.get('certification') is not False):
+        raise ValueError('execution binding has invalid receipt or certification state')
+    execution_payload = dict(contract=execution['contract'],
+                             oracle_factory=execution['oracle_factory'],
+                             candidate_factory=execution['candidate_factory'],
+                             artifact_pins=execution['artifact_pins'])
+    expected_execution_sha256 = hashlib.sha256(json.dumps(
+        execution_payload, sort_keys=True, separators=(',', ':'),
+        allow_nan=False).encode('utf-8')).hexdigest()
+    if execution.get('binding_sha256') != expected_execution_sha256:
+        raise ValueError('execution binding digest mismatch')
+    payload_report = dict(report)
+    payload_report.pop('report_binding', None)
+    report_sha256 = hashlib.sha256(json.dumps(
+        payload_report, sort_keys=True, separators=(',', ':'),
+        allow_nan=False).encode('utf-8')).hexdigest()
+    payload = dict(schema='openagent.wholemodel-report-binding.v1',
+                   report_sha256=report_sha256,
+                   artifact_sha256=artifact_sha256,
+                   manifest_sha256=manifest_sha256,
+                   execution_binding_sha256=execution_sha256)
+    binding_sha256 = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(',', ':'),
+        allow_nan=False).encode('utf-8')).hexdigest()
+    return dict(payload, binding_sha256=binding_sha256,
+                certification=False, runtime_evidence_verified=False)
+
+
+def validate_report_receipt_binding(report):
+    """Check report/archive association integrity without certifying evidence."""
+    binding = report.get('report_binding') if isinstance(report, dict) else None
+    if not isinstance(binding, dict) or binding != report_receipt_binding(report):
+        raise ValueError('whole-model report/archive binding mismatch')
+    return binding
 
 
 def load_adapter(spec, root):
@@ -227,12 +423,26 @@ def checked_runtime(value):
     return copy.deepcopy(value)
 
 
+def adapter_runtime_metadata(adapter):
+    """Require adapters to report observed runtime details after execution.
+
+    This is still adapter-supplied evidence, not an independently verified
+    placement receipt; requiring it prevents an empty/omitted runtime section
+    from accompanying a numerically passed report.
+    """
+    getter = getattr(adapter, 'runtime_metadata', None)
+    if not callable(getter):
+        raise TypeError('adapter must expose callable runtime_metadata')
+    return checked_runtime(getter())
+
+
 def run(manifest, *, base_directory, output_directory):
     """Write report.json and observations.npz. Missing evidence always fails."""
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     report = dict(schema='openagent.wholemodel-validation.v1', status='failed',
-                  certification=False, scope='exact pinned text-model case only',
+                  certification=False, runtime_evidence_verified=False,
+                  scope='exact pinned text-model case only',
                   manifest=manifest, checks=[], errors=[], artifacts={})
     arrays = {}
     adapters = {}
@@ -271,6 +481,10 @@ def run(manifest, *, base_directory, output_directory):
                    {(output/'report.json').resolve(),(output/'observations.npz').resolve()})
             if output_conflicts:
                 raise ValueError('validation output would overwrite a pinned artifact')
+        # Reject a changed contract or pin selection before importing either
+        # user-selected adapter. Pinned file contents are checked above; this
+        # joins those exact records to the exact tuple and callable identities.
+        binding = validate_execution_binding(manifest)
         identities = {role: checkpoint_identity(manifest[role]) for role in ('oracle', 'candidate')}
         if identities['oracle'] != identities['candidate']:
             raise ValueError('complete config/weights/tokenizer pin sets differ between roles')
@@ -285,6 +499,16 @@ def run(manifest, *, base_directory, output_directory):
             raise ValueError('oracle and candidate have identical implementation source pin sets')
         metas = {role: metadata(adapter, manifest[role], role == 'oracle') for role, adapter in adapters.items()}
         report['models'] = metas
+        if binding is not None:
+            contract = binding.get('contract')
+            for role, adapter in adapters.items():
+                if metas[role].get('execution_contract') != contract:
+                    raise ValueError(role + ' adapter metadata does not bind the exact execution row')
+                factory = manifest[role].get('factory')
+                if type(factory) is not str or factory.count(':') != 1:
+                    raise ValueError(role + ' adapter factory is not an exact module:callable')
+            report['execution_binding'] = dict(binding, receipt_present=False,
+                                               executed=False, certification=False)
         if ((metas['oracle']['implementation'], metas['oracle']['implementation_revision']) ==
                 (metas['candidate']['implementation'], metas['candidate']['implementation_revision'])):
             raise ValueError('oracle and candidate declare the same implementation identity')
@@ -512,7 +736,8 @@ def run(manifest, *, base_directory, output_directory):
                 receipt=candidate.snapshot()
                 try:
                     suffix=generated['oracle']
-                    if not suffix:raise ValueError('restoration comparison requires generated continuation tokens')
+                    if not suffix:
+                        raise ValueError('restoration comparison requires generated continuation tokens')
                     first=observe(candidate,suffix,metas['candidate'])
                     candidate.restore(receipt)
                     restored=observe(candidate,suffix,metas['candidate'])
@@ -534,11 +759,7 @@ def run(manifest, *, base_directory, output_directory):
     report['adapter_runtime'] = {}
     for role, adapter in adapters.items():
         try:
-            getter = getattr(adapter, 'runtime_metadata', None)
-            if getter is not None:
-                if not callable(getter):
-                    raise TypeError('runtime_metadata must be callable')
-                report['adapter_runtime'][role] = checked_runtime(getter())
+            report['adapter_runtime'][role] = adapter_runtime_metadata(adapter)
         except Exception as error:
             report['status'] = 'failed'
             report['errors'].append(dict(role=role,stage='runtime_metadata',type=type(error).__name__,message=str(error)))
@@ -577,7 +798,20 @@ def run(manifest, *, base_directory, output_directory):
                 np.savez_compressed(stream,**arrays)
             digest = digest_file(temporary)
             temporary.replace(artifact)
-            report['observation_artifact'] = dict(path=str(artifact.resolve()),sha256=digest)
+            # Bind the receipt to the bytes at the published path, not only
+            # to the temporary inode before the atomic rename.  This catches
+            # path replacement or mutation at the publication boundary before
+            # a report can claim an association for bytes it did not hash.
+            published_digest = digest_file(artifact)
+            if published_digest != digest:
+                raise ValueError('published observation archive differs from hashed temporary')
+            receipt_binding = observation_receipt_binding(
+                artifact_sha256=published_digest,
+                manifest_sha256=report['manifest_sha256'],
+                execution_binding_sha256=binding['binding_sha256'])
+            report['observation_artifact'] = dict(
+                path=str(artifact.resolve()), sha256=published_digest,
+                execution_binding=receipt_binding)
             report['observations'] = observations
         except Exception as error:
             report['status'] = 'failed'
@@ -588,6 +822,12 @@ def run(manifest, *, base_directory, output_directory):
     if report['errors']:
         report['status'] = 'failed'
     report = safe_json(report)
+    if report.get('observation_artifact') is not None:
+        try:
+            report['report_binding'] = report_receipt_binding(report)
+        except Exception as error:
+            report['status'] = 'failed'
+            report['errors'].append(dict(stage='report_binding',type=type(error).__name__,message=str(error)))
     if (output/'report.json').resolve() in output_conflicts:
         return report
     temporary = None

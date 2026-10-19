@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 from openagent.chat import ChatService
@@ -10,6 +11,51 @@ from openagent.workflows import WorkflowEngine
 
 
 class ChatAndWorkflowTests(unittest.TestCase):
+    def test_chat_stream_preserves_generation_error_and_notes_close_failure(self) -> None:
+        class BrokenStream:
+            def __init__(self):
+                self.items = iter((SimpleNamespace(
+                    content="partial", provider="local", model="fixture",
+                    done=False, metadata={},
+                ),))
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                try:
+                    return next(self.items)
+                except StopIteration:
+                    raise ValueError("generation failed")
+
+            def close(self):
+                self.closed = True
+                raise RuntimeError("cleanup failed")
+
+        class Gateway:
+            def __init__(self):
+                self.stream = BrokenStream()
+
+            def stream_complete(self, *_args, **_kwargs):
+                return self.stream
+
+        with TemporaryDirectory() as tmp:
+            gateway = Gateway()
+            service = ChatService(OpenAgentStore(tmp), gateway)
+            events = service.stream("hello")
+            self.assertEqual(next(events)["type"], "conversation")
+            self.assertEqual(next(events)["type"], "status")
+            self.assertEqual(next(events)["content"], "partial")
+            with self.assertRaisesRegex(ValueError, "generation failed") as caught:
+                next(events)
+
+        self.assertTrue(gateway.stream.closed)
+        self.assertTrue(any(
+            "chat provider stream cleanup failed: RuntimeError" in note
+            for note in getattr(caught.exception, "__notes__", ())
+        ))
+
     def test_recent_history_limit_keeps_latest_messages_in_chronological_order(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

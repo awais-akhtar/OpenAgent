@@ -63,7 +63,17 @@ def convert_experts(experts, output, *, hidden_size, intermediate_size, block_co
             os.fsync(stream.fileno())
         result = Q4_1ConversionResult(target, hidden_size, intermediate_size, regions)
         os.link(temporary, target)
-        return result
-    finally:
+    except BaseException as primary:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as cleanup:
+                primary.add_note("Q4_1 conversion temporary cleanup pending: " + repr(cleanup))
+        raise
+    else:
+        # Preserve the conversion/publication failure as primary. If
+        # publication succeeded, however, a failed temporary unlink is still
+        # an observable cleanup failure rather than a silent artifact leak.
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+        return result

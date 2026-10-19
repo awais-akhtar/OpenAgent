@@ -34,6 +34,11 @@ class IndependentQwen4TextDecoder:
         raw = dict(config)
         if raw.get('model_type') != 'qwen4_exp_text':
             raise ValueError('expected exact qwen4_exp_text')
+        if raw.get('architectures') not in (None, ['Qwen4ExpForCausalLM'],
+                                             ('Qwen4ExpForCausalLM',)):
+            raise ValueError('unsupported Qwen4 text architecture declaration')
+        if 'tie_word_embeddings' in raw and type(raw['tie_word_embeddings']) is not bool:
+            raise ValueError('Qwen4 tie_word_embeddings must be boolean')
         fields = ('hidden_size', 'vocab_size', 'num_hidden_layers', 'hc_count', 'hc_lowrank',
                   'linear_conv_kernel_dim', 'linear_key_head_dim', 'linear_value_head_dim',
                   'linear_num_key_heads', 'linear_num_value_heads', 'num_experts',
@@ -378,9 +383,9 @@ class IndependentQwen4TextDecoder:
         from .qwen4_cache_recovery import write_qwen4_cache
         return write_qwen4_cache(self, output, max_bytes=max_bytes)
 
-    def restore_cache(self, source, *, max_bytes):
+    def restore_cache(self, source, *, max_bytes, cancelled=None):
         from .qwen4_cache_recovery import restore_qwen4_cache
-        return restore_qwen4_cache(self, source, max_bytes=max_bytes)
+        return restore_qwen4_cache(self, source, max_bytes=max_bytes, cancelled=cancelled)
 
     def _forward(self, token_ids, *, attention_mask, position_ids, incoming_hidden=None, inputs_embeds=None):
         ids = np.asarray(token_ids)

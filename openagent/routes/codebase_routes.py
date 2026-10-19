@@ -16,6 +16,7 @@ ROUTE_GROUP = "codebase"
 ROUTES = (
     ("GET", "/api/codebase/frameworks"),
     ("GET", "/api/codebase/projects"),
+    ("GET", "/api/codebase/project-identities"),
     ("GET", "/api/codebase/projects/{id}"),
     ("GET", "/api/codebase/projects/{id}/tree"),
     ("GET", "/api/codebase/projects/{id}/file"),
@@ -62,6 +63,12 @@ def handle_get(path: str, query: str, deps: CodebaseRouteDependencies) -> JsonRo
     try:
         if path == "/api/codebase/frameworks":
             return JsonRouteResult({"frameworks": deps.codebase.framework_catalog()})
+        if path == "/api/codebase/project-identities":
+            # In auth-enforced mode query_owner is derived from the bearer
+            # identity (and ignores a caller-supplied owner query parameter).
+            # In local mode it follows the same local-owner contract as the
+            # existing CodeQ project endpoints.
+            return JsonRouteResult(deps.codebase.list_project_identities(owner=owner))
         if path == "/api/codebase/projects":
             return JsonRouteResult({"projects": deps.codebase.list_projects(project=deps.first(params, "project") or "default", owner=owner)})
         if path == "/api/codebase/runs":

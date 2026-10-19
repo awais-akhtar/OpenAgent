@@ -7,7 +7,7 @@ forcing a framework migration or breaking existing desktop/web URLs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from importlib import import_module
 from typing import Any
@@ -19,6 +19,7 @@ class JsonRouteResult:
 
     payload: dict[str, Any]
     status: HTTPStatus = HTTPStatus.OK
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,17 @@ class StreamRouteResult:
     """An event iterator returned by a streaming domain route."""
 
     events: Any
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ServerSentEvent:
+    """A protocol-specific SSE frame; generic chat events remain JSON encoded."""
+
+    data: Any
+    event: str | None = None
+    raw_data: bool = False
+    terminal: bool = False
 
 
 DOMAIN_ROUTE_MODULES: tuple[str, ...] = (

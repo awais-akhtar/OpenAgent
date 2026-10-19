@@ -42,6 +42,7 @@ TOTP_DIGITS = 6
 SCOPE_CATALOG: tuple[dict[str, str], ...] = (
     {"scope": "chat:read", "description": "Read conversations and messages"},
     {"scope": "chat:write", "description": "Send messages and manage conversations"},
+    {"scope": "agents:read", "description": "Read agent runs for projects you own"},
     {"scope": "agents:run", "description": "Run and delegate agents"},
     {"scope": "agents:admin", "description": "Manage agent permissions and approvals"},
     {"scope": "workflows:read", "description": "View workflows and their run history"},
@@ -88,10 +89,14 @@ SCOPE_CATALOG: tuple[dict[str, str], ...] = (
     {"scope": "assistant:write", "description": "Create assistant goals, tasks, and summaries"},
     {"scope": "integrations:read", "description": "View integration hub status and diagnostics"},
     {"scope": "integrations:admin", "description": "Manage pairing codes, preferences, and backups"},
+    {"scope": "backup:read", "description": "View available backup records"},
+    {"scope": "backup:admin", "description": "Create backups and run restore operations"},
     {"scope": "settings:read", "description": "View runtime settings and model policy"},
     {"scope": "settings:write", "description": "Change runtime settings"},
     {"scope": "codebase:read", "description": "View codebase projects, workspaces, runs, and event history"},
     {"scope": "codebase:write", "description": "Create and operate isolated software-engineering workspaces"},
+    {"scope": "terminal:read", "description": "View safe terminal runs and buffered output"},
+    {"scope": "terminal:write", "description": "Run approved safe terminal commands"},
 )
 
 DEFAULT_SCOPES: tuple[str, ...] = tuple(entry["scope"] for entry in SCOPE_CATALOG)
@@ -326,8 +331,15 @@ class AuthManager:
         # Local-first system: every active account currently receives the
         # full scope catalog. Fine-grained restriction is enforced at the
         # API-token level instead (see create_api_token), which is what
-        # external integrations and automations should use.
-        return list(DEFAULT_SCOPES)
+        # external integrations and automations should use. Agent-run history
+        # is granted to the installation owner's interactive session only.
+        # Restricted API tokens keep their stored explicit scope list and are
+        # never widened by this session policy.
+        with self.store.session() as connection:
+            row = connection.execute("SELECT role, status FROM auth_users WHERE id = ?", (user_id,)).fetchone()
+        if row is not None and row["role"] == "owner" and row["status"] == "active":
+            return list(DEFAULT_SCOPES)
+        return [scope for scope in DEFAULT_SCOPES if scope != "agents:read"]
 
     # ------------------------------------------------------------------
     # Account lifecycle
@@ -336,6 +348,38 @@ class AuthManager:
     def user_count(self) -> int:
         with self.store.session() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM auth_users").fetchone()[0])
+
+    def validate_personal_remote_accounts(self) -> str | None:
+        """Validate the one-owner installation invariant without migrating data.
+
+        A new installation may start with a strong bootstrap token configured.
+        Existing databases must contain exactly one active owner account; an
+        ambiguous store is refused rather than silently choosing or deleting
+        an account. Existing Research/Knowledge/Media rows remain in place and
+        are treated as this installation owner's local data only after this
+        account invariant has been proven.
+        """
+        if deployment_mode() != "personal_remote":
+            return None
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT id, role, status FROM auth_users ORDER BY created_at ASC, rowid ASC"
+            ).fetchall()
+        if not rows:
+            bootstrap = os.environ.get("OPENAGENT_BOOTSTRAP_TOKEN", "")
+            if len(bootstrap) < 32:
+                raise AuthError(
+                    "First owner setup requires OPENAGENT_BOOTSTRAP_TOKEN with at least 32 characters. "
+                    "Create the owner locally, then restart without the bootstrap token."
+                )
+            return None
+        if len(rows) != 1 or rows[0]["role"] != "owner" or rows[0]["status"] != "active":
+            raise AuthError(
+                "personal_remote requires exactly one active owner account. This database has an ambiguous "
+                "account state; back it up and resolve accounts manually before starting. No account or data "
+                "was changed."
+            )
+        return str(rows[0]["id"])
 
     def register(
         self,
@@ -355,7 +399,14 @@ class AuthManager:
             raise ValueError("password must be at least 8 characters")
         with self.store.session() as connection:
             existing_count = connection.execute("SELECT COUNT(*) AS n FROM auth_users").fetchone()["n"]
-            if deployment_mode() in {"team", "enterprise"}:
+            mode = deployment_mode()
+            if mode == "personal_remote":
+                if existing_count:
+                    raise AuthError("personal_remote allows one installation owner; additional account registration is disabled")
+                expected = os.environ.get("OPENAGENT_BOOTSTRAP_TOKEN", "")
+                if len(expected) < 32 or not hmac.compare_digest(bootstrap_token, expected):
+                    raise AuthError("a valid local owner bootstrap token is required")
+            elif mode in {"team", "enterprise"}:
                 if existing_count == 0:
                     expected = os.environ.get("OPENAGENT_BOOTSTRAP_TOKEN", "")
                     if not expected or not hmac.compare_digest(bootstrap_token, expected):
@@ -366,7 +417,7 @@ class AuthManager:
                 raise AuthError("username or email already registered")
             user_id = uuid4().hex
             now = utc_now()
-            role = "owner" if existing_count == 0 else "member"
+            role = "owner" if existing_count == 0 or mode == "personal_remote" else "member"
             connection.execute(
                 """
                 INSERT INTO auth_users
@@ -669,8 +720,13 @@ class AuthManager:
         name = (name or "").strip()
         if not name:
             raise ValueError("token name is required")
+        supplied_scopes = scopes is not None
         requested = [s for s in (scopes or []) if s in DEFAULT_SCOPES]
-        if not requested:
+        if deployment_mode() == "personal_remote" and not supplied_scopes:
+            raise ValueError("personal_remote API tokens require an explicit least-privilege scope list")
+        if deployment_mode() == "personal_remote" and scopes is not None and len(requested) != len(scopes):
+            raise ValueError("API token contains an unknown scope")
+        if not requested and deployment_mode() != "personal_remote":
             requested = list(DEFAULT_SCOPES)
         token = _random_token("oat")
         token_id = uuid4().hex
@@ -853,10 +909,12 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/v1/messages", "local_ai:read", "local_ai:admin"),
     ("/v1/models", "local_ai:read", "local_ai:admin"),
     ("/api/chat/", "chat:read", "chat:write"),
+    ("/api/backups", "backup:read", "backup:admin"),
     ("/api/conversations", "chat:read", "chat:write"),
     ("/api/conversation/", "chat:read", "chat:write"),
     ("/api/messages", "chat:read", "chat:write"),
     ("/api/agents", "agents:run", "agents:admin"),
+    ("/api/agent-runs", "agents:read", "agents:admin"),
     ("/api/workflows", "workflows:read", "workflows:write"),
     ("/api/workflow-runs", "workflows:read", "workflows:write"),
     ("/api/knowledge/", "knowledge:read", "knowledge:write"),
@@ -891,6 +949,25 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/integrations/", "integrations:read", "integrations:admin"),
     ("/api/settings/", "settings:read", "settings:write"),
     ("/api/codebase/", "codebase:read", "codebase:write"),
+    ("/api/terminal/", "terminal:read", "terminal:write"),
+    # Explicit permissions for route groups added after the original policy
+    # catalog. Personal remote denies every private route without a scope.
+    ("/api/worker/", "workflows:read", "workflows:write"),
+    ("/api/vector-store/", "semantic:read", "semantic:write"),
+    ("/api/rag/", "knowledge:read", "knowledge:write"),
+    ("/api/inference/", "local_ai:read", "local_ai:admin"),
+    ("/api/ultra-model/", "local_ai:read", "local_ai:admin"),
+    ("/api/adaptive-engine/", "local_ai:read", "local_ai:admin"),
+    ("/api/contacts", "communication:read", "communication:write"),
+    ("/api/model-cookbook/", "local_ai:read", "local_ai:admin"),
+    ("/api/gallery/", "media:read", "media:write"),
+    ("/api/tasks", "assistant:read", "assistant:write"),
+    ("/api/mcp/", "developer:read", "developer:admin"),
+    ("/api/tools/runtime", "terminal:read", "terminal:write"),
+    ("/api/compute/", "local_ai:read", "local_ai:admin"),
+    ("/api/agent-bridge/", "assistant:read", "assistant:write"),
+    ("/api/skills", "developer:read", "developer:admin"),
+    ("/api/science/", "knowledge:read", "knowledge:write"),
     ("/v1/brio", "local_ai:read", "local_ai:admin"),
     ("/v1/systemone", "local_ai:read", "local_ai:admin"),
     ("/v1/chat/completions", "local_ai:read", "local_ai:admin"),
@@ -900,8 +977,81 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+PERSONAL_REMOTE_PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/api/health"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/refresh"),
+    ("POST", "/api/auth/register"),
+})
+
+
+def personal_remote_public_route(path: str, method: str) -> bool:
+    """Return whether a method/path is deliberately public in personal remote."""
+    return (method.upper(), path) in PERSONAL_REMOTE_PUBLIC_ROUTES
+
+
 def required_scope_for_path(path: str, method: str = "GET") -> str | None:
     """Return the scope required for *path*/*method*, or None if it is not gated."""
+    verb = method.upper()
+    if path.startswith("/api/auth/"):
+        if path in {"/api/auth/scopes", "/api/auth/policy", "/api/auth/roles", "/api/auth/me", "/api/auth/sessions", "/api/auth/api-tokens"}:
+            return "settings:read" if verb == "GET" else "settings:write"
+        if path in {"/api/auth/users", "/api/auth/audit"}:
+            return "security:admin"
+        if path.startswith(("/api/auth/identity/", "/api/auth/passkeys", "/api/auth/devices", "/api/auth/federation/", "/api/auth/recovery/")):
+            return "settings:read" if verb == "GET" else "settings:write"
+        if path in {"/api/auth/logout", "/api/auth/sessions/revoke", "/api/auth/2fa/setup", "/api/auth/2fa/verify", "/api/auth/2fa/disable"}:
+            return "settings:write"
+        if path.startswith("/api/auth/api-tokens/"):
+            return "settings:write"
+        return None
+    exact: dict[str, tuple[str, str]] = {
+        "/api/system/metrics": ("production:read", "production:admin"),
+        "/api/ui/build": ("production:read", "production:admin"),
+        "/api/modules/health": ("production:read", "production:admin"),
+        "/api/routes/handlers": ("developer:read", "developer:admin"),
+        "/api/capabilities": ("local_ai:read", "local_ai:admin"),
+        "/api/core/runtime": ("production:read", "production:admin"),
+        "/api/mission/features": ("assistant:read", "assistant:write"),
+        "/api/context": ("knowledge:read", "knowledge:write"),
+        "/api/events": ("workspace:read", "workspace:write"),
+        "/api/capabilities/hard-audit": ("security:read", "security:admin"),
+        "/api/mission/run-check": ("assistant:read", "assistant:write"),
+        "/api/runtime-tools/status": ("production:read", "production:admin"),
+        "/api/runtime-tools/browser-test": ("production:read", "production:admin"),
+        "/api/inference/status": ("local_ai:read", "local_ai:admin"),
+        "/health": ("production:read", "production:admin"),
+        "/metrics": ("production:read", "production:admin"),
+        "/v1/colibri/capabilities": ("local_ai:read", "local_ai:admin"),
+    }
+    if path in exact:
+        read_scope, write_scope = exact[path]
+        return read_scope if verb in {"GET", "HEAD"} else write_scope
+    if path == "/api/agents/run" and method.upper() == "POST":
+        return "agents:run"
+    # The checked run endpoint is the main Agents workspace action. Keep it
+    # available to the same explicitly granted run-only token as /run; the
+    # route still enforces its project ownership and agent-level permissions.
+    if path == "/api/agents/run-checked" and method.upper() == "POST":
+        return "agents:run"
+    if path == "/api/agents/jobs" or path.startswith("/api/agents/jobs/"):
+        return "agents:read" if method.upper() in {"GET", "HEAD"} else "agents:run"
+    if path in {"/api/agents/delegate", "/api/agents/parallel"} and method.upper() == "POST":
+        return "agents:run"
+    # Permission and approval records are administrative controls, including
+    # reads. A run-only token must not enumerate them.
+    if path in {"/api/agents/permissions", "/api/agents/approvals"}:
+        return "agents:admin"
+    if path == "/api/agent-runs":
+        return "agents:read" if method.upper() == "GET" else "agents:admin"
+    # The main chat submit endpoint is exactly /api/chat; it does not match
+    # the /api/chat/ family prefix used by stream, search, replay, and actions.
+    if path == "/api/chat":
+        return "chat:read" if method.upper() == "GET" else "chat:write"
+    # This legacy audit endpoint can return every project's records when no
+    # project filter is supplied, so it is reserved for security administrators.
+    if path == "/api/audit":
+        return "security:admin"
     for prefix, read_scope, write_scope in PROTECTED_ROUTE_SCOPES:
         if path.startswith(prefix):
             return read_scope if method.upper() == "GET" else write_scope

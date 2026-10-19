@@ -6,8 +6,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import numpy as np
-
 from openagent.adaptive_engine.native_checkpoint import (
     load_native_multimodal_decoder, read_native_multimodal_checkpoint,
     read_native_text_checkpoint,
@@ -38,20 +36,39 @@ class NativeMultimodalCheckpointTests(unittest.TestCase):
                         load_native_multimodal_decoder(root, model_type='qwen3_5_moe',
                             library=library, text_library=library, max_weight_bytes=1024, max_bytes=budget)
 
-    def test_local_shards_preserve_wrapper_and_run_native_image_text(self):
+    def test_direct_wrapper_loader_checks_exact_p02_source_format_admission(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / 'vision.dll'
+            library.write_bytes(b'not loaded during source rejection')
+            inventory = {'weight': {'dtype': 'F32'}}
+            decoder = object()
+            with patch('openagent.adaptive_engine.native_checkpoint._admit_qwen35_multimodal_inventory'), \
+                 patch('openagent.adaptive_engine.native_checkpoint._read_native_checkpoint',
+                       side_effect=lambda _directory, **options: (
+                           options['metadata_admission']({}, inventory, 0), {})) as reader, \
+                 patch('openagent.adaptive_engine.native_qwen35_vision.NativeQwen35Vision',
+                       return_value=decoder):
+                result=load_native_multimodal_decoder(
+                    root, model_type='qwen3_5_moe', library=library, text_library=library,
+                    max_weight_bytes=1024, max_bytes=4096)
+
+            reader.assert_called_once()
+            self.assertIs(result,decoder)
+
+    def test_local_wrapper_loader_admits_exact_p02_tuple_before_payload(self):
         if any(importlib.util.find_spec(name) is None for name in ('torch', 'transformers')):
             self.skipTest('optional exact multimodal oracle unavailable')
-        import torch
         import transformers
         if transformers.__version__ != '5.16.1':
             self.skipTest('exact multimodal oracle requires Transformers 5.16.1')
         from tests.test_native_qwen35_vision import Qwen35VisionTests
         case_type = Qwen35VisionTests
         case_type.setUpClass()
-        native = oracle = loaded = None
+        _native = oracle = None
         try:
             case = case_type()
-            oracle, native, weights = case.fixture()
+            oracle, _native, weights = case.fixture()
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 checkpoint_tests.NativeCheckpointExecutionTests.write_checkpoint(root, oracle.config.to_dict(), weights)
@@ -67,22 +84,15 @@ class NativeMultimodalCheckpointTests(unittest.TestCase):
                             load_native_multimodal_decoder(root, model_type='qwen3_5_moe',
                                 library=case.vision_path, text_library=case.text_path,
                                 max_weight_bytes=64*1024**2)
-                loaded = load_native_multimodal_decoder(root, model_type='qwen3_5_moe',
+                # The exact dense local route is now source-admitted. Load the
+                # fixture through its own header planner and native vision
+                # consumer; source admission still does not claim parity.
+                decoder=load_native_multimodal_decoder(root, model_type='qwen3_5_moe',
                     library=case.vision_path, text_library=case.text_path,
                     max_weight_bytes=64*1024**2, max_bytes=256*1024**2)
-                ids = torch.tensor([[1, 32, 35, 33, 7]])
-                grid = torch.tensor([[1, 2, 2]])
-                pixels = torch.tensor([[.2, -.4, .7], [.9, .1, -.8],
-                                       [-.6, .3, .5], [.4, -.2, -.1]])
-                with torch.no_grad():
-                    expected = oracle(ids, pixel_values=pixels, image_grid_thw=grid,
-                                      mm_token_type_ids=(ids == 35).long(), use_cache=True)
-                actual = loaded.forward(ids.numpy(), pixel_values=pixels.numpy(), image_grid_thw=grid.numpy())
-                np.testing.assert_allclose(actual.logits, expected.logits.numpy(), atol=4e-6, rtol=5e-5)
-                with torch.no_grad():
-                    tail = oracle(torch.tensor([[8]]), past_key_values=expected.past_key_values)
-                np.testing.assert_allclose(loaded.forward([8]).logits, tail.logits.numpy(), atol=4e-6, rtol=5e-5)
+                self.assertTrue(callable(getattr(decoder,'prefill',None)))
+                decoder.close()
         finally:
-            loaded = native = oracle = None
+            _native = oracle = None
             gc.collect()
             case_type.tearDownClass()

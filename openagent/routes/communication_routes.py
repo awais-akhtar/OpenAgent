@@ -21,6 +21,8 @@ ROUTE_GROUP = "communication"
 ROUTES = (
     ("GET", "/api/communication/connectors"),
     ("GET", "/api/communication/inbox"),
+    ("GET", "/api/communication/drafts"),
+    ("GET", "/api/communication/sent"),
     ("GET", "/api/communication/contacts"),
     ("GET", "/api/communication/calendar"),
     ("GET", "/api/communication/analytics"),
@@ -92,6 +94,22 @@ def handle_get(path: str, query: str, deps: CommunicationRouteDependencies) -> J
                 query=first(params, "q") or "",
                 follow_up=follow_filter,
                 owner=deps.query_owner(params),
+            )
+        })
+    if path == "/api/communication/drafts":
+        return JsonRouteResult({
+            "drafts": communication.list_drafts(
+                project=first(params, "project") or "default",
+                owner=deps.query_owner(params),
+                limit=deps.parse_int(first(params, "limit"), default=100),
+            )
+        })
+    if path == "/api/communication/sent":
+        return JsonRouteResult({
+            "sent": communication.list_sent_messages(
+                project=first(params, "project") or "default",
+                owner=deps.query_owner(params),
+                limit=deps.parse_int(first(params, "limit"), default=100),
             )
         })
     if path == "/api/communication/contacts":

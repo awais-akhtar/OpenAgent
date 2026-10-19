@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import threading
 import os
+from functools import wraps
 
 from .native_family_cli import _Cancellation,_pairs
 from .execution_service import ExecutionCancelled,_admit_checkpoint_publication
@@ -12,6 +13,26 @@ from .closed_set_scoring import ClosedSetScoringMixin
 from .session_recovery import _path
 from .native_library_identity import _stamp
 from .publisher_media_files import read_regular
+
+
+def _reject_session_reentry(method):
+    """Serialize public lifecycle calls and reject same-thread callback reentry."""
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._lock:
+            if self._request_active:
+                raise RuntimeError('conditional session lifecycle reentry is not admitted')
+            self._request_active = True
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                cleanup=getattr(self,'_request_media_cleanup',None)
+                self._request_media_cleanup=None
+                try:
+                    if callable(cleanup): cleanup()
+                finally:
+                    self._request_active = False
+    return guarded
 
 def parser():
     result=argparse.ArgumentParser(description=__doc__)
@@ -68,7 +89,7 @@ def parser():
 
 class PublisherSession(ClosedSetScoringMixin):
     def __init__(self,args,*,cancelled=None):
-        self._lock=threading.RLock();self._closed=False
+        self._lock=threading.RLock();self._closed=False;self._request_active=False
         self.service=self.processor=self.tokenizer=self.session_id=None
         self._key=tuple((name,str(getattr(args,name,None))) for name in
             ('family','checkpoint','media_library','text_library','tokenizer','context','runtime_mib',
@@ -100,6 +121,14 @@ class PublisherSession(ClosedSetScoringMixin):
         config_sha256=hashlib.sha256(raw).hexdigest()
         if type(config) is not dict or config.get('model_type')!=args.family:
             raise ValueError('conditional checkpoint identity differs from configured family')
+        backend=('public-range' if args.segment_runtime_library is not None else
+                 'device' if args.text_device is not None else 'native')
+        from .source_scope import (require_checkpoint_inventory_admission,
+                                   source_family_for_identity)
+        source_family=source_family_for_identity(args.family)
+        require_checkpoint_inventory_admission(root,family=source_family,
+            model_type=args.family,backend=backend,
+            max_metadata_bytes=args.staging_mib*1024**2)
         image_default={'inkling_mm_model':200054,'qwen3_5_moe':248056,'qwen4_exp':248056,'glm5_next':154854}[args.family]
         if args.image_token_id!=config.get('image_token_id',image_default):
             raise ValueError('configured image token differs from publisher checkpoint')
@@ -206,6 +235,7 @@ class PublisherSession(ClosedSetScoringMixin):
             if _stamp(_path(path).stat())!=stamp:
                 raise ValueError('conditional artifact changed after admission: '+str(path))
 
+    @_reject_session_reentry
     def run(self,args,*,emit=None,cancelled=None,checkpoint_sink=None,max_checkpoint_bytes=0,media_items=None):
         with self._lock:
             _admit_checkpoint_publication(checkpoint_sink,max_checkpoint_bytes)
@@ -214,7 +244,15 @@ class PublisherSession(ClosedSetScoringMixin):
             if self._key!=tuple((name,str(getattr(args,name,None))) for name,_ in self._key):
                 raise ValueError('conditional residency options changed after admission')
             tokens=json.loads(args.token_ids);media=None
-            images=[];encoded_extent=0
+            images=[];audio=[];videos=[];metadata=[];encoded_extent=0
+            raw=waveform=frames=None
+            def release_request_media():
+                nonlocal raw,waveform,frames,media_items,value,item,frame,path
+                images.clear();audio.clear();videos.clear();metadata.clear()
+                if type(media) is dict: media.clear()
+                raw=waveform=frames=None
+                media_items=value=item=frame=path=None
+            self._request_media_cleanup=release_request_media
             if len(args.image)>64: raise ValueError('bounded conditional image inventory required')
             for value in args.image:
                 import numpy as np
@@ -241,7 +279,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 if encoded_extent>args.media_mib*1024**2: raise MemoryError('aggregate encoded images exceed media admission')
                 images.append(raw)
             from .publisher_media_files import read_pcm_audio,read_selected_video
-            audio=[];videos=[];metadata=[];rate=None;extent=encoded_extent
+            rate=None;extent=encoded_extent
             if media_items is not None:
                 from .publisher_media_inputs import PublisherVideoInput
                 if type(media_items) not in (tuple,list) or not 1<=len(media_items)<=64 or images:
@@ -281,22 +319,22 @@ class PublisherSession(ClosedSetScoringMixin):
             if images or audio or videos:
                 if not args.include_vision or not args.prompt_text:
                     raise ValueError('raw media requires explicit media admission and rendered prompt text')
-                tokens,media=self.processor.prepare(args.prompt_text,images=images,audio=audio,
-                    sampling_rate=rate,videos=videos,video_metadata=metadata or None,cancelled=cancelled)
             elif type(tokens) is not list or not tokens:
                 raise ValueError('nonempty conditional token inventory required')
             from .sampling import SamplingPolicy
             sampling=SamplingPolicy(temperature=args.temperature,top_k=args.top_k,top_p=args.top_p,
                 min_p=args.min_p,repetition_penalty=args.repetition_penalty,
                 frequency_penalty=args.frequency_penalty,presence_penalty=args.presence_penalty,seed=args.seed)
-            if args.restore_cache is not None or args.save_cache is not None:
-                if type(args.cache_mib) is not int or args.cache_mib<=0: raise ValueError('explicit durable cache budget required')
-            if args.restore_cache is not None:
-                self.service.load_session_cache(self.session_id,args.restore_cache,max_bytes=args.cache_mib*1024**2)
-            elif not args.continue_session: self.service.reset(self.session_id)
-            def event(value):
-                if emit is not None and value.get('event')=='generation.token':
-                    emit(dict(event='tokens',token_ids=[value['token_id']]))
+            stop_ids=getattr(args,'stop_token_id',())
+            if (type(stop_ids) not in (list,tuple) or len(stop_ids)>self.vocabulary or
+                    any(type(token) is not int or not 0<=token<self.vocabulary
+                        for token in (*self.stops,*stop_ids))):
+                raise ValueError('bounded valid conditional stop-token inventory required')
+            if (type(args.max_tokens) is not int or args.max_tokens<=0 or
+                    args.max_tokens>self.service.limits.max_new_tokens):
+                raise ValueError('conditional generation budget exceeds service admission')
+            # Validate all caller stop controls before cache restore or reset:
+            # invalid requests must not mutate a warm/continuation session.
             prefixes=[]
             for raw_prefix in getattr(args,'stop_prefix',()):
                 try:
@@ -312,10 +350,42 @@ class PublisherSession(ClosedSetScoringMixin):
                 prefixes.append(prefix)
             if len(prefixes)>64 or len(set(prefixes))!=len(prefixes):
                 raise ValueError('bounded unique conditional stop-prefix inventory required')
-            result=self.service.generate(self.session_id,tokens,max_new_tokens=args.max_tokens,
-                stop_ids=(*self.stops,*args.stop_token_id),stop_prefixes=prefixes,cancel=_Cancellation(cancelled),
-                on_event=event,sampling=sampling,media=media or None,checkpoint_sink=checkpoint_sink,
-                max_checkpoint_bytes=max_checkpoint_bytes,application_identity=self.checkpoint_identity)
+            if args.restore_cache is not None or args.save_cache is not None:
+                if type(args.cache_mib) is not int or args.cache_mib<=0: raise ValueError('explicit durable cache budget required')
+            if images or audio or videos:
+                try:
+                    tokens,media=self.processor.prepare(args.prompt_text,images=images,audio=audio,
+                        sampling_rate=rate,videos=videos,video_metadata=metadata or None,cancelled=cancelled)
+                finally:
+                    # Preprocessing returns independently owned model inputs.
+                    # Release request-side decoded buffers even when the
+                    # processor fails or cancellation interrupts it; never
+                    # mutate objects supplied by the caller.
+                    images.clear();audio.clear();videos.clear();metadata.clear()
+                    if 'raw' in locals(): raw=None
+                    if 'waveform' in locals(): waveform=None
+                    if 'frames' in locals(): frames=None
+            def event(value):
+                if emit is not None and value.get('event')=='generation.token':
+                    # A later callback or checkpoint failure can still roll
+                    # back this request's executor transaction. Mark streamed
+                    # output as provisional rather than implying durability.
+                    emit(dict(event='tokens',token_ids=[value['token_id']],committed=False))
+            try:
+                if args.restore_cache is not None:
+                    self.service.load_session_cache(self.session_id,args.restore_cache,max_bytes=args.cache_mib*1024**2)
+                elif not args.continue_session:
+                    self.service.reset(self.session_id)
+                result=self.service.generate(self.session_id,tokens,max_new_tokens=args.max_tokens,
+                    stop_ids=(*self.stops,*stop_ids),stop_prefixes=prefixes,cancel=_Cancellation(cancelled),
+                    on_event=event,sampling=sampling,media=media or None,checkpoint_sink=checkpoint_sink,
+                    max_checkpoint_bytes=max_checkpoint_bytes,application_identity=self.checkpoint_identity)
+            finally:
+                # Generation consumes media synchronously; only its returned
+                # token result survives this boundary. Do not retain request
+                # tensors in traceback frames after provider/cache failures.
+                if type(media) is dict:
+                    media.clear()
             cache=None
             if args.save_cache is not None:
                 cache=self.service.save_session_cache(self.session_id,args.save_cache,max_bytes=args.cache_mib*1024**2)
@@ -325,6 +395,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 finish_reason=result.finish_reason,context_tokens=result.context_tokens,
                 numerical_parity_verified=False,platform_certified=False)
 
+    @_reject_session_reentry
     def resume_generation(self,source,*,max_bytes,max_new_tokens=None,emit=None,cancelled=None,
                           checkpoint_sink=None,max_checkpoint_bytes=0):
         with self._lock:
@@ -342,7 +413,8 @@ class PublisherSession(ClosedSetScoringMixin):
                 if emit is not None and value.get('event')=='generation.token':
                     generated_events.append(value['token_id'])
                     emit(dict(event='tokens',token_ids=[value['token_id']],
-                        text=self.tokenizer.decode(generated_events,skip_special_tokens=True)))
+                        text=self.tokenizer.decode(generated_events,skip_special_tokens=True),
+                        committed=False))
             result=self.service.resume_generation(self.session_id,boundary,max_new_tokens=max_new_tokens,
                 cancel=cancel,on_event=event,checkpoint_sink=checkpoint_sink,
                 max_checkpoint_bytes=max_checkpoint_bytes,application_identity=self.checkpoint_identity)
@@ -373,6 +445,7 @@ class PublisherSession(ClosedSetScoringMixin):
             outgoing.close()
             if incoming is not outgoing:incoming.close()
 
+    @_reject_session_reentry
     def continuation_store(self,directory,*,max_entries,max_total_bytes,max_cache_bytes,
                            expiry_seconds=None,indexed=True):
         from .continuation_store import DurableContinuationStore
@@ -386,6 +459,7 @@ class PublisherSession(ClosedSetScoringMixin):
             return factory(directory,model_identity=self.checkpoint_identity,max_entries=max_entries,
                 max_total_bytes=max_total_bytes,max_cache_bytes=max_cache_bytes,expiry_seconds=expiry_seconds)
 
+    @_reject_session_reentry
     def save_continuation(self,store,key):
         with self._lock:
             if self._closed or store.identity!=self.checkpoint_identity:
@@ -393,6 +467,7 @@ class PublisherSession(ClosedSetScoringMixin):
             self._artifacts_unchanged()
             return store.save(self.service,self.session_id,key)
 
+    @_reject_session_reentry
     def recover_continuation(self,store,key):
         with self._lock:
             if self._closed or store.identity!=self.checkpoint_identity:
@@ -403,11 +478,33 @@ class PublisherSession(ClosedSetScoringMixin):
             # opening a second decoder would exceed the admitted model count.
             return store.recover_into(self.service,previous,key)
 
+    @_reject_session_reentry
     def close(self):
         with self._lock:
-            if self.service is not None: self.service.close();self.service=None
-            if self.processor is not None: self.processor.close();self.processor=None
-            self.tokenizer=self.session_id=None;self._closed=True
+            # Once teardown begins, no new inference may race with a partially
+            # released owner.  A failed release remains retryable through
+            # close(), but the serving session is no longer usable.
+            self._closed=True
+            errors=[]
+            # Teardown is best-effort across independent owners: failure to
+            # release native execution must not skip the tokenizer/media
+            # processor, and failed owners remain reachable for a later retry.
+            for attribute in ('service','processor'):
+                owner=getattr(self,attribute,None)
+                if owner is None: continue
+                try:
+                    owner.close()
+                except BaseException as error:
+                    errors.append((attribute,error))
+                else:
+                    setattr(self,attribute,None)
+            if errors:
+                primary=errors[0][1]
+                for name,error in errors[1:]:
+                    if hasattr(primary,'add_note'):
+                        primary.add_note('conditional '+name+' cleanup also failed: '+repr(error))
+                raise primary
+            self.tokenizer=self.session_id=None
 
 def main(argv=None):
     args=parser().parse_args(argv);session=PublisherSession(args)

@@ -64,19 +64,23 @@ static int tokenize(void *p,const char *a,size_t b,int32_t *c,size_t d,size_t *f
 static int detokenize(void *p,const int32_t *a,size_t b,char *c,size_t d,size_t *f,char *e,size_t n){
     (void)p;(void)a;(void)b;(void)c;(void)d;(void)f;return error(e,n,"Qwen4 Edge requires the external pinned publisher tokenizer");}
 static int embed(void *owner,const oa_se_embed *r,char *e,size_t n){
-    q4_edge *edge=(q4_edge *)owner;oa_q4_public_model *m=edge->model;float *pending;
-    uint64_t row,stream,h=m->config.text.hidden,w=width(m),words;
+    q4_edge *edge=(q4_edge *)owner;oa_q4_public_model *m;float *pending;
+    oa_q4_cancel_guard cancel_state;
+    uint64_t row,stream,h,w,words;
+    if(!edge)return error(e,n,"Qwen4 Edge owner required");
+    m=edge->model;h=m->config.text.hidden;w=width(m);
     if(!r||!r->rows||r->rows>m->rows||r->rows>m->config.text.capacity||r->token_count!=r->rows||!r->tokens||!r->output||r->output_bytes<(uint64_t)r->rows*w*4)
         return error(e,n,"complete Qwen4 lexical input rows required");
+    cancel_state=(oa_q4_cancel_guard){r->cancel,r->cancel_data,0};
     words=(uint64_t)r->rows*w;if(words>m->work/4)return error(e,n,"Qwen4 embedding work admission exhausted");
     pending=(float *)malloc((size_t)words*4);if(!pending)return error(e,n,"Qwen4 embedding allocation failed");
     for(row=0;row<r->rows;row++){
-        int32_t token=r->tokens[row];if(token<0||(uint64_t)token>=m->config.vocabulary||(r->cancel&&r->cancel(r->cancel_data))){free(pending);return error(e,n,"Qwen4 embedding token/cancellation differs");}
+        int32_t token=r->tokens[row];if(token<0||(uint64_t)token>=m->config.vocabulary||oa_q4_checked_cancel(&cancel_state)){free(pending);return error(e,n,cancel_state.invalid?"invalid Qwen4 cancellation callback":"Qwen4 embedding token/cancellation differs");}
         for(stream=0;stream<m->config.streams;stream++)memcpy(pending+row*w+stream*h,m->embedding.data+(uint64_t)token*h,(size_t)h*4);
         pending[row*w+w-5]=(float)token;pending[row*w+w-4]=1;
         pending[row*w+w-3]=pending[row*w+w-2]=pending[row*w+w-1]=(float)row;
     }
-    if(r->cancel&&r->cancel(r->cancel_data)){free(pending);return error(e,n,"Qwen4 embedding cancelled");}
+    if(oa_q4_checked_cancel(&cancel_state)){free(pending);return error(e,n,cancel_state.invalid?"invalid Qwen4 cancellation callback":"Qwen4 embedding cancelled");}
     memcpy(r->output,pending,(size_t)words*4);free(pending);return 0;
 }
 static int project(q4_edge *edge,const void *input,size_t input_bytes,uint32_t rows,float *output,uint64_t retained,
@@ -89,29 +93,35 @@ static int project(q4_edge *edge,const void *input,size_t input_bytes,uint32_t r
     return result?error(e,n,"Qwen4 native final mixer/head failed"):0;
 }
 static int logits(void *owner,const oa_se_logits *r,char *e,size_t n){
-    q4_edge *edge=(q4_edge *)owner;float *pending;uint64_t words;int result;
-    if(!r||!r->rows||r->rows>edge->model->rows||!r->logits)return error(e,n,"Qwen4 bounded logits destination required");
+    q4_edge *edge=(q4_edge *)owner;float *pending;uint64_t words;int result;oa_q4_cancel_guard cancel_state;
+    if(!edge||!r||!r->rows||r->rows>edge->model->rows||!r->logits)return error(e,n,"Qwen4 bounded logits destination required");
     words=(uint64_t)r->rows*edge->model->config.vocabulary;
+    cancel_state=(oa_q4_cancel_guard){r->cancel,r->cancel_data,0};
     if(r->logits_capacity<words||words>edge->model->work/4)return error(e,n,"Qwen4 logits destination admission exhausted");
     pending=(float *)malloc((size_t)words*4);if(!pending)return error(e,n,"Qwen4 logits staging allocation failed");
-    result=project(edge,r->input,r->input_bytes,r->rows,pending,0,r->cancel,r->cancel_data,e,n);
+    result=project(edge,r->input,r->input_bytes,r->rows,pending,0,
+        r->cancel?oa_q4_checked_cancel:NULL,r->cancel?&cancel_state:NULL,e,n);
+    if(cancel_state.invalid)result=error(e,n,"invalid Qwen4 cancellation callback");
     if(!result)memcpy(r->logits,pending,(size_t)words*4);free(pending);return result;
 }
 static int select_tokens(void *owner,const oa_se_select *r,char *e,size_t n){
-    q4_edge *edge=(q4_edge *)owner;float *pending,*scores;uint64_t words,row,token;int32_t *tokens;int result;
-    if(!r||!r->rows||r->rows>edge->model->rows||r->rows>4096||!r->tokens||!r->scores||r->token_capacity<r->rows||r->score_capacity<r->rows)
+    q4_edge *edge=(q4_edge *)owner;float *pending,*scores;uint64_t words,row,token;int32_t *tokens;int result;oa_q4_cancel_guard cancel_state;
+    if(!edge||!r||!r->rows||r->rows>edge->model->rows||r->rows>4096||!r->tokens||!r->scores||r->token_capacity<r->rows||r->score_capacity<r->rows)
         return error(e,n,"Qwen4 bounded token selection destination required");
     words=(uint64_t)r->rows*edge->model->config.vocabulary;if(words>edge->model->work/4||
         (uint64_t)r->rows*8>=edge->model->work-words*4)return error(e,n,"Qwen4 selection staging exceeds admission");
+    cancel_state=(oa_q4_cancel_guard){r->cancel,r->cancel_data,0};
     pending=(float *)malloc((size_t)words*4);scores=(float *)malloc((size_t)r->rows*4);tokens=(int32_t *)malloc((size_t)r->rows*4);
     if(!pending||!scores||!tokens){free(pending);free(scores);free(tokens);return error(e,n,"Qwen4 selection staging allocation failed");}
-    result=project(edge,r->input,r->input_bytes,r->rows,pending,(uint64_t)r->rows*8,r->cancel,r->cancel_data,e,n);
+    result=project(edge,r->input,r->input_bytes,r->rows,pending,(uint64_t)r->rows*8,
+        r->cancel?oa_q4_checked_cancel:NULL,r->cancel?&cancel_state:NULL,e,n);
+    if(cancel_state.invalid)result=error(e,n,"invalid Qwen4 cancellation callback");
     if(!result){for(row=0;row<r->rows;row++){
-        if(r->cancel&&r->cancel(r->cancel_data)){result=error(e,n,"Qwen4 selection cancelled");break;}
+        if(oa_q4_checked_cancel(&cancel_state)){result=error(e,n,cancel_state.invalid?"invalid Qwen4 cancellation callback":"Qwen4 selection cancelled");break;}
         tokens[row]=0;scores[row]=pending[row*edge->model->config.vocabulary];
         for(token=1;token<edge->model->config.vocabulary;token++)if(pending[row*edge->model->config.vocabulary+token]>scores[row]){
             tokens[row]=(int32_t)token;scores[row]=pending[row*edge->model->config.vocabulary+token];}}
-        if(result||(r->cancel&&r->cancel(r->cancel_data)))result=error(e,n,"Qwen4 selection cancelled");
+        if(result||oa_q4_checked_cancel(&cancel_state))result=error(e,n,cancel_state.invalid?"invalid Qwen4 cancellation callback":"Qwen4 selection cancelled");
         else{memcpy(r->tokens,tokens,(size_t)r->rows*4);memcpy(r->scores,scores,(size_t)r->rows*4);}}
     free(pending);free(scores);free(tokens);return result;
 }
@@ -143,7 +153,7 @@ int oa_qwen4_public_unregister(uint64_t id,char *e,size_t n){
 }
 int oa_qwen4_public_hidden(uint64_t id,uint32_t rows,const float *input,uint64_t input_count,
     float *output,uint64_t output_count,oa_q4_cancel cancel,void *context,char *e,size_t n){
-    q4_entry *entry;oa_q4_public_model *m=NULL;oa_q4_compose_config c;float *pending;uint64_t words;int result;
+    q4_entry *entry;oa_q4_public_model *m=NULL;oa_q4_compose_config c;float *pending;uint64_t words,i;oa_q4_cancel_guard cancel_state;int result;
     registry_lock();for(entry=entries;entry;entry=entry->next)if(entry->id==id){
         if(!oa_qwen4_public_model_retain(entry->model))m=entry->model;break;}registry_unlock();
     if(!m)return error(e,n,"registered Qwen4 hidden owner required");
@@ -151,11 +161,16 @@ int oa_qwen4_public_hidden(uint64_t id,uint32_t rows,const float *input,uint64_t
     if(!rows||rows>m->rows||!input||!output||input_count!=(uint64_t)rows*width(m)||output_count!=words||
         words>=m->work/4||!reserve(m,m->work)){
         oa_qwen4_public_model_release(m);return error(e,n,"Qwen4 hidden geometry or aggregate admission exhausted");}
+    for(i=0;i<input_count;i++)if(!isfinite(input[i])){
+        unreserve(m,m->work);oa_qwen4_public_model_release(m);return error(e,n,"Qwen4 hidden input must be finite");}
     pending=(float *)malloc((size_t)words*4);
     if(!pending){unreserve(m,m->work);oa_qwen4_public_model_release(m);return error(e,n,"Qwen4 hidden staging allocation failed");}
     c=m->config;c.max_work_bytes=m->work-words*4;
-    result=m->hidden(&c,rows,(oa_q4_tensor){(float *)input,input_count},(oa_q4_tensor){pending,words},cancel,context);
-    if(!result&&cancel&&cancel(context))result=4;
+    cancel_state=(oa_q4_cancel_guard){cancel,context,0};
+    result=m->hidden(&c,rows,(oa_q4_tensor){(float *)input,input_count},(oa_q4_tensor){pending,words},
+                     cancel?oa_q4_checked_cancel:NULL,cancel?&cancel_state:NULL);
+    if(!result&&cancel_state.invalid)result=4;
+    if(!result)for(i=0;i<words;i++)if(!isfinite(pending[i])){result=4;break;}
     if(!result)memcpy(output,pending,(size_t)words*4);
     free(pending);unreserve(m,m->work);oa_qwen4_public_model_release(m);
     return result?error(e,n,"Qwen4 native hidden projection failed"):0;

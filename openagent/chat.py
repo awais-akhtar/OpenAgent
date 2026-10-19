@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import sys
 from typing import Any, Iterator
 
 from .context import ContextEngine
@@ -176,7 +177,23 @@ class ChatService:
         finally:
             close = getattr(response, 'close', None)
             if callable(close):
-                close()
+                # A provider iterator's close hook is best-effort cleanup when
+                # iteration already failed or the caller closed this generator.
+                # Do not replace that primary failure with a secondary teardown
+                # error; when the stream otherwise completed, surface cleanup
+                # failure so the caller does not mistake it for a clean finish.
+                primary_error = sys.exc_info()[1]
+                try:
+                    close()
+                except BaseException as cleanup_error:
+                    if primary_error is None:
+                        raise
+                    try:
+                        primary_error.add_note(
+                            "chat provider stream cleanup failed: " + type(cleanup_error).__name__
+                        )
+                    except BaseException:
+                        pass
 
         assistant_message = self._record_assistant_message(
             conversation,
@@ -437,7 +454,20 @@ class ChatService:
                 current = path.stat()
                 def stamp(info):
                     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                if len(data) != before.st_size or stamp(before) != stamp(after) or stamp(before) != stamp(current):
+                def content_identity(info):
+                    # Windows can report a small ctime discrepancy between a
+                    # still-open handle and a path lookup even when the file
+                    # identity/content is unchanged. The asset's stored hash
+                    # below is the content authority; retain identity, size,
+                    # and mtime checks here without treating that metadata-only
+                    # discrepancy as an attachment mutation.
+                    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+                expected_hash = (asset or {}).get('content_hash')
+                if (len(data) != before.st_size or stamp(before) != stamp(after) or
+                        content_identity(before) != content_identity(current) or
+                        type(expected_hash) is not str or
+                        not re.fullmatch(r'[0-9a-f]{64}', expected_hash) or
+                        hashlib.sha256(data).hexdigest() != expected_hash):
                     raise ValueError('Image attachment changed while loading.')
                 return data, str((asset or {}).get("mime_type") or item.get("mime_type") or "image/png")
         return None

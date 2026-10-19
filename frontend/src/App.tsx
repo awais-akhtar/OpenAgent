@@ -1,12 +1,15 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Bot, CalendarClock, ChevronDown, Command, FolderOpen, Menu, MessageSquarePlus, Moon, MoreHorizontal, PanelLeftClose, Plus, Search, Settings2, Sun, Wrench, X } from 'lucide-react';
-import { groups, isViewId, migrateLegacyView, titles, views, type ViewId } from './lib/navigation';
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Archive, ChevronDown, Command, FolderOpen, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, Plus, Search, Settings2, Wrench, X } from 'lucide-react';
+import { LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react';
+import { groups, isViewId, migrateLegacyView, primaryNavigation, titles, views, type ViewId } from './lib/navigation';
 import { api, records } from './lib/react/api';
-import { theme } from './state/theme';
+import { accessibility } from './state/accessibility';
+import { theme, type ThemeMode } from './state/theme';
 import { specialPageIds } from './pages/specialPageIds';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './components/ui/dialog';
 import './react-shell.css';
 import './lib/routes/PageFrame.css';
+import './state/accessibility.css';
 
 const ChatPage = lazy(() => import('./pages/ChatPage').then(module => ({ default: module.ChatPage })));
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then(module => ({ default: module.DashboardPage })));
@@ -40,9 +43,9 @@ function readInitialUrl() {
   const view = activityRoute ? 'dashboard' : history.state?.openagentNavigation && isViewId(history.state.view) ? history.state.view : routeFromUrl(url);
   const conversation = routeConversation(url);
   const project = url.searchParams.get('project') || savedProject();
-  // Preserve existing query-based links while moving the old dashboard landing to chat.
+  // Preserve all query-based view links, including the separate Activity page.
   const unknownView = !!oldView && oldView !== 'dashboard' && !isViewId(oldView);
-  if ((!activityRoute && oldView === 'dashboard') || unknownView || url.pathname !== '/') {
+  if (unknownView || url.pathname !== '/') {
     url.pathname = '/';
     url.searchParams.set('view', view);
     if (conversation) url.searchParams.set('conversation_id', conversation);
@@ -52,6 +55,7 @@ function readInitialUrl() {
 }
 
 export default function App() {
+  const systemReduceMotion = useReducedMotion();
   const initial = useMemo(readInitialUrl, []);
   const [view, setView] = useState<ViewId>(initial.view);
   const [project, setProject] = useState(initial.project);
@@ -69,6 +73,10 @@ export default function App() {
   const [paletteQuery, setPaletteQuery] = useState('');
   const [focusIndex, setFocusIndex] = useState(0);
   const [themeMode, setThemeMode] = useState(theme.read());
+  const [motionPreference, setMotionPreference] = useState(() => accessibility.read());
+  const reduceMotion = accessibility.shouldReduceMotion(motionPreference, systemReduceMotion === true);
+  const [projects, setProjects] = useState<string[]>(['default']);
+  const [projectsState, setProjectsState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [searchResults, setSearchResults] = useState<Conversation[] | null>(null);
   const [searchState, setSearchState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const searchRef = useRef<HTMLInputElement>(null);
@@ -81,7 +89,6 @@ export default function App() {
   const sortedConversations = useMemo(() => [...conversations].sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true)), [conversations]);
   const pinned = useMemo(() => showArchived ? [] : sortedConversations.filter(item => item.pinned === true), [sortedConversations, showArchived]);
   const recents = useMemo(() => (showArchived ? sortedConversations : sortedConversations.filter(item => item.pinned !== true)).slice(0, 20), [sortedConversations, showArchived]);
-  const activeConversation = conversations.find(item => conversationId(item) === new URL(location.href).searchParams.get('conversation_id'));
 
   const refreshConversations = useCallback(async () => {
     listController.current?.abort();
@@ -98,10 +105,28 @@ export default function App() {
   }, [project, showArchived]);
 
   useEffect(() => {
-    const cleanup = theme.init();
-    return cleanup;
+    const cleanupTheme = theme.init();
+    const cleanupAccessibility = accessibility.init();
+    const updateTheme = () => setThemeMode(theme.read());
+    const updateAccessibility = () => setMotionPreference(accessibility.read());
+    window.addEventListener(theme.eventName, updateTheme);
+    window.addEventListener(accessibility.eventName, updateAccessibility);
+    return () => {
+      cleanupTheme(); cleanupAccessibility();
+      window.removeEventListener(theme.eventName, updateTheme);
+      window.removeEventListener(accessibility.eventName, updateAccessibility);
+    };
   }, []);
   useEffect(() => { void refreshConversations(); return () => listController.current?.abort(); }, [refreshConversations]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setProjectsState('loading');
+    api.get<unknown>('/api/workspace/items?limit=500', controller.signal).then(data => {
+      const names = records(data, 'items').map(item => value(item.project)).filter(Boolean);
+      if (!controller.signal.aborted) { setProjects([...new Set(['default', ...names])]); setProjectsState('ready'); }
+    }).catch(() => { if (!controller.signal.aborted) setProjectsState('error'); });
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     const update = () => { void refreshConversations(); };
     window.addEventListener('openagent:conversations-updated', update);
@@ -177,8 +202,7 @@ export default function App() {
     history.pushState({ openagentNavigation: true, view, project: next }, '', url);
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
-  const toggleTheme = () => {
-    const next = themeMode === 'dark' ? 'light' : 'dark';
+  const changeTheme = (next: ThemeMode) => {
     theme.set(next); setThemeMode(next);
   };
   const openPalette = () => { setPaletteQuery(''); setFocusIndex(0); setPaletteOpen(true); };
@@ -199,8 +223,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [paletteOpen, mobileNav, filteredViews, searchResults, commandCount, focusIndex, commitUrl]);
 
-  const title = view === 'chat' ? (value(activeConversation?.title, 'New chat')) : titles[view];
-  const projectOptions = [...new Set([project, ...conversations.map(item => value(item.project_id, value(item.project))).filter(Boolean)])];
+  const projectOptions = [...new Set([project, ...projects])];
   const openSearchResult = (item: Conversation) => navigateConversation(conversationId(item));
   const archiveConversation = async (item: Conversation, archived: boolean) => {
     const id = conversationId(item); if (!id) return;
@@ -240,20 +263,20 @@ export default function App() {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}>
       <div className="oa-brand-row">
-        <button className="oa-brand" onClick={newChat} aria-label="OpenAgent home"><span className="oa-brand-mark"><i /></span><strong>OpenAgent</strong></button>
+        <button className="oa-brand" onClick={newChat} aria-label="OpenAgent home"><span className="oa-brand-mark"><i /></span><span className="oa-brand-copy"><strong>OpenAgent</strong><small>Local AI Workspace</small></span></button>
         <button className="oa-icon-button oa-sidebar-dismiss" aria-label="Close navigation" onClick={() => setMobileNav(false)}><X size={17} /></button>
       </div>
-      <button className="oa-new-chat" onClick={newChat} aria-label="New chat" title="New chat" aria-current={view === 'chat' && !new URL(location.href).searchParams.has('conversation_id') ? 'page' : undefined}><MessageSquarePlus size={16} /><span>New chat</span></button>
-      <button className="oa-nav-action" onClick={openPalette} aria-label="Search" title="Search"><Search size={16} /><span>Search</span><kbd>⌘ K</kbd></button>
-      <button className={`oa-nav-action ${view === 'agents' ? 'active' : ''}`} onClick={() => commitUrl('agents')} aria-label="Assistants" title="Assistants"><Bot size={16} /><span>Assistants</span></button>
-      <button className={`oa-nav-action ${view === 'automation' || view === 'calendar' ? 'active' : ''}`} onClick={() => commitUrl('automation')} aria-label="Scheduled" title="Scheduled"><CalendarClock size={16} /><span>Scheduled</span></button>
-
       <div className="oa-workspace-picker">
-        <span className="oa-section-label">Workspace</span>
-        <label className="oa-project-select"><FolderOpen size={15} /><select aria-label="Project scope" value={project} onChange={event => changeProject(event.currentTarget.value)}>{projectOptions.map(option => <option key={option} value={option}>{option === 'default' ? 'Personal workspace' : option}</option>)}</select><ChevronDown size={13} /></label>
+        <span className="sr-only">Workspace</span>
+        <label className="oa-project-select"><FolderOpen size={15} /><select aria-label="Project" value={project} onChange={event => changeProject(event.currentTarget.value)}>{projectOptions.map(option => <option key={option} value={option}>{option === 'default' ? 'Personal workspace' : option}</option>)}</select><ChevronDown size={13} /></label>
+        {projectsState === 'error' && <span className="oa-project-note" role="status">Project list unavailable</span>}
       </div>
+      <button className="oa-new-chat" onClick={newChat} aria-label="New chat" title="New chat" aria-current={view === 'chat' && !new URL(location.href).searchParams.has('conversation_id') ? 'page' : undefined}><MessageSquarePlus size={16} /><span>New chat</span></button>
+      <button className="oa-nav-action oa-search-action" onClick={openPalette} aria-label="Search" title="Search"><Search size={16} /><span>Search pages, files, actions</span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></button>
+      {primaryNavigation.map(item => { const Icon = item.icon; return <Fragment key={item.id}><button className={`oa-nav-action ${view === item.id ? 'active' : ''}`} onClick={() => commitUrl(item.id)} aria-label={item.label} title={item.label}><Icon size={16} /><span>{item.label}</span></button>{item.id === 'dashboard' && <button className={`oa-nav-action ${view === 'chat' ? 'active' : ''}`} onClick={() => commitUrl('chat')} aria-label="Chat" title="Chat"><MessageSquarePlus size={16} /><span>Chat</span></button>}</Fragment>; })}
+
       <div className="oa-history-scroll">
-        {historyMutationError && <p className="oa-history-mutation-error" role="alert" style={{ margin: '6px 10px', padding: '7px 8px', border: '1px solid var(--oa-danger)', borderRadius: 6, color: 'var(--oa-danger)', fontSize: 11, overflowWrap: 'anywhere' }}>{historyMutationError}</p>}
+        {historyMutationError && <p className="oa-history-mutation-error" role="alert">{historyMutationError}</p>}
         {!!pinned.length && <section className="oa-history-section" aria-label="Pinned conversations"><div className="oa-section-heading"><span>Pinned</span><Archive size={12} /></div>{pinned.slice(0, 8).map(item => <ConversationRow key={conversationId(item)} item={item} archived={false} active={new URL(location.href).searchParams.get('conversation_id') === conversationId(item)} onClick={() => navigateConversation(conversationId(item))} onArchive={() => void archiveConversation(item, false)} onPin={() => void updateConversation(item, { pinned: false })} onRename={() => { setEditingConversation(item); setConversationTitleDraft(value(item.title)); }} />)}</section>}
         <section className="oa-history-section" aria-label={showArchived ? 'Archived conversations' : 'Recent conversations'}><div className="oa-section-heading"><span>{showArchived ? 'Archived' : 'Recent'}</span><button title={showArchived ? 'Show recent conversations' : 'Show archived conversations'} aria-label={showArchived ? 'Show recent conversations' : 'Show archived conversations'} aria-pressed={showArchived} onClick={() => setShowArchived(value => !value)}><Archive size={13} /></button></div>
           {historyState === 'loading' && <p className="oa-history-note">Loading conversations…</p>}
@@ -263,7 +286,7 @@ export default function App() {
         </section>
       </div>
       <div className="oa-sidebar-bottom">
-        <button className="oa-nav-action" onClick={openPalette} aria-label="Tools" title="Tools"><Wrench size={16} /><span>Tools</span></button>
+        <button className="oa-nav-action" onClick={openPalette} aria-label="More tools" title="More tools"><Wrench size={16} /><span>More tools</span></button>
         <button className={`oa-nav-action ${view === 'settings' ? 'active' : ''}`} onClick={() => commitUrl('settings')} aria-label="Settings" title="Settings"><Settings2 size={16} /><span>Settings</span></button>
       </div>
     </aside>
@@ -272,20 +295,23 @@ export default function App() {
       <a className="oa-skip-link" href="#oa-main-content">Skip to content</a>
       <header className="oa-topbar">
         <div className="oa-topbar-start">
-          <button className="oa-icon-button oa-sidebar-toggle" aria-label={window.matchMedia('(max-width: 760px)').matches ? 'Open navigation' : collapsed ? 'Open sidebar' : 'Close sidebar'} aria-expanded={window.matchMedia('(max-width: 760px)').matches ? mobileNav : !collapsed} onClick={() => { if (window.matchMedia('(max-width: 760px)').matches) setMobileNav(true); else setCollapsed(value => !value); }}>{window.matchMedia('(max-width: 760px)').matches ? <Menu size={18} /> : collapsed ? <Menu size={18} /> : <PanelLeftClose size={17} />}</button>
-          {view === 'chat' && <span className="oa-page-title" title={title}>{title}</span>}
-          {view === 'chat' && project !== 'default' && <span className="oa-context-project"><FolderOpen size={13} />{project}</span>}
+          <button className="oa-icon-button oa-sidebar-toggle" aria-label={window.matchMedia('(max-width: 800px)').matches ? 'Open navigation' : collapsed ? 'Open sidebar' : 'Close sidebar'} aria-expanded={window.matchMedia('(max-width: 800px)').matches ? mobileNav : !collapsed} onClick={() => { if (window.matchMedia('(max-width: 800px)').matches) setMobileNav(true); else setCollapsed(value => !value); }}>{window.matchMedia('(max-width: 800px)').matches ? <Menu size={18} /> : collapsed ? <Menu size={18} /> : <PanelLeftClose size={17} />}</button>
+          <div className="oa-breadcrumbs" aria-label="Current location"><span className="oa-breadcrumb-workspace"><FolderOpen size={14} />{project === 'default' ? 'Personal Workspace' : project}</span><span className="oa-breadcrumb-separator" aria-hidden="true">/</span><span className="oa-page-title">{primaryNavigation.find(item => item.id === view)?.label ?? titles[view]}</span></div>
         </div>
         <div className="oa-topbar-actions">
-          <button className="oa-top-search" onClick={openPalette} aria-haspopup="dialog"><Search size={15} /><span>Search</span><kbd>⌘ K</kbd></button>
-          <button className="oa-icon-button" onClick={toggleTheme} aria-label={`Use ${themeMode === 'dark' ? 'light' : 'dark'} theme`} title="Toggle theme">{themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button>
+          <button className="oa-top-search" onClick={openPalette} aria-haspopup="dialog"><Search size={15} /><span>Search</span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></button>
+          <label className="oa-theme-select-label"><span className="sr-only">Appearance</span><select className="oa-theme-select" aria-label="Appearance" value={themeMode} onChange={event => changeTheme(event.currentTarget.value as ThemeMode)}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
           {view !== 'chat' && <button className="oa-top-action" onClick={newChat}><Plus size={15} />New chat</button>}
         </div>
       </header>
       <div className="oa-page-stage" id="oa-main-content" tabIndex={-1}>
-        <Suspense fallback={<div className="oa-route-loading" role="status" aria-live="polite">Loading {titles[view]}…</div>}>
-          {view === 'chat' ? <ChatPage key={`chat:${project}`} project={project} draft={chatDraft} setDraft={setChatDraft} attachments={chatAttachments[project] ?? []} setAttachments={next => setChatAttachments(current => ({ ...current, [project]: typeof next === 'function' ? next(current[project] ?? []) : next }))} /> : view === 'dashboard' ? <DashboardPage key={`dashboard:${project}`} project={project} /> : platformWorkspaceIds.has(view) ? <PlatformWorkspaces key={`${view}:${project}`} id={view as import('./pages/PlatformWorkspaces').PlatformWorkspaceId} /> : personalSurfaceIds.has(view) ? <PersonalWorkSurface key={`${view}:${project}`} id={view as import('./pages/PersonalWorkSurfaces').PersonalSurfaceId} /> : specialPageIds.has(view) ? <SpecialPages key={`${view}:${project}`} id={view} /> : <ResourcePages key={`${view}:${project}`} id={view} />}
-        </Suspense>
+        <LazyMotion features={domAnimation}>
+          <m.div key={view} className="oa-route-motion" initial={reduceMotion ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: reduceMotion ? 0 : 0.16, ease: 'easeOut' }}>
+          <Suspense fallback={<div className="oa-route-loading" role="status" aria-live="polite">Loading {titles[view]}…</div>}>
+            {view === 'chat' ? <ChatPage key={`chat:${project}`} project={project} draft={chatDraft} setDraft={setChatDraft} attachments={chatAttachments[project] ?? []} setAttachments={next => setChatAttachments(current => ({ ...current, [project]: typeof next === 'function' ? next(current[project] ?? []) : next }))} /> : view === 'dashboard' ? <DashboardPage key={`dashboard:${project}`} project={project} /> : platformWorkspaceIds.has(view) ? <PlatformWorkspaces key={`${view}:${project}`} id={view as import('./pages/PlatformWorkspaces').PlatformWorkspaceId} /> : personalSurfaceIds.has(view) ? <PersonalWorkSurface key={`${view}:${project}`} id={view as import('./pages/PersonalWorkSurfaces').PersonalSurfaceId} /> : specialPageIds.has(view) ? <SpecialPages key={`${view}:${project}`} id={view} /> : <ResourcePages key={`${view}:${project}`} id={view} />}
+          </Suspense>
+          </m.div>
+        </LazyMotion>
       </div>
     </main>
 
@@ -303,7 +329,7 @@ export default function App() {
               return <div className="oa-command-group" key={group.key}><h3>{group.label}</h3>{items.map(item => { const Icon = item.icon; const index = (searchResults?.length ?? 0) + filteredViews.findIndex(match => match.id === item.id); return <button key={item.id} className={`oa-command-row ${focusIndex === index ? 'selected' : ''}`} aria-selected={focusIndex === index} onMouseMove={() => setFocusIndex(index)} onClick={() => commitUrl(item.id)}><Icon size={15} /><span>{item.label}</span><small>{item.id === 'chat' ? 'New conversation' : item.keywords?.split(' ')[0] ?? 'Open'}</small></button>; })}</div>;
             })}{!filteredViews.length && searchState !== 'loading' && <p className="oa-command-note">No tools match “{paletteQuery}”.</p>}</section>
           </div>
-          <div className="oa-command-footer"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><Command size={11} /> K Search</span></div>
+          <div className="oa-command-footer"><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd> Search</span></div>
         </div>
       </DialogContent>}
     </Dialog>

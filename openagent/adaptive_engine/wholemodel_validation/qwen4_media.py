@@ -1,6 +1,7 @@
 """Qwen4 media observation transport with its own complete QSA/PLE caches."""
 from dataclasses import dataclass
 import copy
+from pathlib import Path
 from .qwen35_media import Qwen35MediaCase,Qwen35MediaSession,Qwen35MediaAdapter
 from .qwen4_publisher_caches import Qwen4PublisherCacheReader
 
@@ -30,6 +31,12 @@ class Qwen4MediaAdapter(Qwen35MediaAdapter):
     session_class=Qwen4MediaSession
 
 
+def _require_source_pin(pins, source):
+    path=Path(source).resolve(strict=True)
+    if not any(row.get('kind')=='source' and Path(row.get('resolved_path',''))==path for row in pins):
+        raise ValueError('actual Qwen4 wrapper, loader and media observation sources must be pinned')
+
+
 def create_candidate(*,offline_root,options):
     from pathlib import Path
     import inspect
@@ -40,10 +47,11 @@ def create_candidate(*,offline_root,options):
     pins=pinned_artifacts({'artifacts':options['_artifact_pins']},root)
     loader=resolve_callable(options['decoder_factory']);source=inspect.getsourcefile(loader)
     if source is None:raise ValueError('inspectable original Qwen4 wrapper loader required')
-    for item in (source,__file__,qwen35_media.__file__):
-        path=Path(item).resolve(strict=True)
-        if not any(row['kind']=='source' and Path(row['resolved_path'])==path for row in pins):
-            raise ValueError('actual wrapper loader and complete media observation control sources must be pinned')
+    from ..qwen4_multimodal import Qwen4MultimodalDecoder
+    wrapper_source=inspect.getsourcefile(Qwen4MultimodalDecoder)
+    if wrapper_source is None:raise ValueError('inspectable original Qwen4 multimodal implementation required')
+    for item in (source,wrapper_source,__file__,qwen35_media.__file__):
+        _require_source_pin(pins,item)
     meta=copy.deepcopy(options['metadata'])
     if meta.get('authoritative') is True:raise ValueError('candidate cannot declare authoritative oracle identity')
     reader=Qwen4PublisherCacheReader(family='qwen4_exp_text',config=options['config'],role='candidate',

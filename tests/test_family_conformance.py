@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 from openagent.adaptive_engine.family_conformance import (
-    REGISTRY_IDENTITIES, conformance_matrix, require_native_decoder,
+    COLIBRI_REGISTRY_IDENTITIES, conformance_matrix,
+    require_native_decoder,
 )
 from openagent.adaptive_engine.hf_moe import HFMoeManifest, SUPPORTED_MODEL_TYPES
 
@@ -26,6 +27,14 @@ def geometry():
 
 
 class FamilyConformanceTests(unittest.TestCase):
+    def test_cached_source_scope_is_validated_and_reports_are_detached(self):
+        first = conformance_matrix()
+        first['source_scope']['families'].clear()
+        first['registry_models'].clear()
+        second = conformance_matrix()
+        self.assertIn('mixtral', second['source_scope']['families'])
+        self.assertEqual(len(second['registry_models']), 19)
+
     def test_explicit_hybrid_fixture_does_not_admit_published_k3(self):
         report = conformance_matrix()
         fixture = report['native_fixture_contracts'][0]
@@ -51,32 +60,42 @@ class FamilyConformanceTests(unittest.TestCase):
             fields = {keyword.arg: keyword.value for keyword in descriptor.keywords}
             observed.append(tuple(ast.literal_eval(fields[key])
                                   for key in ('id', 'model_types', 'config_section')))
-        self.assertEqual(observed, [row[:3] for row in REGISTRY_IDENTITIES])
+        self.assertEqual(observed, list(COLIBRI_REGISTRY_IDENTITIES))
 
     def test_json_matrix_distinguishes_library_python_and_native(self):
         report = json.loads(json.dumps(conformance_matrix()))
         rows = report['registry_models']
-        self.assertEqual(len(rows), 17)
-        self.assertEqual(len({row['model_type'] for row in rows}), 17)
+        self.assertEqual(len(rows), 19)
+        self.assertEqual(len({row['model_type'] for row in rows}), 19)
+        self.assertEqual({row['model_type'] for row in rows if row['colibri_registry_member']},
+                         {name for _, names, _ in COLIBRI_REGISTRY_IDENTITIES for name in names})
+        self.assertEqual(report['openagent_extension_model_types'], ['inkling_text', 'mixtral'])
         self.assertEqual(report['library_allowlist'], sorted(SUPPORTED_MODEL_TYPES))
         self.assertEqual(report['native_decoder_families'], [])
         self.assertEqual(report['native_decoder_supported_scope'], 'full-registry-family')
-        self.assertEqual([row['model_type'] for row in rows if row['library_allowlisted']], ['olmoe'])
+        self.assertEqual([row['model_type'] for row in rows if row['library_allowlisted']],
+                         ['mixtral', 'olmoe'])
         self.assertEqual([row['model_type'] for row in rows if row['independent_python_family']],
-                         ['glm_moe_dsa', 'olmoe', 'qwen3_5_moe_text', 'qwen4_exp_text'])
+                         ['mixtral', 'glm_moe_dsa', 'olmoe', 'qwen3_5_moe_text', 'qwen4_exp_text'])
         self.assertEqual(report['independent_python_families'],
                          ['mixtral', 'olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa', 'qwen4_exp_text'])
-        self.assertEqual(report['native_resident_range_families'], ['olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa', 'qwen4_exp_text', 'glm5_next_text', 'inkling_text'])
-        self.assertEqual([row['model_type'] for row in rows
-                          if row['native_resident_range_supported']], ['glm5_next_text', 'glm_moe_dsa', 'olmoe', 'qwen3_5_moe_text', 'qwen4_exp_text'])
-        self.assertEqual([row['model_type'] for row in rows if row['native_streamed_range_supported']], ['olmoe'])
+        self.assertEqual(set(report['native_resident_range_families']),
+                         {'mixtral', 'olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa',
+                          'qwen4_exp_text', 'glm5_next_text', 'inkling_text'})
+        self.assertEqual({row['model_type'] for row in rows
+                          if row['native_resident_range_supported']},
+                         set(report['native_resident_range_families']))
+        self.assertEqual({row['model_type'] for row in rows
+                          if row['native_streamed_range_supported']},
+                         {'mixtral', 'olmoe', 'glm_moe_dsa', 'qwen3_5_moe_text',
+                          'qwen4_exp_text', 'glm5_next_text', 'inkling_text'})
         self.assertTrue(all(not row['c_owned_storage_runtime'] for row in rows))
         self.assertTrue(all(not row['native_decoder_supported'] and row['rejection_reason']
                             and not row['upstream_abi_compatible'] for row in rows))
         self.assertIsNone(report['transformers_installed'])
         self.assertFalse(report['transformers_probed'])
-        self.assertEqual([row['model_type'] for row in rows if row['resident_text_loader_available']],
-                         ['glm5_next_text', 'glm_moe_dsa', 'kimi_linear', 'qwen3_5_moe_text', 'qwen4_exp_text', 'deepseek_v4'])
+        self.assertEqual({row['model_type'] for row in rows if row['resident_text_loader_available']},
+                         set(report['resident_text_loader_families']))
         self.assertIn('inkling_text', report['resident_text_loader_families'])
         self.assertEqual(report['experimental_text_families'], ['kimi_linear'])
 
@@ -113,7 +132,7 @@ class FamilyConformanceTests(unittest.TestCase):
         exact = rows['glm_moe_dsa']
         self.assertTrue(exact['independent_python_family'])
         self.assertTrue(exact['native_resident_range_supported'])
-        self.assertFalse(exact['native_streamed_range_supported'])
+        self.assertTrue(exact['native_streamed_range_supported'])
         self.assertFalse(exact['native_decoder_supported'])
         self.assertTrue(rows['glm5_next_text']['native_resident_range_supported'])
         self.assertFalse(rows['glm5_next_text']['independent_python_family'])
@@ -147,8 +166,8 @@ class FamilyConformanceTests(unittest.TestCase):
         rows = {row['model_type']: row for row in conformance_matrix()['registry_models']}
         exact = rows['qwen4_exp_text']
         self.assertTrue(exact['independent_python_family'])
-        self.assertEqual(exact['independent_contract'], 'linear-QSA-PLE-default-text-RoPE-FP32-resident')
-        self.assertEqual(exact['native_resident_contract'], 'linear-QSA-PLE-default-text-RoPE-FP32-resident')
+        self.assertEqual(exact['independent_contract'], 'linear-QSA-PLE-default-or-linear-text-RoPE-FP32-resident')
+        self.assertEqual(exact['native_resident_contract'], 'linear-QSA-PLE-default-or-linear-text-RoPE-FP32-resident')
         self.assertTrue(exact['native_resident_range_supported'])
         self.assertFalse(exact['native_decoder_supported'])
         self.assertFalse(rows['qwen4_exp']['independent_python_family'])

@@ -21,6 +21,130 @@ from openagent.voice import synthesize_tone_wav
 
 
 class ServerTests(unittest.TestCase):
+    def test_event_stream_treats_connection_aborted_as_disconnect_and_closes_iterator(self) -> None:
+        from openagent.routes import runtime
+
+        class AbortedWriter:
+            def write(self, _body):
+                raise ConnectionAbortedError("peer aborted the response")
+
+            def flush(self):
+                pass
+
+        class Events:
+            closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return {"type": "chunk", "content": "partial"}
+
+            def close(self):
+                self.closed = True
+
+        with TemporaryDirectory() as tmp:
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp))
+            try:
+                handler = server.RequestHandlerClass.__new__(server.RequestHandlerClass)
+                handler.wfile = AbortedWriter()
+                handler.send_response = lambda _status: None
+                handler.send_header = lambda _name, _value: None
+                handler.end_headers = lambda: None
+                events = Events()
+
+                # Socket disconnect errors are normal stream termination, but
+                # they must still release the iterator that owns inference state.
+                handler.send_event_stream(events)
+
+                self.assertTrue(events.closed)
+            finally:
+                server.server_close()
+
+    def test_inference_disconnect_watcher_starts_after_request_body_is_read(self) -> None:
+        from openagent.routes import runtime
+        from openagent.routes import JsonRouteResult
+
+        events = []
+
+        def fake_inference_post(path, dependencies):
+            events.append("handler")
+            payload = dependencies.read_json()
+            events.append(("body", payload))
+            self.assertFalse(dependencies.cancelled())
+            return JsonRouteResult({"ok": True})
+
+        with TemporaryDirectory() as tmp:
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                original_read_json = server.RequestHandlerClass.read_json
+
+                def observed_read_json(handler):
+                    payload = original_read_json(handler)
+                    events.append(("body-read", payload))
+                    return payload
+
+                with patch.object(runtime, "handle_inference_post", side_effect=fake_inference_post), \
+                     patch.object(server.RequestHandlerClass, "read_json", new=observed_read_json), \
+                     patch.object(runtime._RequestDisconnectWatcher, "start",
+                                  new=lambda watcher: events.append("watcher-start")), \
+                     patch.object(runtime._RequestDisconnectWatcher, "cancelled", return_value=False), \
+                     patch.object(runtime._RequestDisconnectWatcher, "close", return_value=None):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", server.server_address[1], timeout=5)
+                    body = json.dumps({"prompt": "hello"})
+                    connection.request("POST", "/v1/completions", body=body,
+                                       headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.loads(response.read()), {"ok": True})
+                    connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertEqual(events, ["handler", ("body-read", {"prompt": "hello"}),
+                                  "watcher-start", ("body", {"prompt": "hello"})])
+
+    def test_compatibility_stream_route_writes_protocol_sse_without_generic_terminal(self) -> None:
+        from openagent.routes import runtime, ServerSentEvent, StreamRouteResult
+
+        with TemporaryDirectory() as tmp:
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = StreamRouteResult(iter((
+                    ServerSentEvent({"choices": [{"delta": {"role": "assistant"}}]}),
+                    ServerSentEvent("[DONE]", raw_data=True, terminal=True),
+                )), headers={"X-Queue-Wait-Ms": "12"})
+                with patch.object(runtime, "handle_inference_post", return_value=result), \
+                     patch.object(runtime._RequestDisconnectWatcher, "start", return_value=None), \
+                     patch.object(runtime._RequestDisconnectWatcher, "cancelled", return_value=False), \
+                     patch.object(runtime._RequestDisconnectWatcher, "close", return_value=None):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", server.server_address[1], timeout=5)
+                    connection.request("POST", "/v1/chat/completions",
+                        body=json.dumps({"model": "fixture", "messages": [{"role": "user", "content": "hi"}],
+                                         "stream": True}),
+                        headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    body = response.read().decode("utf-8")
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                    self.assertEqual(response.headers.get("X-Queue-Wait-Ms"), "12")
+                    self.assertIn('data: {"choices": [{"delta": {"role": "assistant"}}]}', body)
+                    self.assertIn("data: [DONE]", body)
+                    self.assertNotIn('"type":"done"', body)
+                    connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def test_static_files_cannot_escape_into_web_root_sibling(self) -> None:
         with TemporaryDirectory() as tmp:
             web_root = Path(tmp) / "site"

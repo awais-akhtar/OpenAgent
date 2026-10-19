@@ -569,6 +569,27 @@ class Scheduler:
             row = connection.execute("SELECT * FROM task_notifications WHERE id = ?", (notification_id,)).fetchone()
         return notification_row(row)
 
+    def mark_notification_read(
+        self, notification_id: str, *, project: str = "default", owner: str = ""
+    ) -> dict[str, Any]:
+        clauses = ["id = ?", "project = ?"]
+        values: list[Any] = [notification_id, project]
+        if owner:
+            clauses.append("owner = ?")
+            values.append(owner)
+        read_at = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                "UPDATE task_notifications SET read_at = ? WHERE " + " AND ".join(clauses),
+                [read_at, *values],
+            )
+            row = connection.execute(
+                "SELECT * FROM task_notifications WHERE " + " AND ".join(clauses), values
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown notification '{notification_id}'.")
+        return notification_row(row)
+
     def run_due(self, *, project: str = "default", owner: str = "", limit: int = 25) -> dict[str, Any]:
         now = utc_now()
         clauses = ["project = ?", "status = 'active'", "next_run_at <= ?"]

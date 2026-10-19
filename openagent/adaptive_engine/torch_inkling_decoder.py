@@ -14,6 +14,8 @@ from .device_inkling_forward import inkling_device_forward
 from .device_logits import device_logits
 from .device_execution_policy import admit_no_fallback,admit_fp32
 
+_SOURCE_ADMISSION = object()
+
 @dataclass(frozen=True)
 class InklingDeviceSnapshot:
     owner:str
@@ -24,7 +26,10 @@ class InklingDeviceSnapshot:
 class TorchInklingDecoder:
     implementation='torch-inkling-device-fp32'
     def __init__(self,config,tensors,*,device,max_bytes,max_snapshots=4,max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,
-                 expert_provider=None,projection_provider=None,_borrow_globals=None,_shared_global_identity=None):
+                 expert_provider=None,projection_provider=None,_borrow_globals=None,_shared_global_identity=None,
+                 _source_admission=None):
+        if _source_admission is not _SOURCE_ADMISSION:
+            raise ValueError('Inkling device construction requires metadata-admitted source tensors')
         admit_no_fallback(device)
         inventory=IndependentInklingDecoder(config,{},_inventory_only=True,max_bytes=max_bytes,_omit_experts=expert_provider is not None)
         if any(type(v) is not int or v<=0 for v in (max_bytes,max_work_bytes,max_head_bytes)) or type(max_snapshots) is not int or not 1<=max_snapshots<=64:
@@ -100,10 +105,21 @@ class TorchInklingDecoder:
 
     @classmethod
     def from_directory(cls,directory,*,device,max_weight_bytes,max_bytes,read_limits=None,cancel=None,**options):
+        # The provider contract currently binds configuration/geometry but not
+        # the exact source checkpoint weight bytes.  Omitting a bank and
+        # replacing it with a separately opened provider could therefore mix
+        # checkpoint revisions while still satisfying the tensor shapes.
+        if options.get('expert_provider') is not None or options.get('projection_provider') is not None:
+            raise ValueError(
+                'Inkling external device expert/projection providers are disabled '
+                'until source checkpoint content identity is shared')
         from .native_checkpoint import read_native_text_checkpoint,_finish_decoder
         def select(config,inventory):
             shapes=IndependentInklingDecoder(config,{},_inventory_only=True,max_bytes=max_bytes).tensor_shapes
-            if set(shapes)!=set(inventory) or any(tuple(inventory[name]['shape'])!=shape for name,shape in shapes.items()):
+            if set(shapes)!=set(inventory) or any(
+                    tuple(inventory[name]['shape'])!=shape or
+                    inventory[name].get('dtype') not in ('F32','F16','BF16')
+                    for name,shape in shapes.items()):
                 raise ValueError('exact full Inkling accelerator checkpoint required')
             omitted=set();expert=options.get('expert_provider');projections=options.get('projection_provider')
             if expert is not None:
@@ -119,8 +135,9 @@ class TorchInklingDecoder:
                 raise MemoryError('Inkling checkpoint conversion exceeds aggregate admission')
             return tuple(sorted(selected))
         config,weights=read_native_text_checkpoint(directory,model_type='inkling_text',max_weight_bytes=max_weight_bytes,
-            read_limits=read_limits,cancel=cancel,tensor_selection=select)
-        return _finish_decoder(cls(config,weights,device=device,max_bytes=max_bytes,**options),cancel)
+            read_limits=read_limits,cancel=cancel,tensor_selection=select,source_backend='device')
+        return _finish_decoder(cls(config,weights,device=device,max_bytes=max_bytes,
+            _source_admission=_SOURCE_ADMISSION,**options),cancel)
 
     def _check(self):
         if self._closed or self._busy:
@@ -212,8 +229,12 @@ class TorchInklingDecoder:
     def restore(self,receipt):
         with self._lock:
             self._check();_,banks,size=self._snapshot(receipt);self._admit(2*size);self._cancel()
-            pending=tuple(self.torch.tensor(value,device=self.device) for value in banks)
-            self._cancel();self._cache,self.position=pending,receipt.position
+            pending=();committed=False
+            try:
+                pending=tuple(self.torch.tensor(value,device=self.device) for value in banks)
+                self._cancel();self._cache,self.position=pending,receipt.position;committed=True
+            finally:
+                if not committed: pending=()
     def release_snapshot(self,receipt):
         with self._lock:
             self._check();self._snapshot_bytes-=self._snapshot(receipt)[2];del self._snapshots[receipt.key]

@@ -10,13 +10,14 @@ import copy
 import json
 from pathlib import Path
 import threading
+from contextlib import contextmanager
 
 import numpy as np
 
 from .segment_edge_runtime import (
     _Record, _PTR, _SIZE, _U32, _TRANSFER, _SegmentCaps, _EdgeCaps,
     _SegmentOptions, _SessionOptions, _EdgeOptions, _Run, _Embed, _Logits, _Select,
-    _Functions, _identifier, _integer,
+    _Functions, _identifier, _integer, _cancel_requested,
 )
 
 
@@ -168,6 +169,31 @@ class _ReadStream:
         return raw
 
 
+class _PublicOlmoeSession:
+    """Serialize public session operations and reject callback-stack reentry."""
+
+    def __init__(self, model):
+        self.model = model
+        self._lock = threading.RLock()
+        self._operation_owner = None
+
+    @contextmanager
+    def operation(self):
+        with self._lock:
+            owner = threading.get_ident()
+            if self._operation_owner == owner:
+                raise RuntimeError("reentrant public OLMoE session operation rejected")
+            self._operation_owner = owner
+            try:
+                yield
+            finally:
+                self._operation_owner = None
+
+    def close(self):
+        with self.operation():
+            self.model.close()
+
+
 class NativeOlmoePublicAdapters:
     """Own callbacks and factory-created native resources for one model root."""
     wire_schema = _WIRE_SCHEMA
@@ -180,20 +206,54 @@ class NativeOlmoePublicAdapters:
                  segment_id="openagent-olmoe-streamed", edge_id="openagent-olmoe-edge",
                  expert_cache_bytes, max_staging_bytes, max_snapshot_bytes,
                  max_batch_rows=32, tokenizer_path=None, max_resource_bytes=None):
-        self.native = _Functions(runtime_library)
         self.root = Path(model_directory).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("allowed checkpoint directory required")
-        self.kernel = str(Path(kernel_library).resolve(strict=True))
-        if not Path(self.kernel).is_file():
-            raise ValueError("explicit native kernel library required")
+        self.staging_bytes = _integer(max_staging_bytes, "max_staging_bytes", maximum=(1 << 63)-1)
         from .expert_runtime import SparseExpertManifest
         self.manifest = SparseExpertManifest.read(manifest) if isinstance(manifest, (str, Path)) else copy.deepcopy(manifest)
         if not isinstance(self.manifest, SparseExpertManifest):
             raise TypeError("explicit SparseExpertManifest required")
         self.manifest.validate()
+        if self.manifest.architecture != 'olmoe':
+            raise ValueError('public OLMoE adapter requires an OLMoE expert manifest')
+        if not self.manifest.layers:
+            raise ValueError('public OLMoE adapter requires a nonempty expert manifest')
+        # The public ABI owner is a checkpoint-loading entrypoint too. Bind
+        # complete source headers and the manifest's exact persisted format
+        # before loading either native library; the CLI gate alone is
+        # bypassable by callers that construct this adapter directly.
+        from .source_scope import require_checkpoint_inventory_admission
+        inventory = require_checkpoint_inventory_admission(
+            self.root, family='olmoe', model_type='olmoe',
+            backend='public-range', arithmetic='fp32',
+            max_metadata_bytes=self.staging_bytes,
+            persisted_format=self.manifest.layers[0].dtype)
+        from .olmoe import OlmoeConfig, olmoe_metadata_fingerprint, validate_olmoe_tensors
+        config = OlmoeConfig.read(self.root)
+        if self.manifest.fingerprint != olmoe_metadata_fingerprint(self.root):
+            raise ValueError('public OLMoE expert manifest belongs to a different checkpoint')
+        metadata = {name: (record.shard, {'shape': record.shape, 'dtype': record.dtype})
+                    for name, record in inventory.tensors.items()}
+        validate_olmoe_tensors(config, metadata)
+        if len(self.manifest.layers) != config.num_hidden_layers:
+            raise ValueError('public OLMoE expert inventory differs from checkpoint layers')
+        payload_bytes = 3*config.hidden_size*config.intermediate_size + 4*(
+            2*config.intermediate_size+config.hidden_size)
+        for index, layer in enumerate(self.manifest.layers):
+            if (layer.id != f'model.layers.{index}' or layer.dtype != 'int8-row' or
+                    (layer.hidden_size, layer.intermediate_size, layer.experts_used) !=
+                    (config.hidden_size, config.intermediate_size, config.num_experts_per_tok) or
+                    set(layer.regions) != {str(expert) for expert in range(config.num_experts)} or
+                    any(region.size != payload_bytes or not region.sha256
+                        for region in layer.regions.values())):
+                raise ValueError('public OLMoE INT8 expert manifest differs from checkpoint geometry')
+        inventory.assert_unchanged()
+        self.kernel = str(Path(kernel_library).resolve(strict=True))
+        if not Path(self.kernel).is_file():
+            raise ValueError("explicit native kernel library required")
+        self.native = _Functions(runtime_library)
         self.cache_bytes = _integer(expert_cache_bytes, "expert_cache_bytes", maximum=(1 << 63)-1)
-        self.staging_bytes = _integer(max_staging_bytes, "max_staging_bytes", maximum=(1 << 63)-1)
         self.snapshot_bytes = _integer(max_snapshot_bytes, "max_snapshot_bytes", maximum=(1 << 63)-1)
         self.rows = _integer(max_batch_rows, "max_batch_rows", maximum=4096)
         self.segment_id, self.edge_id = _identifier(segment_id), _identifier(edge_id)
@@ -240,21 +300,56 @@ class NativeOlmoePublicAdapters:
                 raise ValueError("unknown or cleanup-pending adapter resource")
             return entry[1]
 
-    def _allowed(self, path, plan, plan_size, backend):
-        if Path(path.decode("utf-8")).resolve(strict=True) != self.root:
+    def _allowed(self, options):
+        """Admit only the exact current open-record ABI and this registered owner."""
+        reserved = (getattr(options, name) for name in
+                    ('reserved', 'reserved32', 'reserved64') if hasattr(options, name))
+        if (int(options.size) != C.sizeof(type(options)) or
+                any(bool(value) if isinstance(value, int) else any(value)
+                    for value in reserved)):
+            raise ValueError("native adapter open options size or reserved fields differ")
+        if not options.model or Path(options.model.decode("utf-8")).resolve(strict=True) != self.root:
             raise ValueError("adapter may open only its registered checkpoint directory")
-        if plan or plan_size:
+        if options.plan or options.plan_size:
             raise ValueError("this adapter does not accept an opaque resource plan")
-        if backend and not backend & (1 << 8):
+        if options.backend and not options.backend & (1 << 8):
             raise ValueError("this registered adapter uses native CPU kernels")
 
     def _guard(self, callback_type, function):
         def guarded(*arguments):
             receipt = None
             frame = None
+            capabilities = None
             status = 0
             try:
                 if callback_type in (_SOPEN, _EOPEN, _CREATE):
+                    # A failed constructor must never leave a caller-supplied
+                    # stale handle looking like a successfully published
+                    # resource. Clear the ABI out-parameter before admission
+                    # or any operation that can fail.
+                    output_index = 1 if callback_type is _CREATE else 0
+                    output = arguments[output_index]
+                    if not output:
+                        raise ValueError("native adapter constructor requires an output handle")
+                    output[0] = None
+                    if callback_type in (_SOPEN, _EOPEN):
+                        capability_output = arguments[1]
+                        if not capability_output:
+                            raise ValueError("native adapter open requires an output capability record")
+                        capability_type = _SegmentCaps if callback_type is _SOPEN else _EdgeCaps
+                        C.memset(capability_output, 0, C.sizeof(capability_type))
+                        capabilities = (capability_output, capability_type)
+                    else:
+                        # Session creation is a separate versioned ABI record
+                        # from engine-open options. Validate it before using
+                        # its memory budget or reserving resources.
+                        raw_options = arguments[2]
+                        if not raw_options:
+                            raise ValueError("native adapter session creation requires options")
+                        options = raw_options.contents
+                        if (int(options.size) != C.sizeof(_SessionOptions) or
+                                any(options.reserved)):
+                            raise ValueError("native adapter session options size or reserved fields differ")
                     if getattr(self._construction, 'frame', None) is not None:
                         raise RuntimeError('native adapter construction callback reentry')
                     kind = 'session' if callback_type is _CREATE else ('edge' if callback_type is _EOPEN else 'engine')
@@ -264,6 +359,12 @@ class NativeOlmoePublicAdapters:
                 function(*arguments[:-2])
                 status = 0
             except BaseException as error:
+                # A family-specific open callback may have filled its
+                # capabilities before a later handle-publication failure.
+                # Re-clear that output on every error path so stale-looking
+                # metadata can never accompany a failed open status.
+                if capabilities is not None:
+                    C.memset(capabilities[0], 0, C.sizeof(capabilities[1]))
                 status = _error(arguments[-2], arguments[-1], error)
             finally:
                 if frame is not None:
@@ -364,7 +465,7 @@ class NativeOlmoePublicAdapters:
         def open_engine(output, caps, raw_options):
             from .native_leased_olmoe_segments import NativeLeasedOlmoeSegmentEngine
             options = raw_options.contents
-            self._allowed(options.model, options.plan, options.plan_size, options.backend)
+            self._allowed(options)
             budget = _integer(int(options.memory), "explicit native memory budget", maximum=(1 << 63)-1)
             engine = NativeLeasedOlmoeSegmentEngine(self.root, self.manifest, options.begin, options.end,
                 self.kernel, budget, self.cache_bytes, options.context or None,
@@ -385,37 +486,47 @@ class NativeOlmoePublicAdapters:
             cache_bytes = 2*(engine.end-engine.begin)*c.num_key_value_heads*context*(c.hidden_size//c.num_attention_heads)*4
             if not budget or cache_bytes > budget:
                 raise MemoryError("session KV exceeds explicit native memory budget")
-            self._publish(engine.create_session(context_tokens=context), "session", output)
+            self._publish(_PublicOlmoeSession(
+                engine.create_session(context_tokens=context)), "session", output)
 
         def run(session_id, raw_request):
             session = self._get(session_id, "session")
             request = raw_request.contents
-            if (request.size != C.sizeof(_Run) or type(request.rows) is not int or
-                    not 0 < request.rows <= self.rows or request.position < 0 or
-                    not request.input or not request.output or
-                    request.input_bytes != request.rows * session._engine.config.hidden_size * 4 or
-                    request.output_bytes != request.input_bytes):
-                raise ValueError("invalid counted native segment request")
-            if session.position != request.position:
-                raise ValueError("native segment position differs from the requested sequence")
-            width = session._engine.config.hidden_size
-            view = np.ctypeslib.as_array(C.cast(request.input, C.POINTER(C.c_float)),
-                                        shape=(request.rows*width,)).reshape(request.rows, width)
-            cancel = (lambda: bool(request.cancel(request.cancel_data))) if request.cancel else None
-            output = session.forward(view, cancelled=cancel)
-            if output.shape != view.shape or output.dtype != np.float32 or not np.isfinite(output).all():
-                raise ArithmeticError("native segment returned an invalid activation buffer")
-            C.memmove(request.output, output.ctypes.data, output.nbytes)
+            with session.operation():
+                model = session.model
+                if (request.size != C.sizeof(_Run) or type(request.rows) is not int or
+                        not 0 < request.rows <= self.rows or request.position < 0 or
+                        request.token_count != 0 or any(request.reserved) or
+                        not request.input or not request.output or
+                        request.input_bytes != request.rows * model._engine.config.hidden_size * 4 or
+                        request.output_bytes != request.input_bytes):
+                    raise ValueError("invalid counted native segment request")
+                if model.position != request.position:
+                    raise ValueError("native segment position differs from the requested sequence")
+                width = model._engine.config.hidden_size
+                view = np.ctypeslib.as_array(C.cast(request.input, C.POINTER(C.c_float)),
+                                            shape=(request.rows*width,)).reshape(request.rows, width)
+                if not np.isfinite(view).all():
+                    raise ValueError("native segment activation input must be finite")
+                cancel = (lambda: _cancel_requested(request.cancel, request.cancel_data)) if request.cancel else None
+                output = model.forward(view, cancelled=cancel)
+                if output.shape != view.shape or output.dtype != np.float32 or not np.isfinite(output).all():
+                    raise ArithmeticError("native segment returned an invalid activation buffer")
+                C.memmove(request.output, output.ctypes.data, output.nbytes)
 
         def snapshot(session_id, writer, user):
             from .native_segment_snapshot import write_native_snapshot
+            session = self._get(session_id, "session")
             stream = _WriteStream(writer, user, self.snapshot_bytes)
-            write_native_snapshot(self._get(session_id, "session"), stream, max_bytes=self.snapshot_bytes)
+            with session.operation():
+                write_native_snapshot(session.model, stream, max_bytes=self.snapshot_bytes)
 
         def restore(session_id, reader, user):
             from .native_segment_snapshot import restore_native_snapshot
+            session = self._get(session_id, "session")
             stream = _ReadStream(reader, user, self.snapshot_bytes)
-            restore_native_snapshot(self._get(session_id, "session"), stream, max_bytes=self.snapshot_bytes)
+            with session.operation():
+                restore_native_snapshot(session.model, stream, max_bytes=self.snapshot_bytes)
 
         return _SegmentAdapter(version=1, engine=self.segment_id,
             open=self._guard(_SOPEN, open_engine), destroy=self._destroy("engine"),
@@ -426,7 +537,7 @@ class NativeOlmoePublicAdapters:
     def _edge_record(self):
         def open_engine(output, caps, raw_options):
             options = raw_options.contents
-            self._allowed(options.model, options.plan, options.plan_size, options.backend)
+            self._allowed(options)
             budget = _integer(int(options.memory), "explicit edge memory budget", maximum=(1 << 63)-1)
             edge = self._create_edge(budget)
             c = edge.config
@@ -444,15 +555,16 @@ class NativeOlmoePublicAdapters:
             edge = self._get(edge_id, "edge")
             request = raw_request.contents
             if (request.size != C.sizeof(_Embed) or not 0 < request.rows <= self.rows or
+                    any(request.reserved) or
                     not request.tokens or not request.output or
                     request.token_count != request.rows or
                     request.output_bytes != request.rows * edge.config.hidden_size * 4):
                 raise ValueError("invalid counted native embedding request")
-            if request.cancel and request.cancel(request.cancel_data):
+            if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("embedding cancelled")
             ids = np.ctypeslib.as_array(C.cast(request.tokens, C.POINTER(C.c_int32)), shape=(request.rows,))
             output = edge.embeddings(ids.astype(np.int64))
-            if request.cancel and request.cancel(request.cancel_data):
+            if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("embedding cancelled")
             C.memmove(request.output, output.ctypes.data, output.nbytes)
 
@@ -460,23 +572,32 @@ class NativeOlmoePublicAdapters:
             edge = self._get(edge_id, "edge")
             request = raw_request.contents
             if (request.size != C.sizeof(_Logits) or not 0 < request.rows <= self.rows or
+                    any(request.reserved) or
                     not request.input or not request.output or
                     request.input_bytes != request.rows * edge.config.hidden_size * 4 or
                     request.capacity < request.rows * edge.config.vocab_size * 4):
                 raise ValueError("invalid counted native logits request")
-            if request.cancel and request.cancel(request.cancel_data):
+            if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("logit generation cancelled")
             view = np.ctypeslib.as_array(C.cast(request.input, C.POINTER(C.c_float)),
                 shape=(request.rows*edge.config.hidden_size,)).reshape(request.rows, edge.config.hidden_size)
             output = edge.final_head(view)
-            if request.cancel and request.cancel(request.cancel_data):
+            if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("logit generation cancelled")
             C.memmove(request.output, output.ctypes.data, output.nbytes)
 
         def tokenize(edge_id, pointer, size, output, capacity, count):
+            # This is an ABI out-parameter, not an input. Clear it before
+            # handle lookup, admission, UTF-8 decoding, or tokenizer callbacks
+            # so any failure cannot leave a caller's stale count looking like
+            # a successful result. On a capacity error below, publish the
+            # required count deliberately to support the sizing call pattern.
+            if not count:
+                raise ValueError("tokenizer requires an output count")
+            count[0] = 0
             self._get(edge_id, "edge")
             if (self.tokenizer is None or size > self.staging_bytes or
-                    (size and not pointer) or not count):
+                    (size and not pointer)):
                 raise ValueError("tokenizer unavailable or text exceeds admission")
             text = C.string_at(pointer, size).decode("utf-8", errors="strict")
             ids = self.tokenizer.encode(text, add_special_tokens=False).ids
@@ -493,12 +614,13 @@ class NativeOlmoePublicAdapters:
             edge = self._get(edge_id, "edge")
             request = raw_request.contents
             if (request.size != C.sizeof(_Select) or not 0 < request.rows <= self.rows or
+                    any(request.reserved) or
                     not request.input or not request.tokens or
                     request.input_bytes != request.rows * edge.config.hidden_size * 4 or
                     request.token_capacity < request.rows or
                     (request.scores and request.score_capacity < request.rows)):
                 raise ValueError("invalid counted native selection request")
-            if request.cancel and request.cancel(request.cancel_data):
+            if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("greedy selection cancelled")
             view = np.ctypeslib.as_array(C.cast(request.input, C.POINTER(C.c_float)),
                 shape=(request.rows*edge.config.hidden_size,)).reshape(request.rows, edge.config.hidden_size)
@@ -507,16 +629,21 @@ class NativeOlmoePublicAdapters:
                 raise ArithmeticError("native head returned nonfinite logits")
             ids = np.argmax(output, axis=1).astype(np.int32)
             scores = output[np.arange(request.rows), ids].astype(np.float32)
-            if request.cancel and request.cancel(request.cancel_data):
+            if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("greedy selection cancelled")
             C.memmove(request.tokens, ids.ctypes.data, ids.nbytes)
             if request.scores:
                 C.memmove(request.scores, scores.ctypes.data, scores.nbytes)
 
         def detokenize(edge_id, pointer, count, output, capacity, size):
+            # As with tokenize, never preserve an unrelated caller-provided
+            # extent when handle validation or decoding fails.
+            if not size:
+                raise ValueError("detokenizer requires an output size")
+            size[0] = 0
             self._get(edge_id, "edge")
             if (self.tokenizer is None or count*4 > self.staging_bytes or
-                    (count and not pointer) or not size):
+                    (count and not pointer)):
                 raise ValueError("detokenizer unavailable or input exceeds admission")
             ids = np.ctypeslib.as_array(C.cast(pointer, C.POINTER(C.c_int32)), shape=(count,))
             value = self.tokenizer.decode(ids.tolist(), skip_special_tokens=False).encode("utf-8")

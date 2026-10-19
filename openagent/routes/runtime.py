@@ -13,6 +13,8 @@ import logging
 import mimetypes
 import os
 from pathlib import Path
+import select
+import socket
 import struct
 import threading
 import time
@@ -26,7 +28,7 @@ from ..adaptive_engine.runtime import AdaptiveExecutionEngine
 from ..agent_bridge import AgentBridge
 from ..agents import AgentRegistry
 from ..assistant import AssistantManager
-from ..auth import AuthError, AuthManager, required_scope_for_path
+from ..auth import AuthError, AuthManager, personal_remote_public_route, required_scope_for_path
 from ..backup_restore import BackupRestoreManager
 from ..calendar_sync import CalendarSyncError, CalendarSyncManager
 from ..calendar_system import CalendarSystem
@@ -37,7 +39,7 @@ from ..codebase import CodebaseService
 from ..communication import CommunicationApprovalRequired, CommunicationHub
 from ..compute_router import ComputeRouter
 from ..conversation_organization import ConversationOrganization
-from ..config import auth_enforcement_enabled, startup_settings, web_root as default_web_root
+from ..config import StartupConfigurationError, auth_enforcement_enabled, is_loopback_host, startup_settings, web_root as default_web_root
 from ..contacts import ContactsManager
 from ..context import ContextEngine
 from ..developer import DeveloperPlatform
@@ -71,7 +73,7 @@ from ..safe_terminal import SafeTerminal
 from ..scheduler import Scheduler
 from ..skill_ecosystem import SkillEcosystem
 from ..tools.runtime import ToolRuntime, register_safe_terminal
-from . import StreamRouteResult
+from . import ServerSentEvent, StreamRouteResult
 from .agent_bridge_routes import AgentBridgeRouteDependencies, handle_get as handle_agent_bridge_get, handle_post as handle_agent_bridge_post
 from .agents_routes import AgentRouteDependencies, handle_get as handle_agents_get, handle_post as handle_agents_post
 from .assistant_routes import AssistantRouteDependencies, handle_get as handle_assistant_get, handle_post as handle_assistant_post
@@ -142,6 +144,55 @@ class RequestRejected(ValueError):
     def __init__(self, message: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> None:
         super().__init__(message)
         self.status = status
+
+
+class _RequestDisconnectWatcher:
+    """Cooperatively signal inference cancellation when its HTTP peer closes.
+
+    The watcher only peeks at the socket and never consumes request bytes.
+    It is scoped to synchronous inference endpoints, after normal routing and
+    auth gates have passed; ordinary keep-alive data is not treated as EOF.
+    """
+
+    def __init__(self, connection) -> None:
+        self._connection = connection
+        self._cancelled = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._watch, name="inference-disconnect", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def _watch(self) -> None:
+        while not self._stop.is_set():
+            try:
+                readable, _, _ = select.select([self._connection], [], [], 0.05)
+            except (OSError, ValueError):
+                self._cancelled.set()
+                return
+            if not readable:
+                continue
+            try:
+                data = self._connection.recv(1, socket.MSG_PEEK)
+            except (BlockingIOError, InterruptedError):
+                continue
+            except OSError:
+                self._cancelled.set()
+                return
+            if not data:
+                self._cancelled.set()
+                return
+            # Bytes can still be arriving for the request body or a pipelined
+            # request. Do not consume or misclassify them as a disconnect.
+            self._stop.wait(0.05)
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=0.2)
 
 
 def _parse_multipart_parts(body: bytes, boundary: bytes) -> list[dict[str, object]]:
@@ -271,6 +322,12 @@ def build_http_server(
     warm_openvino: bool = False,
 ) -> ThreadingHTTPServer:
     settings = startup_settings(host, port)
+    auth = AuthManager(store)
+    if settings.deployment_mode == "personal_remote":
+        try:
+            auth.validate_personal_remote_accounts()
+        except AuthError as exc:
+            raise StartupConfigurationError(str(exc)) from exc
     context = ContextEngine(store)
     adaptive_engine = AdaptiveExecutionEngine(store)
     gateway = ModelGateway(direct_hardware=adaptive_engine.direct)
@@ -330,7 +387,6 @@ def build_http_server(
     local_ai = LocalAIInfrastructure(store, gateway)
     ultra_model = UltraModelEngine(store)
     enterprise = EnterpriseManager(store)
-    auth = AuthManager(store)
     enterprise_identity = EnterpriseIdentity(store, auth)
     documents = DocumentManager(store)
 
@@ -656,10 +712,13 @@ def build_http_server(
             read_json=read_json,
         )
 
-    def agent_route_dependencies(read_json) -> AgentRouteDependencies:
+    def agent_route_dependencies(read_json, handler) -> AgentRouteDependencies:
         return AgentRouteDependencies(
             agents=agents,
             multi_agent=multi_agent,
+            store=store,
+            owner=handler._auth_scope_owner() or "local",
+            auth_enforced=auth_enforcement_enabled(),
             first=first,
             parse_bool=parse_bool,
             read_json=read_json,
@@ -729,6 +788,7 @@ def build_http_server(
             voice=voice,
             read_json=handler.read_json,
             handle_voice_upload=handler._handle_voice_upload,
+            personal_remote=settings.deployment_mode == "personal_remote",
         )
 
     def workflow_route_dependencies(handler) -> WorkflowRouteDependencies:
@@ -749,6 +809,7 @@ def build_http_server(
             bootstrap_token=lambda: handler.headers.get("X-OpenAgent-Bootstrap-Token", ""),
             request_ip=lambda: str(handler.client_address[0]) if handler.client_address else "",
             user_agent=lambda: handler.headers.get("User-Agent", ""),
+            request_origin=lambda: handler.headers.get("Origin", ""),
         )
 
     def worker_route_dependencies(read_json) -> WorkerRouteDependencies:
@@ -776,8 +837,22 @@ def build_http_server(
     def advanced_rag_route_dependencies(read_json) -> AdvancedRAGRouteDependencies:
         return AdvancedRAGRouteDependencies(rag=advanced_rag, read_json=read_json)
 
-    def inference_route_dependencies(read_json) -> InferenceRouteDependencies:
-        return InferenceRouteDependencies(gateway=gateway, store=store, read_json=read_json)
+    def inference_route_dependencies(read_json, cancelled=None, anthropic_version=None,
+                                     disconnect_watcher=None) -> InferenceRouteDependencies:
+        if disconnect_watcher is not None:
+            def read_json_after_body():
+                payload = read_json()
+                # Do not peek at the shared keep-alive socket until the HTTP
+                # parser has consumed this request body. Starting earlier can
+                # race the handler's read and leave a blocking MSG_PEEK on an
+                # empty socket while the connection is still open.
+                disconnect_watcher.start()
+                return payload
+        else:
+            read_json_after_body = read_json
+        return InferenceRouteDependencies(gateway=gateway, store=store, read_json=read_json_after_body,
+                                          cancelled=cancelled,
+                                          anthropic_version=anthropic_version)
 
     def ultra_model_route_dependencies(read_json) -> UltraModelRouteDependencies:
         return UltraModelRouteDependencies(engine=ultra_model, read_json=read_json)
@@ -823,10 +898,13 @@ def build_http_server(
             read_json=read_json,
         )
 
-    def science_route_dependencies(read_json) -> ScienceRouteDependencies:
+    def science_route_dependencies(read_json, handler) -> ScienceRouteDependencies:
         return ScienceRouteDependencies(
             agent=scientific_agent,
-            run_agent=lambda goal, project="default": agents.run("scientific", goal, project=project),
+            run_agent=lambda goal, project="default": agents.run(
+                "scientific", goal, project=project,
+                owner=handler._auth_scope_owner() or "local",
+            ),
             read_json=read_json,
             service=scientific_service,
             gateway=gateway,
@@ -940,6 +1018,55 @@ def build_http_server(
     class OpenAgentHandler(BaseHTTPRequestHandler):
         server_version = "OpenAgent/0.1"
 
+        def _enforce_personal_remote_transport(self) -> bool:
+            """Reject requests outside the configured private HTTPS proxy boundary."""
+            if settings.deployment_mode != "personal_remote":
+                return True
+
+            def allowed_host(value: str) -> bool:
+                raw = value.strip().lower()
+                if not raw or any(char in raw for char in "\r\n @"):
+                    return False
+                try:
+                    parsed = urlparse("//" + raw)
+                    actual_host = (parsed.hostname or "").rstrip(".")
+                    actual_port = parsed.port
+                except ValueError:
+                    return False
+                if not actual_host:
+                    return False
+                for configured in settings.trusted_hosts:
+                    try:
+                        expected = urlparse("//" + configured)
+                        expected_host = (expected.hostname or "").rstrip(".")
+                        expected_port = expected.port
+                    except ValueError:
+                        continue
+                    if actual_host != expected_host:
+                        continue
+                    if expected_port is not None:
+                        if actual_port == expected_port:
+                            return True
+                    elif actual_port in {None, 443}:
+                        return True
+                return False
+
+            request_host = self.headers.get("Host", "")
+            if not allowed_host(request_host):
+                self.send_json({"error": "request host is not allowed"}, status=HTTPStatus.MISDIRECTED_REQUEST)
+                return False
+            forwarded_proto = self.headers.get("X-Forwarded-Proto", "").strip().lower()
+            if forwarded_proto != "https":
+                self.send_json({"error": "personal remote requires the configured HTTPS proxy"}, status=HTTPStatus.BAD_REQUEST)
+                return False
+            origin = self.headers.get("Origin", "").strip()
+            if origin:
+                parsed_origin = urlparse(origin)
+                if parsed_origin.scheme.lower() != "https" or not allowed_host(parsed_origin.netloc):
+                    self.send_json({"error": "request origin is not allowed"}, status=HTTPStatus.FORBIDDEN)
+                    return False
+            return True
+
         def handle_one_request(self) -> None:
             self.request_id = uuid4().hex
             started = time.monotonic()
@@ -976,6 +1103,11 @@ def build_http_server(
                 "connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
             )
             origin = self.headers.get("Origin", "").strip()
+            if (
+                settings.deployment_mode == "personal_remote"
+                and urlparse(getattr(self, "path", "/")).path.startswith(("/api/", "/v1/"))
+            ):
+                self.send_header("Cache-Control", "no-store, private")
             if origin and origin in settings.trusted_origins:
                 self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Vary", "Origin")
@@ -985,18 +1117,28 @@ def build_http_server(
             super().end_headers()
 
         def do_OPTIONS(self) -> None:
+            if not self._enforce_personal_remote_transport():
+                return
             origin = self.headers.get("Origin", "").strip()
             if not origin or origin not in settings.trusted_origins:
                 self.send_json({"error": "origin is not trusted"}, status=HTTPStatus.FORBIDDEN)
                 return
             self.send_response(HTTPStatus.NO_CONTENT)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Response-Envelope")
+            allowed_headers = "Authorization, Content-Type, X-Response-Envelope"
+            if urlparse(self.path).path == "/v1/messages":
+                # Anthropic browser clients use x-api-key and must send the
+                # required protocol-version header. Keep these credentials
+                # scoped to the one endpoint whose auth gate accepts them.
+                allowed_headers += ", x-api-key, anthropic-version"
+            self.send_header("Access-Control-Allow-Headers", allowed_headers)
             self.send_header("Access-Control-Max-Age", "600")
             self.end_headers()
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_personal_remote_transport():
+                return
             if not self._enforce_rate_limit(parsed.path):
                 return
             if not self._enforce_auth_gate(parsed.path, "GET"):
@@ -1018,7 +1160,7 @@ def build_http_server(
             if core_route is not None:
                 self.send_json(core_route.payload, status=core_route.status)
                 return
-            agent_route = handle_agents_get(parsed.path, parsed.query, agent_route_dependencies(self.read_json))
+            agent_route = handle_agents_get(parsed.path, parsed.query, agent_route_dependencies(self.read_json, self))
             if agent_route is not None:
                 self.send_json(agent_route.payload, status=agent_route.status)
                 return
@@ -1094,9 +1236,15 @@ def build_http_server(
                 params = parse_qs(parsed.query)
                 run_id = unquote(parsed.path.removeprefix("/api/codebase/runs/").removesuffix("/events/stream")).strip("/")
                 try:
+                    owner = self._query_owner(params) or "local"
+                    # Validate existence and ownership before committing the
+                    # response as text/event-stream.  event_stream is lazy, so
+                    # its first authorization check otherwise happens only
+                    # after send_event_stream has sent HTTP 200 headers.
+                    codebase.get_run(run_id, owner=owner)
                     stream = codebase.event_stream(
                         run_id,
-                        owner=self._query_owner(params) or "local",
+                        owner=owner,
                         after=parse_int(first(params, "after"), default=0),
                         timeout_seconds=parse_int(first(params, "timeout_seconds"), default=120),
                     )
@@ -1184,7 +1332,7 @@ def build_http_server(
             if scheduler_route is not None:
                 self.send_json(scheduler_route.payload, status=scheduler_route.status)
                 return
-            science_route = handle_science_get(parsed.path, parsed.query, science_route_dependencies(self.read_json))
+            science_route = handle_science_get(parsed.path, parsed.query, science_route_dependencies(self.read_json, self))
             if science_route is not None:
                 self.send_json(science_route.payload, status=science_route.status)
                 return
@@ -1575,10 +1723,30 @@ def build_http_server(
                 self.send_json({"replay": replay})
                 return
             if parsed.path == "/api/agent-runs":
-                params = parse_qs(parsed.query)
+                params = parse_qs(parsed.query, keep_blank_values=True)
                 project = first(params, "project")
-                limit = parse_int(first(params, "limit"), default=20)
-                self.send_json({"runs": store.list_agent_runs(limit=limit, project=project)})
+                if not project or not project.strip():
+                    self.send_json({"error": "project is required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                project = project.strip()
+                limit = max(1, min(parse_int(first(params, "limit"), default=20), 100))
+                offset = max(0, parse_int(first(params, "offset"), default=0))
+                enforced = auth_enforcement_enabled()
+                owner = self._auth_scope_owner() if enforced else None
+                if enforced and (not owner or not store.agent_run_project_is_owned(project, owner)):
+                    self.send_json({"error": "Project not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                runs = store.list_agent_runs(
+                    limit=limit, project=project, owner=owner, offset=offset,
+                )
+                self.send_json({
+                    "runs": runs,
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "total": store.count_agent_runs(project, owner=owner),
+                    },
+                })
                 return
             if parsed.path == "/api/research/status":
                 params = parse_qs(parsed.query)
@@ -1620,13 +1788,29 @@ def build_http_server(
                 if suffix.endswith("/stream"):
                     session_id = suffix.removesuffix("/stream").strip("/")
                     params = parse_qs(parsed.query)
+                    # ``stream_events`` is a generator: its initial session
+                    # lookup does not run until iteration. Check here so an
+                    # unknown id receives a normal HTTP 404 before SSE headers
+                    # are committed. A session can still be deleted after
+                    # this check, so translate that race into a terminal SSE
+                    # error rather than logging it as an unhandled producer
+                    # failure.
+                    if research_lifecycle.get(session_id) is None:
+                        self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                        return
+
+                    def stream_events():
+                        try:
+                            yield from research_lifecycle.stream_events(
+                                session_id,
+                                after_id=parse_int(first(params, "after_id"), default=0),
+                                timeout_seconds=parse_int(first(params, "timeout"), default=120),
+                            )
+                        except KeyError:
+                            yield {"type": "error", "error": "Research session not found.", "done": True}
+
                     try:
-                        events = research_lifecycle.stream_events(
-                            session_id,
-                            after_id=parse_int(first(params, "after_id"), default=0),
-                            timeout_seconds=parse_int(first(params, "timeout"), default=120),
-                        )
-                        self.send_event_stream(events)
+                        self.send_event_stream(stream_events())
                     except KeyError:
                         self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
                     return
@@ -1958,6 +2142,8 @@ def build_http_server(
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_personal_remote_transport():
+                return
             if not self._enforce_rate_limit(parsed.path):
                 return
             if not self._enforce_auth_gate(parsed.path, "POST"):
@@ -1966,7 +2152,7 @@ def build_http_server(
             if core_route is not None:
                 self.send_json(core_route.payload, status=core_route.status)
                 return
-            agent_route = handle_agents_post(parsed.path, agent_route_dependencies(self.read_json))
+            agent_route = handle_agents_post(parsed.path, agent_route_dependencies(self.read_json, self))
             if agent_route is not None:
                 self.send_json(agent_route.payload, status=agent_route.status)
                 return
@@ -2060,13 +2246,34 @@ def build_http_server(
             if advanced_rag_route is not None:
                 self.send_json(advanced_rag_route.payload, status=advanced_rag_route.status)
                 return
-            inference_route = handle_inference_post(
-                parsed.path,
-                inference_route_dependencies(self.read_json),
-            )
-            if inference_route is not None:
-                self.send_json(inference_route.payload, status=inference_route.status)
-                return
+            if parsed.path in {"/v1/brio", "/v1/systemone", "/v1/chat/completions",
+                               "/v1/completions", "/v1/messages"}:
+                disconnect = _RequestDisconnectWatcher(self.connection)
+                try:
+                    inference_route = handle_inference_post(
+                        parsed.path,
+                        inference_route_dependencies(
+                            self.read_json, disconnect.cancelled,
+                            self.headers.get("anthropic-version"), disconnect),
+                    )
+                    if inference_route is not None:
+                        if isinstance(inference_route, StreamRouteResult):
+                            self.send_event_stream(inference_route.events, headers=inference_route.headers)
+                        else:
+                            self.send_json(inference_route.payload, status=inference_route.status,
+                                           headers=inference_route.headers)
+                        return
+                finally:
+                    disconnect.close()
+            else:
+                inference_route = handle_inference_post(
+                    parsed.path,
+                    inference_route_dependencies(self.read_json),
+                )
+                if inference_route is not None:
+                    self.send_json(inference_route.payload, status=inference_route.status,
+                                   headers=inference_route.headers)
+                    return
             ultra_model_route = handle_ultra_model_post(
                 parsed.path,
                 ultra_model_route_dependencies(self.read_json),
@@ -2139,7 +2346,7 @@ def build_http_server(
             if scheduler_route is not None:
                 self.send_json(scheduler_route.payload, status=scheduler_route.status)
                 return
-            science_route = handle_science_post(parsed.path, science_route_dependencies(self.read_json))
+            science_route = handle_science_post(parsed.path, science_route_dependencies(self.read_json, self))
             if science_route is not None:
                 self.send_json(science_route.payload, status=science_route.status)
                 return
@@ -3740,6 +3947,8 @@ def build_http_server(
 
         def do_PUT(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_personal_remote_transport():
+                return
             if not self._enforce_rate_limit(parsed.path):
                 return
             if not self._enforce_auth_gate(parsed.path, "PUT"):
@@ -3760,6 +3969,8 @@ def build_http_server(
 
         def do_PATCH(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_personal_remote_transport():
+                return
             if not self._enforce_rate_limit(parsed.path):
                 return
             if not self._enforce_auth_gate(parsed.path, "PATCH"):
@@ -3800,6 +4011,8 @@ def build_http_server(
 
         def do_DELETE(self) -> None:
             parsed = urlparse(self.path)
+            if not self._enforce_personal_remote_transport():
+                return
             if not self._enforce_rate_limit(parsed.path):
                 return
             if not self._enforce_auth_gate(parsed.path, "DELETE"):
@@ -3910,16 +4123,36 @@ def build_http_server(
                 return self.headers.get("x-api-key", "").strip()
             return token
 
+        def _send_route_auth_error(self, path: str, message: str, status: int,
+                                   anthropic_type: str) -> None:
+            """Use Anthropic's error envelope only on its compatibility route."""
+            if path == "/v1/messages":
+                self.send_json({"type": "error", "error": {
+                    "type": anthropic_type, "message": message}}, status=status)
+            else:
+                self.send_json({"error": message}, status=status)
+
         def _require_auth(self) -> dict[str, object] | None:
             # Anthropic clients send their credential in x-api-key rather than
             # Authorization: Bearer.  Reuse the same locally-issued token and
             # scope validation, but only for the Anthropic-compatible route;
             # never let an arbitrary x-api-key header authorize other APIs.
             path = urlparse(self.path).path
+            # Do not silently prefer one credential when a request supplies
+            # both schemes. This is particularly important for Anthropic
+            # clients: a stale x-api-key must not be hidden by a valid local
+            # bearer token (or vice versa).
+            if (path == "/v1/messages" and self._bearer_token() and
+                    self.headers.get("x-api-key", "").strip()):
+                self._send_route_auth_error(
+                    path, "provide either Authorization: Bearer or x-api-key, not both",
+                    HTTPStatus.BAD_REQUEST, "invalid_request_error")
+                return None
             token = self._route_credential(path)
             user = auth.resolve_bearer(token)
             if user is None:
-                self.send_json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                self._send_route_auth_error(path, "authentication required",
+                    HTTPStatus.UNAUTHORIZED, "authentication_error")
                 return None
             self._auth_user = user
             return user
@@ -3968,17 +4201,48 @@ def build_http_server(
             route group listed in auth.PROTECTED_ROUTE_SCOPES: GET requires
             the read scope, other verbs require the write/admin scope.
             """
+            personal_remote = settings.deployment_mode == "personal_remote"
+            if personal_remote:
+                is_private_api = (
+                    path.startswith(("/api/", "/v1/"))
+                    or path in {"/health", "/metrics"}
+                )
+                if not is_private_api:
+                    return True  # Static UI assets contain no account data.
+                if personal_remote_public_route(path, method):
+                    return True
             if not auth_enforcement_enabled():
                 return True
             scope = required_scope_for_path(path, method)
-            if scope is None:
+            if scope is None and not personal_remote:
                 return True
             user = auth.resolve_bearer(self._route_credential(path))
             if user is None:
-                self.send_json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                self._send_route_auth_error(path, "authentication required",
+                    HTTPStatus.UNAUTHORIZED, "authentication_error")
                 return False
+            if personal_remote:
+                try:
+                    owner_id = auth.validate_personal_remote_accounts()
+                except AuthError:
+                    self._send_route_auth_error(path, "installation owner configuration is invalid",
+                        HTTPStatus.SERVICE_UNAVAILABLE, "authentication_error")
+                    return False
+                if owner_id is None:
+                    self._send_route_auth_error(path, "installation owner setup is incomplete",
+                        HTTPStatus.SERVICE_UNAVAILABLE, "authentication_error")
+                    return False
+                if str(user.get("user_id", "")) != owner_id:
+                    self._send_route_auth_error(path, "installation owner authentication required",
+                        HTTPStatus.FORBIDDEN, "permission_error")
+                    return False
+                if scope is None:
+                    self._send_route_auth_error(path, "route has no approved personal-remote permission mapping",
+                        HTTPStatus.FORBIDDEN, "permission_error")
+                    return False
             if scope not in user.get("scopes", []):
-                self.send_json({"error": "insufficient scope"}, status=HTTPStatus.FORBIDDEN)
+                self._send_route_auth_error(path, "insufficient scope",
+                    HTTPStatus.FORBIDDEN, "permission_error")
                 return False
             self._auth_user = user
             return True
@@ -4080,7 +4344,8 @@ def build_http_server(
                 return
             self.send_json({"transcription": transcription, "session_id": session_id}, status=HTTPStatus.CREATED)
 
-        def send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+        def send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK,
+                      headers: dict[str, str] | None = None) -> None:
             if not self._wants_legacy_json():
                 payload = self._envelope(payload, status)
             body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -4088,6 +4353,11 @@ def build_http_server(
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
+                for name, value in (headers or {}).items():
+                    if (type(name) is str and type(value) is str and
+                            name.lower() in {"retry-after", "x-queue-wait-ms"} and
+                            "\r" not in value and "\n" not in value):
+                        self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
@@ -4128,45 +4398,73 @@ def build_http_server(
                         envelope[key] = value
             return envelope
 
-        def send_event_stream(self, events: object) -> None:
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "close")
-            self.end_headers()
+        def send_event_stream(self, events: object, *, headers: dict[str, str] | None = None) -> None:
             terminal = False
+            protocol_stream = False
+            headers_sent = False
             close_events = getattr(events, "close", None)
+            event_iterator = None
             try:
-                for event in events:
-                    body = f"data: {json.dumps(event, sort_keys=True)}\n\n".encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "close")
+                for name, value in (headers or {}).items():
+                    if (type(name) is str and type(value) is str and
+                            name.lower() in {"retry-after", "x-queue-wait-ms"} and
+                            "\r" not in value and "\n" not in value):
+                        self.send_header(name, value)
+                self.end_headers()
+                headers_sent = True
+                # A general iterable may create a distinct generator/iterator
+                # in __iter__; that object, not the iterable wrapper, can own
+                # the provider/session resources that need releasing.
+                event_iterator = iter(events)
+                iterator_close = getattr(event_iterator, "close", None)
+                if callable(iterator_close):
+                    close_events = iterator_close
+                for event in event_iterator:
+                    if isinstance(event, ServerSentEvent):
+                        protocol_stream = True
+                        data = event.data if event.raw_data else json.dumps(event.data, sort_keys=True)
+                        frame = (f"event: {event.event}\n" if event.event else "") + f"data: {data}\n\n"
+                        body = frame.encode("utf-8")
+                        terminal = terminal or event.terminal
+                    else:
+                        body = f"data: {json.dumps(event, sort_keys=True)}\n\n".encode("utf-8")
                     self.wfile.write(body)
                     self.wfile.flush()
-                    if isinstance(event, dict) and (
-                        event.get("type") in {"done", "error", "terminal"}
+                    if not isinstance(event, ServerSentEvent) and isinstance(event, dict) and (
+                        event.get("type") in {"done", "error", "terminal", "complete", "stream.closed"}
                         or event.get("done") is True
                     ):
                         terminal = True
-                if not terminal:
+                if not terminal and not protocol_stream:
                     body = b'data: {"type":"done","done":true}\n\n'
                     self.wfile.write(body)
                     self.wfile.flush()
             except (ProviderConfigurationError, ValueError) as exc:
                 terminal = True
-                body = f"data: {json.dumps({'type': 'error', 'error': str(exc), 'done': True}, sort_keys=True)}\n\n"
-                self.wfile.write(body.encode("utf-8"))
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+                if headers_sent:
+                    body = f"data: {json.dumps({'type': 'error', 'error': str(exc), 'done': True}, sort_keys=True)}\n\n"
+                    try:
+                        self.wfile.write(body.encode("utf-8"))
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                        pass
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 return
             except Exception:
                 HTTP_LOG.exception("event stream producer failed")
                 terminal = True
-                body = b'data: {"type":"error","error":"stream failed","done":true}\n\n'
-                try:
-                    self.wfile.write(body)
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
-                    return
+                if headers_sent:
+                    body = b'data: {"type":"error","error":"stream failed","done":true}\n\n'
+                    try:
+                        self.wfile.write(body)
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                        return
             finally:
                 # A generator-backed provider owns native/session resources
                 # until its iterator is closed.  Closing here is required on

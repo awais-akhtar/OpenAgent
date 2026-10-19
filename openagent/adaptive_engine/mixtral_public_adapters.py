@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import threading
 import weakref
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,6 +18,15 @@ from .segment_edge_runtime import _Functions, _identifier, _integer, _SegmentCap
 from .native_mixtral_ranges import NativeMixtralRange
 from .native_mixtral_edge import NativeMixtralEdge
 from .mixtral_range_cache import write_range_cache, restore_range_cache
+
+
+def _cancelled(request):
+    if not request.cancel:
+        return False
+    value=request.cancel(request.cancel_data)
+    if value not in (0,1):
+        raise ValueError('Mixtral cancellation callback must return exactly 0 or 1')
+    return value==1
 
 
 class _RangeEngine:
@@ -52,11 +62,26 @@ class _RangeEngine:
 class _RangeSession:
     def __init__(self, engine, model):
         self.engine,self.model = engine,model
+        self.lock = threading.RLock()
+        self.operation_owner = None
+
+    @contextmanager
+    def operation(self):
+        with self.lock:
+            owner = threading.get_ident()
+            if self.operation_owner == owner:
+                raise RuntimeError('reentrant public range session operation rejected')
+            self.operation_owner = owner
+            try:
+                yield
+            finally:
+                self.operation_owner = None
 
     def close(self):
         with self.engine.lock:
-            self.model.close()
-            self.engine.sessions.discard(self)
+            with self.operation():
+                self.model.close()
+                self.engine.sessions.discard(self)
 
 
 class _EdgeFacade:
@@ -111,6 +136,7 @@ class _MixtralReadStream(_ReadStream):
 
 
 class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
+    _source_route_identity=('mixtral','mixtral')
     """Dense Mixtral ranges and edge kernels; registry pins this owner forever.
 
     Each session owns independent KV and immutable weights with an explicit
@@ -124,6 +150,26 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
                  max_sessions=64, tokenizer_path=None,
                  expert_provider=None, max_resource_bytes=None,
                  segment_id='openagent-mixtral-native', edge_id='openagent-mixtral-edge'):
+        if expert_provider is not None:
+            raise ValueError(
+                'Mixtral packed experts are restricted until source-content identity is bound')
+        # Public registration itself is a model-serving entrypoint. Validate
+        # persisted source metadata before loading either native library; the
+        # later service-factory check is defense in depth.
+        # A subclass must declare its own source route instead of silently
+        # inheriting the nearest family's identity.  The public ABI transport
+        # is reusable; checkpoint admission is not.
+        route_identity=type(self).__dict__.get('_source_route_identity')
+        if (type(route_identity) is not tuple or len(route_identity)!=2 or
+                any(type(value) is not str or not value for value in route_identity)):
+            raise ValueError('concrete public range adapter must declare an exact source family/model identity')
+        source_family,model_type=route_identity
+        from .source_scope import require_checkpoint_inventory_admission
+        metadata_limit=(max_resource_bytes if max_resource_bytes is not None
+                        else max_staging_bytes)
+        self._source_snapshot=require_checkpoint_inventory_admission(model_directory,family=source_family,
+            model_type=model_type,backend='public-range',arithmetic='fp32',
+            max_metadata_bytes=metadata_limit)
         from .native_library_identity import NativeLibraryIdentity
         self._runtime_identity=NativeLibraryIdentity.read(runtime_library)
         self._kernel_identity=NativeLibraryIdentity.read(kernel_library)
@@ -165,9 +211,30 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
         self.segment,self.edge = self._segment_record(),self._edge_record()
         self.native.check_layouts({9:_SegmentAdapter,10:_EdgeAdapter})
 
-    def _allowed(self,path,plan,plan_size,backend):
+    def _allowed(self,options):
         self._runtime_identity.assert_unchanged();self._kernel_identity.assert_unchanged()
-        return super()._allowed(path,plan,plan_size,backend)
+        return super()._allowed(options)
+
+    def _load_source_owner(self, loader, *, kind):
+        """Keep lazy public range/edge loads bound to the admitted checkpoint."""
+        self._source_snapshot.assert_unchanged()
+        owner=loader()
+        try:
+            self._source_snapshot.assert_unchanged()
+        except BaseException as primary:
+            try:
+                owner.close()
+            except BaseException as cleanup:
+                with self.lock:
+                    orphan=-id(owner)
+                    self.objects[orphan]=(kind,owner)
+                    self.pending[orphan]=cleanup
+                try:
+                    primary.add_note('checkpoint-bound owner cleanup retained: '+repr(cleanup))
+                except BaseException:
+                    pass
+            raise
+        return owner
 
     def create_execution_service(self, config, *, checkpoint_identity,
                                  context_tokens, native_memory_bytes,
@@ -186,6 +253,7 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
         from .execution_factories import create_segment_edge_execution_service
         if not self.registered_segment or not self.registered_edge:
             raise RuntimeError('register both Mixtral adapters before creating a service')
+        self._source_snapshot.assert_unchanged()
         settings,context = configuration(config,context_tokens)
         stride = _integer(layers_per_range,'layers_per_range',maximum=settings['num_hidden_layers'])
         count = (settings['num_hidden_layers']+stride-1)//stride
@@ -197,6 +265,7 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
         return create_segment_edge_execution_service(self.runtime_library,
             edge_adapter=self.edge_id.decode('utf-8'),model_directory=str(self.root),
             checkpoint_identity=checkpoint_identity,ranges=ranges,
+            source_family='mixtral',model_type='mixtral',arithmetic='fp32',
             vocabulary=settings['vocab_size'],context_tokens=context,
             native_memory_bytes=native_memory_bytes,max_transfer_bytes=max_transfer_bytes,
             max_snapshot_bytes=self.snapshot_bytes,max_new_tokens=max_new_tokens,
@@ -204,18 +273,19 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
             max_snapshots_per_session=max_snapshots_per_session,backend_mask=1<<8)
 
     def _create_edge(self, budget):
-        return _EdgeFacade(NativeMixtralEdge.from_directory(self.root,library=self.library,
-            max_weight_bytes=self.staging_bytes,max_bytes=budget,tokenizer=self.tokenizer))
+        return self._load_source_owner(lambda:_EdgeFacade(NativeMixtralEdge.from_directory(
+            self.root,library=self.library,max_weight_bytes=self.staging_bytes,max_bytes=budget,
+            tokenizer=self.tokenizer)),kind='edge')
 
     def _segment_record(self):
         def open_engine(output,caps,raw_options):
             options = raw_options.contents
-            self._allowed(options.model,options.plan,options.plan_size,options.backend)
+            self._allowed(options)
             budget = _integer(int(options.memory),'explicit Mixtral engine budget',maximum=(1<<63)-1)
-            template = NativeMixtralRange.from_directory(self.root,begin=int(options.begin),
+            template = self._load_source_owner(lambda:NativeMixtralRange.from_directory(self.root,begin=int(options.begin),
                 end=int(options.end),library=self.library,context_tokens=int(options.context) or None,
                 max_weight_bytes=self.staging_bytes,max_bytes=budget,
-                expert_provider=self.expert_provider)
+                expert_provider=self.expert_provider),kind='engine')
             engine = _RangeEngine(template,self.max_sessions)
             try:
                 c = template.config
@@ -251,37 +321,49 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
         def run(session_id,raw_request):
             session = self._get(session_id,'session')
             model,request = session.model,raw_request.contents
-            with model._lock:
-                model._check()
-                if int(request.position) != model.position or not 0 < int(request.rows) <= self.rows:
-                    raise ValueError('Mixtral run position/row admission mismatch')
-                model._busy = True
-                try:
-                    if request.cancel and request.cancel(request.cancel_data):
-                        raise RuntimeError('Mixtral range execution cancelled')
-                finally:
-                    model._busy = False
-                width = model.config['hidden_size']
-                if (not request.input or not request.output or request.input_bytes<int(request.rows)*width*4 or
-                        request.output_bytes<int(request.rows)*width*4):
-                    raise ValueError('Mixtral range activation capacity mismatch')
-                hidden = np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
-                    shape=(int(request.rows)*width,)).reshape(1,int(request.rows),width)
-                cancelled = (lambda: bool(request.cancel(request.cancel_data))) if request.cancel else None
-                result = model.forward(hidden,cancelled=cancelled)[0]
-                # Native execution is atomic; cancellation is admitted at the
-                # operation boundary before committing a subsequent call.
-                C.memmove(request.output,result.ctypes.data,result.nbytes)
+            with session.operation():
+                with model._lock:
+                    model._check()
+                    if (request.size != C.sizeof(type(request)) or
+                            type(request.rows) is not int or
+                            not 0 < int(request.rows) <= self.rows or
+                            int(request.position) != model.position or
+                            request.tokens or request.token_count or
+                            any(request.reserved)):
+                        raise ValueError('Mixtral run position/row admission mismatch')
+                    model._busy = True
+                    try:
+                        if _cancelled(request):
+                            raise RuntimeError('Mixtral range execution cancelled')
+                    finally:
+                        model._busy = False
+                    width = model.config['hidden_size']
+                    expected_bytes = int(request.rows) * width * C.sizeof(C.c_float)
+                    if (not request.input or not request.output or
+                            request.input_bytes != expected_bytes or
+                            request.output_bytes != expected_bytes):
+                        raise ValueError('Mixtral range activation extent mismatch')
+                    hidden = np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
+                        shape=(int(request.rows)*width,)).reshape(1,int(request.rows),width)
+                    cancelled = (lambda: _cancelled(request)) if request.cancel else None
+                    result = model.forward(hidden,cancelled=cancelled)[0]
+                    if not np.isfinite(result).all():
+                        raise ValueError('Mixtral activation output must be finite')
+                    # Native execution is atomic; cancellation is admitted at the
+                    # operation boundary before committing a subsequent call.
+                    C.memmove(request.output,result.ctypes.data,result.nbytes)
 
         def snapshot(session_id,callback,user):
             session = self._get(session_id,'session')
-            write_range_cache(session.model,_WriteStream(callback,user,self.snapshot_bytes),
-                              max_bytes=self.snapshot_bytes)
+            with session.operation():
+                write_range_cache(session.model,_WriteStream(callback,user,self.snapshot_bytes),
+                                  max_bytes=self.snapshot_bytes)
 
         def restore(session_id,callback,user):
             session = self._get(session_id,'session')
-            restore_range_cache(session.model,_MixtralReadStream(callback,user,self.snapshot_bytes),
-                                max_bytes=self.snapshot_bytes)
+            with session.operation():
+                restore_range_cache(session.model,_MixtralReadStream(callback,user,self.snapshot_bytes),
+                                    max_bytes=self.snapshot_bytes)
 
         return _SegmentAdapter(version=1,engine=self.segment_id,
             open=self._guard(_SOPEN,open_engine),destroy=self._destroy('engine'),

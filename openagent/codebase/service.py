@@ -638,6 +638,43 @@ class CodebaseService:
             rows = connection.execute("SELECT * FROM codebase_projects WHERE project = ? AND owner = ? ORDER BY updated_at DESC", (project, owner)).fetchall()
         return [self._project_row(row) for row in rows]
 
+    def list_project_identities(self, *, owner: str = "local") -> dict[str, Any]:
+        """Return the caller owner's CodeQ IDs and only the persisted namespace fact.
+
+        ``codebase_projects.project`` is the OpenAgent project namespace used by
+        CodeQ runs. It is not the CodeQ project ID, workspace ID, or a foreign
+        key to other service records. Keep this response explicit about that
+        boundary so clients do not invent a cross-service identity mapping.
+        """
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT id, name, project, created_at, updated_at "
+                "FROM codebase_projects WHERE owner = ? ORDER BY updated_at DESC",
+                (owner,),
+            ).fetchall()
+        return {
+            "projects": [
+                {
+                    "codebase_project_id": row["id"],
+                    "name": row["name"],
+                    "codebase_namespace": row["project"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ],
+            "cross_service_mapping": {
+                "available": False,
+                "reason": (
+                    "Other services are generally keyed by a project namespace, "
+                    "not by codebase_project_id; the database has no persisted "
+                    "foreign-key mapping between those records. "
+                    "codebase_namespace is only the exact value stored on the "
+                    "CodeQ project and may be shared by multiple projects or owners."
+                ),
+            },
+        }
+
     def get_project(self, codebase_project_id: str, *, owner: str = "local") -> dict[str, Any]:
         with self.store.session() as connection:
             row = connection.execute("SELECT * FROM codebase_projects WHERE id = ? AND owner = ?", (codebase_project_id, owner)).fetchone()
@@ -832,12 +869,23 @@ class CodebaseService:
 
     def cancel_run(self, run_id: str, *, owner: str = "local") -> dict[str, Any]:
         run = self.get_run(run_id, owner=owner)
-        if run["status"] in FINAL_STATES:
-            return run
+        now = utc_now()
         with self._lock:
+            # Make the terminal-state check and cancel transition one database
+            # operation. A late cancellation must not overwrite a completed
+            # run merely because the caller read its pre-terminal state first.
+            with self.store.session() as connection:
+                cursor = connection.execute(
+                    """UPDATE codebase_runs
+                       SET status = 'cancelled', error = 'Cancelled by user',
+                           finished_at = ?, updated_at = ?
+                       WHERE id = ? AND owner = ? AND status NOT IN ('completed', 'failed', 'cancelled', 'blocked')""",
+                    (now, now, run_id, owner),
+                )
+            if cursor.rowcount != 1:
+                return self.get_run(run_id, owner=owner)
             event = self._cancel.setdefault(run_id, threading.Event())
             event.set()
-        self._set_run(run_id, status="cancelled", error="Cancelled by user", finished=True)
         self._event(run_id, "run.cancelled", reason="Cancelled by user")
         return self.get_run(run_id, owner=owner)
 

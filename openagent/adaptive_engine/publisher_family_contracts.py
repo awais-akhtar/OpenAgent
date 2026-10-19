@@ -63,7 +63,12 @@ def component_contract(config,*,arithmetic):
     if source_dtype not in (None,'float32','bfloat16','float16'):
         raise ValueError('unadmitted publisher component source dtype')
     text.pop('torch_dtype',None);text['dtype']='float32'
-    auxiliary=deepcopy(original.get('mtp_config') or {})
+    raw_auxiliary=original.get('mtp_config',{})
+    if raw_auxiliary is None:
+        raw_auxiliary={}
+    if type(raw_auxiliary) is not dict:
+        raise ValueError('publisher auxiliary/MTP configuration must be an explicit object')
+    auxiliary=deepcopy(raw_auxiliary)
     if family=='qwen3_5_moe':
         text['architectures']=['Qwen3_5MoeForCausalLM']
         auxiliary.update({name:text.pop(name) for name in ('mtp_num_hidden_layers',
@@ -74,6 +79,13 @@ def component_contract(config,*,arithmetic):
             if text.get(name,value)!=value:raise ValueError('unadmitted Qwen3.5 publisher switch: '+name)
         if text.get('mlp_only_layers',[]):raise ValueError('Qwen3.5 dense-only layer overrides are not admitted')
     elif family=='qwen4_exp':
+        # This flag changes whether lm_head.weight is an independently
+        # admitted tensor or an alias of embed_tokens.weight.  Reject
+        # truthy/falsy impostors before a conditional loader can plan or read
+        # either payload; bool() coercion would make inventory ownership
+        # depend on malformed configuration.
+        if 'tie_word_embeddings' in text and type(text['tie_word_embeddings']) is not bool:
+            raise ValueError('Qwen4 publisher tie_word_embeddings must be boolean')
         text['architectures']=['Qwen4ExpForCausalLM']
         # Defaults pinned to the publisher's v5.16.1 configuration class.
         for name,value in (('seed',1234),('norm_topk_prob',True),
@@ -130,6 +142,15 @@ def component_contract(config,*,arithmetic):
         dense=text.pop('first_k_dense_replace',None)
         if dense is not None and text.get('mlp_layer_types')!=['dense' if i<dense else 'sparse' for i in range(text['num_hidden_layers'])]:
             raise ValueError('GLM dense prefix disagrees with the decoder schedule')
+    # Family-specific known draft fields above are moved into `auxiliary`.
+    # Reject unknown spellings too: publisher config parsers can ignore extra
+    # keys, which otherwise lets an MTP/next-token bank declaration pass while
+    # the inventory has no corresponding execution owner.
+    unowned_auxiliary=tuple(name for name in text
+        if 'mtp' in name.lower() or 'nextn' in name.lower())
+    if unowned_auxiliary:
+        raise ValueError('unadmitted publisher MTP/next-token configuration fields: '
+                         + ', '.join(sorted(unowned_auxiliary)))
     vision=deepcopy(original.get('vision_config'))
     if vision is None and family=='glm5_next':
         from .publisher_glm5_config import VISION_DEFAULTS
@@ -189,6 +210,18 @@ def partition_weights(tensors,components):
         raise ValueError('publisher checkpoint is missing a required component')
     if components.audio_config is None and audio:
         raise ValueError('publisher checkpoint contains an unadmitted audio component')
+    # MTP configuration is part of the optional-bank inventory even when the
+    # checkpoint omitted every MTP tensor.  Only Inkling has a draft consumer;
+    # accepting a config-only declaration here would let direct wrapper
+    # construction silently discard an execution claim that the directory
+    # loader correctly rejects.
+    if components.auxiliary_config and components.variant.wrapper!='inkling_mm_model':
+        raise ValueError('publisher MTP configuration requires the admitted Inkling draft consumer')
+    # Keep direct wrapper construction consistent with the directory loader:
+    # opaque MTP tensors are accepted only by Inkling, whose separate
+    # InklingMTP consumer validates and executes the admitted draft inventory.
+    if auxiliary and components.variant.wrapper!='inkling_mm_model':
+        raise ValueError('publisher MTP tensors require the admitted Inkling draft consumer')
     # Tied publishers may omit a physical lm_head tensor.  Keep the public
     # runtime namespace complete by binding the head to the admitted embedding
     # owner; this is an ownership alias, not a decoded or copied fallback.

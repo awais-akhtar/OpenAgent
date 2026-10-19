@@ -12,7 +12,8 @@ from openagent.adaptive_engine.olmoe_batch import OlmoeBatch
 
 
 def checkpoint(root, norm_topk):
-    config = dict(model_type="olmoe", hidden_size=8, intermediate_size=6,
+    config = dict(model_type="olmoe", architectures=["OlmoeForCausalLM"],
+                  hidden_size=8, intermediate_size=6,
                   num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
                   num_experts=3, num_experts_per_tok=2, vocab_size=13,
                   max_position_embeddings=10, rms_norm_eps=1e-5,

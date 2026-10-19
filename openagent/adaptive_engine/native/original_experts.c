@@ -169,10 +169,10 @@ static int original_projections_create(const oa_original_file *files,uint32_t fi
     oa_original_projections **out,char *error,size_t error_bytes,uint32_t row_only) {
     oa_original_projections *owner=NULL;oa_original_experts *storage=NULL;
     uint64_t columns=0,rows=0,bytes;uint32_t i;uint16_t endian=1;
+    if(out)*out=NULL;
     if(!files||!matrices||!out||!file_count||file_count>4096||!count||count>1048576||
        sizeof(float)!=4||*(unsigned char *)&endian!=1)
         return fail(error,error_bytes,"original dense projection inventory differs");
-    *out=NULL;
     for(i=0;i<count;i++) {
         if(!matrices[i].rows||!matrices[i].columns||matrices[i].rows>(row_only?UINT32_MAX:1048576)||matrices[i].columns>1048576)
             return fail(error,error_bytes,"original dense projection geometry exceeds admission");
@@ -278,7 +278,11 @@ int oa_original_projection_read_row(oa_original_projections *owner,uint32_t inde
     for(column=0;column<count;column++) {
         float factor=m->dtype==4?decode(s->scales+(column/m->block_columns)*dtype_width(m->scale_dtype),m->scale_dtype):1;
         float value=decode(s->raw+column*width,m->dtype)*factor;
-        if(!isfinite(value)||!isfinite(factor))goto done;s->gate[column]=value;
+        /* Match PublisherTensorReader and project(): FP8 block scales are
+         * strictly positive, not merely finite.  A zero/negative scale in a
+         * row-table read must not silently publish a different interpretation
+         * than streamed projection evaluation. */
+        if(!isfinite(value)||!isfinite(factor)||factor<=0.0f)goto done;s->gate[column]=value;
     }
     memcpy(output,s->gate,(size_t)count*sizeof(float));status=0;
 done:atomic_flag_clear(&owner->guard);oa_original_projections_release(owner);return status;
@@ -291,8 +295,9 @@ struct oa_original_rows {
 int oa_original_rows_create(oa_original_projections *owner,const uint32_t *indices,uint32_t count,
     uint64_t maximum,oa_original_rows **out,char *error,size_t error_bytes) {
     oa_original_rows *table;uint32_t i;uint64_t rows,columns,bytes;
+    if(out)*out=NULL;
     if(!owner||!indices||!count||count>4096||!out)return fail(error,error_bytes,"original row table inventory differs");
-    *out=NULL;bytes=sizeof(*table)+(uint64_t)count*4+((uint64_t)count+1)*8;
+    bytes=sizeof(*table)+(uint64_t)count*4+((uint64_t)count+1)*8;
     if(bytes>maximum||oa_original_projections_retain(owner))return fail(error,error_bytes,"original row table admission exhausted");
     table=(oa_original_rows *)calloc(1,sizeof(*table));
     if(!table){oa_original_projections_release(owner);return fail(error,error_bytes,"original row table allocation failed");}
@@ -333,6 +338,7 @@ int oa_original_experts_create(const oa_original_file *files,uint32_t file_count
     const oa_original_expert *experts,uint32_t expert_count,uint64_t hidden,uint64_t width,
     float limit,uint64_t max_bytes,oa_original_experts **out,char *error,size_t error_bytes) {
     oa_original_experts *bank;uint64_t bytes,maximum;uint32_t i;uint16_t endian=1;
+    if(out)*out=NULL;
     if(!files||!experts||!out||!file_count||file_count>4096||!expert_count||expert_count>1048576||
        !hidden||hidden>1048576||!width||width>1048576||!isfinite(limit)||limit<=0||
        sizeof(float)!=4||*(unsigned char *)&endian!=1)return fail(error,error_bytes,"native original expert descriptor differs");

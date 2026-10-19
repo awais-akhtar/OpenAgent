@@ -172,9 +172,11 @@ class DocumentHttpRouteTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as ctx:
                     urlopen(not_found, timeout=15)
                 self.assertEqual(ctx.exception.code, 404)
+                ctx.exception.close()
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
     def test_document_routes_hide_cross_user_records_when_auth_is_enforced(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -223,6 +225,7 @@ class DocumentHttpRouteTests(unittest.TestCase):
                     with self.assertRaises(HTTPError) as ctx:
                         urlopen(bob_get, timeout=15)
                     self.assertEqual(ctx.exception.code, 404)
+                    ctx.exception.close()
 
                     bob_library = Request(
                         f"{base_url}/api/documents/library",
@@ -243,6 +246,7 @@ class DocumentHttpRouteTests(unittest.TestCase):
                     with self.assertRaises(HTTPError) as ctx:
                         urlopen(bob_update, timeout=15)
                     self.assertEqual(ctx.exception.code, 404)
+                    ctx.exception.close()
 
                     draft_request = Request(
                         f"{base_url}/api/editor-drafts",
@@ -263,9 +267,11 @@ class DocumentHttpRouteTests(unittest.TestCase):
                     with self.assertRaises(HTTPError) as ctx:
                         urlopen(bob_draft_get, timeout=15)
                     self.assertEqual(ctx.exception.code, 404)
+                    ctx.exception.close()
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
 
 if __name__ == "__main__":

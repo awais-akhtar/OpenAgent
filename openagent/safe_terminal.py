@@ -118,7 +118,7 @@ class SafeTerminal:
                 status="allowed" if status == "completed" else status,
             )
         )
-        return self.get_run(run_id)
+        return self.get_run(run_id, owner=owner)
 
     def runs(self, *, project: str = "default", owner: str = "", limit: int = 50) -> list[dict[str, Any]]:
         clauses = ["project = ?"]
@@ -132,9 +132,12 @@ class SafeTerminal:
             rows = connection.execute(sql, args).fetchall()
         return [run_row(row) for row in rows]
 
-    def get_run(self, run_id: str) -> dict[str, Any]:
+    def get_run(self, run_id: str, *, owner: str = "") -> dict[str, Any]:
         with self.store.session() as connection:
-            row = connection.execute("SELECT * FROM terminal_runs WHERE id = ?", (run_id,)).fetchone()
+            if owner:
+                row = connection.execute("SELECT * FROM terminal_runs WHERE id = ? AND owner = ?", (run_id, owner)).fetchone()
+            else:
+                row = connection.execute("SELECT * FROM terminal_runs WHERE id = ?", (run_id,)).fetchone()
             if row is None:
                 raise KeyError("terminal run not found")
             logs = connection.execute("SELECT * FROM terminal_logs WHERE run_id = ? ORDER BY created_at ASC, rowid ASC", (run_id,)).fetchall()

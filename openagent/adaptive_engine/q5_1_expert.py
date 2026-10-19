@@ -96,6 +96,12 @@ def decode_expert(payload, hidden_size, intermediate_size):
     with memoryview(payload) as borrowed:
         if not borrowed.c_contiguous or borrowed.nbytes != payload_size(hidden_size, intermediate_size):
             raise ValueError("Q5_1 payload must be contiguous with exact size")
+        # Reject nonfinite scale geometry before allocating decoded matrices.
+        # Signed finite deltas and affine minima are preserved verbatim.
+        for offset in range(0, borrowed.nbytes, BLOCK_BYTES):
+            delta, minimum = struct.unpack_from("<ee", borrowed, offset)
+            if not math.isfinite(delta) or not math.isfinite(minimum):
+                raise ValueError("Q5_1 metadata must be finite")
         matrices = []
         offset = 0
         for shape in shapes:
@@ -103,8 +109,6 @@ def decode_expert(payload, hidden_size, intermediate_size):
             flat = matrix.reshape(-1)
             for first in range(0, flat.size, BLOCK_WIDTH):
                 d, m, fifth, *pairs = _RECORD.unpack_from(borrowed, offset)
-                if not math.isfinite(d) or not math.isfinite(m):
-                    raise ValueError("Q5_1 metadata must be finite")
                 for lane in range(BLOCK_WIDTH):
                     pair = pairs[lane % 16]
                     low = pair % 16 if lane < 16 else pair // 16

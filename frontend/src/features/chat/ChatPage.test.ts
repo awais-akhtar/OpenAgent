@@ -28,7 +28,7 @@ describe('ChatPage conversation experience', () => {
       if (path.startsWith('/api/conversations/organized')) return { conversations: [] };
       if (path === '/api/models') return { providers: [{ id: 'local-provider', label: 'Local model', default_model: 'small', installed_models: ['small', 'large'] }] };
       if (path === '/api/agents') return { agents: [{ id: 'executive', name: 'Executive Agent', description: 'Plans work using local context.' }, { id: 'knowledge', name: 'Knowledge Agent', description: 'Searches local memory.' }] };
-      if (path.startsWith('/api/conversation/messages')) return { messages: [{ id: 'saved-1', role: 'assistant', content: path.includes('target-conversation') ? 'Target conversation message' : path.includes('conversation-1') ? 'A real streamed response.' : 'Saved assistant response' }] };
+      if (path.startsWith('/api/conversation/messages')) return { messages: [{ id: 'saved-1', role: 'assistant', content: path.includes('target-conversation') ? 'Target conversation message' : path.includes('conversation-1') ? 'A real streamed response.' : 'Saved assistant response', created_at: '2026-10-14T10:24:00Z' }] };
       return {};
     });
     post.mockResolvedValue({});
@@ -68,12 +68,40 @@ describe('ChatPage conversation experience', () => {
     expect(host.textContent).toContain('A real streamed response.');
   });
 
-  it('selects a provider shortcut and sends that provider through the normal chat stream', async () => {
+  it('provides a real context inspector and opens it as a panel on narrow screens', async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
     const { ChatPage } = await import('../../pages/ChatPage');
     await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
-    const provider = [...host.querySelectorAll<HTMLButtonElement>('.oa-chat-home-models button')].find(button => button.textContent === 'Local model');
-    await act(async () => { provider?.click(); });
-    expect(provider?.getAttribute('aria-pressed')).toBe('true');
+    expect(host.querySelector('.oa-chat-inspector')).toBeNull();
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Show context panel"]')?.click(); });
+    expect(host.querySelector('.oa-chat-inspector')).toBeTruthy();
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain('Preview');
+    expect(host.textContent).toContain('project-one');
+    await act(async () => { host.querySelector<HTMLButtonElement>('[role="tab"]:nth-child(3)')?.click(); });
+    expect(host.querySelector('.oa-chat-inspector-body')?.textContent).toContain('project-one');
+    await act(async () => { host.querySelector<HTMLButtonElement>('[role="tab"]:nth-child(2)')?.click(); });
+    expect(host.querySelector('.oa-chat-inspector-body')?.textContent).toContain('No response to preview');
+    await act(async () => { host.querySelector<HTMLButtonElement>('[role="tab"]:nth-child(1)')?.click(); });
+    expect(host.querySelector('.oa-chat-inspector-body')?.textContent).toContain('No files attached');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+  });
+
+  it('accepts a one-time Home prompt handoff without placing prompt content in the route', async () => {
+    sessionStorage.setItem('oa-chat-handoff:project-one', 'Draft from Home');
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value).toBe('Draft from Home');
+    expect(sessionStorage.getItem('oa-chat-handoff:project-one')).toBeNull();
+    expect(location.search).not.toContain('Draft%20from%20Home');
+  });
+
+  it('selects a provider in the composer and sends that provider through the normal chat stream', async () => {
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const provider = host.querySelector<HTMLSelectElement>('select[aria-label="Chat provider"]');
+    await act(async () => { if (provider) { provider.value = 'local-provider'; provider.dispatchEvent(new Event('change', { bubbles: true })); } });
+    expect(provider?.value).toBe('local-provider');
     const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     await act(async () => {
       if (textarea) {
@@ -86,14 +114,14 @@ describe('ChatPage conversation experience', () => {
     expect(postEvents).toHaveBeenCalledWith('/api/chat/stream', expect.objectContaining({ provider: 'local-provider', model: null }), expect.any(AbortSignal));
   });
 
-  it('runs a selected assistant shortcut through the checked agent API', async () => {
+  it('offers a compact assistant selector and runs the selected assistant through the checked agent API', async () => {
     post.mockResolvedValueOnce({ run: { response: 'A checked local plan.' } });
     const { ChatPage } = await import('../../pages/ChatPage');
     await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
-    const shortcut = [...host.querySelectorAll<HTMLButtonElement>('.oa-chat-home-agent-grid button')].find(button => button.textContent?.includes('Executive Agent'));
-    await act(async () => { shortcut?.click(); });
-    expect(shortcut?.getAttribute('aria-pressed')).toBe('true');
-    expect(host.textContent).toContain('uses the checked local agent runtime; provider selection applies to standard chat.');
+    expect(host.querySelector('.oa-chat-home-agent-grid')).toBeNull();
+    const assistant = host.querySelector<HTMLSelectElement>('select[aria-label="Assistant"]');
+    await act(async () => { if (assistant) { assistant.value = 'executive'; assistant.dispatchEvent(new Event('change', { bubbles: true })); } });
+    expect(assistant?.value).toBe('executive');
     const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     await act(async () => {
       if (textarea) {
@@ -108,6 +136,37 @@ describe('ChatPage conversation experience', () => {
     expect(postEvents).not.toHaveBeenCalled();
   });
 
+  it('shows and independently retries model and assistant catalog failures', async () => {
+    let modelAttempts = 0;
+    let agentAttempts = 0;
+    get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/conversations/organized')) return { conversations: [] };
+      if (path === '/api/models') {
+        if (modelAttempts++ === 0) throw new Error('Models offline');
+        return { providers: [{ id: 'local-provider', label: 'Local model' }] };
+      }
+      if (path === '/api/agents') {
+        if (agentAttempts++ === 0) throw new Error('Agents offline');
+        return { agents: [{ id: 'executive', name: 'Executive Agent' }] };
+      }
+      return {};
+    });
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    expect(host.textContent).toContain('Model options unavailable.');
+    expect(host.textContent).toContain('Assistant options unavailable.');
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button[aria-label="Retry model options"]')?.click();
+      host.querySelector<HTMLButtonElement>('button[aria-label="Retry assistant options"]')?.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(host.textContent).not.toContain('Model options unavailable.');
+    expect(host.textContent).not.toContain('Assistant options unavailable.');
+    expect(host.querySelector('select[aria-label="Chat provider"] option[value="local-provider"]')).toBeTruthy();
+    expect(host.querySelector('select[aria-label="Assistant"] option[value="executive"]')).toBeTruthy();
+  });
+
   it('stops a checked assistant run and restores its prompt without leaving an optimistic message', async () => {
     let runSignal: AbortSignal | undefined;
     post.mockImplementationOnce((_path: string, _body: unknown, signal?: AbortSignal) => {
@@ -116,8 +175,8 @@ describe('ChatPage conversation experience', () => {
     });
     const { ChatPage } = await import('../../pages/ChatPage');
     await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
-    const shortcut = [...host.querySelectorAll<HTMLButtonElement>('.oa-chat-home-agent-grid button')].find(button => button.textContent?.includes('Executive Agent'));
-    await act(async () => { shortcut?.click(); });
+    const assistant = host.querySelector<HTMLSelectElement>('select[aria-label="Assistant"]');
+    await act(async () => { if (assistant) { assistant.value = 'executive'; assistant.dispatchEvent(new Event('change', { bubbles: true })); } });
     const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     await act(async () => {
       if (textarea) {
@@ -170,12 +229,43 @@ describe('ChatPage conversation experience', () => {
     expect(host.querySelector('.oa-chat-jump-latest')).toBeNull();
   });
 
+  it('accepts dropped files in the composer and uploads them within the active project', async () => {
+    post.mockResolvedValueOnce({ attachment: { id: 'attachment-1', name: 'notes.txt' } });
+    const { ChatPage } = await import('../../pages/ChatPage');
+    await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); });
+    const composer = host.querySelector<HTMLElement>('.oa-chat-composer');
+    expect(composer).toBeTruthy();
+    if (!composer) return;
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const transfer = { types: ['Files'], files: [file] };
+    const dragEnter = new Event('dragenter', { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnter, 'dataTransfer', { value: transfer });
+    await act(async () => { composer.dispatchEvent(dragEnter); });
+    expect(host.textContent).toContain('Drop files to attach');
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: transfer });
+    await act(async () => { composer.dispatchEvent(drop); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(post).toHaveBeenCalledWith('/api/knowledge/upload', expect.any(FormData));
+    const form = post.mock.calls[0][1] as FormData;
+    expect(form.get('project')).toBe('project-one');
+    expect(form.get('file')).toBeInstanceOf(File);
+    expect(host.textContent).toContain('notes.txt');
+    expect(host.textContent).not.toContain('Drop files to attach');
+  });
+
   it('loads a selected conversation from the shell query parameter', async () => {
     history.replaceState({}, '', '/?view=chat&conversation_id=saved-conversation');
     const { ChatPage } = await import('../../pages/ChatPage');
     await act(async () => { root.render(createElement(ChatPage, { project: 'project-one' })); await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(get).toHaveBeenCalledWith('/api/conversation/messages?conversation_id=saved-conversation');
     expect(host.textContent).toContain('Saved assistant response');
+    expect(host.textContent).not.toContain('2026-10-14T10:24:00Z');
+    expect(host.textContent?.match(/Saved assistant response/g)).toHaveLength(1);
+    expect(host.querySelector('.oa-chat-inspector-body')?.textContent).toContain('Words');
+    const viewResponse = host.querySelector<HTMLButtonElement>('.oa-chat-preview-jump');
+    expect(viewResponse).toBeTruthy();
+    await act(async () => { viewResponse?.click(); });
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     expect(host.querySelector('.oa-chat-title')).toBeNull();
     expect(host.querySelector('.oa-chat-menu summary[aria-label="Conversation actions"]')).toBeTruthy();
   });

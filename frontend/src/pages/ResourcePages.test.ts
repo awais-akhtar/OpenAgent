@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resourcePageConfigs } from './ResourcePages';
+import { resourcePageConfigs, resourcePresentation } from './ResourcePages';
 
 const resourceScreens = ['assistant', 'agents', 'automation', 'calendar', 'communications', 'developer', 'engine', 'finetune', 'science', 'scraper', 'twin'];
 
@@ -11,6 +11,15 @@ describe('API-backed resource screens', () => {
       expect(page.title.trim(), screen).not.toBe('');
       expect(page.reads.length, screen).toBeGreaterThan(0);
       for (const read of page.reads) expect(read.path, `${screen}: ${read.label}`).toMatch(/^\/api\//);
+    }
+  });
+
+  it('gives each resource screen a meaningful API-backed landing surface and matching primary action', () => {
+    for (const [screen, presentation] of Object.entries(resourcePresentation)) {
+      const page = resourcePageConfigs[screen];
+      expect(presentation.primaryRead, `${screen} landing collection`).toBeTruthy();
+      expect(page.reads.some(read => read.label === presentation.primaryRead), `${screen} landing read`).toBe(true);
+      if (presentation.primaryAction) expect(page.actions?.some(action => action.label === presentation.primaryAction), `${screen} contextual action`).toBe(true);
     }
   });
 
@@ -40,5 +49,10 @@ describe('API-backed resource screens', () => {
     expect(dry?.payload({ workflow_id: 'wf' })).toMatchObject({ workflow_id: 'wf', dry_run: true, allow_network: false });
     expect(live?.payload({ workflow_id: 'wf' })).toMatchObject({ workflow_id: 'wf', dry_run: false, allow_network: false });
     expect(live?.confirmText).toBeTruthy();
+  });
+
+  it('does not expose workflow creation through the generic JSON action dialog', () => {
+    expect(resourcePageConfigs.automation.actions?.some(action => action.label === 'Create workflow')).toBe(false);
+    expect(resourcePageConfigs.automation.actions?.some(action => action.fields.some(field => field.name === 'steps'))).toBe(false);
   });
 });

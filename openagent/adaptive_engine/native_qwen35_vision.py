@@ -196,7 +196,20 @@ class NativeQwen35Vision:
                 identity.update(memoryview(weights['model.embed_tokens.weight']).cast('B'))
                 candidate.identity='openagent-qwen35-vision-fixture-text-v1:'+identity.hexdigest()
                 candidate.reset()
-            result = candidate.forward(ids, position_ids=positions)
+            try:
+                result = candidate.forward(ids, position_ids=positions)
+            except BaseException as primary:
+                # An image request executes against a private decoder copy so
+                # its cache is published only after the full multimodal
+                # prefill succeeds.  That candidate may already own partially
+                # allocated KV state when native execution fails; release it
+                # without disturbing the still-current base decoder.
+                if candidate is not self.decoder:
+                    try:
+                        candidate.close()
+                    except BaseException as cleanup:
+                        primary.add_note('failed Qwen3.5 media candidate cleanup retained: '+repr(cleanup))
+                raise
             self.decoder = candidate
             return result
 

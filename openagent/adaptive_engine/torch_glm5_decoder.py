@@ -14,6 +14,8 @@ from .device_glm5_forward import glm5_device_forward
 from .device_logits import device_logits
 from .device_execution_policy import admit_no_fallback,admit_fp32
 
+_SOURCE_ADMISSION = object()
+
 def _canonical(name):
     for prefix in ('model.language_model.','language_model.','model.'):
         if name.startswith(prefix): return name[len(prefix):]
@@ -23,7 +25,10 @@ class TorchGlm5NextDecoder(TorchInklingDecoder):
     implementation='torch-glm5-next-device-fp32'
     cache_magic=b'OATGLM01'
     def __init__(self,config,tensors,*,device,max_bytes,max_tokens=None,max_snapshots=4,
-                 max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,projection_provider=None):
+                 max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,projection_provider=None,
+                 _source_admission=None):
+        if _source_admission is not _SOURCE_ADMISSION:
+            raise ValueError('GLM5 device construction requires metadata-admitted source tensors')
         admit_no_fallback(device)
         self.contract=Glm5NextTextContract.parse(config);c=self.contract
         capacity=c.max_position_embeddings if max_tokens is None else max_tokens
@@ -110,6 +115,16 @@ class TorchGlm5NextDecoder(TorchInklingDecoder):
         return self.max_tokens*(c.num_attention_heads*(c.qk_nope_head_dim+c.v_head_dim)+2*c.index_head_dim)
     @classmethod
     def from_directory(cls,directory,*,device,max_weight_bytes,max_bytes,read_limits=None,cancel=None,**options):
+        # These providers are independently constructed from a publisher
+        # snapshot.  Matching their configuration/geometry does not prove
+        # their expert/projection payloads came from this directory's exact
+        # checkpoint revision.  Until a shared immutable snapshot/content
+        # identity is threaded through both owners, do not permit an external
+        # provider to replace tensors from the admitted source inventory.
+        if options.get('expert_provider') is not None or options.get('projection_provider') is not None:
+            raise ValueError(
+                'GLM5 external device expert/projection providers are disabled '
+                'until source checkpoint content identity is shared')
         from .native_checkpoint import read_native_text_checkpoint,_finish_decoder
         def select(config,inventory):
             c=Glm5NextTextContract.parse(config);shapes,_=tensor_layout(c)
@@ -120,8 +135,15 @@ class TorchGlm5NextDecoder(TorchInklingDecoder):
                 canonical[key]=(name,record)
             if not c.tie_word_embeddings or 'lm_head.weight' in canonical:
                 shapes['lm_head.weight']=(c.vocab_size,c.hidden_size)
-            if set(shapes)!=set(canonical) or any(tuple(canonical[name][1]['shape'])!=shape for name,shape in shapes.items()):
+            if set(shapes)!=set(canonical) or any(
+                    tuple(canonical[name][1]['shape'])!=shape or
+                    canonical[name][1].get('dtype') not in ('F32','F16','BF16')
+                    for name,shape in shapes.items()):
                 raise ValueError('exact full GLM accelerator checkpoint required')
+            from .source_scope import require_source_inventory_admission
+            require_source_inventory_admission(
+                family='glm5-next',model_type='glm5_next_text',backend='device',
+                arithmetic='fp32',persisted_format='float32',inventory=inventory)
             omitted=set();expert=options.get('expert_provider');projections=options.get('projection_provider')
             if expert is not None:
                 omitted.update(name for name in shapes if name.endswith(('mlp.experts.gate_up_proj','mlp.experts.down_proj')))
@@ -139,8 +161,9 @@ class TorchGlm5NextDecoder(TorchInklingDecoder):
                 raise MemoryError('GLM checkpoint conversion exceeds aggregate admission')
             return tuple(canonical[name][0] for name in sorted(selected))
         config,weights=read_native_text_checkpoint(directory,model_type='glm5_next_text',max_weight_bytes=max_weight_bytes,
-            read_limits=read_limits,cancel=cancel,tensor_selection=select)
-        return _finish_decoder(cls(config,weights,device=device,max_bytes=max_bytes,**options),cancel)
+            read_limits=read_limits,cancel=cancel,tensor_selection=select,source_backend='device')
+        return _finish_decoder(cls(config,weights,device=device,max_bytes=max_bytes,
+            _source_admission=_SOURCE_ADMISSION,**options),cancel)
     def forward(self,token_ids,*,attention_mask=None,position_ids=None,use_cache=True,inputs_embeds=None,capture_routing=False):
         admit_fp32(self.torch,self.device)
         with self._lock:

@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import struct
+from functools import wraps
 
 import numpy as np
 
@@ -25,6 +26,17 @@ def _session(session):
     if not isinstance(session, OlmoeSegmentSession):
         raise TypeError('expected OlmoeSegmentSession')
     session._check()
+
+
+def _serialized(function):
+    """Hold the session owner lease for the complete codec transaction."""
+    @wraps(function)
+    def call(session, *args, **kwargs):
+        if not isinstance(session, OlmoeSegmentSession):
+            raise TypeError('expected OlmoeSegmentSession')
+        with session._lock:
+            return function(session, *args, **kwargs)
+    return call
 
 
 def _identity(session):
@@ -75,6 +87,7 @@ def _chunks(array):
         yield chunk.tobytes(order='C')
 
 
+@_serialized
 def write_segment_snapshot(session, binary_output):
     """Write the active KV prefix without making a full snapshot copy."""
     _session(session)
@@ -105,6 +118,7 @@ def write_segment_snapshot(session, binary_output):
     _write(binary_output, digest.digest())
 
 
+@_serialized
 def restore_segment_snapshot(session, binary_input, max_bytes=_DEFAULT_LIMIT):
     """Validate an entire snapshot before committing it to the session."""
     _session(session)

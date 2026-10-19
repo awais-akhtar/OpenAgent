@@ -119,9 +119,10 @@ def _pairs(values):
 def _media_coverage(report, value):
     """Admit only an observed processor fixture and its full continuation."""
     if (type(report) is not dict or report.get('schema')!='openagent.k3-media-wholemodel.v2'
-            or report.get('status')!='passed' or report.get('candidate_runtime')!={
+            or report.get('status')!='passed' or report.get('errors',[])!=[]
+            or report.get('candidate_runtime')!={
                 'execution_identity':value['execution_identity'],'arithmetic_identity':value['arithmetic_identity']}):
-        raise ValueError('observed matching complete media comparison required')
+        raise ValueError('observed matching complete error-free media comparison required')
     metadata=report.get('adapter_metadata')
     if (type(metadata) is not list or len(metadata)!=2 or any(type(row) is not dict for row in metadata)
             or metadata[1].get('authoritative') is not True or metadata[1].get('unchanged') is not True

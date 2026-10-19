@@ -10,10 +10,11 @@ import ctypes as C
 import json
 import math
 import threading
+from contextlib import contextmanager
 import numpy as np
 from .mixtral_public_adapters import NativeMixtralPublicAdapters
 from .segment_edge_adapters import _SegmentAdapter,_SOPEN,_CREATE,_RUN,_SNAPSHOT,_WriteStream,_ReadStream
-from .segment_edge_runtime import _SegmentCaps,_integer
+from .segment_edge_runtime import _SegmentCaps,_Run,_integer,_cancel_requested
 from .native_qwen35_ranges import NativeQwen35Range,NativeQwen35Edge
 from .qwen35_cache_recovery import write_qwen35_cache,restore_qwen35_cache
 
@@ -42,10 +43,27 @@ class _RangeEngine:
 
 
 class _RangeSession:
-    def __init__(self,engine,model):self.engine=engine;self.model=model
+    def __init__(self,engine,model):
+        self.engine,self.model=engine,model
+        self.lock=threading.RLock()
+        self.operation_owner=None
+
+    @contextmanager
+    def operation(self):
+        with self.lock:
+            owner=threading.get_ident()
+            if self.operation_owner==owner:
+                raise RuntimeError('reentrant Qwen3.5 public session operation rejected')
+            self.operation_owner=owner
+            try:
+                yield
+            finally:
+                self.operation_owner=None
+
     def close(self):
         with self.engine.lock:
-            self.model.close();self.engine.sessions.discard(self)
+            with self.operation():
+                self.model.close();self.engine.sessions.discard(self)
 
 
 class _CacheReadStream(_ReadStream):
@@ -83,6 +101,7 @@ class _CacheReadStream(_ReadStream):
 
 
 class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
+    _source_route_identity=('qwen35','qwen3_5_moe_text')
     wire_schema=b'openagent.qwen35.hidden.f32.v1'
     numeric_class=b'openagent.qwen35.native-fp32-boundary-double-dot.v1'
 
@@ -95,17 +114,44 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
         super().__init__(runtime_library,**options)
 
     def _create_edge(self,budget):
-        return NativeQwen35Edge.from_directory(self.root,library=self.kernel,
-            max_weight_bytes=self.staging_bytes,max_bytes=budget,context_tokens=self.context_tokens)
+        return self._load_source_owner(lambda:NativeQwen35Edge.from_directory(
+            self.root,library=self.kernel,max_weight_bytes=self.staging_bytes,max_bytes=budget,
+            context_tokens=self.context_tokens),kind='edge')
+
+    def _publish(self,resource,kind,output):
+        """Recheck source identity at the final public-handle boundary.
+
+        The shared loader already brackets checkpoint reads with snapshot
+        checks, but the adapter composes and stages its public engine/edge
+        after that loader returns. A file replacement in this interval must
+        not publish a capability that claims the original admitted identity.
+        """
+        try:
+            self._source_snapshot.assert_unchanged()
+        except BaseException as primary:
+            try:
+                resource.close()
+            except BaseException as cleanup:
+                with self.lock:
+                    orphan=-id(resource)
+                    self.objects[orphan]=(kind,resource)
+                    self.pending[orphan]=cleanup
+                try:
+                    primary.add_note('Qwen3.5 source-bound publication cleanup retained: '+repr(cleanup))
+                except BaseException:
+                    pass
+            raise
+        return super()._publish(resource,kind,output)
 
     def _segment_record(self):
         def open_engine(output,caps,raw_options):
             options=raw_options.contents
-            self._allowed(options.model,options.plan,options.plan_size,options.backend)
+            self._allowed(options)
             budget=_integer(int(options.memory),'Qwen3.5 engine memory',maximum=2**63-1)
-            template=NativeQwen35Range.from_directory(self.root,begin=int(options.begin),end=int(options.end),
+            template=self._load_source_owner(lambda:NativeQwen35Range.from_directory(
+                self.root,begin=int(options.begin),end=int(options.end),
                 library=self.kernel,max_weight_bytes=self.staging_bytes,max_bytes=budget,expert_provider=self.expert_provider,
-                context_tokens=int(options.context) or self.context_tokens)
+                context_tokens=int(options.context) or self.context_tokens),kind='engine')
             try:
                 c=template.config
                 if int(options.context) and not 0<int(options.context)<=template.capacity:
@@ -115,8 +161,23 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
                     schema=self.wire_schema,numeric=self.numeric_class,dtype=1,width=c.hidden_size,
                     rows=self.rows,context=template.capacity,layers=c.num_hidden_layers)
                 C.memmove(caps,C.byref(record),C.sizeof(record))
-            except BaseException:
-                template.close();raise
+            except BaseException as primary:
+                try:
+                    template.close()
+                except BaseException as cleanup:
+                    # This template has not reached _publish yet, so there is
+                    # no public handle through which failed cleanup could be
+                    # retried. Keep it in the adapter's retry inventory and
+                    # preserve the capability-construction failure.
+                    with self.lock:
+                        orphan=-id(template)
+                        self.objects[orphan]=('engine',template)
+                        self.pending[orphan]=cleanup
+                    try:
+                        primary.add_note('Qwen3.5 range construction cleanup pending: '+repr(cleanup))
+                    except BaseException:
+                        pass
+                raise
             self._publish(engine,'engine',output)
         def create(engine_id,output,raw_options):
             engine=self._get(engine_id,'engine');options=raw_options.contents
@@ -125,22 +186,32 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
             self._publish(session,'session',output)
         def run(session_id,raw_request):
             session=self._get(session_id,'session');model=session.model;request=raw_request.contents
-            with model._lock:
-                model._check_open();rows=int(request.rows);width=model.config.hidden_size
-                if int(request.position)!=model.position or not 0<rows<=self.rows:
-                    raise ValueError('Qwen3.5 public position or row admission differs')
-                if not request.input or not request.output or request.input_bytes<rows*width*4 or request.output_bytes<rows*width*4:
-                    raise ValueError('Qwen3.5 public activation capacity differs')
-                hidden=np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),shape=(rows*width,)).reshape(1,rows,width)
-                cancelled=(lambda:bool(request.cancel(request.cancel_data))) if request.cancel else None
-                result=model.forward(hidden,cancelled=cancelled).hidden[0]
-                C.memmove(request.output,result.ctypes.data,result.nbytes)
+            with session.operation():
+                with model._lock:
+                    model._check_open();rows=int(request.rows);width=model.config.hidden_size
+                    if (int(request.size)!=C.sizeof(_Run) or int(request.position)!=model.position or
+                            not 0<rows<=self.rows):
+                        raise ValueError('Qwen3.5 public position or row admission differs')
+                    if (request.tokens or request.token_count or any(request.reserved)):
+                        raise ValueError('Qwen3.5 hidden-activation ABI does not accept token or reserved fields')
+                    extent=rows*width*4
+                    if (not request.input or not request.output or request.input_bytes!=extent or
+                            request.output_bytes!=extent):
+                        raise ValueError('Qwen3.5 public activation extent differs')
+                    hidden=np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),shape=(rows*width,)).reshape(1,rows,width)
+                    if not np.isfinite(hidden).all():
+                        raise ValueError('Qwen3.5 public activation input must be finite')
+                    cancelled=(lambda:_cancel_requested(request.cancel,request.cancel_data)) if request.cancel else None
+                    result=model.forward(hidden,cancelled=cancelled).hidden[0]
+                    C.memmove(request.output,result.ctypes.data,result.nbytes)
         def snapshot(session_id,callback,user):
-            model=self._get(session_id,'session').model
-            write_qwen35_cache(model,_WriteStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
+            session=self._get(session_id,'session')
+            with session.operation():
+                write_qwen35_cache(session.model,_WriteStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
         def restore(session_id,callback,user):
-            model=self._get(session_id,'session').model
-            restore_qwen35_cache(model,_CacheReadStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
+            session=self._get(session_id,'session')
+            with session.operation():
+                restore_qwen35_cache(session.model,_CacheReadStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
         return _SegmentAdapter(version=1,engine=self.segment_id,
             open=self._guard(_SOPEN,open_engine),destroy=self._destroy('engine'),
             create=self._guard(_CREATE,create),destroy_session=self._destroy('session'),
@@ -153,6 +224,7 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
         from .segment_edge_runtime import SegmentRange
         from .execution_factories import create_segment_edge_execution_service
         if not self.registered_segment or not self.registered_edge:raise RuntimeError('register both Qwen3.5 adapters first')
+        self._source_snapshot.assert_unchanged()
         qwen35_tensor_inventory(config)
         if type(context_tokens) is not int or not 1<=context_tokens<=config['max_position_embeddings']:
             raise ValueError('bounded Qwen3.5 public serving context required')
@@ -164,6 +236,7 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
             for begin in range(0,config['num_hidden_layers'],stride))
         return create_segment_edge_execution_service(self.runtime_library,edge_adapter=self.edge_id.decode(),
             model_directory=str(self.root),checkpoint_identity=checkpoint_identity,ranges=ranges,
+            source_family='qwen35',model_type='qwen3_5_moe_text',arithmetic='fp32',
             vocabulary=config['vocab_size'],context_tokens=context_tokens,native_memory_bytes=native_memory_bytes,
             max_transfer_bytes=max_transfer_bytes,max_snapshot_bytes=self.snapshot_bytes,max_new_tokens=max_new_tokens,
             max_sessions=max_sessions,prefill_chunk_tokens=prefill_chunk_tokens,max_snapshots_per_session=max_snapshots_per_session,

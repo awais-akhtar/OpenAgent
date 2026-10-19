@@ -19,13 +19,20 @@ from .torch_inkling_decoder import TorchInklingDecoder
 from .device_logits import device_logits
 from .device_execution_policy import admit_no_fallback,admit_fp32
 
+_SOURCE_ADMISSION = object()
+
 
 class TorchGlmDsaDecoder(TorchInklingDecoder):
     implementation = 'torch-glm-moe-dsa-device-fp32'
     cache_magic = b'OATDSA01'
 
     def __init__(self, config, tensors, *, device, max_bytes, max_snapshots=4,
-                 max_work_bytes=64*1024**2, max_head_bytes=64*1024**2,expert_provider=None):
+                 max_work_bytes=64*1024**2, max_head_bytes=64*1024**2,expert_provider=None,
+                 _source_admission=None):
+        if _source_admission is not _SOURCE_ADMISSION:
+            raise ValueError('GLM-DSA device construction requires metadata-admitted source tensors')
+        if expert_provider is not None:
+            raise ValueError('GLM-DSA external experts are disabled until packed/source tensor content identity is bound')
         admit_no_fallback(device)
         inventory = IndependentGlmDsaDecoder(config, {}, _inventory_only=True)
         c = inventory.config
@@ -88,7 +95,18 @@ class TorchGlmDsaDecoder(TorchInklingDecoder):
         self._configuration_identity=hashlib.sha256(json.dumps(vars(c),sort_keys=True,allow_nan=False).encode()).digest()
         self.weights = {name: torch.tensor(value, device=device, dtype=torch.float32)
                         for name, value in admitted.items()}
-        digest.update(repr((device, torch.__version__, self.implementation)).encode())
+        # PyTorch reports CUDA and ROCm devices through the same ``cuda:N``
+        # namespace. Bind cache/recovery identity to the linked runtime too;
+        # otherwise snapshots from CUDA and HIP could be mistaken for the
+        # same selected-device execution owner.
+        version = getattr(torch, 'version', None)
+        self.device_runtime = dict(
+            cuda=getattr(version, 'cuda', None),
+            hip=getattr(version, 'hip', None),
+            mps=getattr(version, 'mps', None),
+        )
+        digest.update(repr((device, torch.__version__, self.device_runtime,
+                            self.implementation)).encode())
         self.identity = 'openagent-torch-glm-dsa-v1:'+digest.hexdigest()
         self.geometry = tuple(c.indexer_types)+('mask',)
         self.max_bytes, self.max_snapshots = max_bytes, max_snapshots
@@ -174,6 +192,10 @@ class TorchGlmDsaDecoder(TorchInklingDecoder):
     @classmethod
     def from_directory(cls, directory, *, device, max_weight_bytes, max_bytes,
                        read_limits=None, cancel=None, **options):
+        if options.get('expert_provider') is not None:
+            raise ValueError(
+                'GLM-DSA packed experts lack checkpoint source-content identity; '
+                'device directory loading is restricted')
         from .native_checkpoint import read_native_text_checkpoint, _finish_decoder
         def select(config, records):
             inventory = IndependentGlmDsaDecoder(config, {}, _inventory_only=True)
@@ -184,17 +206,21 @@ class TorchGlmDsaDecoder(TorchInklingDecoder):
                                                   records[name].get('dtype') not in ('F32','F16','BF16')
                                                   for name, shape in shapes.items()):
                 raise ValueError('exact complete GLM DSA device checkpoint required')
+            from .source_scope import require_source_inventory_admission
+            require_source_inventory_admission(
+                family='glm-dsa',model_type='glm_moe_dsa',backend='device',
+                arithmetic='fp32',persisted_format='float32',inventory=records)
             expert=options.get('expert_provider')
             if expert is not None:
-                shapes={name:shape for name,shape in shapes.items()
-                    if not name.endswith(('mlp.experts.gate_up_proj','mlp.experts.down_proj'))}
-            if 4*sum(math.prod(shape)*4 for shape in shapes.values())+(0 if expert is None else expert.max_bytes) > max_bytes:
+                raise ValueError('GLM-DSA external experts are disabled until packed/source tensor content identity is bound')
+            if 4*sum(math.prod(shape)*4 for shape in shapes.values()) > max_bytes:
                 raise MemoryError('GLM DSA checkpoint conversion exceeds admission')
             return tuple(sorted(shapes))
         config, weights = read_native_text_checkpoint(directory, model_type='glm_moe_dsa',
             max_weight_bytes=max_weight_bytes, read_limits=read_limits, cancel=cancel,
-            tensor_selection=select)
-        return _finish_decoder(cls(config, weights, device=device, max_bytes=max_bytes, **options), cancel)
+            tensor_selection=select,source_backend='device')
+        return _finish_decoder(cls(config, weights, device=device, max_bytes=max_bytes,
+            _source_admission=_SOURCE_ADMISSION, **options), cancel)
 
     def _rotary(self, value, positions):
         torch, rope = self.torch, self.contract.rope_parameters
@@ -381,7 +407,8 @@ class TorchGlmDsaDecoder(TorchInklingDecoder):
 
     def status(self):
         return dict(model_type='glm_moe_dsa',implementation=self.implementation,
-                    device=self.device,position=self.position,closed=self._closed)
+                    device=self.device,device_runtime=dict(self.device_runtime),
+                    position=self.position,closed=self._closed)
 
     def close(self):
         with self._lock:

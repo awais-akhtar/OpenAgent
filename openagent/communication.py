@@ -1230,6 +1230,34 @@ class CommunicationHub:
                 row = connection.execute("SELECT * FROM communication_drafts WHERE id = ?", (draft_id,)).fetchone()
         return draft_row(row) if row else None
 
+    def list_drafts(self, *, project: str = "default", owner: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses = ["project = ?"]
+        values: list[Any] = [project]
+        if owner:
+            clauses.append("owner = ?")
+            values.append(owner)
+        values.append(max(1, min(int(limit), 500)))
+        with self.store.session() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM communication_drafts WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?",
+                values,
+            ).fetchall()
+        return [draft_row(row) for row in rows]
+
+    def list_sent_messages(self, *, project: str = "default", owner: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        clauses = ["project = ?"]
+        values: list[Any] = [project]
+        if owner:
+            clauses.append("owner = ?")
+            values.append(owner)
+        values.append(max(1, min(int(limit), 500)))
+        with self.store.session() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM sent_messages WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
+                values,
+            ).fetchall()
+        return [sent_message_row(row) for row in rows]
+
     def request_send_approval(
         self,
         draft_id: str,
@@ -1923,6 +1951,22 @@ def draft_row(row: Any) -> dict[str, Any]:
         "status": row["status"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def sent_message_row(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "project": row["project"],
+        "owner": row["owner"],
+        "draft_id": row["draft_id"],
+        "platform": row["platform"],
+        "recipients": json.loads(row["recipients_json"]),
+        "subject": row["subject"],
+        "body": row["body"],
+        "status": row["status"],
+        "metadata": json.loads(row["metadata_json"]),
+        "created_at": row["created_at"],
     }
 
 

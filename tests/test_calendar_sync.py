@@ -365,6 +365,7 @@ class CalendarSyncHttpRouteTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
     def test_calendar_provider_routes_hide_cross_user_records_when_auth_is_enforced(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -419,9 +420,11 @@ class CalendarSyncHttpRouteTests(unittest.TestCase):
                     with self.assertRaises(HTTPError) as ctx:
                         urlopen(bob_sync, timeout=15)
                     self.assertEqual(ctx.exception.code, 404)
+                    ctx.exception.close()
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
 
 if __name__ == "__main__":

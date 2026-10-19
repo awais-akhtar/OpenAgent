@@ -26,11 +26,29 @@ def _canonical(name):
     return name
 
 
-def admit_publisher_glm5_inventory(inventory,components):
+def admit_publisher_glm5_inventory(inventory,components,*,backend='native'):
     """Plan all original wrapper headers before reading any selected payload."""
     from .glm5_vision import vision_shapes
+    from .publisher_checkpoint.storage import thaw
     if components.variant.wrapper!='glm5_next':
         raise ValueError('exact GLM5-next publisher inventory required')
+    # This planner is callable independently of the directory loader. Bind
+    # the component contract to the configuration captured in the same
+    # immutable checkpoint snapshot; otherwise a caller could pair a valid
+    # GLM5 inventory with a different, shape-compatible wrapper contract.
+    if (type(getattr(components,'original_config',None)) is not dict or
+            thaw(inventory.config)!=components.original_config):
+        raise ValueError('GLM5 component contract differs from checkpoint inventory configuration')
+    if components.auxiliary_config:
+        raise ValueError('GLM5 publisher rejects auxiliary/MTP configuration: no admitted draft consumer')
+    # This wrapper currently owns image/video vision only.  A declared audio
+    # component must not be silently accepted merely because no audio tensors
+    # happen to be present in the checkpoint inventory.
+    audio_names=tuple(name for name in inventory.tensors if name.startswith((
+        'model.audio_tower.','audio_tower.','model.language_model.audio_tower.',
+        'model.audio.','audio.')))
+    if components.audio_config is not None or audio_names:
+        raise ValueError('GLM5 publisher loader rejects audio_config/audio tensors: audio execution is not implemented')
     contract=Glm5NextTextContract.parse(components.text_config)
     layout=dict(tensor_layout(contract)[0])
     layout={name:shape for name,shape in layout.items()
@@ -40,10 +58,29 @@ def admit_publisher_glm5_inventory(inventory,components):
     names={};prefixes=set();owned=set();seen_visual=set()
     scales={name[:-7]+'.weight_scale_inv' if name.endswith('.weight') else name+'_scale_inv'
         for name,record in inventory.tensors.items() if record.dtype=='F8_E4M3'}
+    from .source_scope import require_source_inventory_admission
+    source_tensors={name:record for name,record in inventory.tensors.items()
+        if name not in scales and record.dtype in ('F32','F16','BF16')}
+    if source_tensors:
+        require_source_inventory_admission(
+            family='glm5-next',model_type='glm5_next',backend=backend,
+            arithmetic='fp32',persisted_format='float32',inventory=source_tensors)
+    fp8_tensors={name:record for name,record in inventory.tensors.items()
+        if name not in scales and record.dtype=='F8_E4M3'}
+    if fp8_tensors:
+        require_source_inventory_admission(
+            family='glm5-next',model_type='glm5_next',backend=backend,
+            arithmetic='fp32',persisted_format='fp8-e4m3-b128-f32',
+            inventory=fp8_tensors)
     for name,record in inventory.tensors.items():
         if name in scales:continue
         if record.dtype not in ('F32','F16','BF16','F8_E4M3'):
             raise ValueError('unsupported original GLM component source dtype: '+name)
+        if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
+            # GLM MTP tensors used to be counted as owned auxiliary data but
+            # were never bound to a draft executor.  Do not admit that
+            # incomplete inventory as a runnable GLM5 checkpoint.
+            raise ValueError('GLM5 publisher loader rejects MTP tensors: no admitted draft consumer')
         media_name = name
         if media_name.startswith('model.language_model.visual.'):
             media_name = 'model.visual.' + media_name[len('model.language_model.visual.'):]
@@ -51,8 +88,6 @@ def admit_publisher_glm5_inventory(inventory,components):
             if visual.get(media_name)!=record.shape:
                 raise ValueError('original GLM media tensor geometry differs: '+name)
             seen_visual.add(media_name);owned.add(name);continue
-        if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
-            owned.add(name);continue
         canonical=_canonical(name)
         if canonical in names:raise ValueError('ambiguous GLM publisher tensor namespace')
         names[canonical]=name
@@ -103,9 +138,18 @@ class OwnedPublisherGlm5Text:
     def __getattr__(self,name): return getattr(self.decoder,name)
     def close(self):
         # Native callbacks stop borrowing before closing their checkpoint owner.
-        if self.decoder is not None: self.decoder.close();self.decoder=None
-        if self.provider is not None: self.provider.close();self.provider=None
-        if self.projections is not None: self.projections.close();self.projections=None
+        failures=[]
+        for name in ('decoder','provider','projections'):
+            owner=getattr(self,name)
+            if owner is None:continue
+            try:owner.close()
+            except BaseException as error:failures.append((name,error))
+            else:setattr(self,name,None)
+        if failures:
+            primary=failures[0][1]
+            for name,error in failures[1:]:
+                primary.add_note(f'additional GLM {name} cleanup failure: {error!r}')
+            raise primary
 
 def load_publisher_glm5_text_decoder(directory,*,library,expert_library,context_tokens,
         max_weight_bytes,max_bytes,max_expert_bytes,max_conversion_bytes,cancel=None,text_device=None,max_snapshots=4,max_projection_bytes=0):
@@ -117,7 +161,9 @@ def load_publisher_glm5_text_decoder(directory,*,library,expert_library,context_
     original=json.loads(raw,object_pairs_hook=_pairs)
     if original.get('model_type')!='glm5_next': raise ValueError('exact GLM5-next publisher wrapper required')
     components=component_contract(original,arithmetic='fp32');config=components.text_config
-    contract,bindings,prefixes,expert_mappings=admit_publisher_glm5_inventory(inventory,components)
+    backend='device' if text_device is not None else 'native'
+    contract,bindings,prefixes,expert_mappings=admit_publisher_glm5_inventory(
+        inventory,components,backend=backend)
     if type(max_expert_bytes) is not int or max_expert_bytes<0:
         raise ValueError('nonnegative explicit GLM expert streaming admission required')
     if not max_expert_bytes:bindings+=expert_mappings
@@ -164,31 +210,42 @@ def load_publisher_glm5_text_decoder(directory,*,library,expert_library,context_
                 max_bytes=max_bytes,expert_provider=provider)
         else:
             from .torch_glm5_decoder import TorchGlm5NextDecoder
+            from .torch_glm5_decoder import _SOURCE_ADMISSION as _TEXT_SOURCE_ADMISSION
             decoder=TorchGlm5NextDecoder(config,weights,device=text_device,max_tokens=context_tokens,
-                max_bytes=max_bytes,expert_provider=provider,max_snapshots=max_snapshots,projection_provider=projections)
+                max_bytes=max_bytes,expert_provider=provider,max_snapshots=max_snapshots,projection_provider=projections,
+                _source_admission=_TEXT_SOURCE_ADMISSION)
         decoder=_finish_decoder(decoder,cancel)
+        if text_device is None:
+            from .family_source_binding import bind_decoder_to_snapshot
+            bind_decoder_to_snapshot(decoder,inventory,family='glm5-next',
+                                     model_type='glm5_next_text')
         return OwnedPublisherGlm5Text(decoder,provider,projections)
     except BaseException as error:
         prior_cleanup=getattr(error,'cleanup',None)
         def cleanup():
             nonlocal decoder,provider,projections,prior_cleanup
-            if prior_cleanup is not None:
-                prior_cleanup();prior_cleanup=None
-            if decoder is not None:
-                decoder.close();decoder=None
             failures=[]
+            if prior_cleanup is not None:
+                try:prior_cleanup()
+                except BaseException as failure:failures.append(('prior',failure))
+                else:prior_cleanup=None
+            if decoder is not None:
+                try:decoder.close()
+                except BaseException as failure:failures.append(('decoder',failure))
+                else:decoder=None
             if provider is not None:
                 try:provider.close()
-                except BaseException as failure:failures.append(failure)
+                except BaseException as failure:failures.append(('expert provider',failure))
                 else:provider=None
             if projections is not None:
                 try:projections.close()
-                except BaseException as failure:failures.append(failure)
+                except BaseException as failure:failures.append(('projection provider',failure))
                 else:projections=None
             if failures:
-                for failure in failures[1:]:
-                    failures[0].add_note('additional GLM provider cleanup failure: '+repr(failure))
-                raise failures[0]
+                primary=failures[0][1]
+                for name,failure in failures[1:]:
+                    primary.add_note(f'additional GLM {name} cleanup failure: {failure!r}')
+                raise primary
         try: cleanup()
         except BaseException as failure:
             error.cleanup=cleanup;error.add_note('GLM checkpoint owner cleanup remains pending: '+str(failure))

@@ -3,7 +3,7 @@ import copy
 import ctypes as C
 import _ctypes
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
 import threading
@@ -188,6 +188,16 @@ class K3Snapshot:
     kda: tuple
     exact_evidence: str | None=None
     media_case: str | None=None
+    _lifetime: object | None=field(default=None, repr=False, compare=False)
+
+
+class _K3SnapshotLifetime:
+    """Mutable invalidation bit for an explicitly released detached snapshot."""
+    __slots__ = ('owner', 'released')
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.released = False
 
 
 @dataclass(frozen=True)
@@ -252,6 +262,21 @@ class K3Execution:
             from .metal_mixer import MetalK3Policy
             if type(fla_policy) not in (FLAK3Policy, MetalK3Policy):
                 raise ValueError('explicit FLA or Metal KDA policy required')
+            if type(fla_policy) is MetalK3Policy:
+                # The source-scope matrix keeps this exact backend restricted:
+                # the Metal recurrence helper is not a complete admitted
+                # token-to-logit/indexer route. Enforce the restriction here,
+                # at the shared executor boundary, so direct factory and
+                # validation callers cannot bypass the CLI policy.
+                raise ValueError('K3 Metal backend is not admitted: complete token-to-logit dispatch is unavailable')
+            # K3 FLA has a specialized mixer, but the source catalog still
+            # classifies its family/backend/format tuples as unverified
+            # candidates. Enforce that P02 restriction here, below every
+            # factory and CLI, until one exact tuple has a complete chain.
+            if type(fla_policy) is FLAK3Policy:
+                raise ValueError(
+                    'K3 FLA backend is restricted: no exact family/backend/format '
+                    'tuple is admitted through the complete P02 source chain')
         if arithmetic is not None:
             if 'kda' in config.layer_types and fla_policy is None:
                 raise ValueError('hybrid BF16 execution requires an explicit FLA policy')
@@ -314,6 +339,7 @@ class K3Execution:
             if name.endswith("weight_scale") and np.any(a == 255):
                 raise ValueError("nonfinite E8M0 scales are unsupported")
         self.config, self.max_bytes = config, max_bytes
+        self._snapshot_owner = object()
         self._weight_bytes = sum(np.asarray(tensors[n]).nbytes for n in shapes if n not in sharded)
         self._projection_scratch=0
         if sharded:
@@ -1146,7 +1172,27 @@ class K3Execution:
         return K3Snapshot(self._identity, self._position,
                           tuple(mla), tuple(kda),
                           None if self._exact_evidence is None else self._exact_evidence.identity,
-                          self._exact_media_case)
+                          self._exact_media_case, _K3SnapshotLifetime(self._snapshot_owner))
+
+    def release_snapshot(self, snapshot):
+        """Invalidate and drop an owned in-memory snapshot's physical state.
+
+        Checkpoint-decoded snapshots have no local lifetime token and remain
+        caller-owned; they can be restored but are not releasable through this
+        executor.  Locally issued snapshots are one-shot release capabilities.
+        """
+        with self._operation():
+            if (type(snapshot) is not K3Snapshot or snapshot.identity != self._identity
+                    or type(snapshot._lifetime) is not _K3SnapshotLifetime
+                    or snapshot._lifetime.owner is not self._snapshot_owner):
+                raise ValueError('foreign or non-owned K3 snapshot release')
+            if snapshot._lifetime.released:
+                raise ValueError('K3 snapshot was already released')
+            snapshot._lifetime.released = True
+            # The dataclass stays immutable to callers.  Clearing the two
+            # owning tuples here drops NumPy and device tensor copies promptly.
+            object.__setattr__(snapshot, 'mla', ())
+            object.__setattr__(snapshot, 'kda', ())
 
     def restore(self, snapshot):
         with self._operation():
@@ -1155,6 +1201,9 @@ class K3Execution:
     def _restore_locked(self, snapshot, *, cancelled=None):
         if type(snapshot) is not K3Snapshot or snapshot.identity != self._identity:
             raise ValueError("foreign K3 snapshot")
+        if (type(snapshot._lifetime) is _K3SnapshotLifetime and
+                snapshot._lifetime.released):
+            raise ValueError('released K3 snapshot cannot be restored')
         if type(snapshot.position) is not int or not 0 <= snapshot.position <= self.config.capacity:
             raise ValueError("invalid snapshot position")
         expected=None if self._exact_evidence is None else self._exact_evidence.identity
@@ -1303,6 +1352,15 @@ class K3Execution:
             n = len(ids)
             if pixel_values is not None:
                 lengths = self._vision.projected_lengths(grid_thws)
+                # The pinned K3 processor contract covers still images only.
+                # Multi-frame video is admitted through media_items so frame
+                # selection and timestamp provenance cannot be bypassed by
+                # supplying a raw temporal grid directly.
+                temporal_grid = np.asarray(grid_thws)
+                if (media_items is None and temporal_grid.ndim == 2 and
+                        temporal_grid.shape[1] == 3 and
+                        np.any(temporal_grid[:, 0] != 1)):
+                    raise ValueError('K3 multi-frame media requires explicit K3VideoInput selection and timestamps')
                 if count != len(lengths):
                     raise ValueError("one media sequence per placeholder required")
                 n = len(ids) - count + sum(lengths)

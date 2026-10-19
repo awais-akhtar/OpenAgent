@@ -9,6 +9,9 @@ const views = [
 ];
 const viewports = [
   { name: 'desktop-1440x900', width: 1440, height: 900 },
+  { name: 'desktop-1280x800', width: 1280, height: 800 },
+  { name: 'tablet-1024x768', width: 1024, height: 768 },
+  { name: 'tablet-768x1024', width: 768, height: 1024 },
   { name: 'mobile-390x844', width: 390, height: 844 },
 ];
 const themes = ['light', 'dark'];
@@ -62,13 +65,26 @@ try {
         await page.goto(`${baseURL}/?${query}`, { waitUntil: 'domcontentloaded' });
         await page.locator('#oa-main-content').waitFor({ state: 'visible' });
         await page.waitForTimeout(300);
+        // Capture the settled API-backed state. A fixed delay alone can freeze
+        // transient loading UI (notably the workspace files pane) on a busy host.
+        let loadingAtCapture = false;
+        try {
+          await page.waitForFunction(
+            () => !document.querySelector('[aria-busy="true"]'),
+            undefined,
+            { timeout: 5000 },
+          );
+        } catch {
+          loadingAtCapture = await page.locator('[aria-busy="true"]').count() > 0;
+        }
         const file = path.join(output, theme, viewport.name, `${view}.png`);
         mkdirSync(path.dirname(file), { recursive: true });
         await page.screenshot({ path: file, fullPage: false, animations: 'disabled' });
         const title = view === 'chat'
           ? await page.locator('.oa-page-title').textContent().catch(() => '')
           : await page.locator('#oa-main-content h1, #oa-main-content h2').first().textContent().catch(() => '');
-        evidence.push({ view, theme, viewport: viewport.name, file, title: title?.trim() || '', pageErrors: [...pageErrors] });
+        const horizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+        evidence.push({ view, theme, viewport: viewport.name, file, title: title?.trim() || '', loadingAtCapture, horizontalOverflow, pageErrors: [...pageErrors] });
       }
       await context.close();
     }
@@ -78,8 +94,8 @@ try {
 }
 mkdirSync(output, { recursive: true });
 writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ baseURL, views: views.length, themes, viewports, evidence }, null, 2));
-const failures = evidence.filter(item => !item.title || item.pageErrors.length > 0);
-console.log(`Captured ${evidence.length} screenshots at ${output}; ${failures.length} missing headings/runtime errors.`);
+const failures = evidence.filter(item => !item.title || item.pageErrors.length > 0 || item.loadingAtCapture || item.horizontalOverflow);
+console.log(`Captured ${evidence.length} screenshots at ${output}; ${failures.length} missing headings, unsettled loading states, horizontal overflow, or runtime errors.`);
 if (failures.length) {
   console.error(JSON.stringify(failures, null, 2));
   process.exitCode = 1;

@@ -250,8 +250,8 @@ class NativeQwen4PublicTextDecoder:
     def write_cache(self,output,*,max_bytes):
         self._check();return self.execution.write_cache(output,max_bytes=max_bytes)
     @_exclusive
-    def restore_cache(self,source,*,max_bytes):
-        self._check();return self.execution.restore_cache(source,max_bytes=max_bytes)
+    def restore_cache(self,source,*,max_bytes,cancelled=None):
+        self._check();return self.execution.restore_cache(source,max_bytes=max_bytes,cancelled=cancelled)
     @_exclusive
     def status(self):
         self._check();return dict(self.execution.status(),implementation=self.implementation,family=self.family)

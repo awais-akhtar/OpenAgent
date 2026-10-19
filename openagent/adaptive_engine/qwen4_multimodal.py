@@ -9,6 +9,7 @@ from contextlib import ExitStack
 import hashlib
 import hmac
 import json
+from pathlib import Path
 import struct
 import threading
 from uuid import uuid4
@@ -17,6 +18,11 @@ from .publisher_family_contracts import component_contract,partition_weights
 from .native_qwen4 import NativeQwen4TextDecoder
 from .qwen4_vision import Qwen4VisionEncoder,_cancel
 from .segment_snapshot import _read,_write,_pairs
+
+# Only the publisher loader, after its checkpoint inventory and persisted-format
+# admission, may construct the device-backed wrapper. Raw in-memory tensors do
+# not carry enough provenance to prove a supported loader-to-consumer route.
+_PUBLISHER_DEVICE_ADMISSION = object()
 
 @dataclass(frozen=True)
 class Qwen4MediaSnapshot:
@@ -34,7 +40,10 @@ class Qwen4MultimodalDecoder:
                  projection_provider=None,own_projection_provider=False,native_composition=False,
                  native_store_runtime_library=None,native_expert_max_bytes=0,native_ple_max_bytes=0,
                  segment_runtime_library=None,segment_model_directory=None,segment_work_bytes=None,
-                 segment_layer_ranges=None):
+                 segment_layer_ranges=None,_checkpoint_inventory=None,
+                 _publisher_device_admission=None):
+        if text_device is not None and _publisher_device_admission is not _PUBLISHER_DEVICE_ADMISSION:
+            raise ValueError('device Qwen4 construction requires publisher inventory and format admission')
         self.components=component_contract(config,arithmetic=arithmetic)
         if self.components.variant.wrapper!='qwen4_exp':
             raise ValueError('Qwen4 publisher wrapper required')
@@ -45,6 +54,12 @@ class Qwen4MultimodalDecoder:
         self._owner=uuid4().hex;self._snapshots={};self._orphaned_snapshots=[];self.max_snapshots=max_snapshots
         self.rope_delta=0;self.text=self.vision=None
         self._native_store_runtime=self._native_experts=self._native_ple=None
+        # Ownership transfers at construction entry. Register owned providers
+        # before inventory admission so a malformed/unsupported media bank
+        # cannot strand resources supplied with an explicit own_* flag.
+        self._ple_provider=ple_provider;self._own_ple_provider=own_ple_provider
+        self._expert_provider=expert_provider;self._own_expert_provider=own_expert_provider
+        self._projection_provider=projection_provider;self._own_projection_provider=own_projection_provider
         if type(native_composition) is not bool:raise ValueError('boolean complete native composition policy required')
         if any(type(value) is not int or value<0 for value in (native_expert_max_bytes,native_ple_max_bytes)):
             raise ValueError('nonnegative original native store budgets required')
@@ -54,6 +69,11 @@ class Qwen4MultimodalDecoder:
                 raise ValueError('public Qwen4 requires native composition and an admitted checkpoint directory')
             if type(segment_work_bytes) is not int or segment_work_bytes<=0:
                 raise ValueError('explicit native public work admission required')
+            inventory_root=getattr(_checkpoint_inventory,'root',None)
+            if (not callable(getattr(_checkpoint_inventory,'assert_unchanged',None)) or
+                    not isinstance(inventory_root,(str,Path)) or
+                    Path(inventory_root).resolve(strict=True)!=Path(segment_model_directory).resolve(strict=True)):
+                raise ValueError('public Qwen4 requires the publisher loader checkpoint inventory receipt')
         elif any(value is not None for value in (segment_model_directory,segment_work_bytes,segment_layer_ranges)):
             raise ValueError('public Qwen4 options require a runtime library')
         if native_store_runtime_library is not None or native_expert_max_bytes or native_ple_max_bytes:
@@ -63,26 +83,32 @@ class Qwen4MultimodalDecoder:
                 raise ValueError('each original streamed bank requires its matching native owner budget')
         elif native_composition and (expert_provider is not None or ple_provider is not None):
             raise ValueError('streamed composition requires native original store ownership')
-        self._ple_provider=ple_provider;self._own_ple_provider=own_ple_provider
-        self._expert_provider=expert_provider;self._own_expert_provider=own_expert_provider
-        self._projection_provider=projection_provider;self._own_projection_provider=own_projection_provider
-        text,vision,audio,auxiliary=partition_weights(tensors,self.components)
-        if audio:
-            raise ValueError('Qwen4 wrapper does not own an audio encoder')
-        # Auxiliary tensor ownership remains explicit even when generation does
-        # not request draft prediction; no checkpoint namespace is discarded.
-        auxiliary_bytes=sum(np.asarray(a).nbytes for a in auxiliary.values())
-        if 2*auxiliary_bytes>=max_bytes:
-            raise MemoryError('auxiliary construction staging exhausts admission')
-        for name,value in auxiliary.items():
-            value=np.asarray(value)
-            if value.dtype.kind!='f' or not np.isfinite(value).all():
-                raise ValueError('finite owned Qwen4 auxiliary weights required: '+name)
-        self.auxiliary={name:np.frombuffer(np.asarray(value).tobytes(),dtype=np.asarray(value).dtype).reshape(np.asarray(value).shape)
-                        for name,value in auxiliary.items()}
-        available=max_bytes-auxiliary_bytes
-        if available<=0:
-            raise MemoryError('auxiliary checkpoint storage exhausts admission')
+        try:
+            text,vision,audio,auxiliary=partition_weights(tensors,self.components)
+            if audio:
+                raise ValueError('Qwen4 wrapper does not own an audio encoder')
+            if auxiliary or self.components.auxiliary_config:
+                raise ValueError('Qwen4 publisher rejects auxiliary/MTP inventory: no admitted draft consumer')
+            # No unconsumed auxiliary bank is retained: MTP is admitted only by
+            # the Inkling path, which has an explicit draft executor.
+            auxiliary_bytes=sum(np.asarray(a).nbytes for a in auxiliary.values())
+            if 2*auxiliary_bytes>=max_bytes:
+                raise MemoryError('auxiliary construction staging exhausts admission')
+            for name,value in auxiliary.items():
+                value=np.asarray(value)
+                if value.dtype.kind!='f' or not np.isfinite(value).all():
+                    raise ValueError('finite owned Qwen4 auxiliary weights required: '+name)
+            self.auxiliary={name:np.frombuffer(np.asarray(value).tobytes(),dtype=np.asarray(value).dtype).reshape(np.asarray(value).shape)
+                            for name,value in auxiliary.items()}
+            available=max_bytes-auxiliary_bytes
+            if available<=0:
+                raise MemoryError('auxiliary checkpoint storage exhausts admission')
+        except BaseException as primary:
+            try:self.close()
+            except BaseException as cleanup:
+                primary.cleanup=self.close
+                primary.add_note('Qwen4 inventory admission cleanup remains pending: '+repr(cleanup))
+            raise
         try:
             if (native_expert_max_bytes+native_ple_max_bytes+getattr(expert_provider,'max_bytes',0)
                     +getattr(ple_provider,'max_bytes',0)>=available-available//2):
@@ -107,6 +133,9 @@ class Qwen4MultimodalDecoder:
                                                native_composition=native_composition,native_expert_bank=self._native_experts,
                                                native_ple_bank=self._native_ple)
                 if segment_runtime_library is not None:
+                    from .family_source_binding import bind_decoder_to_snapshot
+                    bind_decoder_to_snapshot(self.text,_checkpoint_inventory,family='qwen4',
+                        model_type='qwen4_exp_text')
                     from .native_qwen4_public_text import NativeQwen4PublicTextDecoder
                     self.text=NativeQwen4PublicTextDecoder(segment_runtime_library,self.text,
                         directory=segment_model_directory,max_bytes=available-available//2,
@@ -117,9 +146,10 @@ class Qwen4MultimodalDecoder:
                 if ple_provider is not None:
                     raise ValueError('CPU lexical provider cannot be used by a device decoder')
                 from .torch_qwen4_decoder import TorchQwen4Decoder
+                from .torch_qwen4_decoder import _SOURCE_ADMISSION as _TEXT_SOURCE_ADMISSION
                 self.text=TorchQwen4Decoder(self.components.text_config,text,device=text_device,
                     max_bytes=available-available//2,max_snapshots=max_snapshots,expert_provider=expert_provider,
-                    projection_provider=projection_provider)
+                    projection_provider=projection_provider,_source_admission=_TEXT_SOURCE_ADMISSION)
                 self.implementation='torch-qwen4-conditional-fp32';self.native_range_execution=False
             if self.text.mrope_section is None:
                 raise ValueError('conditional Qwen4 requires an explicit MRoPE contract')
@@ -144,7 +174,7 @@ class Qwen4MultimodalDecoder:
         if self._closed or self._busy:
             raise RuntimeError('Qwen4 media owner is closed or executing')
 
-    def _positions(self,ids,types,image_grids,video_grids):
+    def _positions(self,ids,types,image_grids,video_grids,*,cancelled=None):
         merge=self.components.vision_config['spatial_merge_size']
         queues={1:[],2:[]}
         for modality,grids in ((1,image_grids),(2,video_grids)):
@@ -156,20 +186,31 @@ class Qwen4MultimodalDecoder:
         used={1:0,2:0};positions=np.empty((3,1,ids.shape[1]),np.int64)
         cursor=self.position+self.rope_delta;start=0
         while start<ids.shape[1]:
+            _cancel(cancelled)
             kind=int(types[0,start]);end=start+1
             while end<ids.shape[1] and types[0,end]==kind: end+=1
             if kind==0:
                 positions[:,0,start:end]=np.arange(cursor,cursor+end-start)[None]
                 cursor+=end-start
             else:
-                if used[kind]>=len(queues[kind]):
-                    raise ValueError('media type span has no corresponding publisher grid')
-                temporal,height,width=queues[kind][used[kind]];used[kind]+=1
-                if height%merge or width%merge or end-start!=temporal*(height//merge)*(width//merge):
-                    raise ValueError('media placeholder span differs from its merged grid')
-                axes=np.meshgrid(np.arange(temporal),np.arange(height//merge),np.arange(width//merge),indexing='ij')
-                positions[:,0,start:end]=np.stack(axes).reshape(3,-1)+cursor
-                cursor+=max(height,width)//merge
+                # Processor output may concatenate adjacent media placeholder
+                # tokens. Split that run by the ordered grid extents rather
+                # than assuming one contiguous run represents one item.
+                run_start=start
+                while run_start<end:
+                    if used[kind]>=len(queues[kind]):
+                        raise ValueError('media type span has no corresponding publisher grid')
+                    temporal,height,width=queues[kind][used[kind]]
+                    count=temporal*(height//merge)*(width//merge)
+                    run_end=run_start+count
+                    if height%merge or width%merge or count<=0 or run_end>end:
+                        raise ValueError('media placeholder run differs from its ordered merged grids')
+                    axes=np.meshgrid(np.arange(temporal),np.arange(height//merge),
+                        np.arange(width//merge),indexing='ij')
+                    positions[:,0,run_start:run_end]=np.stack(axes).reshape(3,-1)+cursor
+                    cursor+=max(height,width)//merge
+                    run_start=run_end;used[kind]+=1
+                    _cancel(cancelled)
             start=end
         if any(used[k]!=len(queues[k]) for k in used):
             raise ValueError('publisher grids have unused media items')
@@ -197,6 +238,15 @@ class Qwen4MultimodalDecoder:
                 c=self.components.text_config
                 if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=c['vocab_size']):
                     raise ValueError('Qwen4 media expects unpadded batch-one expanded processor token ids')
+                # Bound the prompt before embedding lookup and media tower
+                # execution. The text decoder repeats this at its mutation
+                # boundary, but discovering an overlong request only there
+                # wastes the full vision transaction and its borrowed inputs.
+                capacity=getattr(self.text,'capacity',c['max_position_embeddings'])
+                position=self.text.position
+                if (type(capacity) is not int or type(position) is not int or
+                        position<0 or ids.shape[1]>capacity-position):
+                    raise ValueError('Qwen4 multimodal prompt exceeds remaining text context')
                 image_id=self.config['image_token_id'];video_id=self.config['video_token_id']
                 types=np.where(ids==image_id,1,np.where(ids==video_id,2,0))
                 if mm_token_type_ids is not None and not np.array_equal(types,np.asarray(mm_token_type_ids)):
@@ -227,12 +277,21 @@ class Qwen4MultimodalDecoder:
                     if pixels is None:
                         if count: raise ValueError('media placeholder has no owned features')
                         continue
+                    if not count:
+                        # Reject orphan processor payloads before entering the
+                        # vision tower.  Besides avoiding wasted allocation,
+                        # this keeps the media dispatch order tied to the
+                        # expanded-token inventory rather than trusting a
+                        # caller-supplied pixels dictionary on its own.
+                        raise ValueError('processor media has no matching expanded-token placeholders')
                     values=self.vision.forward(pixels,grids,cancelled=cancelled)
                     projected=np.concatenate(values,axis=0)
                     if projected.shape!=(count,c['hidden_size']):
                         raise ValueError('vision features and media placeholders differ')
                     embeds[types==modality]=projected
-                positions,delta=self._positions(ids,types,image_grid_thw,video_grid_thw)
+                positions,delta=self._positions(ids,types,image_grid_thw,video_grid_thw,
+                    cancelled=cancelled)
+                _cancel(cancelled)
                 if hasattr(self.text,'torch'):
                     with self.text.cancellation_scope(event):
                         result=self.text.forward(ids,inputs_embeds=embeds,position_ids=positions,**routing)
@@ -302,18 +361,24 @@ class Qwen4MultimodalDecoder:
             finally:
                 self._busy=False
 
-    def restore_cache(self,source,*,max_bytes):
+    def restore_cache(self,source,*,max_bytes,cancelled=None):
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError('Qwen4 media restore cancellation callback required')
+        def check_cancelled():
+            if cancelled is not None and cancelled():
+                raise InterruptedError('Qwen4 media continuation restore cancelled')
         with self._lock:
             self._check()
+            check_cancelled()
             if type(max_bytes) is not int or not 44<max_bytes<=self.max_bytes:
                 raise ValueError('explicit bounded media continuation budget required')
             self._busy=True
             try:
-                prefix=_read(source,12)
+                prefix=_read(source,12);check_cancelled()
                 if prefix[:8]!=self.cache_magic: raise ValueError('invalid media continuation magic')
                 length=struct.unpack('<I',prefix[8:])[0]
                 if not 0<length<=min(65536,max_bytes-44): raise MemoryError('media continuation header exceeds budget')
-                raw=_read(source,length);digest=_read(source,32)
+                raw=_read(source,length);check_cancelled();digest=_read(source,32);check_cancelled()
                 if not hmac.compare_digest(bytes(digest),hashlib.sha256(prefix+raw).digest()):
                     raise ValueError('media continuation header checksum differs')
                 header=json.loads(raw,object_pairs_hook=_pairs)
@@ -321,7 +386,11 @@ class Qwen4MultimodalDecoder:
                     type(header['version']) is not int or header['version']!=1 or header['identity']!=self.identity or
                     type(header['rope_delta']) is not int or abs(header['rope_delta'])>self.components.text_config['max_position_embeddings']):
                     raise ValueError('media continuation identity or rotary delta differs')
-                position=self.text.restore_cache(source,max_bytes=max_bytes-44-length)
+                position=self.text.restore_cache(source,max_bytes=max_bytes-44-length,
+                                                 cancelled=cancelled)
+                # Nested restore checks cancellation immediately before its
+                # atomic publish. Do not introduce a post-publish cancellation
+                # point that could leave text and media metadata split.
                 self.rope_delta=header['rope_delta'];return position
             finally:
                 self._busy=False
@@ -340,18 +409,41 @@ class Qwen4MultimodalDecoder:
                 if owner is not None:
                     try:
                         owner.close()
-                        if owner is self.text:self._orphaned_snapshots.clear()
+                        if owner is self.text:
+                            self.text=None;self._orphaned_snapshots.clear()
+                        elif owner is self.vision:
+                            self.vision=None
                     except BaseException as error: errors.append(error)
+            # Original native bank wrappers borrow the publisher providers;
+            # release each independently, but retain the shared runtime while
+            # any child still needs it. A failed first close must not strand
+            # unrelated banks or skip safe provider cleanup on later retries.
+            # Keep every bank/runtime/provider borrowed by a text owner whose
+            # close failed. A vision/snapshot cleanup failure is independent,
+            # however, and must not skip safe native child retirement after
+            # text has closed successfully.
+            if self.text is None:
+                for name in ('_native_ple','_native_experts'):
+                    owner=getattr(self,name)
+                    if owner is not None:
+                        try:
+                            owner.close();setattr(self,name,None)
+                        except BaseException as error: errors.append(error)
+            if (self.text is None and self._native_ple is None and self._native_experts is None
+                    and self._native_store_runtime is not None):
+                try:
+                    self._native_store_runtime.close();self._native_store_runtime=None
+                except BaseException as error: errors.append(error)
+            if self.text is None and self._native_ple is None and self._own_ple_provider and self._ple_provider is not None:
+                try:self._ple_provider.close();self._ple_provider=None
+                except BaseException as error: errors.append(error)
+            if self.text is None and self._native_experts is None and self._own_expert_provider and self._expert_provider is not None:
+                try:self._expert_provider.close();self._expert_provider=None
+                except BaseException as error: errors.append(error)
+            if self.text is None and self._own_projection_provider and self._projection_provider is not None:
+                try:self._projection_provider.close();self._projection_provider=None
+                except BaseException as error: errors.append(error)
             if errors: raise RuntimeError('media component cleanup remains pending') from errors[0]
-            for name in ('_native_ple','_native_experts','_native_store_runtime'):
-                owner=getattr(self,name)
-                if owner is not None:owner.close();setattr(self,name,None)
-            if self._own_ple_provider and self._ple_provider is not None:
-                self._ple_provider.close();self._ple_provider=None
-            if self._own_expert_provider and self._expert_provider is not None:
-                self._expert_provider.close();self._expert_provider=None
-            if self._own_projection_provider and self._projection_provider is not None:
-                self._projection_provider.close();self._projection_provider=None
             self.auxiliary={};self._snapshots.clear();self._closed=True
 
 __all__=['Qwen4MultimodalDecoder','Qwen4MediaSnapshot']

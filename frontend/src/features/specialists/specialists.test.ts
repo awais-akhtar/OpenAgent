@@ -34,7 +34,6 @@ describe('specialist workspace API parity', () => {
         'Add CRM relationship': ['POST', '/api/assistant/crm'],
       },
       automation: {
-        'Create workflow': ['POST', '/api/workflows'],
         'Update workflow details': ['PUT', '/api/workflows/test-id'],
         'Run workflow in dry-run mode': ['POST', '/api/workflows/run'],
         'Run a workflow live': ['POST', '/api/workflows/run'],
@@ -111,6 +110,10 @@ describe('specialist workspace API parity', () => {
       allow_external: false, respect_robots: true, ingest: true,
     });
     expect(resourcePageConfigs.agents.actions?.find(item => item.label === 'Grant scoped permission')?.payload({ agent: 'a', scope: 'read' })).toMatchObject({ project: 'default', granted_by: 'user' });
+  });
+
+  it('uses the guided workflow builder instead of a raw JSON creation action', () => {
+    expect(resourcePageConfigs.automation.actions?.some(item => item.label === 'Create workflow')).toBe(false);
   });
 });
 

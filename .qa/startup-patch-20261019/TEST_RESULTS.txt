@@ -1,0 +1,5 @@
+2026-10-19 startup patch verification
+- Python workbench/desktop py_compile: PASS
+- Six new desktop UI asset/startup unit tests: PASS
+- Full real Python HTTP startup with synthetic built frontend: PASS (/ 200, /app.js 200, /styles.css 200, /api/health 200)
+- Full Windows desktop, React build, browser visual tests: NOT RUN

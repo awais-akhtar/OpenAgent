@@ -114,37 +114,47 @@ def restore_device_cache(model,source,*,max_bytes):
                 raise MemoryError('Qwen4 cache restore staging exceeds admission')
             banks = [[] for _ in expected['banks']]
             lexical = [None if bank is None else [] for bank in expected['lexical']]
-            positions = None
+            positions = mask = host = flat = value = data = None
+            committed=False
             digest = hashlib.sha256(prefix+encoded)
-            for kind,index,slot,shape,dtype in _entries(expected):
-                model._cancel()
-                host = np.empty(shape,dtype=dtype)
-                flat,item = host.reshape(-1),host.dtype.itemsize
-                block = 1024**2//item
-                for offset in range(0,flat.size,block):
+            try:
+                for kind,index,slot,shape,dtype in _entries(expected):
                     model._cancel()
-                    count = min(block,flat.size-offset)
-                    data = _read(source,count*item);digest.update(data)
-                    value = np.frombuffer(data,dtype=dtype)
-                    if not np.isfinite(value).all():
-                        raise ValueError('nonfinite Qwen4 continuation')
-                    if dtype=='<i8' and (np.any(value<0) or np.any(value>=(model.config.max_position_embeddings if kind=='positions' else model.config.vocab_size))):
-                        raise ValueError('invalid Qwen4 lexical/position state')
-                    flat[offset:offset+count] = value
-                value = model.torch.tensor(host,device=model.device,dtype=model.torch.int64 if dtype=='<i8' else model.torch.float32)
-                if kind=='positions':
-                    positions = value
-                else:
-                    (banks if kind=='layer' else lexical)[index].append(value)
-                del flat,host
-            mask_data = _read(source,batch*position);digest.update(mask_data)
-            if any(value>1 for value in mask_data):
-                raise ValueError('invalid Qwen4 occupancy mask')
-            mask = np.frombuffer(mask_data,dtype=np.uint8).reshape(batch,position).copy() if batch else None
-            if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
-                raise ValueError('Qwen4 cache checksum/EOF mismatch')
-            model._cancel()
-            model._cache,model._ple,model._positions,model._mask,model.position = tuple(tuple(bank) for bank in banks),tuple(None if bank is None else tuple(bank) for bank in lexical),positions,mask,position
-            return position
+                    host = np.empty(shape,dtype=dtype)
+                    flat,item = host.reshape(-1),host.dtype.itemsize
+                    block = 1024**2//item
+                    for offset in range(0,flat.size,block):
+                        model._cancel()
+                        count = min(block,flat.size-offset)
+                        data = _read(source,count*item);digest.update(data)
+                        value = np.frombuffer(data,dtype=dtype)
+                        if not np.isfinite(value).all():
+                            raise ValueError('nonfinite Qwen4 continuation')
+                        if dtype=='<i8' and (np.any(value<0) or np.any(value>=(model.config.max_position_embeddings if kind=='positions' else model.config.vocab_size))):
+                            raise ValueError('invalid Qwen4 lexical/position state')
+                        flat[offset:offset+count] = value
+                    value = model.torch.tensor(host,device=model.device,dtype=model.torch.int64 if dtype=='<i8' else model.torch.float32)
+                    if kind=='positions':
+                        positions = value
+                    else:
+                        (banks if kind=='layer' else lexical)[index].append(value)
+                    host=flat=value=data=None
+                mask_data = _read(source,batch*position);digest.update(mask_data)
+                if any(value>1 for value in mask_data):
+                    raise ValueError('invalid Qwen4 occupancy mask')
+                mask = np.frombuffer(mask_data,dtype=np.uint8).reshape(batch,position).copy() if batch else None
+                if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
+                    raise ValueError('Qwen4 cache checksum/EOF mismatch')
+                model._cancel()
+                model._cache,model._ple,model._positions,model._mask,model.position = tuple(tuple(bank) for bank in banks),tuple(None if bank is None else tuple(bank) for bank in lexical),positions,mask,position
+                committed=True
+                return position
+            finally:
+                if not committed:
+                    banks.clear()
+                    for bank in lexical:
+                        if bank is not None: bank.clear()
+                    lexical.clear();positions=mask=None
+                host=flat=value=data=mask_data=None
         finally:
             model._busy = False

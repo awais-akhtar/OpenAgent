@@ -1,11 +1,46 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, record, records } from '../lib/react/api';
 import { PageFrame } from '../components/PageFrame';
+import { Sparkles } from 'lucide-react';
+import './ModelsPage.css';
 
 type Row = Record<string, unknown>;
 const text = (value: unknown, fallback = '—') => value == null || value === '' ? fallback : String(value);
 const terminal = (job: Row) => ['completed', 'failed', 'cancelled'].includes(String(job.status).toLowerCase());
 const project = () => new URL(location.href).searchParams.get('project') || localStorage.getItem('oa-project') || 'default';
+const stateLabel = (value: unknown) => {
+  if (value === true) return 'Available';
+  if (value === false) return 'Unavailable';
+  if (typeof value !== 'string' || !value.trim()) return 'Not reported';
+  const normalized = value.toLowerCase();
+  if (['ready', 'healthy', 'available', 'active', 'ok', 'success', 'succeeded'].includes(normalized)) return 'Ready';
+  if (['unavailable', 'failed', 'error', 'disabled', 'inactive'].includes(normalized)) return 'Unavailable';
+  if (normalized === 'not_installed') return 'Not installed';
+  if (['unknown', 'registered'].includes(normalized)) return 'Not reported';
+  return normalized.replaceAll('_', ' ').replace(/\b\w/g, character => character.toUpperCase());
+};
+const jobProgress = (job: Row) => {
+  if (job.progress == null || job.progress === '') return undefined;
+  const value = Number(job.progress);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : undefined;
+};
+const runtimeState = (provider: Row) => provider.available === true ? 'Available' : provider.available === false ? 'Unavailable' : 'Availability not reported';
+const locationState = (provider: Row) => provider.local === true ? 'Local' : provider.local === false ? 'External' : 'Routing provider';
+const runtimeAvailability = (runtime: Row) => runtime.available === true ? 'Installed' : runtime.available === false ? 'Not installed' : 'Not reported';
+const runtimeDescription = (runtime: Row) => {
+  if (runtime.server_available === true) return 'Local server responding';
+  if (runtime.server_available === false && runtime.available === true) return 'Runtime installed; local server not responding';
+  if (runtime.server_available === false && runtime.available === false) return 'Runtime not found on this device';
+  if (runtime.available === true) return 'Runtime available; server state not reported';
+  if (runtime.available === false) return 'Runtime not found on this device';
+  return 'Runtime details not reported';
+};
+const runtimeModelReadiness = (runtime: Row) => {
+  const ready = typeof runtime.default_model_ready === 'boolean' ? runtime.default_model_ready : runtime.model_ready;
+  if (ready === true) return `Model ready · ${text(runtime.selected_model, text(runtime.model, 'configured default'))}`;
+  if (ready === false) return `No ready model · ${text(runtime.model, 'default not reported')}`;
+  return 'Model readiness not reported';
+};
 
 export function ModelsPage() {
   const [providers, setProviders] = useState<Row[]>([]);
@@ -18,6 +53,8 @@ export function ModelsPage() {
   const [setupStatus, setSetupStatus] = useState<Row>({});
   const [selected, setSelected] = useState<Row>({});
   const [selectedModel, setSelectedModel] = useState<Row>({});
+  const [providerReadError, setProviderReadError] = useState('');
+  const [readFailures, setReadFailures] = useState<string[]>([]);
   const [probe, setProbe] = useState<Row>({});
   const [query, setQuery] = useState('');
   const [allowNetwork, setAllowNetwork] = useState(false);
@@ -43,27 +80,34 @@ export function ModelsPage() {
       api.get<unknown>('/api/local-ai/hardware'), api.get<unknown>('/api/model-policy'), api.get<unknown>('/api/local-ai/adapters'),
       api.get<unknown>('/api/local-ai/marketplace'), api.get<unknown>('/api/local-ai/setup/status'), loadJobs(),
     ]);
-    const failed: string[] = [];
+    const readAreas = ['providers', 'local-models', 'hardware', 'routing', 'adapters', 'catalog', 'setup', 'jobs'];
+    const failedAreas = response.flatMap((item, index) => item.status === 'rejected' ? [readAreas[index]] : []);
+    setReadFailures(failedAreas);
     const applyRows = (index: number, setter: (value: Row[]) => void, key: string) => {
-      const item = response[index]; if (item.status === 'fulfilled') setter(records(item.value, key)); else failed.push(String(item.reason));
+      const item = response[index];
+      if (item.status === 'fulfilled') {
+        const rows = records(item.value, key); setter(rows);
+        if (index === 0) setSelected(current => rows.find(provider => provider.id === current.id) ?? rows.find(provider => provider.available === true) ?? rows[0] ?? {});
+      } else if (index === 0) setProviderReadError('Provider availability could not be read.');
     };
     const applyRecord = (index: number, setter: (value: Row) => void) => {
-      const item = response[index]; if (item.status === 'fulfilled') setter(record(item.value)); else failed.push(String(item.reason));
+      const item = response[index]; if (item.status === 'fulfilled') setter(record(item.value));
     };
     applyRows(0, setProviders, 'providers');
+    if (response[0].status === 'fulfilled') setProviderReadError('');
     applyRows(1, setModels, 'models');
     applyRecord(2, setHardware);
     applyRecord(3, setPolicy);
     applyRows(4, setAdapters, 'adapters');
     applyRows(5, setMarketplace, 'models');
     applyRecord(6, setSetupStatus);
-    if (failed.length) setError(`Some model services could not be read: ${failed[0]}`);
+    if (failedAreas.length) setError(`Could not read ${failedAreas.join(', ')}. Data from available model services is still shown.`);
     setBusy(false);
   }
   useEffect(() => { void refresh(); }, []);
   useEffect(() => {
     if (!jobs.some(job => !terminal(job))) return;
-    const timer = window.setInterval(() => { void loadJobs().catch(cause => setError(cause instanceof Error ? cause.message : 'Model job status unavailable.')); }, 1500);
+    const timer = window.setInterval(() => { void loadJobs().catch(() => setError('Model setup activity could not be refreshed.')); }, 1500);
     return () => window.clearInterval(timer);
   }, [jobs]);
 
@@ -71,10 +115,26 @@ export function ModelsPage() {
   const shownModels = useMemo(() => models.filter(item => `${item.name ?? ''} ${item.id ?? ''} ${item.provider ?? ''}`.toLowerCase().includes(query.toLowerCase())), [models, query]);
   const shownMarketplace = useMemo(() => marketplace.filter(item => `${item.name ?? ''} ${item.id ?? ''} ${item.provider ?? ''}`.toLowerCase().includes(query.toLowerCase())), [marketplace, query]);
   const gpu = record(hardware.gpu);
+  const activeProvider = providers.find(item => item.id === selected.id) ?? selected;
+  const ollamaSetup = record(setupStatus.ollama);
+  const llamaSetup = record(setupStatus.llamacpp);
+  const recommendations = record(setupStatus.recommended);
+  const setupRuntimes = [['Ollama', ollamaSetup], ['llama.cpp', llamaSetup]] as const;
+  const localPolicies = record(policy.routes);
+  const policyRoute = Array.isArray(localPolicies['local-first']) ? localPolicies['local-first'].filter(item => typeof item === 'string').join(' → ') : '';
+  const hardwareFacts = [
+    hardware.system && hardware.machine ? `${String(hardware.system)} · ${String(hardware.machine)}` : hardware.system ?? hardware.machine,
+    hardware.cpu_count != null ? `${String(hardware.cpu_count)} CPU cores` : null,
+    hardware.ram_gb != null ? `${String(hardware.ram_gb)} GB memory` : null,
+    gpu.available === true && gpu.adapter ? `GPU · ${String(gpu.adapter)}` : gpu.available === false ? 'No GPU detected' : null,
+  ].filter((value): value is string => typeof value === 'string' && value !== '');
+  const probeDependents = records(probe, 'dependents').length;
+  const probeTools = records(probe, 'tools').length;
+  const providerManagedProbe = ['ollama://', 'llamacpp://'].some(prefix => text(probe.local_path, '').startsWith(prefix));
 
   async function discover() {
     setDiscovering(true); setError(''); setNotice('');
-    try { const result = record(await api.post<unknown>('/api/models/discover', {})); await refresh(); setNotice(`Discovery finished. ${Array.isArray(result.discovered) ? result.discovered.length : 0} model records reported.`); }
+    try { const result = record(await api.post<unknown>('/api/models/discover', {})); await refresh(); setNotice(Array.isArray(result.discovered) ? `Discovery finished. ${result.discovered.length} model records reported.` : 'Model discovery completed.'); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Discovery failed.'); }
     finally { setDiscovering(false); }
   }
@@ -95,7 +155,7 @@ export function ModelsPage() {
     try {
       const result = record(await api.post<unknown>('/api/local-ai/models/setup/job', { task: 'chat', model: modelName, allow_network: allowNetwork, project: project() }));
       const job = record(result.job); setJobs(current => [job, ...current.filter(existing => existing.id !== job.id)]);
-      setNotice(`Setup job queued: ${text(job.id)} · ${text(job.status, 'queued')}.`);
+      setNotice(`Setup request accepted for ${modelName}.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Model setup could not be queued.'); }
     finally { setStartingJob(false); }
   }
@@ -115,7 +175,7 @@ export function ModelsPage() {
   async function downloadModel(item: Row) {
     if (!confirm(`Download ${text(item.name, text(item.id))}? The backend verifies any registered checksum. ${allowNetwork ? 'Network use is enabled for this request.' : 'Network downloads are off; remote source URLs will be rejected.'}`)) return;
     setModelBusy(String(item.id)); setError(''); setNotice('');
-    try { const result = record(await api.post<unknown>('/api/local-ai/models/download', { model_id: item.id, allow_network: allowNetwork })); setNotice(`Model downloaded to ${text(record(result.model).local_path, 'the configured model store')}.`); await refresh(); }
+    try { await api.post<unknown>('/api/local-ai/models/download', { model_id: item.id, allow_network: allowNetwork }); setNotice(`Download completed for ${text(item.name, 'the selected model')}.`); await refresh(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Model download failed.'); }
     finally { setModelBusy(''); }
   }
@@ -128,17 +188,58 @@ export function ModelsPage() {
     finally { setModelBusy(''); }
   }
 
-  return <PageFrame eyebrow="Runtime / model catalog" title="Models & providers" description="See configured providers, installed models, host capability and server-reported setup jobs." actions={<><button className="btn" onClick={() => void refresh()} disabled={busy}>Refresh</button><button className="btn primary" onClick={() => void discover()} disabled={discovering}>{discovering ? 'Discovering…' : 'Discover models'}</button></>}>
-    {error && <p className="notice error" role="alert">{error}</p>}{notice && <p className="notice success" role="status">{notice}</p>}
-    <section className="panel panel-body row"><strong>{text(hardware.system)} · {text(hardware.machine)}</strong><span>CPU {text(hardware.cpu_count)} · RAM {text(hardware.ram_gb)} GB · GPU {gpu.available === true ? text(gpu.adapter) : 'Not detected'}</span></section>
-    <div className="row" style={{ margin: '20px 0' }}><h2>Providers and local models</h2><input className="field" style={{ maxWidth: 300 }} aria-label="Filter models" placeholder="Filter models" value={query} onChange={event => setQuery(event.target.value)} /></div>
-    {busy ? <p className="empty">Checking configured runtimes…</p> : <div className="workspace">
-      <section className="panel"><div className="panel-head"><h2>Configured providers</h2></div><div className="panel-body list">{shownProviders.map(item => <button key={String(item.id)} aria-current={selected.id === item.id} onClick={() => setSelected(item)}><strong>{text(item.label, text(item.id))}</strong><small>{text(item.privacy_warning, item.local === true ? 'Local provider' : 'Provider status from OpenAgent')} · {item.available === true ? 'Reachable' : item.available === false ? 'Not reachable' : 'Status unknown'}</small></button>)}{!shownProviders.length && <p className="empty">No provider records match this filter.</p>}</div></section>
-      <section className="panel"><div className="panel-head"><h2>Provider details</h2></div><div className="panel-body">{selected.id ? <><dl className="facts">{['id', 'default_model', 'network', 'default_model_ready', 'privacy_warning'].map(key => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{text(selected[key])}</dd></div>)}</dl><h3>Installed models</h3><p>{Array.isArray(selected.installed_models) ? selected.installed_models.map(String).join(', ') : 'No installed model list reported.'}</p></> : <p className="empty">Select a provider to inspect its reported configuration.</p>}<details><summary>Runtime setup capability</summary><pre>{JSON.stringify(setupStatus, null, 2)}</pre></details></div></section>
-    </div>}
-    <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><h2>Local model inventory</h2><span>{shownModels.length} records</span></div><div className="panel-body">{shownModels.length ? <div className="table-wrap"><table><thead><tr><th>Model</th><th>Provider</th><th>State</th><th>Size</th><th>Actions</th></tr></thead><tbody>{shownModels.map(item => <tr key={String(item.id)}><td><button className="text-button" onClick={() => void inspectModel(item)}>{text(item.name, text(item.id))}</button><small>{text(item.id)}</small></td><td>{text(item.provider)}</td><td>{text(item.status)}</td><td>{item.size_bytes != null && item.size_bytes !== 0 ? `${(Number(item.size_bytes) / 1024 ** 3).toFixed(1)} GB` : '—'}</td><td className="toolbar"><button className="btn" onClick={() => void inspectModel(item)} disabled={probing}>{selectedModel.id === item.id && probing ? 'Checking…' : 'Probe'}</button>{item.local_path ? <button className="btn danger" disabled={!!modelBusy} onClick={() => void removeModel(item)}>Remove</button> : <button className="btn" disabled={!!modelBusy || !item.source_url} onClick={() => void downloadModel(item)}>{modelBusy === item.id ? 'Downloading…' : 'Download'}</button>}</td></tr>)}</tbody></table></div> : <p className="empty">No local model records returned.</p>}{selectedModel.id != null && selectedModel.id !== '' ? <details open><summary>Probe result · {text(selectedModel.name, text(selectedModel.id))}</summary><pre>{JSON.stringify(probe, null, 2)}</pre></details> : null}<details><summary>Active routing policy</summary><pre>{JSON.stringify(policy, null, 2)}</pre></details></div></section>
-    <div className="workspace" style={{ marginTop: 16 }}><form className="panel panel-body stack" onSubmit={registerModel}><h2>Register a model source</h2><label>Model name<input className="field" value={modelName} onChange={event => setModelName(event.target.value)} required /></label><label>Local file path<input className="field" value={modelPath} onChange={event => setModelPath(event.target.value)} placeholder="Optional path to an existing model file" /></label><label>Download source URL<input className="field" type="url" value={modelSource} onChange={event => setModelSource(event.target.value)} placeholder="Optional https://…" /></label><small className="tiny">Registration stores model metadata. It does not download the file or contact the URL.</small><button className="btn primary" disabled={modelBusy === 'register'}>{modelBusy === 'register' ? 'Registering…' : 'Register model'}</button></form><section className="panel"><div className="panel-head"><h2>Adapters</h2><span>{adapters.length} records</span></div><div className="panel-body list">{adapters.map((adapter, index) => <article className="record-row" key={text(adapter.id, String(index))}><div><strong>{text(adapter.name, text(adapter.adapter_id, 'Adapter'))}</strong><p>{text(adapter.model_id)} · {text(adapter.status)}</p></div><small>{text(adapter.path, 'Path not reported')}</small></article>)}{!adapters.length && <p className="empty">No acceleration adapters returned.</p>}</div></section></div>
-    <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><h2>Setup catalog</h2><span>Only entries with a returned Ollama model ID can be queued here</span></div><div className="panel-body"><label className="record-row">Permit network download for the next setup job<input type="checkbox" checked={allowNetwork} onChange={event => setAllowNetwork(event.target.checked)} /></label><p className="tiny">Off by default. Every queued setup still asks for confirmation and the backend records `allow_network` with the job.</p><div className="table-wrap"><table><thead><tr><th>Catalog model</th><th>Engine</th><th>Requirements</th><th>Action</th></tr></thead><tbody>{shownMarketplace.map(item => { const metadata = record(item.metadata); return <tr key={String(item.id)}><td>{text(item.name, text(item.id))}<small>{text(metadata.model, 'No direct Ollama identifier')}</small></td><td>{text(item.recommended_engine, text(item.provider))}</td><td>{text(metadata.ram_gb, '—')} GB RAM · {text(metadata.quantization, 'Unreported quantization')}</td><td><button className="btn" disabled={startingJob || !metadata.model} onClick={() => void setup(item)}>{startingJob ? 'Queuing…' : 'Queue chat setup'}</button></td></tr>; })}</tbody></table></div></div></section>
-    <section className="panel" style={{ marginTop: 16 }}><div className="panel-head"><h2>Model setup jobs</h2><button className="btn" onClick={() => void loadJobs()}>Refresh jobs</button></div><div className="panel-body list">{jobs.map(job => <article className="record-row" key={String(job.id)}><div><strong>{text(job.model_name, 'Model setup')}</strong><p>{text(job.current_step, text(job.kind))} · {text(job.status)}</p><small>{Math.max(0, Math.min(100, Number(job.progress ?? 0)))}% · {text(job.id)}</small>{job.error != null && job.error !== '' ? <p className="notice error">{String(job.error)}</p> : null}</div>{!terminal(job) && <button className="btn danger" onClick={() => void cancelJob(String(job.id))}>Cancel job</button>}</article>)}{!jobs.length && <p className="empty">No setup jobs reported for this project.</p>}</div></section>
+  return <PageFrame title="Models" actions={<><button className="btn" onClick={() => void refresh()} disabled={busy}>Refresh</button><button className="btn primary" onClick={() => void discover()} disabled={discovering}>{discovering ? 'Discovering…' : 'Discover models'}</button></>}>
+    <div className="models-page">
+      {error && <p className="notice error" role="alert">{error}</p>}{notice && <p className="notice success" role="status">{notice}</p>}
+      <div className="models-primary">
+      {hardwareFacts.length > 0 ? <section className="models-host" aria-label="Host capability"><span>Host</span><strong>{hardwareFacts[0]}</strong>{hardwareFacts.slice(1).map(fact => <span key={fact}>{fact}</span>)}</section> : readFailures.includes('hardware') && <section className="models-host" aria-label="Host capability"><span>Host</span><p>Host capabilities could not be read.</p></section>}
+      <section className="models-section models-provider-section" aria-labelledby="models-providers-title">
+        <div className="models-section-head"><div><h2 id="models-providers-title">Providers</h2></div><input className="field models-filter" aria-label="Filter providers and models" placeholder="Filter providers and models" value={query} onChange={event => setQuery(event.target.value)} /></div>
+        {busy ? <div className="models-loading" role="status">Checking provider availability…</div> : <div className="models-provider-layout">
+          <div className="models-provider-list" role="group" aria-label="Configured providers">{shownProviders.map(item => <button type="button" key={String(item.id)} aria-current={activeProvider.id === item.id ? 'true' : undefined} className={`models-provider-choice${activeProvider.id === item.id ? ' active' : ''}`} onClick={() => setSelected(item)}><span className="models-provider-copy"><strong>{text(item.label, text(item.id))}</strong><small>{locationState(item)}</small></span><span className={`models-status ${item.available === true ? 'available' : item.available === false ? 'unavailable' : 'unknown'}`}>{runtimeState(item)}</span></button>)}{!shownProviders.length && <p className="models-empty" role={providerReadError ? 'status' : undefined}>{providerReadError ? 'Provider availability could not be loaded.' : query ? 'No providers match this filter.' : 'No provider records are configured.'}</p>}</div>
+          <div className="models-provider-detail">{activeProvider.id ? <>
+            <div className="models-provider-detail-head"><div><span>{locationState(activeProvider)} provider</span><h3>{text(activeProvider.label, text(activeProvider.id))}</h3></div><span className={`models-status ${activeProvider.available === true ? 'available' : activeProvider.available === false ? 'unavailable' : 'unknown'}`}>{runtimeState(activeProvider)}</span></div>
+            <dl className="models-provider-facts"><div><dt>Configured default</dt><dd>{text(activeProvider.default_model, 'Not configured')}</dd></div><div><dt>Default model readiness</dt><dd>{activeProvider.default_model_ready === true ? 'Ready' : activeProvider.default_model_ready === false ? 'Not installed' : 'Not reported'}</dd></div><div><dt>Network access</dt><dd>{activeProvider.network === true ? 'Configured for network access' : activeProvider.network === false ? 'Network disabled' : locationState(activeProvider) === 'External' ? 'External service' : 'Not reported'}</dd></div></dl>
+            {Array.isArray(activeProvider.installed_models) && activeProvider.installed_models.length > 0 && <div className="models-installed"><span>Installed with this provider</span><ul>{activeProvider.installed_models.map((model, index) => <li key={`${String(model)}-${index}`}>{String(model)}</li>)}</ul></div>}
+            {text(activeProvider.privacy_warning, '') && <p className="models-privacy">{text(activeProvider.privacy_warning, '')}</p>}
+            {activeProvider.local === false && <p className="models-privacy">Prompts may leave this device.</p>}
+          </> : <p className="models-empty">{providerReadError ? 'Retry to read provider availability.' : 'No configured providers are available.'}</p>}</div>
+        </div>}
+      </section>
+
+      <section className="models-section" aria-labelledby="models-installed-title">
+        <div className="models-section-head"><div><h2 id="models-installed-title">Local models</h2></div><span className="models-count">{readFailures.includes('local-models') ? 'Unavailable' : `${shownModels.length} shown`}</span></div>
+        {shownModels.length ? <div className="table-wrap models-table-wrap"><table><thead><tr><th>Model</th><th>Provider</th><th>Availability</th><th>Size</th><th>Actions</th></tr></thead><tbody>{shownModels.map(item => <tr key={String(item.id)}><td><strong>{text(item.name, text(item.id))}</strong>{item.name != null && item.id != null && String(item.name) !== String(item.id) ? <small>{String(item.id)}</small> : null}</td><td>{text(item.provider, 'Local')}</td><td>{stateLabel(item.status)}</td><td>{item.size_bytes != null && item.size_bytes !== 0 ? `${(Number(item.size_bytes) / 1024 ** 3).toFixed(1)} GB` : '—'}</td><td className="toolbar"><button className="btn" onClick={() => void inspectModel(item)} disabled={probing}>{selectedModel.id === item.id && probing ? 'Checking…' : 'Probe'}</button>{item.local_path ? <button className="btn danger" disabled={!!modelBusy} onClick={() => void removeModel(item)}>Remove</button> : <button className="btn" disabled={!!modelBusy || !item.source_url} onClick={() => void downloadModel(item)}>{modelBusy === item.id ? 'Downloading…' : 'Download'}</button>}</td></tr>)}</tbody></table></div> : <p className="models-empty">{busy ? 'Reading local model inventory…' : readFailures.includes('local-models') ? 'Local model inventory could not be read.' : query ? 'No local models match this filter.' : 'No local models are registered.'}</p>}
+        {selectedModel.id != null && selectedModel.id !== '' && <section className="models-probe" aria-label="Model probe result"><div><strong>{text(selectedModel.name, text(selectedModel.id))}</strong><span>{probing ? 'Checking local model…' : stateLabel(probe.status)}</span></div>{!probing && <dl><div><dt>File status</dt><dd>{probe.exists === true ? 'Present on this device' : providerManagedProbe ? 'Managed by local provider' : probe.exists === false ? 'Not present at the registered path' : 'Not reported'}</dd></div><div><dt>Size</dt><dd>{probe.size_bytes != null ? `${(Number(probe.size_bytes) / 1024 ** 3).toFixed(2)} GB` : 'Not reported'}</dd></div><div><dt>Checksum</dt><dd>{probe.checksum_valid === true ? 'Verified' : probe.checksum_valid === false ? 'Mismatch' : 'Not available'}</dd></div><div><dt>Dependencies</dt><dd>{probeDependents}</dd></div><div><dt>Assigned tools</dt><dd>{probeTools}</dd></div></dl>}</section>}
+        <details className="models-routing"><summary>Model routing settings</summary>{readFailures.includes('routing') ? <p className="models-empty">Routing policy could not be read.</p> : <div className="models-routing-content"><div><span>Routing policy</span><strong>{text(policy.routing_policy, 'Not reported')}</strong></div><div><span>Fallback policy</span><strong>{text(policy.fallback_policy, 'Not reported')}</strong></div>{policyRoute && <div className="models-route-list"><span>Local-first order</span><strong>{policyRoute}</strong></div>}</div>}</details>
+      </section>
+
+      <details className="models-secondary" open={jobs.some(job => !terminal(job))}>
+        <summary>Setup activity <span>{jobs.length}</span></summary>
+        <div className="models-job-list">{jobs.map(job => { const progress = jobProgress(job); return <article className="models-job" key={String(job.id)}><div><strong>{text(job.model_name, 'Model setup')}</strong><p>{text(job.current_step, text(job.kind))} · {stateLabel(job.status)}</p>{progress != null && <progress max="100" value={progress} aria-label={`Setup progress for ${text(job.model_name, 'model')}`} />}{job.error != null && job.error !== '' && <p className="notice error">{String(job.error)}</p>}</div><div><small>{progress != null ? `${progress}%` : 'Progress not reported'}</small>{!terminal(job) && <button className="btn danger" onClick={() => void cancelJob(String(job.id))}>Cancel job</button>}</div></article>; })}{!jobs.length && <p className="models-empty">{readFailures.includes('jobs') ? 'Setup activity could not be read.' : 'No setup jobs have been recorded for this project.'}</p>}</div>
+      </details>
+
+      <details className="models-secondary">
+        <summary>Setup catalog and model registry</summary>
+        <div className="models-management-grid">
+          <section><div className="models-section-head"><div><h2>Setup catalog</h2></div></div><label className="models-network-toggle">Permit network download for the next setup job<input type="checkbox" checked={allowNetwork} onChange={event => setAllowNetwork(event.target.checked)} /></label><p className="models-safety-note">Network downloads are disabled by default. Starting a job always requires confirmation; the backend records the chosen policy.</p><div className="models-catalog">{shownMarketplace.map(item => { const metadata = record(item.metadata); return <article className="models-catalog-item" key={String(item.id)}><div><strong>{text(item.name, text(item.id))}</strong><small>{text(metadata.model, 'No direct Ollama identifier')}</small><small>{metadata.ram_gb != null ? `${String(metadata.ram_gb)} GB RAM` : 'Memory requirement not reported'} · {metadata.quantization != null ? String(metadata.quantization) : 'Quantization not reported'}</small></div><button className="btn" disabled={startingJob || !metadata.model} onClick={() => void setup(item)}>{startingJob ? 'Queuing…' : 'Queue setup'}</button></article>; })}{!shownMarketplace.length && <p className="models-empty">{readFailures.includes('catalog') ? 'Setup catalog could not be read.' : query ? 'No catalog models match this filter.' : 'No models are available in the setup catalog.'}</p>}</div></section>
+          <section><div className="models-section-head"><div><h2>Register a model</h2><p>Add a local file or optional source URL to the registry.</p></div></div><form className="models-register-form" onSubmit={registerModel}><label>Model name<input className="field" value={modelName} onChange={event => setModelName(event.target.value)} required /></label><label>Local file path<input className="field" value={modelPath} onChange={event => setModelPath(event.target.value)} placeholder="Optional path to an existing model file" /></label><label>Download source URL<input className="field" type="url" value={modelSource} onChange={event => setModelSource(event.target.value)} placeholder="Optional https://…" /></label><small>Registration saves metadata only. It does not download a file or contact the URL.</small><button className="btn primary" disabled={modelBusy === 'register'}>{modelBusy === 'register' ? 'Registering…' : 'Register model'}</button></form></section>
+          <section className="models-setup-summary"><div className="models-section-head"><div><h2>Local setup tools</h2></div></div>{readFailures.includes('setup') ? <p className="models-empty">Local setup availability could not be read.</p> : <><div className="models-runtime-grid">{setupRuntimes.map(([label, runtime]) => <article key={label}><div><strong>{label}</strong><span className={`models-status ${runtime.available === true ? 'available' : runtime.available === false ? 'unavailable' : 'unknown'}`}>{runtimeAvailability(runtime)}</span></div><p>{runtimeDescription(runtime)}</p><small>{runtimeModelReadiness(runtime)}</small></article>)}</div>{Object.keys(recommendations).length > 0 && <div className="models-recommendations"><span>Recommended defaults</span><p>{['chat', 'code', 'research', 'speed', 'vision', 'low_resource_code'].filter(key => recommendations[key]).map(key => <span key={key}><b>{key.replaceAll('_', ' ')}</b>{String(recommendations[key])}</span>)}</p></div>}</>}</section>
+          <section className="models-adapters"><div className="models-section-head"><div><h2>Acceleration adapters</h2></div><span className="models-count">{readFailures.includes('adapters') ? 'Unavailable' : adapters.length}</span></div><div className="models-adapter-list">{adapters.map((adapter, index) => <article className="models-adapter" key={text(adapter.id, String(index))}><div><strong>{text(adapter.name, text(adapter.adapter_id, 'Adapter'))}</strong><span>{text(adapter.model_id, 'Model not reported')}</span></div><small>{stateLabel(adapter.status)}</small></article>)}{!adapters.length && <p className="models-empty">{readFailures.includes('adapters') ? 'Acceleration adapters could not be read.' : 'No acceleration adapters are reported.'}</p>}</div></section>
+        </div>
+      </details>
+      </div>
+      <aside className="models-inspector" aria-label="Model guidance and runtime readiness">
+        <section className="models-inspector-card">
+          <div className="models-inspector-heading"><span className="models-inspector-icon" aria-hidden="true"><Sparkles size={17}/></span><div><h2>Recommended defaults</h2><p>Based on the runtime configuration.</p></div></div>
+          {Object.keys(recommendations).length ? <dl className="models-recommendation-list">{['chat', 'code', 'research', 'speed', 'vision', 'low_resource_code'].filter(key => recommendations[key]).map(key => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{String(recommendations[key])}</dd></div>)}</dl> : <p className="models-inspector-empty">No role recommendations were returned by the runtime.</p>}
+        </section>
+        <section className="models-inspector-card">
+          <div className="models-inspector-heading"><div><h2>Runtime readiness</h2><p>Reported by configured setup tools.</p></div></div>
+          {readFailures.includes('setup') ? <p className="models-inspector-empty">Setup availability could not be read.</p> : setupRuntimes.length ? <div className="models-runtime-rail">{setupRuntimes.map(([name, runtime]) => <article key={name}><div><strong>{name}</strong><span className={`models-status ${runtime.available === true ? 'available' : runtime.available === false ? 'unavailable' : 'unknown'}`}>{runtimeAvailability(runtime)}</span></div><small>{runtimeModelReadiness(runtime)}</small></article>)}</div> : <p className="models-inspector-empty">No setup runtimes were reported.</p>}
+        </section>
+        <section className="models-inspector-note"><strong>Model availability is live</strong><p>Selection, setup, downloads, and removal follow the status and permissions reported by this backend.</p></section>
+      </aside>
+    </div>
   </PageFrame>;
 }

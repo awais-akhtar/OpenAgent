@@ -33,6 +33,12 @@ _PINNED=set()
 _PIN_LOCK=threading.RLock()
 
 
+def _register_checkpoint_bound_model(snapshot,register,*args):
+    """Recheck the admitted headers immediately before native publication."""
+    snapshot.assert_unchanged()
+    return register(*args)
+
+
 class NativeQwen4PublicAdapters:
     segment_id=edge_id='openagent-qwen4-native-model'
     family='qwen4_exp_text'
@@ -48,7 +54,16 @@ class NativeQwen4PublicAdapters:
         if type(own_decoder) is not bool:raise ValueError('boolean source decoder ownership required')
         root=_safe_path(model_directory).resolve(strict=True)
         if not root.is_dir():raise ValueError('admitted local publisher checkpoint root required')
+        # Do not let a preloaded Python decoder bypass exact public-route
+        # admission. Header-only inventory runs before runtime registration.
+        from .source_scope import require_checkpoint_inventory_admission
+        inventory=require_checkpoint_inventory_admission(root,family='qwen4',
+            model_type='qwen4_exp_text',backend='public-range',arithmetic='fp32',
+            max_metadata_bytes=max_resource_bytes)
+        from .family_source_binding import require_decoder_snapshot
+        require_decoder_snapshot(decoder,inventory,family='qwen4',model_type='qwen4_exp_text')
         self._lock=threading.RLock();self._closed=False;self._model_id=None
+        self._active_operation=False
         self._observing=False
         self._pending_observation=None
         self.native=self.kernel=self._kernel_release=None
@@ -134,7 +149,9 @@ class NativeQwen4PublicAdapters:
                 register=self.native.library.oa_qwen4_public_register
                 register.argtypes=[C.POINTER(Qwen4PublicDescriptor),C.POINTER(C.c_uint64),C.c_void_p,C.c_size_t];register.restype=C.c_int
                 result=C.c_uint64();error=C.create_string_buffer(4096)
-                if register(C.byref(descriptor),C.byref(result),error,len(error)):raise RuntimeError(error.value.decode(errors='replace'))
+                status=_register_checkpoint_bound_model(inventory,register,
+                    C.byref(descriptor),C.byref(result),error,len(error))
+                if status:raise RuntimeError(error.value.decode(errors='replace'))
                 self._model_id=int(result.value)
                 with _PIN_LOCK:_PINNED.add(self)
                 runtime_identity.assert_unchanged();kernel_identity.assert_unchanged()
@@ -151,7 +168,8 @@ class NativeQwen4PublicAdapters:
         if not callable(observer) or type(max_host_bytes) is not int or max_host_bytes <= 0:
             raise ValueError('bounded routing observer required')
         with self._lock:
-            if self._closed or self._model_id is None or self._observing or self._pending_observation is not None:
+            if (self._closed or self._model_id is None or self._observing or
+                    self._active_operation or self._pending_observation is not None):
                 raise RuntimeError('idle open Qwen4 observation owner required')
             signature=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_uint32,C.c_uint64,C.c_uint64,C.c_uint64,
                 C.POINTER(C.c_float),C.POINTER(C.c_int64),C.POINTER(C.c_float))
@@ -159,8 +177,11 @@ class NativeQwen4PublicAdapters:
             def capture(context,layer,rows,experts,topk,raw,chosen,scales):
                 try:
                     if (not 0 <= layer < self.layers or not 0 < rows <= self.rows or
-                            not 0 < topk <= experts or rows*(experts*12+topk*40)>max_host_bytes):
+                            not 0 < topk <= experts or
+                            rows*(experts*12+topk*40)>max_host_bytes):
                         raise MemoryError('native routing export exceeds scope admission')
+                    if not raw or not chosen or not scales:
+                        raise ValueError('native routing callback supplied null array storage')
                     logits=np.ctypeslib.as_array(raw,shape=(rows*experts,)).copy().reshape(rows,experts)
                     selected=np.ctypeslib.as_array(chosen,shape=(rows*topk,)).copy().reshape(rows,topk)
                     weights=np.ctypeslib.as_array(scales,shape=(rows*topk,)).copy().reshape(rows,topk)
@@ -176,19 +197,35 @@ class NativeQwen4PublicAdapters:
             identity=self.identity.encode('ascii');pointer=C.cast(callback,C.c_void_p)
             if begin(identity,pointer,None):raise RuntimeError('native routing scope already active')
             self._observing=True
-            try:
-                yield
-                if failures:raise RuntimeError('native routing observation failed') from failures[0]
-            finally:
+            def finish():
                 status=end(identity,pointer,None)
                 if status:
                     self._pending_observation=(threading.get_ident(),identity,callback,pointer,end)
                     raise RuntimeError('native routing scope release failed; callback retained')
                 self._observing=False
+            try:
+                yield
+                if failures:raise RuntimeError('native routing observation failed') from failures[0]
+            except BaseException as primary:
+                try:
+                    finish()
+                except BaseException as cleanup:
+                    primary.add_note('native routing observer cleanup failed: '+repr(cleanup))
+                raise
+            else:
+                finish()
 
     def final_hidden(self,wire,*,cancelled=None,max_host_bytes):
         with self._lock:
+            # routing_scope invokes user code synchronously from a native
+            # callback while this RLock is held.  RLock recursion would let
+            # that callback re-enter the native model through this method,
+            # which the public ABI does not support.
+            if self._observing or self._active_operation:
+                raise RuntimeError('native Qwen4 model operation reentry from a native callback is unsupported')
             if self._closed or self._model_id is None:raise RuntimeError('closed public Qwen4 owner')
+            if cancelled is not None and not callable(cancelled):
+                raise ValueError('Qwen4 cancellation observer must be callable')
             value=np.asarray(wire)
             if (value.dtype!=np.float32 or value.ndim!=2 or value.shape[1]!=self.transport_width
                     or not 0<value.shape[0]<=self.rows or not np.isfinite(value).all()):
@@ -198,15 +235,19 @@ class NativeQwen4PublicAdapters:
             value=np.array(value,dtype=np.float32,order='C',copy=True)
             output=np.empty((len(value),self.hidden_size),np.float32);failures=[]
             def check(user):
-                try:return int(cancelled is not None and cancelled())
+                try:return 1 if cancelled is not None and bool(cancelled()) else 0
                 except BaseException as failure:failures.append(failure);return 1
             callback=C.CFUNCTYPE(C.c_int,C.c_void_p)(check)
             operation=self.native.library.oa_qwen4_public_hidden
             operation.argtypes=[C.c_uint64,C.c_uint32,C.POINTER(C.c_float),C.c_uint64,
                 C.POINTER(C.c_float),C.c_uint64,C.c_void_p,C.c_void_p,C.c_void_p,C.c_size_t]
             operation.restype=C.c_int;error=C.create_string_buffer(4096)
-            status=operation(self._model_id,len(value),value.ctypes.data_as(C.POINTER(C.c_float)),value.size,
-                output.ctypes.data_as(C.POINTER(C.c_float)),output.size,C.cast(callback,C.c_void_p),None,error,len(error))
+            self._active_operation=True
+            try:
+                status=operation(self._model_id,len(value),value.ctypes.data_as(C.POINTER(C.c_float)),value.size,
+                    output.ctypes.data_as(C.POINTER(C.c_float)),output.size,C.cast(callback,C.c_void_p),None,error,len(error))
+            finally:
+                self._active_operation=False
             if failures:raise InterruptedError('hidden export cancellation failed') from failures[0]
             if status:raise RuntimeError(error.value.decode(errors='replace'))
             if not np.isfinite(output).all():raise ValueError('nonfinite native final hidden output')
@@ -215,6 +256,8 @@ class NativeQwen4PublicAdapters:
     def close(self):
         with self._lock:
             if self._closed:return
+            if self._active_operation:
+                raise RuntimeError('cannot close Qwen4 owner during an active native operation')
             if self._pending_observation is not None:
                 thread,identity,callback,pointer,end=self._pending_observation
                 if thread!=threading.get_ident() or end(identity,pointer,None):

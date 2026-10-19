@@ -118,6 +118,22 @@ def _integer(value, name, *, minimum=1, maximum=(1 << 32) - 1):
     return value
 
 
+def _cancel_requested(callback, user_data):
+    """Invoke a public ABI cancellation callback with its exact wire contract.
+
+    Segment/Edge declares cancellation as a C ``int`` whose only legal values
+    are 0 (continue) and 1 (cancel).  Treating every nonzero value as true
+    silently accepts malformed callers and makes family adapters disagree on
+    the ABI.  Validate at the boundary before a decoder can commit state.
+    """
+    if not callback:
+        return False
+    value = callback(user_data)
+    if type(value) is not int or value not in (0, 1):
+        raise ValueError('public ABI cancellation callback must return exactly 0 or 1')
+    return value == 1
+
+
 def _identifier(value):
     if type(value) is not str or not value or "\0" in value:
         raise ValueError("adapter identifier must be a non-empty string without NUL")
@@ -756,6 +772,8 @@ class SegmentEdgeExecution:
         """Apply the native final head and its deterministic greedy selection."""
         with self._lock:
             self._check()
+            if cancel is None:
+                cancel = getattr(self._cancellation, "event", None)
             if not self._edge_caps.flags & 4:
                 raise ValueError("native greedy selection capability required")
             vector = np.asarray(hidden)

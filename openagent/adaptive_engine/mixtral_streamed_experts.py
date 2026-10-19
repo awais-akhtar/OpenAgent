@@ -95,7 +95,7 @@ def pack_mixtral_experts(directory, destination, *, model_id, dtype,
             raise ValueError('selected Mixtral conversion layout differs from original checkpoint')
         return ('model.norm.weight',)
     read_native_text_checkpoint(root,model_type='mixtral',max_weight_bytes=max_conversion_bytes,
-        tensor_selection=admit_source)
+        tensor_selection=admit_source,source_backend='native')
     layers = []
     for index in range(config['num_hidden_layers']):
         prefix = f'model.layers.{index}.block_sparse_moe.experts.'

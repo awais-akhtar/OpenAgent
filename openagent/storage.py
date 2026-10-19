@@ -338,13 +338,57 @@ class OpenAgentStore:
             rows = connection.execute(sql, params).fetchall()
         return [self._event_row_to_dict(row) for row in rows]
 
-    def save_agent_run(self, response: AgentResponse, project: str = "default") -> dict[str, Any]:
+    def claim_agent_run_project(self, project: str, owner: str) -> bool:
+        """Bind an agent-history namespace without overriding an existing project owner."""
+        project = str(project or "").strip()
+        owner = str(owner or "").strip()
+        if not project or not owner:
+            return False
+        with self.session() as connection:
+            # The only existing project registry is CodeQ's namespace table.
+            # When it knows this namespace, it is authoritative: an Agent run
+            # cannot claim another user's CodeQ project by submitting its name.
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codebase_projects'"
+            ).fetchone()
+            if table:
+                project_owners = connection.execute(
+                    "SELECT DISTINCT owner FROM codebase_projects WHERE project = ?",
+                    (project,),
+                ).fetchall()
+                if project_owners and (
+                    len(project_owners) != 1 or str(project_owners[0]["owner"]) != owner
+                ):
+                    return False
+            connection.execute(
+                "INSERT OR IGNORE INTO agent_run_projects(project, owner, created_at) VALUES (?, ?, ?)",
+                (project, owner, utc_now()),
+            )
+            row = connection.execute(
+                "SELECT owner FROM agent_run_projects WHERE project = ?", (project,),
+            ).fetchone()
+        return row is not None and str(row["owner"]) == owner
+
+    def agent_run_project_is_owned(self, project: str, owner: str) -> bool:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM agent_run_projects WHERE project = ? AND owner = ?",
+                (str(project or "").strip(), str(owner or "").strip()),
+            ).fetchone()
+        return row is not None
+
+    def save_agent_run(
+        self, response: AgentResponse, project: str = "default", *, owner: str | None = None,
+    ) -> dict[str, Any]:
         payload = response.to_record()
+        persisted_owner = str(owner or "").strip()
+        if owner is not None and not self.claim_agent_run_project(project, persisted_owner):
+            raise PermissionError("project not found")
         with self.session() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO agent_runs (agent, goal, response_json, project, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO agent_runs (agent, goal, response_json, project, created_at, owner)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     response.agent,
@@ -352,22 +396,52 @@ class OpenAgentStore:
                     json.dumps(payload, sort_keys=True),
                     project,
                     response.created_at,
+                    persisted_owner,
                 ),
             )
             run_id = cursor.lastrowid
         return {"id": run_id, "project": project, **payload}
 
-    def list_agent_runs(self, limit: int = 20, project: str | None = None) -> list[dict[str, Any]]:
+    def list_agent_runs(
+        self, limit: int = 20, project: str | None = None, *, owner: str | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 100))
+        offset = max(0, int(offset))
+        conditions: list[str] = []
+        params: list[Any] = []
         if project:
-            query = "SELECT * FROM agent_runs WHERE project = ? ORDER BY created_at DESC LIMIT ?"
-            params: tuple[Any, ...] = (project, limit)
-        else:
-            query = "SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT ?"
-            params = (limit,)
+            conditions.append("project = ?")
+            params.append(project)
+        if owner is not None:
+            if str(owner) == "local":
+                # Single-user compatibility can still read ownerless legacy
+                # local rows, without enumerating authenticated users' rows.
+                conditions.append("(owner = ? OR owner = '')")
+            else:
+                conditions.append("owner = ?")
+            params.append(owner)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM agent_runs{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
         with self.session() as connection:
             rows = connection.execute(query, params).fetchall()
         return [self._agent_run_row_to_dict(row) for row in rows]
+
+    def count_agent_runs(self, project: str, *, owner: str | None = None) -> int:
+        conditions = ["project = ?"]
+        params: list[Any] = [project]
+        if owner is not None:
+            if str(owner) == "local":
+                conditions.append("(owner = ? OR owner = '')")
+            else:
+                conditions.append("owner = ?")
+            params.append(owner)
+        with self.session() as connection:
+            row = connection.execute(
+                f"SELECT count(*) FROM agent_runs WHERE {' AND '.join(conditions)}", params,
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def create_conversation(
         self,

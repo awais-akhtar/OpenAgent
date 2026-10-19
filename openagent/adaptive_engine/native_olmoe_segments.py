@@ -423,6 +423,14 @@ class NativeOlmoeEdge:
         if mode not in ("embedding","head","both"):
             raise ValueError("mode must be embedding, head or both")
         self.root = Path(model_directory).resolve(strict=True)
+        # The edge loads dense checkpoint tensors independently of the leased
+        # range engine. Guard this public loader boundary itself so direct
+        # callers cannot rely on a separate engine/CLI admission having run.
+        from .source_scope import require_checkpoint_inventory_admission
+        require_checkpoint_inventory_admission(
+            self.root,family='olmoe',model_type='olmoe',backend='native',
+            arithmetic='fp32',max_metadata_bytes=max_bytes,
+            persisted_format='float32')
         self.config = c = OlmoeConfig.read(self.root)
         self.mode = mode
         self.max_resident_bytes = _budget(max_resident_bytes,"max_resident_bytes")
