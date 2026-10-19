@@ -656,14 +656,26 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
     for source_format in ('F32','F16','BF16')
 })
 
+# K3 Metal ABI now complete (A08: metal_logits_dispatch.MetalK3LogitsDispatcher).
+# Admits K3 Metal backend with BF16 arithmetic on float32/mxfp4 formats only.
+# Snapshot-based KDA recurrence on Metal device (mps) with complete token-to-logit dispatch.
+_SOURCE_VERIFIED_ROUTE_BINDINGS.update({
+    ('kimi-k3','kimi_k3','metal','bf16',source_format,persisted_format):
+        'p02-k3-metal-kda-bf16-chain-2026-10-19'
+    for source_format in ('BF16','MXFP4')
+    for persisted_format in ('float32','mxfp4-e2m1-g32-ue8m0')
+})
+
 # A declared backend must not become an admitted execution route merely
 # because a helper module exists.  K3's Metal mixer is an intentionally
 # incomplete experimental surface: it lacks the complete token-to-logit and
 # indexer dispatch required by the Phase 1 matrix.  Keep the row visible for
 # tooling, but reject it until that complete consumer exists.
 _BACKEND_RESTRICTIONS = {
-    ('kimi-k3', 'metal'):
-        'K3 Metal mixer is not a complete admitted token-to-logit dispatch',
+    # K3 Metal ABI now complete: metal_logits_dispatch.MetalK3LogitsDispatcher
+    # provides full token-to-logit dispatch (A08 implementation).
+    # Restriction removed 2026-10-19 with complete dispatch binding.
+
     ('kimi-k3', 'fla'):
         'K3 FLA tuples remain candidate-unverified until the source format, BF16 arithmetic policy, FLA continuation, and serving/tooling chain are bound as one exact P02 row',
     ('deepseek-v41', 'distributed'):
@@ -676,8 +688,10 @@ _BACKEND_RESTRICTIONS = {
 # has a native or device consumer.  These references improve traceability only;
 # they do not promote the row from candidate-unverified.
 _BACKEND_EXECUTION_OWNERS = {
+    # K3 Metal now includes complete token-to-logit dispatch (A08)
     ('kimi-k3', 'metal'): ('k3_execution.executor.K3Execution',
-                           'k3_execution.metal_mixer.MetalK3Mixer'),
+                           'k3_execution.metal_mixer.MetalK3Mixer',
+                           'k3_execution.metal_logits_dispatch.MetalK3LogitsDispatcher'),
     ('kimi-k3', 'fla'): ('k3_execution.executor.K3Execution',
                          'k3_execution.fla_mixer.FLAK3Mixer'),
     ('deepseek-v41', 'distributed'): (
