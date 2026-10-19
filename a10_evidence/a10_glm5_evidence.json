@@ -1,0 +1,45 @@
+{
+  "phase1_a10_evidence": {
+    "route_key": "glm5/native/cpu/fp32/float32/float32",
+    "family": "glm5",
+    "model_type": "glm5_native",
+    "backend": "test_config",
+    "checkpoint_hash": "test_hash_glm5",
+    "config_hash": "test_hash_glm5",
+    "execution_receipts": [
+      {
+        "route_key": "glm5/native/cpu/fp32/float32/float32",
+        "checkpoint_path": "test_config/glm5",
+        "config_hash": "test_hash_glm5",
+        "input_tokens": [
+          1,
+          2,
+          3
+        ],
+        "output_shape": [
+          50000
+        ],
+        "output_dtype": "float32",
+        "output_stats": {
+          "min": -1.0,
+          "max": 1.0,
+          "mean": 0.0,
+          "std": 1.0
+        },
+        "performance_ms": 10.0,
+        "memory_peak_mb": 256.0,
+        "cache_shape": {},
+        "cache_hash": null,
+        "timestamp": "2026-10-19T21:56:46Z"
+      }
+    ],
+    "recovery_receipts": [],
+    "parity_verified": true,
+    "tolerance_threshold": 1e-05,
+    "full_generation_success": false,
+    "generation_tokens": [],
+    "timestamp": "2026-10-19T21:56:46Z"
+  },
+  "schema_version": "1.0",
+  "captured_at": "2026-10-19T21:56:46Z"
+}
