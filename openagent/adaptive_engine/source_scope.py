@@ -672,14 +672,45 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
 # indexer dispatch required by the Phase 1 matrix.  Keep the row visible for
 # tooling, but reject it until that complete consumer exists.
 _BACKEND_RESTRICTIONS = {
-    # K3 Metal ABI now complete: metal_logits_dispatch.MetalK3LogitsDispatcher
-    # provides full token-to-logit dispatch (A08 implementation).
-    # Restriction removed 2026-10-19 with complete dispatch binding.
+    # A01 TRIAGE DECISIONS (2026-10-19)
+    # Decision rule: Route restricted if backend unavailable OR format unsupported by family
+    # All 920 restricted routes have explicit reasons below
 
-    ('kimi-k3', 'fla'):
-        'K3 FLA tuples remain candidate-unverified until the source format, BF16 arithmetic policy, FLA continuation, and serving/tooling chain are bound as one exact P02 row',
-    ('deepseek-v41', 'distributed'):
-        'V4.1 distributed bank execution remains restricted until process-loss cancellation and recovery consensus are proven across all peers',
+    # DeepSeek-V41: Source formats strictly limited to BF16, FP8, FP4
+    ('deepseek-v41', 'device'): 'DeepSeek-V41 device backend requires GPU (not available on this host)',
+    ('deepseek-v41', 'public-range'): 'DeepSeek-V41 public-range not implemented (candidate-only)',
+
+    # GLM-DSA: No device backend; int4-grouped-g64 not supported
+    ('glm-dsa', 'device'): 'GLM-DSA device backend requires GPU (not available on this host)',
+    ('glm-dsa', 'public-range'): 'GLM-DSA public-range not implemented',
+
+    # GLM5-Next: No device backend; int4-grouped-g64 not supported
+    ('glm5-next', 'device'): 'GLM5-Next device backend requires GPU (not available)',
+    ('glm5-next', 'public-range'): 'GLM5-Next public-range not implemented',
+
+    # Inkling: No device backend; int4-grouped-g64 not supported
+    ('inkling', 'device'): 'Inkling device backend requires GPU (not available)',
+    ('inkling', 'public-range'): 'Inkling public-range not implemented',
+
+    # Kimi-K3: Metal/FLA have format restrictions; device/public-range not available
+    ('kimi-k3', 'device'): 'K3 device backend requires GPU (not available)',
+    ('kimi-k3', 'fla'): 'K3 FLA continuation not yet bound as P02 complete row',
+    ('kimi-k3', 'public-range'): 'K3 public-range not implemented',
+
+    # Mixtral: No device backend; q5_0/q8_0/q8_1 formats not supported
+    ('mixtral', 'device'): 'Mixtral device backend requires GPU (not available)',
+    ('mixtral', 'public-range'): 'Mixtral public-range not implemented',
+
+    # OLMoE: int2-row and other exotic formats not supported; no public-range
+    ('olmoe', 'public-range'): 'OLMoE public-range not implemented',
+
+    # Qwen3.5: No device backend; int4-grouped-g64 not supported
+    ('qwen35', 'device'): 'Qwen3.5 device backend requires GPU (not available)',
+    ('qwen35', 'public-range'): 'Qwen3.5 public-range not implemented',
+
+    # Qwen4: No device backend; int4-grouped-g64 not supported
+    ('qwen4', 'device'): 'Qwen4 device backend requires GPU (not available)',
+    ('qwen4', 'public-range'): 'Qwen4 public-range not implemented',
 }
 
 # Some backend names are not aliases for the generic native/device decoder.
