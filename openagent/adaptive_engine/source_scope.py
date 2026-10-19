@@ -666,15 +666,13 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
     for persisted_format in ('float32','mxfp4-e2m1-g32-ue8m0')
 })
 
-# A01 TRIAGE CLOSURE: Add all remaining admitted routes from A01 triage decision engine.
-# These routes were triaged as ADMIT because all backends and formats are supported.
-# They are ready for A02-A08 implementation of complete P02 chains.
-from A01_NEW_VERIFIED_ROUTES import NEW_VERIFIED_ROUTES
-from A01_REMAINING_CANDIDATES import REMAINING_CANDIDATES
-from A01_FINAL_CANDIDATES import FINAL_CANDIDATES
-_SOURCE_VERIFIED_ROUTE_BINDINGS.update(NEW_VERIFIED_ROUTES)
-_SOURCE_VERIFIED_ROUTE_BINDINGS.update(REMAINING_CANDIDATES)
-_SOURCE_VERIFIED_ROUTE_BINDINGS.update(FINAL_CANDIDATES)
+# A01 TRIAGE CLOSURE: Generated A01 modules (NEW_VERIFIED_ROUTES, etc.) removed
+# per P0-03 defect resolution (Oct 19, 2026).
+# Reason: root-level A01_*.py files are not installed with the package;
+# admission decisions must come from canonical source_scope_matrix() only,
+# not from generated helpers that break on deployed wheels.
+# Any route admission is validated through require_source_route_admission()
+# against the authoritative P02 catalog.
 
 # A declared backend must not become an admitted execution route merely
 # because a helper module exists.  K3's Metal mixer is an intentionally
