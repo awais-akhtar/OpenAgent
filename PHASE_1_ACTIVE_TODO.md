@@ -1,6 +1,41 @@
 # Phase 1 — active completion queue
 
-Updated 2026-10-18. This is the short list of **remaining work**, not a record of past edits. The detailed requirements and audit history remain in [PHASE_1_SOURCE_CHECKLIST.md](PHASE_1_SOURCE_CHECKLIST.md). Phase 1 and P15 are **OPEN**.
+Updated 2026-10-19 (rechecked). This is the short list of **remaining work**, not a record of past edits. The detailed requirements and audit history remain in [PHASE_1_SOURCE_CHECKLIST.md](PHASE_1_SOURCE_CHECKLIST.md). Phase 1 and P15 are **OPEN**.
+
+## 2026-10-19 source-only audit
+
+The desktop repair is source-complete for its narrow scope: the Windows launcher prefers the checked-out runtime, uses writable data/runtime directories, stale directory-server ownership was removed, and the workbench keeps serving after a browser process is reused. The live endpoint was observed separately as `OpenAgent/0.1` HTML, but this is desktop smoke evidence only and does not close Phase 1.
+
+The repository does **not** contain the claimed `unified_execution.py` implementation or commit `96b5007`. The universal layer currently present is `universal_engine.py` (`UniversalEngine`, `UniversalSession`, `ModelRoute`, and `ModelManifest`), wired through the adaptive-engine package/runtime. No audit claim should treat the absent unified-execution work as complete.
+
+Recheck result: the closure decision is unchanged. The working tree has additional assistant/route/test edits, but no new canonical route matrix, runtime receipt, ABI execution receipt, placement observation, or P15 reconciliation was identified; those edits therefore do not change the Phase 1 status.
+
+### 2026-10-19 code audit result
+
+Source inspection confirms the existing admission guards, universal engine/session layer, queue/stream cleanup, speculative rollback boundaries, distributed poisoning/cleanup, format restrictions, and capability disclosures are present. It also confirms the remaining blockers: `unified_execution.py` is absent, route tuples are not all fully traced, family-wide media/speculative/distributed/recovery/ABI closure is incomplete, and P13 evidence fields remain structural (`not-captured`, `executed=false`, `phase1_closed=false`). The newly modified assistant/route files are outside the unresolved engine-route matrix and do not close any P02–P15 package. Status remains unchanged: Phase 1 **OPEN**, P15 **OPEN**.
+
+Repeat audit (2026-10-19): `source_scope.py` still emits candidate-unverified rows and `phase1_closed=False`; `wholemodel_validation/runner.py` still rejects absent/candidate/restricted execution contracts; `unified_execution.py` remains absent while `universal_engine.py` remains present. No source change qualifies a package for closure, so no status transition was made.
+
+Latest delta audit (2026-10-19): only assistant/route and support-test files are newly modified in the working tree; no adaptive-engine route, source-matrix, evidence, ABI, or recovery closure changed. The same gates remain visible in source (`candidate-unverified`, `not-captured`, `completion_claim=False`, and `phase1_closed=False`). Phase 1 and P15 remain **OPEN**.
+
+Audit refresh (2026-10-19): current source still has no `unified_execution.py`; `universal_engine.py` is the available universal layer. The modified assistant files do not touch the Phase 1 route matrix or evidence gates. No package status changed.
+
+Claim review (2026-10-19): the proposed summary is only partially accurate. P04/P05/P06 have substantial source implementations and safeguards, but the checklist still correctly classifies them as **IN PROGRESS** because cross-family/caller closure, atomic publication, full distributed-bank consensus, and transparent process-loss recovery are not complete. The source matrix still contains candidate-unverified rows; exact totals differ by matrix view (the active baseline records 1,334 expanded tuples / 1,133 canonical route items, not a verified-admitted conversion). P13 receipts remain uncaptured, P11 family ABI closure remains partial, P12 distributed physical-state/recovery remains partial, P14 lifecycle/parity remains partial, and P15 remains open. Evidence requirements are enforced by source gates; hardware absence is one blocker for A10 receipts, but not the only remaining closure gap.
+
+Full audit refresh (2026-10-19): source gates and package states were rechecked across the route matrix, universal engine, validation runner, serving routes, distributed/recovery modules, ABI owners, and Colibri capability boundaries. Existing implementations and explicit restrictions are confirmed, but no package is promoted: candidate rows remain non-admitted, evidence remains `receipt_present=False`, and the catalog remains `phase1_closed=False`. P02, P04–P07, P09–P14 remain partial/in progress; P15 remains open.
+
+Current closure status remains: P01 complete; bounded P03 inventory contracts complete; P02, P04–P07, P09–P14 in progress; P15 open. Structural source guards and explicit restrictions are implemented in several paths, but they do not substitute for family-wide route traces, caller lifecycle closure, runtime placement, numerical comparisons, native ABI execution, or pinned P13 receipts.
+
+Remaining work must be tracked as concrete rows, not percentages:
+
+- P02/P03: review every canonical family/backend/arithmetic/source/persisted-format tuple through loader, logits consumer, cache/TP owner, ABI/factory/CLI/gateway, recovery, and tooling; reconcile every optional/shared/MTP/expert/media tensor or enforce a specific exclusion.
+- P04/P07/P14: close cross-family media order/geometry/ownership/temporal/continuation and caller-specific stream, backpressure, stop, cancellation, warm-session, recovery, and cleanup behavior.
+- P05: cover speculative target/draft state, both RNGs, accept/reject/bonus/EOS/context-limit/cancel/restore, and publication guarantees for every serving caller.
+- P06/P12: close every distributed bank/shard/cache owner, operation failure, cancellation, rollback, stale/foreign restore, consensus, and process/transport-loss path; current poisoning and best-effort cleanup are not transparent recovery.
+- P09/P10: bind each admitted persisted format to its real loader and execution consumer, including scales/geometry, E8/IQ3 transforms, conversion cleanup, device admission, actual placement, and no-host-fallback evidence.
+- P11: finish family-by-family ABI symbols/ranges, tensor/head schemas, continuation, callbacks, ownership/reentry, close order, and factory/CLI/service wiring; native compile/execute receipts remain absent.
+- P13: attach exact artifact pins, cache leaves, placement observations, comparison adapters, and captured receipts for every applicable row. Structural catalogs remain `not-captured` and `completion_claim=false`.
+- P15: reconcile every applicable requirement as implemented, concretely restricted, or missing; keep Phase 1 open until no required candidate or evidence gap remains.
 
 ## Baseline and counting rule
 
