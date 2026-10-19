@@ -567,9 +567,9 @@ def source_execution_cases():
                             classification=('candidate-unverified' if route_admitted
                                              else 'rejected-unadmitted'),
                             references=(persisted_format,), routes=(persisted_format,))
+                        execution='native' if backend in ('native','public-range') else 'device'
                         if not route_admitted:
                             cells['loading']['classification'] = 'contract-restriction'
-                            cells['execution']['classification'] = 'contract-restriction'
                         cells['format_route'] = dict(
                             classification=('candidate-unverified' if route_admitted
                                              else route['classification']),
@@ -582,7 +582,6 @@ def source_execution_cases():
                             native_consumer=route['native_consumer'],
                             device_consumer=route['device_consumer'],
                             reason=route.get('reason'))
-                        execution='native' if backend in ('native','public-range') else 'device'
                         if backend_reason is not None:
                             cells['execution'] = dict(
                                 classification='contract-restriction',
