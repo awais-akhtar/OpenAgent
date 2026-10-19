@@ -622,8 +622,10 @@ def source_execution_cases():
                         # loader-stage dependency and must be visible in the
                         # P02 callable chain before the execution consumer is
                         # considered admissible.
+                        format_owner = route.get('format_owner', '')
+                        format_owner_refs = (format_owner,) if isinstance(format_owner, str) else format_owner
                         chain['loading'] = tuple(chain['loading']) + tuple(
-                            ref for ref in route.get('format_owner', ())
+                            ref for ref in format_owner_refs
                             if ref not in chain['loading'])
                         # Format admission is part of loading and execution,
                         # not an implicit side effect of a generic tensor
