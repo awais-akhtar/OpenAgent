@@ -99,8 +99,23 @@ class UniversalEngine:
         return ModelManifest(directory, model_type, architecture, route, copy.deepcopy(config))
 
     def open(self, model_directory: str | Path, *, route: ModelRoute | None = None, **options: Any) -> "UniversalSession":
+        # BUG-02 FIX: Validate exact route against source_scope before opening adapter.
         manifest = self.inspect(model_directory, route=route)
-        key = (str(manifest.directory), tuple(manifest.route.as_dict().values()))
+        try:
+            from .source_scope import require_source_route_admission
+            require_source_route_admission(
+                family=manifest.route.family,
+                model_type=manifest.route.model_type,
+                backend=manifest.route.backend,
+                arithmetic=manifest.route.arithmetic,
+                source_format=manifest.route.source_format,
+                persisted_format=manifest.route.persisted_format
+            )
+        except (ImportError, AttributeError, ValueError) as e:
+            raise ValueError(f"route admission validation failed: {e}")
+        # BUG-03 FIX: Include options in warm-session identity check.
+        option_key = tuple(sorted(options.items())) if options else ()
+        key = (str(manifest.directory), tuple(manifest.route.as_dict().values()), option_key)
         with self._lock:
             existing = self._sessions.get(key)
             if existing is not None and not existing.status()["closed"]:
@@ -191,6 +206,13 @@ class UniversalSession:
             try:
                 for event in iterator:
                     if cancelled is not None and cancelled():
+                        # BUG-04 FIX: Rollback state on cancellation before raising.
+                        rollback = getattr(self._owner, "rollback", None)
+                        if callable(rollback):
+                            try:
+                                rollback()
+                            except BaseException as e:
+                                raise RuntimeError(f"rollback failed during stream cancellation: {e}") from e
                         raise RuntimeError("generation cancelled during universal stream")
                     yield event
             finally:
@@ -220,6 +242,11 @@ class UniversalSession:
             restore = getattr(self._owner, "restore", None)
             if not callable(restore):
                 raise TypeError("adapter session lacks restore")
+            # BUG-05 FIX: Validate receipt is from this exact route/session.
+            if isinstance(receipt, dict) and "route" in receipt:
+                receipt_route = receipt.get("route", {})
+                if receipt_route != self.manifest.route.as_dict():
+                    raise ValueError(f"restore receipt from wrong route; expected {self.manifest.route.as_dict()}, got {receipt_route}")
             restore(receipt)
 
     def close(self) -> None:
@@ -227,9 +254,17 @@ class UniversalSession:
             if self._closed:
                 return
             close = getattr(self._owner, "close", None)
-            if callable(close):
-                close()
-            self._closed = True
+            primary_error = None
+            try:
+                if callable(close):
+                    close()
+            except BaseException as error:
+                # BUG-06 FIX: Mark closed=True before raising so session remains reachable for retry.
+                primary_error = error
+            finally:
+                self._closed = True
+            if primary_error is not None:
+                raise primary_error
 
     def __enter__(self) -> "UniversalSession":
         self._check_open()

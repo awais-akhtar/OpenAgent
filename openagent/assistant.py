@@ -136,6 +136,11 @@ class AssistantManager:
         if not title:
             raise ValueError("Task title is required.")
         project = project.strip() or "default"
+        # BUG-08 FIX: Validate goal_id exists before creating task.
+        if goal_id:
+            goal = self.get_goal(goal_id)
+            if goal is None:
+                raise ValueError(f"goal_id '{goal_id}' does not exist")
         task_id = unique_id("task", project, title)
         now = utc_now()
         with self.store.session() as connection:

@@ -96,7 +96,13 @@ class AdaptiveExecutionEngine:
 
     def open_universal_model(self, model_directory, *, route: ModelRoute | None = None,
                              **options) -> UniversalSession:
-        """Open any registered family through the common lifecycle boundary."""
+        """Open any registered family through the common lifecycle boundary.
+
+        BUG-01 FIX: This is the production entry point. All admitted routes must call
+        this path, not any alternate admission. Fail startup if no adapters registered.
+        """
+        if not self.universal.registered_model_types():
+            raise RuntimeError("no universal adapters registered; cannot open model")
         return self.universal.open(model_directory, route=route, **options)
 
     def initialize(self) -> None:
