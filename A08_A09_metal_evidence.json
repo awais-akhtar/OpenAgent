@@ -1,0 +1,108 @@
+{
+  "timestamp": "2026-10-19",
+  "a08_metal_abi": {
+    "total_k3": 96,
+    "total_metal": 16,
+    "metal_admitted": 0,
+    "metal_restricted": 16,
+    "metal_rejected": 0,
+    "requirements": {
+      "metal_kernel": {
+        "description": "Metal compute kernel for token \u2192 logit dispatch",
+        "status": "NOT IMPLEMENTED",
+        "reason": "Apple Metal SDK not available on this host",
+        "location": "native_kimi_k3_metal.metal or similar"
+      },
+      "metal_buffer_management": {
+        "description": "Metal MTLBuffer allocation and lifecycle",
+        "status": "NOT IMPLEMENTED",
+        "location": "native_kimi_k3.MetalK3Engine"
+      },
+      "metal_device_selection": {
+        "description": "Select appropriate Metal device (GPU, Neural Engine)",
+        "status": "NOT IMPLEMENTED",
+        "location": "native_kimi_k3.MetalDeviceSelector"
+      },
+      "metal_abi_callbacks": {
+        "description": "Callback ownership and reentrancy safety",
+        "status": "PARTIALLY IMPLEMENTED",
+        "location": "phase1_closure_integrated.FamilyABICallbackManager"
+      }
+    }
+  },
+  "a09_evidence_binding": {
+    "total_admitted": 129,
+    "evidence_bindings": {
+      "artifact_pins": {
+        "checkpoint_path": {
+          "description": "Exact checkpoint location (HuggingFace, local, revision)",
+          "required": true,
+          "captured": false
+        },
+        "weights": {
+          "description": "Weight file hashes and versions",
+          "required": true,
+          "captured": false
+        },
+        "tokenizer": {
+          "description": "Tokenizer config and vocabulary",
+          "required": true,
+          "captured": false
+        },
+        "runtime": {
+          "description": "Runtime version and config flags",
+          "required": true,
+          "captured": false
+        }
+      },
+      "cache_schema": {
+        "layout": {
+          "description": "Cache memory layout (tensor shapes, block sizes)",
+          "required": true,
+          "captured": false
+        },
+        "footprint": {
+          "description": "Total cache size and per-layer breakdown",
+          "required": true,
+          "captured": false
+        },
+        "device_placement": {
+          "description": "Where cache resides (VRAM/RAM/NVMe)",
+          "required": true,
+          "captured": false
+        }
+      },
+      "execution_observations": {
+        "numerical_parity": {
+          "description": "Output matches reference (within tolerance)",
+          "required": true,
+          "captured": false,
+          "blocker": "A10 - requires model execution"
+        },
+        "latency": {
+          "description": "Time per token generation",
+          "required": true,
+          "captured": false,
+          "blocker": "A10 - requires GPU/accelerator"
+        },
+        "memory_peak": {
+          "description": "Peak memory usage during execution",
+          "required": true,
+          "captured": false,
+          "blocker": "A10 - requires execution"
+        },
+        "platform_cert": {
+          "description": "Platform-specific certification (CUDA/HIP/Metal)",
+          "required": true,
+          "captured": false,
+          "blocker": "A10 - requires target device"
+        }
+      }
+    },
+    "evidence_status": {
+      "artifact_pins": "STRUCTURE READY, DATA MISSING",
+      "cache_schema": "STRUCTURE READY, DATA MISSING",
+      "execution_observations": "BLOCKED ON A10 (NO EXECUTION)"
+    }
+  }
+}

@@ -1,0 +1,1342 @@
+{
+  "timestamp": "2026-10-19",
+  "v41_routes": {
+    "total": 216,
+    "admitted": 9,
+    "restricted": 198,
+    "rejected": 9,
+    "routes_by_status": {
+      "admitted": [
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        }
+      ],
+      "restricted": [
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/distributed/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/distributed/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "distributed",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/float32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "float32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-f32/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-f32"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/e8-lattice-caller-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "e8-lattice-caller-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/iq3-format6-98-v1/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "iq3-format6-98-v1"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/int4-rans256-g0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "int4-rans256-g0"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/fp8-e4m3-b128-ue8m0/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8-e4m3-b128-ue8m0"
+        }
+      ],
+      "rejected": [
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/native/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "native",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/device/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "device",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "bf16"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp8"
+        },
+        {
+          "route_id": "deepseek-v41/deepseek_v41_text/public-range/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+          "backend": "public-range",
+          "arithmetic": "publisher-bf16-fp8-fp4",
+          "persisted_format": "fp4"
+        }
+      ]
+    }
+  },
+  "requirements": {
+    "capture_target_rng": {
+      "description": "Capture RNG state before target generation",
+      "location": "v41_execution/execution.py",
+      "method": "V41Execution.capture_rng_snapshot()"
+    },
+    "capture_draft_rng": {
+      "description": "Capture draft RNG state separately",
+      "location": "v41_execution/execution.py",
+      "method": "V41Execution.capture_draft_rng_snapshot()"
+    },
+    "restore_both_rngs": {
+      "description": "Restore BOTH target and draft RNG on rejection",
+      "location": "v41_execution/execution.py",
+      "method": "V41Execution.restore_rng_state(target, draft)",
+      "critical": true
+    },
+    "publish_both_rngs": {
+      "description": "Publish both RNG states with accepted proposal",
+      "location": "v41_execution/checkpoint_publisher.py",
+      "method": "AtomicGenerationCheckpoint.publish_with_rng()"
+    },
+    "verify_rng_equality": {
+      "description": "Compare RNG states with array-safe comparator",
+      "location": "v41_execution/rng_comparator.py",
+      "method": "RNGComparator.compare_recursive_state()",
+      "critical": true
+    }
+  }
+}
