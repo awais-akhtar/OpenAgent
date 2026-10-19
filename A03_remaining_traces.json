@@ -1,0 +1,6694 @@
+{
+  "timestamp": "2026-10-19",
+  "total": 66,
+  "complete": 66,
+  "routes": [
+    {
+      "route_id": "mixtral/mixtral/native/fp32/F32/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/native/fp32/F32/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/native/fp32/F16/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/native/fp32/F16/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/native/fp32/BF16/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/native/fp32/BF16/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/device/fp32/F32/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_mixtral_decoder.TorchMixtralDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/device/fp32/F32/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_mixtral_decoder.TorchMixtralDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/device/fp32/F16/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_mixtral_decoder.TorchMixtralDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/device/fp32/F16/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_mixtral_decoder.TorchMixtralDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/device/fp32/BF16/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_mixtral_decoder.TorchMixtralDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/device/fp32/BF16/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_mixtral_decoder.TorchMixtralDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/public-range/fp32/F32/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/public-range/fp32/F32/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/public-range/fp32/F16/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/public-range/fp32/F16/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/public-range/fp32/BF16/float32/mistralai/Mixtral-8x7B-v0.1/41c1fe324a57f555d8df74b85a1353a583746532",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "mixtral/mixtral/public-range/fp32/BF16/float32/mistralai/Mixtral-8x22B-v0.1/76fa59362cd95eb633a4e419c24364c90674966c",
+      "family": "mixtral",
+      "model_type": "mixtral",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.configuration",
+            "mixtral_inventory.publisher_contract"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_inventory.admit_mixtral_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_mixtral_decoder.TorchMixtralDecoder.from_directory"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_mixtral_decoder.NativeMixtralDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_cache_recovery",
+            "mixtral_range_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "mixtral_public_adapters.NativeMixtralPublicAdapters",
+            "native_mixtral_ranges"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_service.NativeExecutionService"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "mixtral_cache_recovery",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.runner",
+            "platform_certification.decoder_matrix"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/float32/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/int8-row/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "int8-row",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/q4_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "q4_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q4_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/q4_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "q4_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q4_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/q5_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "q5_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q5_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/q5_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "q5_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q5_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/q8_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "q8_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q8_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F32/q8_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "q8_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q8_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/float32/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/int8-row/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "int8-row",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/q4_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "q4_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q4_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/q4_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "q4_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q4_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/q5_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "q5_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q5_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/q5_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "q5_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q5_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/q8_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "q8_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q8_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/F16/q8_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "q8_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q8_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/float32/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/int8-row/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "int8-row",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/q4_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "q4_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q4_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/q4_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "q4_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q4_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/q5_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "q5_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q5_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/q5_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "q5_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q5_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/q8_0/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "q8_0",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q8_0_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/native/fp32/BF16/q8_1/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "q8_1",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "q8_1_expert"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/public-range/fp32/F32/int8-row/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "int8-row",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/public-range/fp32/F16/int8-row/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "int8-row",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "olmoe/olmoe/public-range/fp32/BF16/int8-row/olmoe/caller-pin",
+      "family": "olmoe",
+      "model_type": "olmoe",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "int8-row",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeConfig",
+            "olmoe.validate_olmoe_tensors"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "olmoe.OlmoeModel._tensor",
+            "native_checkpoint"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine",
+            "expert_packing"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentEngine",
+            "native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments.NativeOlmoeSegmentSession",
+            "tensor_parallel"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "segment_edge_adapters.NativeOlmoePublicAdapters",
+            "segment_edge_runtime"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "native_olmoe_cli"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 1,
+          "refs": [
+            "native_olmoe_cli"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_service.NativeExecutionService",
+            "segment_edge_runtime"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_olmoe_segments",
+            "service_generation_checkpoint"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "wholemodel_validation.runner",
+            "wholemodel_validation.olmoe_native"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/native/fp32/F32/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/native/fp32/F16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/native/fp32/BF16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/native/fp32/F8_E4M3/fp8-e4m3-b128-f32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F8_E4M3",
+      "persisted_format": "fp8-e4m3-b128-f32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_fp8_block_expert.NativeFP8BlockExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/device/fp32/F32/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/device/fp32/F16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/device/fp32/BF16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/device/fp32/F8_E4M3/fp8-e4m3-b128-f32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F8_E4M3",
+      "persisted_format": "fp8-e4m3-b128-f32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/public-range/fp32/F32/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/public-range/fp32/F16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/public-range/fp32/BF16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_mm_model/public-range/fp32/F8_E4M3/fp8-e4m3-b128-f32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_mm_model",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F8_E4M3",
+      "persisted_format": "fp8-e4m3-b128-f32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_fp8_block_expert.NativeFP8BlockExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/native/fp32/F32/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/native/fp32/F16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/native/fp32/BF16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "native",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/device/fp32/F32/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/device/fp32/F16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/device/fp32/BF16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "device",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "torch_inkling_decoder.TorchInklingDecoder",
+            "device_packed_decode.decode_device_expert"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/public-range/fp32/F32/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F32",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 5,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/public-range/fp32/F16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "F16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 5,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    },
+    {
+      "route_id": "inkling/inkling_text/public-range/fp32/BF16/float32/thinkingmachines/Inkling/91b051f1ec836e6d56596c624c3775b495d797b1",
+      "family": "inkling",
+      "model_type": "inkling_text",
+      "backend": "public-range",
+      "arithmetic": "fp32",
+      "source_format": "BF16",
+      "persisted_format": "float32",
+      "chain_complete": true,
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_inkling"
+          ]
+        },
+        "inventory": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "inkling_mtp.admit_mtp_inventory"
+          ]
+        },
+        "loading": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "execution": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_inkling.NativeInklingDecoder",
+            "native_expert.NativeExpertBackend"
+          ]
+        },
+        "cache_tp": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "flat_native_session",
+            "torch_inkling_cache"
+          ]
+        },
+        "native_abi": {
+          "present": true,
+          "ref_count": 5,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot"
+          ]
+        },
+        "factory": {
+          "present": true,
+          "ref_count": 4,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ]
+        },
+        "cli": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "gateway": {
+          "present": true,
+          "ref_count": 2,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ]
+        },
+        "recovery": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "flat_native_session",
+            "grouped_continuation"
+          ]
+        },
+        "tooling": {
+          "present": true,
+          "ref_count": 3,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches"
+          ]
+        }
+      },
+      "missing": [],
+      "source_verified": true
+    }
+  ]
+}

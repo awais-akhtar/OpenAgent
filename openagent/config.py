@@ -151,13 +151,15 @@ def project_root() -> Path:
 
 
 def web_root() -> Path:
+    modern_source = project_root() / "frontend-second"
+    if (modern_source / "package.json").is_file():
+        # Fail visibly with build instructions when source React assets are not
+        # compiled. Never silently downgrade a production desktop to legacy web.
+        return modern_source / "dist"
     candidates = [
-        # frontend-second is the approved production desktop frontend.  Prefer
-        # its isolated Vite build when running from the source repository.
-        project_root() / "frontend-second" / "dist",
-        project_root() / "web",
         Path(__file__).resolve().parent / "web",
         Path(sys.prefix) / "web",
+        project_root() / "web",
     ]
     for candidate in candidates:
         if (candidate / "index.html").is_file():

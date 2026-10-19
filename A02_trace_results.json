@@ -1,0 +1,6557 @@
+{
+  "timestamp": "2026-10-19",
+  "total_routes": 63,
+  "routes": [
+    {
+      "route_id": "qwen35/qwen3_5_moe/native/fp32/F32/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "native_checkpoint.read_native_multimodal_checkpoint",
+            "native_checkpoint.load_native_multimodal_decoder",
+            "native_checkpoint._admit_qwen35_multimodal_source",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_qwen35_vision.NativeQwen35Vision",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c",
+            "native_qwen35_vision",
+            "native_qwen35_vision.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/native/fp32/F16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "native_checkpoint.read_native_multimodal_checkpoint",
+            "native_checkpoint.load_native_multimodal_decoder",
+            "native_checkpoint._admit_qwen35_multimodal_source",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_qwen35_vision.NativeQwen35Vision",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c",
+            "native_qwen35_vision",
+            "native_qwen35_vision.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/native/fp32/BF16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "native_checkpoint.read_native_multimodal_checkpoint",
+            "native_checkpoint.load_native_multimodal_decoder",
+            "native_checkpoint._admit_qwen35_multimodal_source",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_qwen35_vision.NativeQwen35Vision",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c",
+            "native_qwen35_vision",
+            "native_qwen35_vision.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/native/fp32/F8_E4M3/fp8-e4m3-b128-f32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "fp8_block_expert"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_fp8_block_expert.NativeFP8BlockExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/device/fp32/F32/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/device/fp32/F16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/device/fp32/BF16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe/device/fp32/F8_E4M3/fp8-e4m3-b128-f32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "fp8_block_expert"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe_text/native/fp32/F32/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe_text/native/fp32/F16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe_text/native/fp32/BF16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen35.NativeQwen35TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe_text/device/fp32/F32/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe_text/device/fp32/F16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen35/qwen3_5_moe_text/device/fp32/BF16/float32/Qwen/Qwen3.5-35B-A3B/59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "family": "qwen35",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen35"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen35_decoder.TorchQwen35Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "torch_qwen35_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "qwen35_public_adapters",
+            "native_qwen35_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen35_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen35_media",
+            "wholemodel_validation.qwen35_publisher_caches",
+            "wholemodel_validation.qwen35_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/native/fp32/F32/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/native/fp32/F16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/native/fp32/BF16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/native/fp32/F8_E4M3/fp8-e4m3-b128-f32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "fp8_block_expert"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_fp8_block_expert.NativeFP8BlockExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/device/fp32/F32/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/device/fp32/F16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/device/fp32/BF16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp/device/fp32/F8_E4M3/fp8-e4m3-b128-f32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "fp8_block_expert"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp_text/native/fp32/F32/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp_text/native/fp32/F16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp_text/native/fp32/BF16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_qwen4.NativeQwen4TextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp_text/device/fp32/F32/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp_text/device/fp32/F16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "qwen4/qwen4_exp_text/device/fp32/BF16/float32/Qwen/Qwen3.8-Flash-Next/34567a4712bc9766c4449e2e98e4468bfa24d915",
+      "family": "qwen4",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_family_contracts.component_contract",
+            "independent_qwen4"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "native_qwen4_ranges.qwen4_tensor_inventory",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_qwen4_decoder.TorchQwen4Decoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "wholemodel_validation.native_qwen4_caches",
+            "tensor_parallel",
+            "qwen4_ple_store"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_qwen4_public_adapters.NativeQwen4PublicAdapters",
+            "native_qwen4_public_text",
+            "native/qwen4_public_adapters.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "qwen4_cache_recovery",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.qwen4_media",
+            "wholemodel_validation.qwen4_publisher_caches",
+            "wholemodel_validation.qwen4_media_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/native/fp32/F32/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/native/fp32/F16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/native/fp32/BF16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/native/fp32/F8_E4M3/fp8-e4m3-b128-f32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "fp8_block_expert"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_fp8_block_expert.NativeFP8BlockExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/device/fp32/F32/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/device/fp32/F16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/device/fp32/BF16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next/device/fp32/F8_E4M3/fp8-e4m3-b128-f32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "fp8_block_expert"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/native/fp32/F32/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/native/fp32/F16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/native/fp32/BF16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/device/fp32/F32/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/device/fp32/F16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/device/fp32/BF16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm5_decoder.TorchGlm5NextDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/public-range/fp32/F32/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c",
+            "native_glm5_next.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "execution_factories.open_native_family_public_directory_service",
+            "execution_factories.create_native_family_public_execution_service"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/public-range/fp32/F16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c",
+            "native_glm5_next.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "execution_factories.open_native_family_public_directory_service",
+            "execution_factories.create_native_family_public_execution_service"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm5-next/glm5_next_text/public-range/fp32/BF16/float32/zai-org/GLM-5.3-Flash/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "family": "glm5-next",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_config",
+            "independent_glm5_next.Glm5NextTextContract"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader.admit_publisher_glm5_inventory",
+            "resident_family_inventory.admit_resident_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_glm5_loader",
+            "native_checkpoint.read_native_text_checkpoint",
+            "family_source_binding.bind_decoder_to_snapshot",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm5_next.NativeGlm5NextTextDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "tensor_parallel",
+            "device_publisher_projections"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "native_family_public_adapters.NativeFamilyPublicAdapters",
+            "family_source_binding.require_decoder_snapshot",
+            "native_family_public_text",
+            "native/segment_family_models.c",
+            "native_glm5_next.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "publisher_conditional_loader.load_publisher_conditional_decoder",
+            "execution_factories.open_native_family_public_directory_service",
+            "execution_factories.create_native_family_public_execution_service"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "native_conditional_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "flat_native_session",
+            "compound_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.publisher_family_candidate",
+            "wholemodel_validation.publisher_family_caches",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/native/fp32/F32/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa.NativeGlmDsaDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/native/fp32/F16/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa.NativeGlmDsaDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/native/fp32/BF16/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa.NativeGlmDsaDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/device/fp32/F32/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/device/fp32/F16/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/device/fp32/BF16/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder",
+            "device_packed_decode.decode_device_expert"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/public-range/fp32/F32/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa.NativeGlmDsaDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/public-range/fp32/F16/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa.NativeGlmDsaDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "glm-dsa/glm_moe_dsa/public-range/fp32/BF16/float32/glm-dsa/caller-pin",
+      "family": "glm-dsa",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "independent_glm_dsa"
+          ],
+          "verified": true
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "resident_family_inventory.admit_resident_inventory",
+            "native_glm_dsa_ranges.admit_inventory"
+          ],
+          "verified": true
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "native_checkpoint.read_native_text_checkpoint",
+            "torch_glm_dsa_decoder.TorchGlmDsaDecoder.from_directory",
+            "expert_packing"
+          ],
+          "verified": true
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa.NativeGlmDsaDecoder",
+            "native_expert.NativeExpertBackend"
+          ],
+          "verified": true
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "tensor_parallel",
+            "device_glm_dsa_experts"
+          ],
+          "verified": true
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "glm_dsa_public_adapters",
+            "native_glm_dsa_ranges",
+            "native/segment_edge_compat.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "native_family_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_provider.NativePublisherProvider",
+            "execution_factories"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "native_glm_dsa_cache",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.glm_dsa_caches",
+            "platform_certification.decoder_matrix",
+            "native_family_cli"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "v41_execution.publisher_arithmetic"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher.PublisherV41Execution"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "v41_execution.fp8_projection"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher.PublisherV41Execution",
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/native/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "native",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "native_mxfp4.NativeMXFP4"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher.PublisherV41Execution",
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "v41_execution.publisher_arithmetic"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.device_execution.DevicePublisherV41Execution",
+            "v41_execution.device_arithmetic.DevicePublisherV41Arithmetic",
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "v41_execution.fp8_projection"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.device_execution.DevicePublisherV41Execution",
+            "v41_execution.device_arithmetic.DevicePublisherV41Arithmetic",
+            "v41_execution.fp8_projection.NativeFP8Projection"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/device/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "device",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "native_mxfp4.NativeMXFP4"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.device_execution.DevicePublisherV41Execution",
+            "v41_execution.device_arithmetic.DevicePublisherV41Arithmetic",
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/BF16/bf16/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "v41_execution.publisher_arithmetic"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher.PublisherV41Execution"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP8/fp8/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "v41_execution.fp8_projection"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher.PublisherV41Execution",
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    },
+    {
+      "route_id": "deepseek-v41/deepseek_v41/public-range/publisher-bf16-fp8-fp4/FP4/fp4/deepseek-ai/DeepSeek-V4.1-Flash/2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "family": "deepseek-v41",
+      "backend": "public-range",
+      "dimensions": {
+        "configuration": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_profile",
+            "publisher_checkpoint.contracts.build_contracts"
+          ],
+          "verified": false
+        },
+        "inventory": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.service.PublisherCheckpoint",
+            "publisher_checkpoint.v41_adapter"
+          ],
+          "verified": false
+        },
+        "loading": {
+          "present": true,
+          "refs": [
+            "publisher_checkpoint.v41_adapter",
+            "native_mxfp4.NativeMXFP4"
+          ],
+          "verified": false
+        },
+        "execution": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher.PublisherV41Execution",
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic"
+          ],
+          "verified": false
+        },
+        "cache_tp": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_checkpoints",
+            "distributed_generation_checkpoint",
+            "tensor_parallel"
+          ],
+          "verified": false
+        },
+        "native_abi": {
+          "present": true,
+          "refs": [
+            "v41_execution.publisher_arithmetic.NativePublisherV41Arithmetic",
+            "publisher_public_adapters.NativePublisherPublicAdapters",
+            "native/segment_edge_compat.c",
+            "v41_execution/kernels.c",
+            "v41_execution/fp8_projection.c"
+          ],
+          "verified": false
+        },
+        "factory": {
+          "present": true,
+          "refs": [
+            "execution_factories",
+            "execution_factories.create_public_publisher_v41_execution_service",
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "cli": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession"
+          ],
+          "verified": true
+        },
+        "gateway": {
+          "present": true,
+          "refs": [
+            "publisher_v41_cli.PublisherSession",
+            "publisher_public_cli.PublisherSession",
+            "publisher_provider.NativePublisherProvider"
+          ],
+          "verified": true
+        },
+        "recovery": {
+          "present": true,
+          "refs": [
+            "v41_generation_recovery",
+            "distributed_generation_checkpoint",
+            "service_generation_checkpoint"
+          ],
+          "verified": true
+        },
+        "tooling": {
+          "present": true,
+          "refs": [
+            "wholemodel_validation.v41_publisher",
+            "wholemodel_validation.v41",
+            "platform_certification.decoder_matrix",
+            "publisher_public_adapters"
+          ],
+          "verified": false
+        }
+      },
+      "all_present": true,
+      "missing_dims": []
+    }
+  ]
+}

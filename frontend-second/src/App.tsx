@@ -239,7 +239,13 @@ export function App() {
             <button className="icon-button sidebar-collapse" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={toggleCollapsed}><PanelLeftClose size={17} /></button>
           </div>
           <button ref={projectPickerTriggerRef} className="sidebar-project" type="button" aria-label={dataMode === 'demo' ? `Choose project, current ${currentProject}` : 'Current workspace, switching unavailable'} title={dataMode === 'demo' ? 'Choose a local Demo project' : 'Live project switching is unavailable until a verified workspace scope operation is connected'} disabled={dataMode !== 'demo'} onClick={event => openProjectPicker(event.currentTarget)}><FolderOpen size={15} /><span className="sidebar-copy">{currentProject}</span><ChevronDown className="project-chevron" size={14} /></button>
-          <button className="sidebar-new" data-nav="chat" title="New chat (⌘ K)"><Plus size={16} /><span className="nav-label">New chat</span><kbd className="sidebar-shortcut">⌘ K</kbd></button>
+          <button className="sidebar-new" type="button" title="New chat (N)" onClick={() => {
+            if (dataMode === 'live') {
+              sessionStorage.removeItem('oa-second-conversation-id');
+              window.dispatchEvent(new CustomEvent('openagent:select-conversation', { detail: '' }));
+            }
+            go('chat');
+          }}><Plus size={16} /><span className="nav-label">New chat</span><kbd className="sidebar-shortcut">N</kbd></button>
           <button className="sidebar-search" onClick={() => setPaletteOpen(true)} title="Search pages, files, actions (Ctrl+K)"><Search size={16} /><span className="sidebar-search-label">Search pages, files, actions</span></button>
         </div>
         <div className="sidebar-scroll">

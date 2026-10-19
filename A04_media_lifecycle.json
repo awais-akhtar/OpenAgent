@@ -1,0 +1,201 @@
+{
+  "timestamp": "2026-10-19",
+  "families_audited": 9,
+  "results": {
+    "mixtral": {
+      "family": "mixtral",
+      "media_owner": [],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [],
+      "status": "NO_MEDIA"
+    },
+    "olmoe": {
+      "family": "olmoe",
+      "media_owner": [],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [],
+      "status": "NO_MEDIA"
+    },
+    "qwen35": {
+      "family": "qwen35",
+      "media_owner": [
+        "qwen35_multimodal.Qwen35MultimodalDecoder",
+        "native_qwen35_vision",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [
+        "qwen35_multimodal.Qwen35MultimodalDecoder",
+        "native_qwen35_vision",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "status": "IMPLEMENTED",
+      "required_lifecycle_paths": [
+        "admit_media_stream",
+        "complete_media_stream",
+        "cancel_media_stream",
+        "error_media_stream"
+      ],
+      "media_backends": {
+        "native": 64,
+        "device": 64,
+        "public-range": 48
+      }
+    },
+    "qwen4": {
+      "family": "qwen4",
+      "media_owner": [
+        "qwen4_multimodal.Qwen4MultimodalDecoder",
+        "qwen4_vision",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [
+        "qwen4_multimodal.Qwen4MultimodalDecoder",
+        "qwen4_vision",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "status": "IMPLEMENTED",
+      "required_lifecycle_paths": [
+        "admit_media_stream",
+        "complete_media_stream",
+        "cancel_media_stream",
+        "error_media_stream"
+      ],
+      "media_backends": {
+        "native": 64,
+        "device": 64,
+        "public-range": 64
+      }
+    },
+    "glm5-next": {
+      "family": "glm5-next",
+      "media_owner": [
+        "glm5_multimodal.Glm5MultimodalDecoder",
+        "glm5_vision",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [
+        "glm5_multimodal.Glm5MultimodalDecoder",
+        "glm5_vision",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "status": "IMPLEMENTED",
+      "required_lifecycle_paths": [
+        "admit_media_stream",
+        "complete_media_stream",
+        "cancel_media_stream",
+        "error_media_stream"
+      ],
+      "media_backends": {
+        "native": 56,
+        "device": 56,
+        "public-range": 28
+      }
+    },
+    "inkling": {
+      "family": "inkling",
+      "media_owner": [
+        "inkling_multimodal.InklingMultimodalDecoder",
+        "inkling_media",
+        "inkling_mtp.InklingMTP",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [
+        "inkling_multimodal.InklingMultimodalDecoder",
+        "inkling_media",
+        "inkling_mtp.InklingMTP",
+        "publisher_media_processor.PublisherMediaProcessor"
+      ],
+      "status": "IMPLEMENTED",
+      "required_lifecycle_paths": [
+        "admit_media_stream",
+        "complete_media_stream",
+        "cancel_media_stream",
+        "error_media_stream"
+      ],
+      "media_backends": {
+        "native": 56,
+        "device": 56,
+        "public-range": 28
+      }
+    },
+    "glm-dsa": {
+      "family": "glm-dsa",
+      "media_owner": [],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [],
+      "status": "NO_MEDIA"
+    },
+    "kimi-k3": {
+      "family": "kimi-k3",
+      "media_owner": [
+        "k3_execution.preprocessing",
+        "k3_execution.video_input",
+        "k3_execution.vision",
+        "k3_execution.exact_admission.K3ExactEvidence"
+      ],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [
+        "k3_execution.preprocessing",
+        "k3_execution.video_input",
+        "k3_execution.vision",
+        "k3_execution.exact_admission.K3ExactEvidence"
+      ],
+      "status": "IMPLEMENTED",
+      "required_lifecycle_paths": [
+        "admit_media_stream",
+        "complete_media_stream",
+        "cancel_media_stream",
+        "error_media_stream"
+      ],
+      "media_backends": {
+        "native": 24,
+        "device": 16,
+        "fla": 16,
+        "metal": 16
+      }
+    },
+    "deepseek-v41": {
+      "family": "deepseek-v41",
+      "media_owner": [
+        "v41_execution.publisher_vision",
+        "v41_execution.device_vision",
+        "v41_execution.publisher_mtp",
+        "v41_execution.dspark",
+        "v41_execution.speculative"
+      ],
+      "media_restricted": false,
+      "restriction_reason": null,
+      "media_dimensions": [
+        "v41_execution.publisher_vision",
+        "v41_execution.device_vision",
+        "v41_execution.publisher_mtp",
+        "v41_execution.dspark",
+        "v41_execution.speculative"
+      ],
+      "status": "IMPLEMENTED",
+      "required_lifecycle_paths": [
+        "admit_media_stream",
+        "complete_media_stream",
+        "cancel_media_stream",
+        "error_media_stream"
+      ],
+      "media_backends": {
+        "native": 54,
+        "device": 54,
+        "distributed": 54
+      }
+    }
+  }
+}

@@ -2023,3 +2023,173 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
             error.cleanup = cleanup
             add_failure_note(error, 'checkpoint cleanup remains pending: '+failure_summary(cleanup_error))
         raise
+
+
+# ============================================================================
+# NATIVE FAMILY FACTORIES — A02/A03 PHASE 1 CLOSURE
+# ============================================================================
+
+def create_qwen35_native_session(model_path, config_path, *,
+                                 max_new_tokens=256,
+                                 max_snapshot_bytes=16 * 1024 * 1024):
+    """A02: Load Qwen3.5-MoE from native checkpoint and prepare for generation.
+    
+    Route: qwen3.5/qwen3_5_moe/native/fp32/float32/float32
+    Chain: config → native_checkpoint.read_native_text_checkpoint → 
+           NativeQwen35TextDecoder → Qwen35CacheRecovery → factory → CLI
+    """
+    from pathlib import Path
+    from .native_checkpoint import read_native_text_checkpoint
+    from .native_qwen35 import NativeQwen35TextDecoder
+    from .qwen35_cache_recovery import Qwen35CacheRecovery
+    import json
+    
+    model_path = Path(model_path).resolve(strict=True)
+    config_path = Path(config_path).resolve(strict=True)
+    
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    if config.get('model_type') != 'qwen3_5_moe':
+        raise ValueError(f"config.model_type must be 'qwen3_5_moe'")
+    
+    weights = read_native_text_checkpoint(model_path, family='qwen3.5')
+    decoder = NativeQwen35TextDecoder(weights, config)
+    cache = Qwen35CacheRecovery()
+    
+    vocab_size = config.get('vocab_size', 128000)
+    context = config.get('max_position_embeddings', 8192)
+    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
+    
+    def create_executor():
+        return decoder
+    
+    return NativeExecutionService(create_executor, limits)
+
+
+def create_qwen4_native_session(model_path, config_path, *,
+                                max_new_tokens=256,
+                                max_snapshot_bytes=16 * 1024 * 1024):
+    """A02: Load Qwen4-Exp from native checkpoint. QSA+gated attention cache."""
+    from pathlib import Path
+    from .native_checkpoint import read_native_text_checkpoint
+    from .native_qwen4 import NativeQwen4TextDecoder
+    from .qwen4_cache_recovery import Qwen4CacheRecovery
+    import json
+    
+    model_path = Path(model_path).resolve(strict=True)
+    config_path = Path(config_path).resolve(strict=True)
+    
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    if config.get('model_type') != 'qwen4_exp':
+        raise ValueError(f"config.model_type must be 'qwen4_exp'")
+    
+    weights = read_native_text_checkpoint(model_path, family='qwen4')
+    decoder = NativeQwen4TextDecoder(weights, config)
+    cache = Qwen4CacheRecovery()
+    
+    vocab_size = config.get('vocab_size', 152064)
+    context = config.get('max_position_embeddings', 32768)
+    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
+    
+    def create_executor():
+        return decoder
+    
+    return NativeExecutionService(create_executor, limits)
+
+
+def create_glm5_native_session(model_path, config_path, *,
+                               max_new_tokens=256,
+                               max_snapshot_bytes=16 * 1024 * 1024):
+    """A02: Load GLM5-Next from native checkpoint. Shared expert banks."""
+    from pathlib import Path
+    from .native_checkpoint import read_native_text_checkpoint
+    from .native_glm5_next import NativeGLM5NextTextDecoder
+    import json
+    
+    model_path = Path(model_path).resolve(strict=True)
+    config_path = Path(config_path).resolve(strict=True)
+    
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    if config.get('model_type') != 'glm5_next':
+        raise ValueError(f"config.model_type must be 'glm5_next'")
+    
+    weights = read_native_text_checkpoint(model_path, family='glm5-next')
+    decoder = NativeGLM5NextTextDecoder(weights, config)
+    
+    vocab_size = config.get('vocab_size', 150000)
+    context = config.get('seq_length', 8192)
+    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
+    
+    def create_executor():
+        return decoder
+    
+    return NativeExecutionService(create_executor, limits)
+
+
+def create_glm_dsa_native_session(model_path, config_path, *,
+                                  max_new_tokens=256,
+                                  max_snapshot_bytes=16 * 1024 * 1024):
+    """A02: Load GLM-DSA from native checkpoint. Dynamic activation routing."""
+    from pathlib import Path
+    from .native_checkpoint import read_native_text_checkpoint
+    from .native_glm_dsa import NativeGLMDSATextDecoder
+    from .native_glm_dsa_cache import GLMDSACacheRecovery
+    import json
+    
+    model_path = Path(model_path).resolve(strict=True)
+    config_path = Path(config_path).resolve(strict=True)
+    
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    if config.get('model_type') != 'glm_dsa':
+        raise ValueError(f"config.model_type must be 'glm_dsa'")
+    
+    weights = read_native_text_checkpoint(model_path, family='glm-dsa')
+    decoder = NativeGLMDSATextDecoder(weights, config)
+    cache = GLMDSACacheRecovery()
+    
+    vocab_size = config.get('vocab_size', 65024)
+    context = config.get('max_seq_len', 4096)
+    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
+    
+    def create_executor():
+        return decoder
+    
+    return NativeExecutionService(create_executor, limits)
+
+
+def create_deepseek_v41_native_session(model_path, config_path, *,
+                                       max_new_tokens=256,
+                                       max_snapshot_bytes=16 * 1024 * 1024):
+    """A02: Load DeepSeek-V4.1 native (BF16 only; FP8/FP4 need device backend)."""
+    from pathlib import Path
+    from .native_checkpoint import read_native_text_checkpoint
+    import json
+    
+    model_path = Path(model_path).resolve(strict=True)
+    config_path = Path(config_path).resolve(strict=True)
+    
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    if config.get('model_type') != 'deepseek_v41':
+        raise ValueError(f"config.model_type must be 'deepseek_v41'")
+    
+    quant_method = config.get('quantization_config', {}).get('quant_method')
+    if quant_method not in (None, 'bfloat16', 'bf16'):
+        raise ValueError("DeepSeek V4.1 native: BF16 only; use device for FP8/FP4")
+    
+    weights = read_native_text_checkpoint(model_path, family='deepseek-v41')
+    
+    if config.get('architecture') == 'deepseek_moe':
+        from .native_deepseek_v41_mhc import NativeDeepSeekV41MoE as Decoder
+    else:
+        from .native_deepseek_v41_quant import NativeDeepSeekV41Quantized as Decoder
+    
+    decoder = Decoder(weights, config)
+    
+    vocab_size = config.get('vocab_size', 128256)
+    context = config.get('max_position_embeddings', 4096)
+    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
+    
+    def create_executor():
+        return decoder
+    
+    return NativeExecutionService(create_executor, limits)
+

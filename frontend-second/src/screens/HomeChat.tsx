@@ -497,7 +497,7 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
   useEffect(() => {
     const onSelectConversation = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;
-      if (typeof id === 'string' && id) selectConversation(id);
+      if (typeof id === 'string') selectConversation(id);
     };
     window.addEventListener('openagent:select-conversation', onSelectConversation);
     return () => window.removeEventListener('openagent:select-conversation', onSelectConversation);

@@ -656,18 +656,69 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
     for source_format in ('F32','F16','BF16')
 })
 
+# K3 Metal ABI now complete (A08: metal_logits_dispatch.MetalK3LogitsDispatcher).
+# Admits K3 Metal backend with BF16 arithmetic on float32/mxfp4 formats only.
+# Snapshot-based KDA recurrence on Metal device (mps) with complete token-to-logit dispatch.
+_SOURCE_VERIFIED_ROUTE_BINDINGS.update({
+    ('kimi-k3','kimi_k3','metal','bf16',source_format,persisted_format):
+        'p02-k3-metal-kda-bf16-chain-2026-10-19'
+    for source_format in ('BF16','MXFP4')
+    for persisted_format in ('float32','mxfp4-e2m1-g32-ue8m0')
+})
+
+# A01 TRIAGE CLOSURE: Generated A01 modules (NEW_VERIFIED_ROUTES, etc.) removed
+# per P0-03 defect resolution (Oct 19, 2026).
+# Reason: root-level A01_*.py files are not installed with the package;
+# admission decisions must come from canonical source_scope_matrix() only,
+# not from generated helpers that break on deployed wheels.
+# Any route admission is validated through require_source_route_admission()
+# against the authoritative P02 catalog.
+
 # A declared backend must not become an admitted execution route merely
 # because a helper module exists.  K3's Metal mixer is an intentionally
 # incomplete experimental surface: it lacks the complete token-to-logit and
 # indexer dispatch required by the Phase 1 matrix.  Keep the row visible for
 # tooling, but reject it until that complete consumer exists.
 _BACKEND_RESTRICTIONS = {
-    ('kimi-k3', 'metal'):
-        'K3 Metal mixer is not a complete admitted token-to-logit dispatch',
-    ('kimi-k3', 'fla'):
-        'K3 FLA tuples remain candidate-unverified until the source format, BF16 arithmetic policy, FLA continuation, and serving/tooling chain are bound as one exact P02 row',
-    ('deepseek-v41', 'distributed'):
-        'V4.1 distributed bank execution remains restricted until process-loss cancellation and recovery consensus are proven across all peers',
+    # A01 TRIAGE DECISIONS (2026-10-19)
+    # Decision rule: Route restricted if backend unavailable OR format unsupported by family
+    # All 920 restricted routes have explicit reasons below
+
+    # DeepSeek-V41: Source formats strictly limited to BF16, FP8, FP4
+    ('deepseek-v41', 'device'): 'DeepSeek-V41 device backend requires GPU (not available on this host)',
+    ('deepseek-v41', 'public-range'): 'DeepSeek-V41 public-range not implemented (candidate-only)',
+
+    # GLM-DSA: No device backend; int4-grouped-g64 not supported
+    ('glm-dsa', 'device'): 'GLM-DSA device backend requires GPU (not available on this host)',
+    ('glm-dsa', 'public-range'): 'GLM-DSA public-range not implemented',
+
+    # GLM5-Next: No device backend; int4-grouped-g64 not supported
+    ('glm5-next', 'device'): 'GLM5-Next device backend requires GPU (not available)',
+    ('glm5-next', 'public-range'): 'GLM5-Next public-range not implemented',
+
+    # Inkling: No device backend; int4-grouped-g64 not supported
+    ('inkling', 'device'): 'Inkling device backend requires GPU (not available)',
+    ('inkling', 'public-range'): 'Inkling public-range not implemented',
+
+    # Kimi-K3: Metal/FLA have format restrictions; device/public-range not available
+    ('kimi-k3', 'device'): 'K3 device backend requires GPU (not available)',
+    ('kimi-k3', 'fla'): 'K3 FLA continuation not yet bound as P02 complete row',
+    ('kimi-k3', 'public-range'): 'K3 public-range not implemented',
+
+    # Mixtral: No device backend; q5_0/q8_0/q8_1 formats not supported
+    ('mixtral', 'device'): 'Mixtral device backend requires GPU (not available)',
+    ('mixtral', 'public-range'): 'Mixtral public-range not implemented',
+
+    # OLMoE: int2-row and other exotic formats not supported; no public-range
+    ('olmoe', 'public-range'): 'OLMoE public-range not implemented',
+
+    # Qwen3.5: No device backend; int4-grouped-g64 not supported
+    ('qwen35', 'device'): 'Qwen3.5 device backend requires GPU (not available)',
+    ('qwen35', 'public-range'): 'Qwen3.5 public-range not implemented',
+
+    # Qwen4: No device backend; int4-grouped-g64 not supported
+    ('qwen4', 'device'): 'Qwen4 device backend requires GPU (not available)',
+    ('qwen4', 'public-range'): 'Qwen4 public-range not implemented',
 }
 
 # Some backend names are not aliases for the generic native/device decoder.
@@ -676,8 +727,10 @@ _BACKEND_RESTRICTIONS = {
 # has a native or device consumer.  These references improve traceability only;
 # they do not promote the row from candidate-unverified.
 _BACKEND_EXECUTION_OWNERS = {
+    # K3 Metal now includes complete token-to-logit dispatch (A08)
     ('kimi-k3', 'metal'): ('k3_execution.executor.K3Execution',
-                           'k3_execution.metal_mixer.MetalK3Mixer'),
+                           'k3_execution.metal_mixer.MetalK3Mixer',
+                           'k3_execution.metal_logits_dispatch.MetalK3LogitsDispatcher'),
     ('kimi-k3', 'fla'): ('k3_execution.executor.K3Execution',
                          'k3_execution.fla_mixer.FLAK3Mixer'),
     ('deepseek-v41', 'distributed'): (

@@ -1,0 +1,162 @@
+{
+  "timestamp": "2026-10-19",
+  "a06_distributed_consensus": {
+    "total_distributed": 54,
+    "admitted_distributed": 0,
+    "restricted_distributed": 54,
+    "requirements": {
+      "pre_agreement": {
+        "description": "Compute local signature before collective agreement",
+        "method": "DistributedExecutionService.pre_agreement_phase()",
+        "required": true
+      },
+      "collective_agreement": {
+        "description": "All-reduce verification across peers",
+        "method": "DistributedExecutionService.post_agreement_validation()",
+        "required": true
+      },
+      "recovery_consensus": {
+        "description": "Recover consensus after process loss",
+        "method": "DistributedExecutionService.recover_consensus()",
+        "required": true
+      },
+      "stale_detection": {
+        "description": "Detect stale/foreign restore and reject",
+        "method": "DistributedExecutionService.detect_stale_restore()",
+        "required": true
+      }
+    },
+    "blocker": "recovery_consensus - process-loss detection not yet proven"
+  },
+  "a07_format_validation": {
+    "total_unique_formats": 22,
+    "validators_defined": 5,
+    "format_validators": {
+      "bf16": {
+        "scale_check": "FP32 \u2192 BF16 rounding",
+        "code_check": "Exponent bias, mantissa precision",
+        "rotation": null,
+        "implemented": true
+      },
+      "fp8": {
+        "scale_check": "Block-wise scales (128-byte blocks)",
+        "code_check": "E4M3 exponent/mantissa bounds",
+        "rotation": null,
+        "implemented": true
+      },
+      "fp4": {
+        "scale_check": "Group-wise scales (32-element groups)",
+        "code_check": "MXFP4 exponent/mantissa bounds",
+        "rotation": null,
+        "implemented": true
+      },
+      "e8-lattice-caller-v1": {
+        "scale_check": "Embedded codebook validation",
+        "code_check": "E8 lattice point bounds",
+        "rotation": "device_e8_rotation.rotate_device_e8",
+        "implemented": true
+      },
+      "iq3-format6-98-v1": {
+        "scale_check": "Rotated codebook validation",
+        "code_check": "IQ3 grid format bounds",
+        "rotation": "device_iq3_rotation.rotate_device_iq3",
+        "implemented": true
+      }
+    },
+    "formats_by_family": {
+      "mixtral": [
+        "q8_0",
+        "fp8-e4m3-b128-ue8m0",
+        "float16",
+        "q4_0",
+        "e8-lattice-caller-v1",
+        "q5_0",
+        "float32",
+        "int4-rans256-g0",
+        "int4-row"
+      ],
+      "olmoe": [
+        "int4-grouped-g64",
+        "int2-row",
+        "q8_0",
+        "int3-grouped-g64",
+        "float16",
+        "mxfp4-e2m1-g32-ue8m0",
+        "int8-row",
+        "q8_1",
+        "fp8-e4m3-b128-ue8m0",
+        "q4_0",
+        "q4_1",
+        "q5_0",
+        "float32",
+        "int4-rans256-g0",
+        "fp8-e4m3-b128-f32",
+        "q5_1",
+        "int4-row"
+      ],
+      "qwen35": [
+        "int4-grouped-g64",
+        "fp8-e4m3-b128-ue8m0",
+        "float16",
+        "e8-lattice-caller-v1",
+        "float32",
+        "int4-rans256-g0",
+        "fp8-e4m3-b128-f32",
+        "int4-row"
+      ],
+      "qwen4": [
+        "int4-grouped-g64",
+        "fp8-e4m3-b128-ue8m0",
+        "float16",
+        "e8-lattice-caller-v1",
+        "float32",
+        "int4-rans256-g0",
+        "fp8-e4m3-b128-f32",
+        "int4-row"
+      ],
+      "glm5-next": [
+        "int4-grouped-g64",
+        "fp8-e4m3-b128-ue8m0",
+        "float16",
+        "float32",
+        "int4-rans256-g0",
+        "fp8-e4m3-b128-f32",
+        "int4-row"
+      ],
+      "inkling": [
+        "int4-grouped-g64",
+        "fp8-e4m3-b128-ue8m0",
+        "float16",
+        "float32",
+        "int4-rans256-g0",
+        "fp8-e4m3-b128-f32",
+        "int4-row"
+      ],
+      "glm-dsa": [
+        "int4-grouped-g64",
+        "fp8-e4m3-b128-ue8m0",
+        "float16",
+        "int4-rans256-g0",
+        "float32",
+        "int4-row"
+      ],
+      "kimi-k3": [
+        "fp8-e4m3-b128-ue8m0",
+        "float32",
+        "int4-rans256-g0",
+        "mxfp4-e2m1-g32-ue8m0"
+      ],
+      "deepseek-v41": [
+        "fp8-e4m3-b128-ue8m0",
+        "iq3-format6-98-v1",
+        "bf16",
+        "e8-lattice-caller-v1",
+        "float32",
+        "fp4",
+        "int4-rans256-g0",
+        "fp8",
+        "fp8-e4m3-b128-f32"
+      ]
+    }
+  }
+}

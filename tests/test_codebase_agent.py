@@ -500,8 +500,13 @@ class SandboxAndPolicyTests(unittest.TestCase):
             manager = SandboxManager(base / "sandboxes")
             manager.create("workspace-1", source=source)
             process = manager.start_process("workspace-1", [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(5)"])
-            time.sleep(0.2)
+            # Interpreter cold starts can take longer than 200 ms (notably in
+            # fresh Windows venvs). Observe readiness, don't assume a timing.
+            deadline = time.monotonic() + 5
             logs = manager.process_logs("workspace-1", process["id"])
+            while "ready" not in logs["stdout"] and time.monotonic() < deadline:
+                time.sleep(0.05)
+                logs = manager.process_logs("workspace-1", process["id"])
             self.assertIn("ready", logs["stdout"])
             stopped = manager.stop_process("workspace-1", process["id"])
             self.assertEqual("exited", stopped["status"])

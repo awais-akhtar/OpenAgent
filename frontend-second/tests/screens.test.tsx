@@ -30,6 +30,17 @@ describe('reference screen set', () => {
     } finally { useWorkspaceState.getState().setDataMode(originalMode); }
   });
 
+  it('keeps developer-only integration guide controls out of the Live workspace', () => {
+    const originalMode = useWorkspaceState.getState().dataMode;
+    useWorkspaceState.getState().setDataMode('live');
+    try {
+      renderWithClient(<AdvancedScreen route="voice" />);
+      expect(screen.queryByRole('button', { name: 'Integration guide' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Demo and integration guide' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Live export is unavailable here. No backend export route is configured for this guide.')).not.toBeInTheDocument();
+    } finally { useWorkspaceState.getState().setDataMode(originalMode); }
+  });
+
   it('renders the Home screen and navigates only through explicit actions', () => {
     const go = vi.fn();
     renderWithClient(<HomeScreen go={go} />);
