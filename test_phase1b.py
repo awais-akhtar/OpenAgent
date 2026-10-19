@@ -15,7 +15,10 @@ print("="*70)
 try:
     # Create runtime
     print("\n[1/4] Creating AdaptiveExecutionEngine...")
-    store = OpenAgentStore()
+    from pathlib import Path
+    data_dir = Path.home() / ".openagent"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = OpenAgentStore(data_dir)
     engine = AdaptiveExecutionEngine(store)
     print("✅ Engine created")
 
