@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-This document inventories client behavior and endpoint families found in the current frontend source. It is not a complete listing of every Python route, and source references do not prove runtime handler behavior. The route inventory reports 672 method/path declarations across 50 modules; declarations alone are not a tested contract. Exact handlers remain authoritative.
+This document inventories client behavior and endpoint families found in the current frontend source. It is not a complete listing of every Python route, and source references do not prove runtime handler behavior. The current live route-contract registry reports 654 method/path declarations across 49 groups; declarations alone are not a tested contract. For the full route-by-route comparison against the primary and second frontends, see [the frontend coverage audit](../frontend-second/FRONTEND_CAPABILITY_GAPS.md) and [the backend capability gap audit](../frontend-second/BACKEND_CAPABILITY_GAPS.md). Exact handlers remain authoritative.
 
 ## Shared HTTP and stream clients
 
@@ -18,7 +18,7 @@ The client is **generic rather than domain-typed**: many calls use `api.get<unkn
 |---|---|
 | Dashboard / Activity | GET `/api/health`, `/api/system/metrics`, `/api/modules/health`, `/api/inference/status`, `/api/local-ai/status`, `/api/audit`, `/api/agents/approvals`, `/api/worker/jobs` |
 | Chat and shell history | GET `/api/conversations/organized`, `/api/models`, `/api/chat/search`, `/api/conversation/messages`; POST `/api/chat/stream`, `/api/conversations/bulk`, `/api/chat/branch`, `/api/chat/import`, `/api/chat/artifact`; GET `/api/chat/replay`, `/api/chat/export`; POST `/api/knowledge/upload` |
-| CodeQ | GET `/api/codebase/projects`, project tree/file, runs/detail/events; POST folder-picker/project/scan/preflight/run/cancel/resume/snapshot restore/approval resolve/file write; event stream is fetched with cursor/timeout parameters |
+| CodeQ | GET `/api/codebase/projects`, `/api/codebase/project-identities`, project detail/tree/file, runs/detail/events; POST folder-picker/project/scan/preflight/run/cancel/resume/snapshot restore/approval resolve/file write; event stream is fetched with cursor/timeout parameters |
 | Voice | GET `/api/voice/status`, `/personas`, `/sessions`, `/turns`; POST sessions/STT/personas/transcript/TTS/translate/close |
 | Research | GET `/api/research/sessions` and session event stream; POST session creation and `/api/chat/research-record` |
 | Agents | GET `/api/agents`, `/marketplace`, `/permissions`, `/approvals`; POST `/run-checked`, approval request/resolve, `/delegate`, permission grant |
@@ -39,11 +39,14 @@ The client is **generic rather than domain-typed**: many calls use `api.get<unkn
 | Scraper | GET scraper status/jobs; POST schedule/scrape/run-due |
 | Fine-tuning | GET finetune status/templates/datasets/jobs/adapters; POST dataset/example/job/adapter registration/activation |
 
-The endpoint families can be traced to the active React pages and Python route handlers. This inventory is descriptive; test results belong to the project CI and do not imply that every endpoint has been exercised.
+The endpoint families can be traced to the active React pages and Python route handlers. Assistant task completion now requires an explicit `project` in the POST body, verifies the task belongs to that project, and applies the update with both task ID and project in the SQL predicate. The Assistant action builder includes the active project. Focused route regression coverage verifies missing scope and cross-project completion are rejected without changing task state, and matching-project completion succeeds. This inventory is descriptive; it does not imply that every endpoint has been exercised.
+
+`GET /api/codebase/project-identities` returns owner-filtered CodeQ project IDs and their persisted service namespace. It explicitly reports that no cross-service identity mapping is available; clients must not reuse a CodeQ project ID or workspace ID as another service's `project` value. See [the identity contract](PROJECT_IDENTITY_CONTRACT.md).
 
 ## Privacy and safety behavior represented in source
 
 - Project scope is sent on many reads and mutations from the active `project` query or saved `oa-project` value. The Workspace route subtree is keyed by active project in the shell; Workspace also clears document selection, content, versions, and library rows on a scope change and guards late document reads. A deterministic component regression test covers the page transition and the encoded project-scoped library requests. These client behaviors do not establish backend authorization: the Python service remains the authorization and data-isolation authority, and no frontend-only selection is a security boundary.
+- Assistant task completion is explicitly project-scoped end-to-end: the action payload includes the active project, the route rejects a missing project, and the service selects and updates only a task whose ID and project both match. Regression tests use two project scopes and assert a rejected attempt leaves the task open. This is project isolation in the local application data model, not authenticated multi-user authorization.
 - Chat sends default to local-only/external access disabled unless the user explicitly opts in. The chat page passes the scope into `/api/chat/stream`; source tests cover payload construction but not the live backend policy.
 - Communications sends are separated into draft, approval request, approval resolution, then send. The send request includes `allow_external:false`; server enforcement still governs delivery.
 - Workflow run supports dry-run and a separate confirmed live action; configured payload sets `allow_network:false`. The JSON steps field remains a usability/parity concern.
@@ -51,7 +54,8 @@ The endpoint families can be traced to the active React pages and Python route h
 - CodeQ write includes the file's expected SHA-256 and requires an explicit confirmation; operation approvals, runs, and snapshots call dedicated API routes.
 - Vault secrets are submitted to server endpoints, reveal requires a passphrase and source schedules concealment after 15 seconds; source review does not prove memory clearing, transport behavior or project isolation.
 - Security/settings and privileged actions remain server-backed. Security and Settings summaries use allowlisted, human-readable fields and omit sensitive nested policy details and identifiers; some specialist surfaces may still show API-shaped data. Avoid treating a UI label, payload flag, or client confirmation as equivalent to backend security enforcement.
+- Auth-enforced route scopes now include exact `POST /api/chat` (`chat:write`) and the backup family (`backup:read` for GET; `backup:admin` for writes, including restore). These are server-side scope checks and are covered by enforcement tests; client-side confirmation remains an additional interaction safeguard only.
 
 ## Verification boundary
 
-The source tree includes API-client, SSE, chat, specialist, resource, workspace and project-scope tests. Mocked Workspace project-change coverage proves client request scope and UI clearing, not server-side isolation. The tests do not comprehensively validate response schemas, protected-route authorization/egress denials, every protected route, or real stream cancellation/reconnection. The PhD Application Studio was retired, leaving 22 active view destinations.
+The focused verification run for the assistant completion scope change was `\.venv\Scripts\python.exe -m unittest tests.test_assistant_routes tests.test_workspace_assistant` (6 tests passed), including the matching/mismatched project route regression. The corresponding frontend contract is covered by the `PersonalWorkSurfaces` action-builder test; it should be run with the project's `npm run test:web` suite. Auth enforcement regressions additionally cover exact chat-submit and backup routes. Mocked Workspace project-change coverage proves client request scope and UI clearing, not server-side isolation. Tests do not comprehensively validate response schemas, protected-route authorization/egress denials, every protected route, or real stream cancellation/reconnection. No live user-data mutations were performed. The PhD Application Studio was retired, leaving 22 active view destinations.

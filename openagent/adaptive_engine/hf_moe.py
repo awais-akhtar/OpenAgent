@@ -32,6 +32,33 @@ def _expert_count_key(model_type: str) -> str:
     return "n_routed_experts" if model_type in _DENSE_PREFIX_TYPES else "num_experts"
 
 
+def require_hf_moe_execution_admission(manifest: "HFMoeManifest") -> tuple[dict, ...]:
+    """Require a complete Phase 1 route before Transformers loads checkpoint data.
+
+    Manifest and expert-placement inspection remain available to tooling, but
+    this loader is not currently represented by an exact family/backend/format
+    row. In particular, an HF model allowlist is not P02 admission.
+    """
+    if type(manifest) is not HFMoeManifest:
+        raise TypeError("validated local HF MoE manifest required")
+    from .source_scope import (require_source_family_backend_admission,
+                               source_family_for_identity)
+    try:
+        family = source_family_for_identity(manifest.model_type)
+    except ValueError as error:
+        raise ValueError(
+            f"P02 HF MoE execution is restricted: {manifest.model_type} "
+            "is not a catalogued Phase 1 family identity") from error
+    try:
+        return require_source_family_backend_admission(
+            family=family, model_type=manifest.model_type,
+            backend="transformers-expert-offload", arithmetic="fp32")
+    except ValueError as error:
+        raise ValueError(
+            f"P02 HF MoE execution is restricted for {manifest.model_type}: "
+            "no admitted Transformers/Accelerate loader-to-consumer route") from error
+
+
 @dataclass(frozen=True)
 class HFMoeManifest:
     model_directory: Path
@@ -224,6 +251,7 @@ class HFMoeAdapter:
              expert_placement: Mapping[str, str] | None = None,
              offload_directory: str | Path | None = None) -> "HFMoeAdapter":
         manifest = HFMoeManifest.read(model_directory)
+        require_hf_moe_execution_admission(manifest)
         try:
             import torch
             from transformers import AutoConfig, AutoModelForCausalLM, GenerationConfig

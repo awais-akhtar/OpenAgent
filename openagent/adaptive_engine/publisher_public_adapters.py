@@ -9,14 +9,17 @@ import ctypes as C
 import hashlib
 import struct
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 
+from .failure_reporting import add_failure_note, failure_summary
 from .segment_edge_adapters import (NativeOlmoePublicAdapters, _SegmentAdapter,
     _EdgeAdapter, _SOPEN, _CREATE, _RUN, _SNAPSHOT, _EOPEN, _EMBED, _LOGITS,
     _WriteStream)
-from .segment_edge_runtime import _Functions, _SegmentCaps, _EdgeCaps, _identifier, _integer
+from .segment_edge_runtime import _Functions, _SegmentCaps, _EdgeCaps, _identifier, _integer, _cancel_requested
+from .segment_edge_runtime import _Embed, _Logits
 from .native_library_identity import NativeLibraryIdentity
 from .session_recovery import _path
 from .executor_budget import _ReservedExecutor, _ConstructionCleanup
@@ -36,7 +39,7 @@ class _Event:
         self.request=request
 
     def is_set(self):
-        return bool(self.request.cancel and self.request.cancel(self.request.cancel_data))
+        return _cancel_requested(self.request.cancel,self.request.cancel_data)
 
 
 class _FrameReader:
@@ -97,13 +100,29 @@ class _Session:
     def __init__(self, engine, model):
         self.engine,self.model,self.closed=engine,model,False
         self.lock=threading.RLock()
+        self._operation_thread=None
         with engine.owner.lock:
             if engine.closed:
                 raise RuntimeError('public publisher engine closed during session construction')
             engine.children+=1
 
-    def close(self):
+    @contextmanager
+    def operation(self):
+        """Serialize ABI operations and reject same-thread callback reentry."""
+        thread=threading.get_ident()
+        if self._operation_thread==thread:
+            raise RuntimeError('reentrant public publisher session operation rejected')
         with self.lock:
+            if self._operation_thread==thread:
+                raise RuntimeError('reentrant public publisher session operation rejected')
+            self._operation_thread=thread
+            try:
+                yield
+            finally:
+                self._operation_thread=None
+
+    def close(self):
+        with self.operation():
             if not self.closed:
                 self.model.close()
                 with self.engine.owner.lock:
@@ -133,6 +152,48 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
             width,vocab,context,layers=config.hidden_size,config.vocabulary,config.context,len(config.layers)
         else:
             raise ValueError('matching exact native publisher family and geometry required')
+        # This class is also a public constructor, not merely a factory
+        # implementation detail. Keep the P02 gate here so direct callers
+        # cannot load an ABI library around compose_public_publisher_service.
+        route = {
+            'kimi-k3': ('kimi-k3', 'kimi_k3', 'fp32-approximate'),
+            'deepseek-v41': ('deepseek-v41', 'deepseek_v41',
+                             'publisher-bf16-fp8-fp4'),
+        }[family]
+        from .source_scope import (require_checkpoint_inventory_admission,
+                                   require_source_family_backend_admission)
+        require_source_family_backend_admission(
+            family=route[0], model_type=route[1], backend='public-range',
+            arithmetic=route[2])
+        self.root=_path(model_directory).resolve(strict=True)
+        if not self.root.is_dir():
+            raise ValueError('original local publisher model directory required')
+        self.inventory = require_checkpoint_inventory_admission(
+            self.root, family=route[0], model_type=route[1],
+            backend='public-range', arithmetic=route[2],
+            max_metadata_bytes=max_work_bytes)
+        payload=getattr(backing_service,'publisher_payload',None)
+        if family=='kimi-k3':
+            from .publisher_checkpoint.k3_adapter import require_k3_payload_admission
+            require_k3_payload_admission(payload)
+        else:
+            from .publisher_checkpoint.v41_adapter import require_v41_source_admission
+            require_v41_source_admission(payload)
+        if (payload._source_root!=str(self.inventory.root) or
+                payload._source_files!=tuple(sorted(self.inventory.files.items())) or
+                payload.config_sha256!=self.inventory.config_sha256):
+            raise ValueError('public publisher payload and model directory are not the same checkpoint snapshot')
+        if ((family=='kimi-k3' and payload.config!=config) or
+                (family=='deepseek-v41' and payload.profile!=config)):
+            raise ValueError('public publisher config differs from the checkpoint-bound payload')
+        # Provenance and checkpoint-bound config checks above remain the
+        # authoritative admission errors.  Once those pass, ensure the
+        # already-constructed service cannot disagree with the geometry this
+        # ABI is about to advertise; keep this before loading the ABI library.
+        limits=getattr(backing_service,'limits',None)
+        if (limits is None or getattr(limits,'vocabulary',None)!=vocab or
+                getattr(limits,'context',None)!=context):
+            raise ValueError('backing service limits differ from original publisher geometry')
         if type(checkpoint_identity) is not str or not 0<len(checkpoint_identity)<=4096:
             raise ValueError('pinned public publisher checkpoint identity required')
         self.width,self.vocabulary,self.context,self.layers=width,vocab,context,layers
@@ -142,13 +203,12 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
         self.rows=_integer(max_batch_rows,'publisher public rows',maximum=4096)
         if self.rows*(2*width+vocab+1)*4>self.staging_bytes:
             raise MemoryError('public publisher transfer rows exceed work admission')
-        self.root=_path(model_directory).resolve(strict=True)
-        if not self.root.is_dir():
-            raise ValueError('original local publisher model directory required')
         self.family,self.config,self.service=family,config,backing_service
+        self.inventory.assert_unchanged()
         self._runtime_identity=NativeLibraryIdentity.read(runtime_library)
         self.native=_Functions(runtime_library)
         self._runtime_identity.assert_unchanged()
+        self.inventory.assert_unchanged()
         self.lock=threading.RLock()
         self.objects,self.pending,self.next_id={}, {}, 1
         self._initialize_resource_ledger(max_resource_bytes)
@@ -188,11 +248,11 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
                     _PUBLIC_REGISTRY[key]=self
             return self
 
-    def _allowed(self, path, plan, plan_size, backend):
+    def _allowed(self, options):
         self._runtime_identity.assert_unchanged()
         if self.service._closed:
             raise RuntimeError('backing publisher service is closed')
-        return super()._allowed(path,plan,plan_size,backend)
+        return super()._allowed(options)
 
     def _retain_construction(self, primary):
         cleanup=getattr(self.service.factory,'retry_cleanup',None)
@@ -212,7 +272,7 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
             with self.lock:
                 self.objects[orphan]=('session',resource)
                 self.pending[orphan]=failure
-            primary.add_note('public publisher construction cleanup retained: '+repr(failure))
+            add_failure_note(primary, 'public publisher construction cleanup retained: '+failure_summary(failure))
 
     def _new(self, memory):
         if memory<self.executor_bytes:
@@ -258,7 +318,7 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
                 with self.lock:
                     self.objects[orphan]=('session',model)
                     self.pending[orphan]=failure
-                primary.add_note('public publisher admission cleanup retained: '+repr(failure))
+                add_failure_note(primary, 'public publisher admission cleanup retained: '+failure_summary(failure))
             raise
 
     def _scope(self, model, request):
@@ -274,7 +334,7 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
     def _segment_record(self):
         def open_engine(output,caps,raw_options):
             options=raw_options.contents
-            self._allowed(options.model,options.plan,options.plan_size,options.backend)
+            self._allowed(options)
             if options.begin!=0 or options.end!=self.layers or options.context not in (0,self.context):
                 raise ValueError('complete publisher residual/shared-index layer range and original capacity required')
             engine=_Engine(self,int(options.memory))
@@ -304,15 +364,16 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
                     with self.lock:
                         self.objects[orphan]=('session',model)
                         self.pending[orphan]=failure
-                    primary.add_note('public session construction cleanup retained: '+repr(failure))
+                    add_failure_note(primary, 'public session construction cleanup retained: '+failure_summary(failure))
                 raise
             self._publish(session,'session',output)
         def run(session_id,raw_request):
             session=self._get(session_id,'session')
             request=raw_request.contents
-            if (session.closed or type(request.rows) is not int or not 1<=request.rows<=self.rows or
+            if (request.size != C.sizeof(type(request)) or
+                    type(request.rows) is not int or not 1<=request.rows<=self.rows or
                     type(request.position) is not int or not 0<=request.position<=self.context or
-                    _position(session.model)!=request.position or request.token_count!=request.rows or
+                    any(request.reserved) or request.token_count!=request.rows or
                     not request.tokens or not request.input or not request.output or
                     request.input_bytes != request.rows*self.width*4 or
                     request.output_bytes != request.rows*self.width*4 or
@@ -323,9 +384,15 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
                 raise ValueError('public publisher token IDs are outside the vocabulary')
             rows=np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
                 shape=(request.rows*self.width,)).reshape(request.rows,self.width)
-            with session.lock:
+            with session.operation():
                 if session.closed:
                     raise ValueError('public publisher session is closed')
+                # Position admission must be serialized with continuation
+                # mutation. Checking it before acquiring the operation lease
+                # lets callbacks validate the same old boundary and commit
+                # sequentially from stale state.
+                if _position(session.model)!=request.position:
+                    raise ValueError('public publisher position changed before operation admission')
                 with self._scope(session.model,request):
                     output=session.model.forward_hidden(tuple(int(token) for token in ids),rows)
             if output.shape!=rows.shape or output.dtype!=np.float32 or not np.isfinite(output).all():
@@ -335,13 +402,13 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
             if not writer:
                 raise ValueError('public publisher cache writer required')
             session=self._get(session_id,'session')
-            with session.lock:
+            with session.operation():
                 if session.closed:
                     raise ValueError('public publisher session is closed')
                 session.model.write_cache(_WriteStream(writer,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
         def restore(session_id,reader,user):
             session=self._get(session_id,'session')
-            with session.lock:
+            with session.operation():
                 if session.closed:
                     raise ValueError('public publisher session is closed')
                 session.model.restore_cache(_FrameReader(reader,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
@@ -353,7 +420,7 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
     def _edge_record(self):
         def open_edge(output,caps,raw_options):
             options=raw_options.contents
-            self._allowed(options.model,options.plan,options.plan_size,options.backend)
+            self._allowed(options)
             model=self._new(int(options.memory))
             record=_EdgeCaps(version=2,flags=(1<<8)|8,engine=self.edge_id,
                 schema=self.wire_schema,numeric=self.numeric_class,tokenizer=b'',dtype=1,
@@ -364,7 +431,8 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
         def embed(edge_id,raw_request):
             model=self._get(edge_id,'edge')
             request=raw_request.contents
-            if (type(request.rows) is not int or not 1<=request.rows<=self.rows or
+            if (request.size != C.sizeof(_Embed) or any(request.reserved) or
+                    type(request.rows) is not int or not 1<=request.rows<=self.rows or
                     request.token_count != request.rows or not request.tokens or
                     not request.output or
                     request.output_bytes != request.rows*self.width*4):
@@ -380,7 +448,8 @@ class NativePublisherPublicAdapters(NativeOlmoePublicAdapters):
         def logits(edge_id,raw_request):
             model=self._get(edge_id,'edge')
             request=raw_request.contents
-            if (type(request.rows) is not int or not 1<=request.rows<=self.rows or
+            if (request.size != C.sizeof(_Logits) or any(request.reserved) or
+                    type(request.rows) is not int or not 1<=request.rows<=self.rows or
                     not request.input or not request.output or
                     request.input_bytes != request.rows*self.width*4 or
                     request.capacity != request.rows*self.vocabulary):

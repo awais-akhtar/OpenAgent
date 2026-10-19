@@ -70,6 +70,8 @@ class NativeGlmDsaDecoder(IndependentGlmDsaDecoder):
                                 max_bytes,max_snapshots=4,retain_diagnostics=False,
                                 read_limits=None,cancel=None):
         from .native_checkpoint import read_native_text_checkpoint,_finish_decoder
+        if expert_provider is not None:
+            raise ValueError('GLM-DSA packed experts are disabled until source-content identity is bound')
         from .native_glm_dsa_ranges import admit_inventory
         from .glm_dsa_streamed_experts import config_identity
         def select(config,records):
@@ -79,7 +81,8 @@ class NativeGlmDsaDecoder(IndependentGlmDsaDecoder):
             return tuple(sorted(name for name in shapes if not name.endswith(
                 ('mlp.experts.gate_up_proj','mlp.experts.down_proj'))))
         config,weights = read_native_text_checkpoint(directory,model_type='glm_moe_dsa',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='native')
         return _finish_decoder(cls(config,weights,library=library,max_bytes=max_bytes,
             max_snapshots=max_snapshots,retain_diagnostics=retain_diagnostics,
             expert_provider=expert_provider),cancel)
@@ -92,6 +95,8 @@ class NativeGlmDsaDecoder(IndependentGlmDsaDecoder):
         self._busy = False
         if type(max_bytes) is not int or max_bytes <= 0:
             raise ValueError('invalid max_bytes')
+        if expert_provider is not None:
+            raise ValueError('GLM-DSA packed experts require verified checkpoint source-content identity')
         self.max_bytes = max_bytes
         if type(retain_diagnostics) is not bool:
             raise ValueError('retain_diagnostics must be boolean')

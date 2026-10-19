@@ -250,10 +250,13 @@ int coli_segment_engine_open(const char *name, const oa_se_segment_options *opti
 }
 int coli_segment_engine_capabilities(const void *handle, oa_se_segment_caps *caps,
                                     char *error, size_t size) {
-    se_object *node; uint32_t capacity;
+    se_object *node;
     if(!caps || caps->size<sizeof(*caps)) return failure(error,size,"capability output is too small");
-    capacity=caps->size; node=acquire((void*)handle,SE_ENGINE,error,size); if(!node) return -1;
-    memset(caps,0,capacity);memcpy(caps,&node->segment_caps,sizeof(*caps));release(node);return 0;
+    node=acquire((void*)handle,SE_ENGINE,error,size); if(!node) return -1;
+    /* `size` is caller-supplied capacity, not proof of the backing allocation.
+     * Only touch the known v1 record; zeroing the claimed larger capacity can
+     * overwrite unrelated caller memory when a malformed size is supplied. */
+    memset(caps,0,sizeof(*caps));memcpy(caps,&node->segment_caps,sizeof(*caps));release(node);return 0;
 }
 int coli_segment_engine_close(void *handle, char *error, size_t size) {
     se_object *node;
@@ -391,10 +394,12 @@ int coli_edge_engine_open(const char *name,const oa_se_edge_options *options,voi
     *handle=node;return 0;
 }
 int coli_edge_engine_capabilities(const void *handle,oa_se_edge_caps *caps,char *error,size_t size) {
-    se_object *node;uint32_t capacity;
+    se_object *node;
     if(!caps || caps->size<sizeof(*caps)) return failure(error,size,"edge capability output too small");
-    capacity=caps->size;node=acquire((void*)handle,SE_EDGE,error,size);if(!node) return -1;
-    memset(caps,0,capacity);memcpy(caps,&node->edge_caps,sizeof(*caps));release(node);return 0;
+    node=acquire((void*)handle,SE_EDGE,error,size);if(!node) return -1;
+    /* As above, never trust a caller-declared capacity as an actual allocation
+     * extent when clearing a fixed-version capability record. */
+    memset(caps,0,sizeof(*caps));memcpy(caps,&node->edge_caps,sizeof(*caps));release(node);return 0;
 }
 void coli_edge_engine_close(void *handle) {
     se_object *node=acquire(handle,SE_EDGE,NULL,0);if(!node) return;

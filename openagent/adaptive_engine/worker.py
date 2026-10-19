@@ -433,18 +433,37 @@ class HardwareWorker:
         pieces: list[str] = []
         first_token_ms: float | None = None
         started = time.perf_counter()
+        consumer_error: BaseException | None = None
 
         def streamer(piece: Any) -> bool:
-            nonlocal first_token_ms
+            nonlocal first_token_ms, consumer_error
             text = str(piece)
             if text:
                 if first_token_ms is None:
                     first_token_ms = (time.perf_counter() - started) * 1000
                 pieces.append(text)
-                emit({"type": "token", "content": text})
+                try:
+                    emit({"type": "token", "content": text})
+                except BaseException as exc:
+                    # OpenVINO's streamer return value requests generation
+                    # stop. Preserve the sink failure and report it after the
+                    # engine has observed that stop signal.
+                    consumer_error = exc
+                    return True
             return False
 
-        result = session.pipeline.generate(prompt, config, streamer)
+        try:
+            result = session.pipeline.generate(prompt, config, streamer)
+        except BaseException as primary:
+            if consumer_error is not None:
+                try:
+                    consumer_error.add_note("generation failed while stopping after stream consumer failure: " + repr(primary))
+                except BaseException:
+                    pass
+                raise consumer_error
+            raise
+        if consumer_error is not None:
+            raise consumer_error
         latency_ms = (time.perf_counter() - started) * 1000
         session.calls += 1
         session.total_generate_ms += latency_ms
@@ -1059,6 +1078,10 @@ def main() -> int:
 
             result = worker.execute(command, emit=emit)
             response = {"request_id": request_id, "status": "ok", "result": result}
+        except BrokenPipeError:
+            # There is no JSONL consumer left to receive an error envelope.
+            # A streaming action will already have asked OpenVINO to stop.
+            break
         except Exception as exc:
             response = {
                 "request_id": request_id,

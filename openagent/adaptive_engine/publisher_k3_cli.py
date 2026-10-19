@@ -11,6 +11,7 @@ import threading
 import time
 
 import numpy as np
+from .failure_reporting import add_failure_note, failure_summary
 from .session_recovery import _path
 from .publisher_media_files import read_regular
 
@@ -151,11 +152,14 @@ class PublisherSession:
         except BaseException as error:
             try:self._close_unlocked()
             except BaseException as failure:
-                error.cleanup=self.close;error.add_note('K3 dependent cleanup remains pending: '+str(failure))
+                error.cleanup=self.close;add_failure_note(error, 'K3 dependent cleanup remains pending: '+failure_summary(failure))
             raise
 
     def _load(self, cancelled):
         _check_cancelled(cancelled)
+        device=getattr(self._args,'arithmetic_device',None)
+        if isinstance(device,str) and device.startswith('mps'):
+            raise ValueError('K3 Metal backend is not admitted: complete token-to-logit dispatch is unavailable')
         from tokenizers import Tokenizer
         from .publisher_checkpoint.service import PublisherCheckpoint
         from .publisher_checkpoint.k3_adapter import K3ExecutionPayload
@@ -188,10 +192,7 @@ class PublisherSession:
                     type(args.torch_version) is not str or not args.torch_version or
                     any(type(value) is not int or value<=0 for value in (args.arithmetic_mib,args.routing_mib))):
                 raise ValueError('BF16 serving requires explicit device, Torch version and arithmetic/routing budgets')
-            metal=args.arithmetic_device.startswith('mps')
-            if metal and args.fla_version is not None:
-                raise ValueError('Metal KDA uses the explicit Torch recurrence and does not accept an FLA pin')
-            if not metal and (args.fla_version is None)!=(args.fla_mib is None):
+            if (args.fla_version is None)!=(args.fla_mib is None):
                 raise ValueError('FLA version and per-mixer admission must be supplied together')
             if args.fla_mib is not None and (type(args.fla_mib) is not int or args.fla_mib<=0):
                 raise ValueError('positive per-mixer KDA admission required')
@@ -255,6 +256,17 @@ class PublisherSession:
         _check_cancelled(cancelled)
         self._checkpoint = PublisherCheckpoint.open(directory, family='kimi_k3',
             max_metadata_bytes=budgets['metadata'], max_tensors=args.max_tensors, max_shards=args.max_shards)
+        # The CLI constructs K3Execution directly rather than using the shared
+        # execution factory. Require every declared format row for this exact
+        # route to be verified before weights, providers, or native libraries
+        # are materialized; a valid publisher payload seal alone is not P02
+        # source/backend/format admission.
+        from .source_scope import require_source_family_backend_admission
+        route_backend = ('fla' if bf16 and args.fla_version is not None else
+                         'device' if bf16 else 'native')
+        require_source_family_backend_admission(
+            family='kimi-k3', model_type='kimi_k3', backend=route_backend,
+            arithmetic='bf16' if bf16 else 'fp32-approximate')
         self._vocabulary = self._checkpoint.config['text_config']['vocab_size']
         if type(self._vocabulary) is not int or self._vocabulary <= 0:
             raise ValueError('positive publisher vocabulary required')
@@ -312,8 +324,7 @@ class PublisherSession:
             from .k3_execution.routing import TorchK3Router
             from .k3_execution.fla_mixer import FLAK3Policy
             has_kda='kda' in payload.config.layer_types
-            metal=args.arithmetic_device.startswith('mps')
-            if has_kda and (args.fla_mib is None or (not metal and args.fla_version is None)):
+            if has_kda and (args.fla_mib is None or args.fla_version is None):
                 raise ValueError('BF16 hybrid checkpoint requires explicit FLA dependency and mixer admission')
             if not has_kda and (args.fla_version is not None or args.fla_mib is not None):
                 raise ValueError('FLA admission requires a checkpoint containing KDA layers')
@@ -329,13 +340,8 @@ class PublisherSession:
             routing=TorchK3Router(device=args.arithmetic_device,expected_torch_version=args.torch_version,
                 max_bytes=args.routing_mib*1024**2)
             if has_kda:
-                if metal:
-                    from .k3_execution.metal_mixer import MetalK3Policy
-                    fla_policy=MetalK3Policy(device=args.arithmetic_device,torch_version=args.torch_version,
-                        max_bytes=args.fla_mib*1024**2)
-                else:
-                    fla_policy=FLAK3Policy(device=args.arithmetic_device,torch_version=args.torch_version,
-                        fla_version=args.fla_version,max_bytes=args.fla_mib*1024**2)
+                fla_policy=FLAK3Policy(device=args.arithmetic_device,torch_version=args.torch_version,
+                    fla_version=args.fla_version,max_bytes=args.fla_mib*1024**2)
         self._model = K3Execution(payload.config, payload.tensors, library=libraries['kimi'],
             require_publisher_exact=args.require_publisher_exact,exact_evidence=evidence,
             attention_library=libraries['attention'], operators_library=libraries['operators'],
@@ -383,8 +389,10 @@ class PublisherSession:
         return self.generate(emit=emit, cancelled=cancelled, _request_args=request)
 
     def _close_unlocked(self):
-        self._owned.close()
+        # A failed dependency close remains retryable in OwnedResources, but
+        # this warm session must stop admitting requests immediately.
         self._closed = True
+        self._owned.close()
         self._model = self._tokenizer = self._checkpoint = None
 
     def close(self):
@@ -449,11 +457,11 @@ class PublisherSession:
                 try:
                     self._model.reset()
                 except BaseException as cleanup_error:
-                    error.add_note('K3 cache reset failed: ' + str(cleanup_error))
+                    add_failure_note(error, 'K3 cache reset failed: ' + failure_summary(cleanup_error))
                     try:
                         self._close_unlocked()
                     except BaseException as close_error:
-                        error.add_note('K3 session close failed: ' + str(close_error))
+                        add_failure_note(error, 'K3 session close failed: ' + failure_summary(close_error))
                 raise
             else:
                 try:
@@ -615,7 +623,8 @@ class PublisherSession:
                     tuple(generated),expanded_prompt,np.asarray(logits,dtype=np.float32),
                     copy.deepcopy(rng.bit_generator.state),temperature,tuple(sorted(stops)),scope,
                     stop_prefixes,tuple(copy.deepcopy(media_metadata)),self._tokenizer_sha256)
-                self._publish_boundary(checkpoint_sink,boundary,checkpoint_max_bytes,checkpoint_scratch_directory)
+                self._publish_boundary(checkpoint_sink,boundary,checkpoint_max_bytes,
+                    checkpoint_scratch_directory,cancelled=cancelled)
                 _check_cancelled(cancelled)
         save_boundary()
         finish_reason = 'length'
@@ -627,7 +636,9 @@ class PublisherSession:
             save_boundary()
             if first_token_ms is None:
                 first_token_ms = (time.perf_counter() - loaded) * 1000
-            event('tokens', token_ids=[token], position=self._model.position,
+            # Request-level failures can still restore the generation
+            # boundary, but already-emitted caller bytes cannot be retracted.
+            event('tokens', token_ids=[token], position=self._model.position, committed=False,
                   text=self._tokenizer.decode(generated, skip_special_tokens=False))
             prefix_stopped = any(len(generated) >= len(prefix) and
                 tuple(generated[-len(prefix):]) == prefix for prefix in stop_prefixes)
@@ -659,7 +670,7 @@ class PublisherSession:
         elif not callable(sink) or type(maximum) is not int or maximum<=0:
             raise ValueError('callable checkpoint sink and positive complete frame budget required')
 
-    def _publish_boundary(self,sink,boundary,maximum,scratch):
+    def _publish_boundary(self,sink,boundary,maximum,scratch,*,cancelled=None):
         from .k3_generation_recovery import write_generation_boundary
         active=True;written=False;consumed=False
         owner_thread=threading.get_ident()
@@ -668,7 +679,8 @@ class PublisherSession:
             if not active or consumed or threading.get_ident()!=owner_thread:
                 raise RuntimeError('checkpoint writer expired, consumed or outside its request thread')
             consumed=True
-            size=write_generation_boundary(self._model,boundary,output,max_bytes=maximum,scratch_directory=scratch)
+            size=write_generation_boundary(self._model,boundary,output,max_bytes=maximum,
+                scratch_directory=scratch,cancelled=cancelled)
             written=True
             return size
         try:
@@ -742,10 +754,12 @@ class PublisherSession:
                         copy.deepcopy(rng.bit_generator.state),boundary.temperature,boundary.stop_token_ids,
                         boundary.execution_scope,stop_prefixes,boundary.media_metadata,self._tokenizer_sha256)
                     if checkpoint_sink is not None:
-                        self._publish_boundary(checkpoint_sink,current,checkpoint_max_bytes,checkpoint_scratch_directory)
+                        self._publish_boundary(checkpoint_sink,current,checkpoint_max_bytes,
+                            checkpoint_scratch_directory,cancelled=cancelled)
                     _check_cancelled(cancelled)
                     if emit is not None:emit(dict(event='tokens',token_ids=[token],position=self._model.position,
-                        text=self._tokenizer.decode(generated,skip_special_tokens=False),recovered=True))
+                        text=self._tokenizer.decode(generated,skip_special_tokens=False),recovered=True,
+                        committed=False))
                 prefix_stopped = bool(generated and any(
                     len(generated)>=len(prefix) and
                     tuple(generated[-len(prefix):])==prefix
@@ -764,8 +778,8 @@ class PublisherSession:
                 try:self._model.reset()
                 except BaseException as cleanup:
                     try:self._close_unlocked()
-                    except BaseException as release:cleanup.add_note('session release failed: '+repr(release))
-                    if primary is not None:primary.add_note('recovery cache cleanup failed: '+repr(cleanup))
+                    except BaseException as release:add_failure_note(cleanup, 'session release failed: '+failure_summary(release))
+                    if primary is not None:add_failure_note(primary, 'recovery cache cleanup failed: '+failure_summary(cleanup))
                     else:raise
             return result
         finally:self._lock.release()

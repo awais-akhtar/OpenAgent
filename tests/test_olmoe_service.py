@@ -263,6 +263,35 @@ class OlmoeServiceTests(unittest.TestCase):
             service.submit("three", session_id="a").result(1)
             self.assertEqual(model.consumed[-5:], [1, 99, 1, 1, 2])
 
+    def test_stream_close_failure_does_not_mask_sink_failure(self):
+        class BrokenCloseStream:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return 1
+
+            def close(self):
+                raise RuntimeError("stream close failed")
+
+        class Model(FakeOlmoeModel):
+            def continue_id_stream(self, ids, *, max_tokens):
+                return BrokenCloseStream()
+
+        decoder = OlmoeChatDecoder(Model())
+
+        def fail_sink(_text):
+            raise ValueError("sink failed")
+
+        with self.assertRaisesRegex(ValueError, "sink failed") as caught:
+            decoder.generate(
+                [ChatMessage("user", "hello")],
+                max_tokens=1,
+                on_token=fail_sink,
+                cancelled=lambda: False,
+            )
+        self.assertTrue(any("stream close failed" in note for note in caught.exception.__notes__))
+
     def test_stateful_decoder_snapshots_are_isolated_per_session(self):
         decoder = StatefulFakeDecoder()
         with OlmoeService(decoder) as service:

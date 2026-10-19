@@ -105,31 +105,38 @@ def restore_device_cache(model,source,*,max_bytes):
                 raise MemoryError('Qwen3.5 device recovery staging exceeds admission')
             digest = hashlib.sha256(prefix+encoded)
             pending = []
-            for shapes in expected['shapes']:
-                bank = []
-                for shape in shapes:
-                    model._cancel()
-                    host = np.empty(shape,dtype='<f4')
-                    flat = host.reshape(-1)
-                    for offset in range(0,flat.size,262144):
+            bank=[];mask=host=flat=value=data=mask_data=None;committed=False
+            try:
+                for shapes in expected['shapes']:
+                    bank = []
+                    for shape in shapes:
                         model._cancel()
-                        count = min(262144,flat.size-offset)
-                        data = _read(source,count*4);digest.update(data)
-                        value = np.frombuffer(data,dtype='<f4')
-                        if not np.isfinite(value).all():
-                            raise ValueError('nonfinite Qwen3.5 continuation')
-                        flat[offset:offset+count] = value
-                    bank.append(model.torch.tensor(host,device=model.device,dtype=model.torch.float32))
-                    del host,flat
-                pending.append(tuple(bank))
-            mask_data = _read(source,batch*position);digest.update(mask_data)
-            if any(value>1 for value in mask_data):
-                raise ValueError('invalid Qwen3.5 occupancy mask')
-            mask = np.frombuffer(mask_data,dtype=np.uint8).reshape(batch,position).copy() if batch else None
-            if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
-                raise ValueError('Qwen3.5 cache checksum/EOF mismatch')
-            model._cancel()
-            model._cache,model._mask,model.position = tuple(pending),mask,position
-            return position
+                        host = np.empty(shape,dtype='<f4')
+                        flat = host.reshape(-1)
+                        for offset in range(0,flat.size,262144):
+                            model._cancel()
+                            count = min(262144,flat.size-offset)
+                            data = _read(source,count*4);digest.update(data)
+                            value = np.frombuffer(data,dtype='<f4')
+                            if not np.isfinite(value).all():
+                                raise ValueError('nonfinite Qwen3.5 continuation')
+                            flat[offset:offset+count] = value
+                        bank.append(model.torch.tensor(host,device=model.device,dtype=model.torch.float32))
+                        host=flat=value=data=None
+                    pending.append(tuple(bank));bank=[]
+                mask_data = _read(source,batch*position);digest.update(mask_data)
+                if any(value>1 for value in mask_data):
+                    raise ValueError('invalid Qwen3.5 occupancy mask')
+                mask = np.frombuffer(mask_data,dtype=np.uint8).reshape(batch,position).copy() if batch else None
+                if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
+                    raise ValueError('Qwen3.5 cache checksum/EOF mismatch')
+                model._cancel()
+                model._cache,model._mask,model.position = tuple(pending),mask,position
+                committed=True
+                return position
+            finally:
+                if not committed:
+                    bank.clear();pending.clear();mask=None
+                host=flat=value=data=mask_data=None
         finally:
             model._busy = False

@@ -70,7 +70,14 @@ def convert_experts(
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, destination)
-        return manifest
-    finally:
+    except BaseException as primary:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as cleanup:
+                primary.add_note("Q8_0 conversion temporary cleanup pending: " + repr(cleanup))
+        raise
+    else:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+        return manifest

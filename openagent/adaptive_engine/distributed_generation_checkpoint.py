@@ -17,6 +17,8 @@ import shutil
 from .generation_checkpoint_files import AtomicGenerationCheckpoint
 from .session_recovery import _path
 from .segment_snapshot import _pairs
+from .distributed_execution import _failure_summary
+from .owned_file_descriptor import close_after_failure,fdopen_owned
 
 
 def signature(boundary):
@@ -53,7 +55,8 @@ def _atomic_manifest(path,value):
             try:temporary.unlink(missing_ok=True)
             except BaseException as failure:
                 if primary is None:raise
-                primary.add_note('distributed manifest staging cleanup remains pending at '+str(temporary)+': '+str(failure))
+                primary.add_note('distributed manifest staging cleanup remains pending at '+str(temporary)+': '+
+                                 _failure_summary(failure))
                 primary.cleanup=lambda path=temporary:path.unlink(missing_ok=True)
 
 
@@ -70,10 +73,10 @@ def read_manifest(path):
         opened=os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or stamp(opened)!=stamp(before):
             raise ValueError('distributed manifest changed during opening')
-        stream=os.fdopen(descriptor,'rb')
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        close_after_failure(descriptor,primary,owner='distributed generation manifest')
         raise
+    stream=fdopen_owned(descriptor,'rb',owner='distributed generation manifest')
     with stream:
         raw=stream.read(65537)
         if stamp(os.fstat(stream.fileno()))!=stamp(before):
@@ -81,6 +84,55 @@ def read_manifest(path):
     if stamp(_path(path).stat())!=stamp(before) or len(raw)!=before.st_size:
         raise ValueError('distributed manifest changed during admission')
     return path,raw
+
+
+def _valid_reservation_record(rank, record, *, index):
+    if rank != 0:
+        return record is None
+    if type(record) is not tuple or len(record) != 2:
+        return False
+    name, error = record
+    if error is not None:
+        return (name is None and type(error) is str and 0 < len(error) <= 4096)
+    prefix=f'boundary-{index}-'
+    suffix=name[len(prefix):] if type(name) is str and name.startswith(prefix) else ''
+    return (len(suffix) == 32 and
+            all(character in '0123456789abcdef' for character in suffix))
+
+
+def _valid_collective_error(value):
+    return value is None or (type(value) is str and 0 < len(value) <= 4096)
+
+
+def _valid_generation_record(row, *, max_rank_bytes):
+    if type(row) is not tuple or len(row) != 3:
+        return False
+    observed, failure, item = row
+    if failure is not None:
+        return (observed is None and item is None and type(failure) is str and
+                0 < len(failure) <= 4096)
+    if (type(observed) is not str or len(observed) != 64 or
+            any(char not in '0123456789abcdef' for char in observed) or
+            type(item) is not dict or
+            set(item) != {'bytes', 'sha256', 'execution_identity'} or
+            type(item['bytes']) is not int or item['bytes'].bit_length() > 63 or
+            not 128 <= item['bytes'] <= max_rank_bytes or
+            type(item['sha256']) is not str or len(item['sha256']) != 64 or
+            any(char not in '0123456789abcdef' for char in item['sha256']) or
+            type(item['execution_identity']) is not str or
+            not 0 < len(item['execution_identity']) <= 8192 or
+            '\x00' in item['execution_identity']):
+        return False
+    return True
+
+
+def _poison_coordinator(owner):
+    # These result-envelope failures make subsequent control schedules
+    # untrustworthy. The coordinator is caller-owned and must be restarted.
+    try:
+        owner._failed = True
+    except BaseException:
+        pass
 
 
 class CollectiveGenerationSink:
@@ -94,10 +146,15 @@ class CollectiveGenerationSink:
 
     @staticmethod
     def _quarantine_uncommitted(path, *, manifest_written=False):
-        """Remove only a just-created boundary without a committed pointer."""
+        """Remove only a just-created boundary known to lack a commit pointer."""
         path=_path(path)
         try:
-            if path.is_dir() and (manifest_written or not (path/'manifest.json').exists()):
+            # Once publication of latest.json has begun, its atomic rename may
+            # have committed even if the following directory fsync failed.
+            # Before that point the unique generation directory cannot be
+            # referenced by the commit pointer and is safe to remove, even if
+            # its private manifest was already written.
+            if path.is_dir() and not manifest_written:
                 shutil.rmtree(path)
         except BaseException as error:
             return error
@@ -107,7 +164,7 @@ class CollectiveGenerationSink:
         owner=self.coordinator;receipt=None;error=None;logical=None
         # A sink is recreated for each request. Its local index cannot name an
         # immutable recovery boundary across requests or replacement owners.
-        reservation=None
+        reservation=None;directory=None
         if owner.rank==0:
             try:
                 self.directory.mkdir(parents=True,exist_ok=True)
@@ -118,11 +175,43 @@ class CollectiveGenerationSink:
                 _sync_directory(self.directory)
                 reservation=(name,None)
             except BaseException as failure:
-                reservation=(None,(str(failure) or type(failure).__name__)[:4096])
+                reservation=(None,_failure_summary(failure))
         reservations=[None]*owner.world_size
         owner.distributed.all_gather_object(reservations,reservation,group=owner.group)
+        malformed=[rank for rank,row in enumerate(reservations)
+                   if not _valid_reservation_record(rank,row,index=self.index)]
+        if malformed:
+            cleanup_error=None
+            if owner.rank==0 and directory is not None:
+                cleanup_error=self._quarantine_uncommitted(directory)
+            cleanup=[None]*owner.world_size
+            owner.distributed.all_gather_object(cleanup,
+                None if cleanup_error is None else _failure_summary(cleanup_error),group=owner.group)
+            _poison_coordinator(owner)
+            if any(not _valid_collective_error(value) for value in cleanup):
+                raise RuntimeError('malformed reservation and cleanup agreement records')
+            cleanup_failures=[value for value in cleanup if value is not None]
+            detail=('malformed distributed generation reservation record from rank(s) '+
+                    ','.join(str(rank) for rank in malformed))
+            if cleanup_failures:
+                detail+='; reservation cleanup failed: '+'; '.join(cleanup_failures)
+            raise RuntimeError(detail)
         name,reservation_error=reservations[0]
         if reservation_error is not None:
+            cleanup_error=None
+            if owner.rank==0 and directory is not None:
+                cleanup_error=self._quarantine_uncommitted(directory)
+            cleanup=[None]*owner.world_size
+            owner.distributed.all_gather_object(cleanup,
+                None if cleanup_error is None else _failure_summary(cleanup_error),group=owner.group)
+            if any(not _valid_collective_error(value) for value in cleanup):
+                _poison_coordinator(owner)
+                raise RuntimeError('malformed reservation cleanup agreement record')
+            cleanup_failures=[value for value in cleanup if value is not None]
+            if cleanup_failures:
+                _poison_coordinator(owner)
+                raise RuntimeError('distributed generation reservation failed: '+reservation_error+
+                    '; cleanup: '+'; '.join(cleanup_failures))
             raise RuntimeError('distributed generation directory reservation failed: '+reservation_error)
         try:
             directory=_path(self.directory/name)
@@ -133,33 +222,15 @@ class CollectiveGenerationSink:
                 receipt=store(boundary,write_frame)
             finally:store.close()
         except BaseException as failure:
-            error=(str(failure) or type(failure).__name__)[:4096]
+            error=_failure_summary(failure)
         records=[None]*owner.world_size
         owner.distributed.all_gather_object(records,(logical,error,receipt),group=owner.group)
-        def valid_record(rank, row):
-            if type(row) is not tuple or len(row) != 3:
-                return False
-            observed, failure, item = row
-            if failure is not None and type(failure) is not str:
-                return False
-            if failure is not None:
-                return True
-            if (type(observed) is not str or len(observed) != 64 or
-                    any(char not in '0123456789abcdef' for char in observed) or
-                    type(item) is not dict or
-                    set(item) != {'bytes', 'sha256', 'execution_identity'} or
-                    type(item['bytes']) is not int or
-                    not 128 <= item['bytes'] <= self.max_rank_bytes or
-                    type(item['sha256']) is not str or len(item['sha256']) != 64 or
-                    any(char not in '0123456789abcdef' for char in item['sha256']) or
-                    type(item['execution_identity']) is not str or
-                    not 0 < len(item['execution_identity']) <= 8192):
-                return False
-            return True
         malformed = [rank for rank, row in enumerate(records)
-                     if not valid_record(rank, row)]
+                     if not _valid_generation_record(row,max_rank_bytes=self.max_rank_bytes)]
         for rank in malformed:
             records[rank] = (None, 'malformed generation publication record', None)
+        if malformed:
+            _poison_coordinator(owner)
         failures=[f'rank {rank}: {row[1]}' for rank,row in enumerate(records) if row[1] is not None]
         if (failures or records[0][0] is None or
                 any(row[0] != records[0][0] for row in records)):
@@ -168,13 +239,16 @@ class CollectiveGenerationSink:
                 cleanup_error=self._quarantine_uncommitted(directory)
             cleanup=[None]*owner.world_size
             owner.distributed.all_gather_object(cleanup,
-                None if cleanup_error is None else str(cleanup_error)[:4096],group=owner.group)
+                None if cleanup_error is None else _failure_summary(cleanup_error),group=owner.group)
+            if any(not _valid_collective_error(value) for value in cleanup):
+                _poison_coordinator(owner)
+                raise RuntimeError('malformed generation cleanup agreement record')
             if any(value is not None for value in cleanup):
                 failures.append('uncommitted boundary cleanup failed: '+
                     next(value for value in cleanup if value is not None))
             raise RuntimeError('distributed generation capture failed: '+
                 ('; '.join(failures) if failures else 'logical generation boundaries differ'))
-        error=None
+        error=None;latest_publication_started=False
         if owner.rank==0:
             try:
                 if any(row[2] is None for row in records):
@@ -189,20 +263,32 @@ class CollectiveGenerationSink:
                 # This pointer contains an exact relative committed manifest and
                 # its digest. The immutable boundary manifest is the recovery pin.
                 _,raw=read_manifest(directory/'manifest.json')
+                latest_publication_started=True
                 _atomic_manifest(self.directory/'latest.json',dict(version=1,
                     manifest=f'{name}/manifest.json',
                     sha256=hashlib.sha256(raw).hexdigest()))
             except BaseException as failure:
-                error=(str(failure) or type(failure).__name__)[:4096]
+                error=_failure_summary(failure)
         errors=[None]*owner.world_size
         owner.distributed.all_gather_object(errors,error,group=owner.group)
+        malformed_errors=[rank for rank,value in enumerate(errors)
+                          if not _valid_collective_error(value)]
+        if malformed_errors:
+            _poison_coordinator(owner)
+            errors=[value if _valid_collective_error(value) else
+                    f'malformed generation manifest agreement record from rank {rank}'
+                    for rank,value in enumerate(errors)]
         if any(value is not None for value in errors):
             cleanup_error=None
             if owner.rank==0:
-                cleanup_error=self._quarantine_uncommitted(directory,manifest_written=True)
+                cleanup_error=self._quarantine_uncommitted(
+                    directory,manifest_written=latest_publication_started)
             cleanup=[None]*owner.world_size
             owner.distributed.all_gather_object(cleanup,
-                None if cleanup_error is None else str(cleanup_error)[:4096],group=owner.group)
+                None if cleanup_error is None else _failure_summary(cleanup_error),group=owner.group)
+            if any(not _valid_collective_error(value) for value in cleanup):
+                _poison_coordinator(owner)
+                raise RuntimeError('malformed manifest cleanup agreement record')
             if any(value is not None for value in cleanup):
                 errors.append('uncommitted boundary cleanup failed: '+
                     next(value for value in cleanup if value is not None))
@@ -237,7 +323,8 @@ def admit_manifest(path,*,world_size,max_rank_bytes,context,application_identity
                 or type(row['rank']) is not int or row['rank']!=rank
                 or row['filename']!=f'rank-{rank}.generation'
                 or type(row['bytes']) is not int or not 128<=row['bytes']<=max_rank_bytes
-                or not pin(row['sha256']) or type(row['identity']) is not str or not 0<len(row['identity'])<=8192):
+                or not pin(row['sha256']) or type(row['identity']) is not str or
+                not 0<len(row['identity'])<=8192 or '\x00' in row['identity']):
             raise ValueError('distributed generation rank receipt differs')
     return path,value
 
@@ -274,7 +361,7 @@ def restore_rank(coordinator,session,command):
             type(receipt.get('sha256')) is not str or len(receipt['sha256'])!=64 or
             any(char not in '0123456789abcdef' for char in receipt['sha256']) or
             type(receipt.get('identity')) is not str or
-            not 0<len(receipt['identity'])<=8192):
+            not 0<len(receipt['identity'])<=8192 or '\x00' in receipt['identity']):
         raise ValueError('foreign distributed rank receipt')
     root_path=_path(command['directory'])
     try:

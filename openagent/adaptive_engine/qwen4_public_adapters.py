@@ -8,7 +8,7 @@ import numpy as np
 
 from .mixtral_public_adapters import NativeMixtralPublicAdapters, _RangeSession
 from .segment_edge_adapters import _SegmentAdapter, _SOPEN, _CREATE, _RUN, _SNAPSHOT, _WriteStream, _ReadStream
-from .segment_edge_runtime import _integer, _SegmentCaps, SegmentRange
+from .segment_edge_runtime import _integer, _SegmentCaps, SegmentRange, _cancel_requested
 from .native_qwen4_ranges import NativeQwen4Range, qwen4_tensor_inventory
 from .native_qwen4_edge import NativeQwen4Edge
 
@@ -23,9 +23,14 @@ class _QwenRangeSession(_RangeSession):
         with self.engine.lock:
             if self.closed:
                 return
-            self.model.close()
-            self.engine.sessions.discard(self)
-            self.closed = True
+            # Match the base public-range ownership ordering: serialize close
+            # with run/snapshot/restore and reject same-thread callback
+            # reentry instead of closing a model from inside its active ABI
+            # operation. Retain idempotence after successful destruction.
+            with self.operation():
+                self.model.close()
+                self.engine.sessions.discard(self)
+                self.closed = True
 
 
 class _QwenEngine:
@@ -122,6 +127,10 @@ class _QwenReadStream(_ReadStream):
 
 
 class NativeQwen4PublicAdapters(NativeMixtralPublicAdapters):
+    # Inherit the ABI transport and lifecycle, never Mixtral's source identity.
+    # This gate runs before native-library loading and must bind the checkpoint
+    # to the exact Qwen4 public-range row.
+    _source_route_identity=('qwen4','qwen4_exp_text')
     wire_schema = b'openagent.qwen4.hyper-hidden.f32.v1'
     numeric_class = b'openagent.qwen4.native-fp32-double-dot.v1'
 
@@ -143,7 +152,7 @@ class NativeQwen4PublicAdapters(NativeMixtralPublicAdapters):
     def _segment_record(self):
         def open_engine(output,caps,raw_options):
             options = raw_options.contents
-            self._allowed(options.model,options.plan,options.plan_size,options.backend)
+            self._allowed(options)
             budget = _integer(int(options.memory),'explicit Qwen4 engine budget',maximum=(1<<63)-1)
             template = NativeQwen4Range.from_directory(self.root,begin=int(options.begin),end=int(options.end),
                 library=self.kernel,max_weight_bytes=self.staging_bytes,max_bytes=budget,max_snapshots=1,
@@ -168,38 +177,49 @@ class NativeQwen4PublicAdapters(NativeMixtralPublicAdapters):
                           'session',output)
 
         def run(session_id,raw_request):
-            model = self._get(session_id,'session').model
+            session = self._get(session_id,'session')
+            model = session.model
             request = raw_request.contents
-            with model._lock:
-                model._check_open()
-                rows = int(request.rows)
-                if int(request.position)!=model.position or not 0<rows<=self.rows:
-                    raise ValueError('Qwen4 run position/rows differ from continuation admission')
-                if not request.tokens or int(request.token_count)!=rows:
-                    raise ValueError('Qwen4 range requires matching PLE token-side rows')
-                model._transport = True
-                try:
-                    if request.cancel and request.cancel(request.cancel_data):
-                        raise RuntimeError('Qwen4 range execution cancelled')
-                finally:
-                    model._transport = False
-                width = model.config.hc_count*model.config.hidden_size
-                if not request.input or not request.output or request.input_bytes<rows*width*4 or request.output_bytes<rows*width*4:
-                    raise ValueError('Qwen4 range activation capacity mismatch')
-                hidden = np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
-                    shape=(rows*width,)).reshape(1,rows,width)
-                ids = np.ctypeslib.as_array(C.cast(request.tokens,C.POINTER(C.c_int32)),shape=(rows,))
-                cancelled = (lambda: bool(request.cancel(request.cancel_data))) if request.cancel else None
-                result = model.forward(hidden,ids.astype(np.int64),cancelled=cancelled).hidden
-                C.memmove(request.output,result.ctypes.data,result.nbytes)
+            with session.operation():
+                with model._lock:
+                    model._check_open()
+                    rows = request.rows
+                    if (request.size != C.sizeof(type(request)) or
+                            type(rows) is not int or not 0 < rows <= self.rows or
+                            any(request.reserved) or int(request.position) != model.position):
+                        raise ValueError('Qwen4 run position/rows differ from continuation admission')
+                    if not request.tokens or request.token_count != rows:
+                        raise ValueError('Qwen4 range requires matching PLE token-side rows')
+                    model._transport = True
+                    try:
+                        if _cancel_requested(request.cancel,request.cancel_data):
+                            raise RuntimeError('Qwen4 range execution cancelled')
+                    finally:
+                        model._transport = False
+                    width = model.config.hc_count*model.config.hidden_size
+                    expected_bytes = rows*width*C.sizeof(C.c_float)
+                    if (not request.input or not request.output or
+                            request.input_bytes != expected_bytes or
+                            request.output_bytes != expected_bytes):
+                        raise ValueError('Qwen4 range activation extent mismatch')
+                    hidden = np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
+                        shape=(rows*width,)).reshape(1,rows,width)
+                    ids = np.ctypeslib.as_array(C.cast(request.tokens,C.POINTER(C.c_int32)),shape=(rows,))
+                    cancelled = (lambda: _cancel_requested(request.cancel,request.cancel_data)) if request.cancel else None
+                    result = model.forward(hidden,ids.astype(np.int64),cancelled=cancelled).hidden
+                    C.memmove(request.output,result.ctypes.data,result.nbytes)
 
         def snapshot(session_id,callback,user):
-            model = self._get(session_id,'session').model
-            model.write_cache(_WriteStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
+            session = self._get(session_id,'session')
+            with session.operation():
+                session.model.write_cache(_WriteStream(callback,user,self.snapshot_bytes),
+                                          max_bytes=self.snapshot_bytes)
 
         def restore(session_id,callback,user):
-            model = self._get(session_id,'session').model
-            model.restore_cache(_QwenReadStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
+            session = self._get(session_id,'session')
+            with session.operation():
+                session.model.restore_cache(_QwenReadStream(callback,user,self.snapshot_bytes),
+                                            max_bytes=self.snapshot_bytes)
 
         return _SegmentAdapter(version=1,engine=self.segment_id,
             open=self._guard(_SOPEN,open_engine),destroy=self._destroy('engine'),
@@ -223,6 +243,7 @@ class NativeQwen4PublicAdapters(NativeMixtralPublicAdapters):
         return create_segment_edge_execution_service(self.runtime_library,
             edge_adapter=self.edge_id.decode(),model_directory=str(self.root),
             checkpoint_identity=checkpoint_identity,ranges=ranges,vocabulary=config['vocab_size'],
+            source_family='qwen4',model_type='qwen4_exp_text',arithmetic='fp32',
             context_tokens=context_tokens,native_memory_bytes=native_memory_bytes,
             max_transfer_bytes=max_transfer_bytes,max_snapshot_bytes=self.snapshot_bytes,
             max_new_tokens=max_new_tokens,max_sessions=max_sessions,prefill_chunk_tokens=prefill_chunk_tokens,

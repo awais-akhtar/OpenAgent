@@ -99,6 +99,7 @@ def restore_cache(model, source, *, max_bytes):
             raise ValueError('explicit native GLM cache transport budget required')
         model._admit_snapshot(3 * 1024**2)
         model._busy = True
+        pending=[];state=[];mask=None;array=None;flat=row=raw=None;committed=False
         try:
             model._cancel()
             prefix = _read(source, 12)
@@ -128,7 +129,6 @@ def restore_cache(model, source, *, max_bytes):
                 sum(widths) for widths in header['widths']) + batch * position
             model._admit_snapshot(required + 3 * 1024**2)
             digest = hashlib.sha256(prefix + encoded)
-            pending = []
             for widths in header['widths']:
                 if not batch:
                     pending.append(None)
@@ -166,7 +166,11 @@ def restore_cache(model, source, *, max_bytes):
                 raise ValueError('native GLM cache checksum or trailing extent differs')
             model._cancel()
             model.cache, model.mask, model.position = pending, mask, position
+            committed=True
         finally:
+            if not committed:
+                pending.clear();state.clear();mask=None
+            array=flat=row=raw=None
             model._busy = False
 
 

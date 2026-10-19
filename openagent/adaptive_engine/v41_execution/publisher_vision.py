@@ -60,9 +60,21 @@ class PublisherV41Vision:
 
     @staticmethod
     def _array(value, shape):
-        result = np.array(value, dtype=np.float32, copy=True)
-        if result.size != math.prod(shape) or not np.isfinite(result).all():
+        # Check the borrowed/source extent before allocating a detached FP32
+        # copy.  In particular, malformed patch payloads must not turn a small
+        # admitted grid into an unbounded conversion allocation.
+        source = np.asarray(value)
+        if source.size != math.prod(shape) or source.dtype.kind != 'f':
             raise ValueError('invalid vision tensor extent or arithmetic')
+        try:
+            finite = np.isfinite(source).all()
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            raise ValueError('invalid vision tensor extent or arithmetic')
+        result = np.array(source, dtype=np.float32, order='C', copy=True)
+        if not np.isfinite(result).all():
+            raise ValueError('vision tensor is not representable as FP32')
         return result.reshape(shape)
 
     def _cast(self, x):
@@ -141,7 +153,9 @@ class PublisherV41Vision:
                 type(images) not in (tuple, list) or len(images) != observed.shape[0] or
                 len(images) > 4096):
             raise ValueError('batch language embeddings and image inventory mismatch')
-        retained = observed.size*12+observed.shape[1]*16
+        # Each batch member gets a prompt-sized occupancy bitmap. Account for
+        # every bitmap, not just one, before allocating language or mask copies.
+        retained = observed.size*12+observed.shape[0]*observed.shape[1]*16
         if retained >= self.max_bytes:
             raise MemoryError('language image insertion exceeds workspace admission')
         h = np.array(observed, dtype=np.float32, copy=True)
@@ -155,8 +169,9 @@ class PublisherV41Vision:
             previous_end = 0
             for img in sample or ():
                 try:
-                    types = np.array(img.types, copy=True)
-                    types.flags.writeable = False
+                    # Span metadata is borrowed and only read below; avoid a
+                    # copy until its length is bounded by the admitted prompt.
+                    types = np.asarray(img.types)
                     start = img.start
                     patches, n_vit_h, n_vit_w = img.patches, img.n_vit_h, img.n_vit_w
                 except AttributeError as error:
@@ -172,11 +187,14 @@ class PublisherV41Vision:
                     raise ValueError('invalid or overlapping image span')
                 ratio = self.config['downsample_ratio']
                 aligned_h, aligned_w = math.ceil(n_vit_h/ratio), math.ceil(n_vit_w/ratio)
-                expected = np.empty(aligned_h*(aligned_w+1)+2, dtype=np.int64)
-                expected[0], expected[-1] = 0, 3
-                expected[1:-1].reshape(aligned_h, aligned_w+1)[:, :-1] = 1
-                expected[1:-1].reshape(aligned_h, aligned_w+1)[:, -1] = 2
-                if not np.array_equal(types, expected):
+                # Validate geometry without materializing a second array whose
+                # size is derived from untrusted checkpoint/request metadata.
+                expected_count = aligned_h*(aligned_w+1)+2
+                if (types.size != expected_count or int(types[0]) != 0 or
+                        int(types[-1]) != 3):
+                    raise ValueError('image span types do not match aligned patch-grid geometry')
+                grid = types[1:-1].reshape(aligned_h, aligned_w+1)
+                if (np.any(grid[:, :-1] != 1) or np.any(grid[:, -1] != 2)):
                     raise ValueError('image span types do not match aligned patch-grid geometry')
                 rows = self.encode_image(patches, n_vit_h, n_vit_w,
                                          workspace_bytes=self.max_bytes-retained)

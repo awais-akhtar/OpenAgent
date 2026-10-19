@@ -3,8 +3,10 @@ from dataclasses import dataclass
 import io
 import math
 from pathlib import Path
+import sys
 
 import numpy as np
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 @dataclass(frozen=True)
@@ -113,10 +115,13 @@ class PublisherImageProcessor:
             raise ValueError('no valid admitted image grid')
         return target_h, target_w, rows, columns
 
-    def prepare(self, source, *, start):
+    def prepare(self, source, *, start, max_bytes=None):
         from PIL import Image, ImageOps
         if type(start) is not int or start < 0:
             raise ValueError('nonnegative image-span position required')
+        budget=self.max_bytes if max_bytes is None else max_bytes
+        if type(budget) is not int or budget<=0:
+            raise ValueError('positive per-image staging budget required')
         decoded=isinstance(source,(np.ndarray,Image.Image))
         if decoded:
             if isinstance(source,np.ndarray):
@@ -127,7 +132,7 @@ class PublisherImageProcessor:
                 if getattr(source, 'n_frames', 1) != 1:
                     raise ValueError('animated publisher images require explicit frame admission')
                 width,height=source.size
-            if width<=0 or height<=0 or width*height*16>self.max_bytes:
+            if width<=0 or height<=0 or width*height*16>budget:
                 raise MemoryError('decoded publisher image exceeds input admission')
             opened_source=Image.fromarray(source) if isinstance(source,np.ndarray) else source.copy()
             encoded=b''
@@ -136,23 +141,24 @@ class PublisherImageProcessor:
         else:
             path = Path(source).resolve(strict=True)
             from ..publisher_media_files import read_regular
-            encoded = read_regular(path, max_bytes=self.max_bytes)
-        if not decoded and (not encoded or len(encoded) > self.max_bytes):
+            encoded = read_regular(path, max_bytes=budget)
+        if not decoded and (not encoded or len(encoded) > budget):
             raise MemoryError('image bytes exceed admission')
         with (opened_source if decoded else Image.open(io.BytesIO(encoded))) as opened:
             if getattr(opened, 'n_frames', 1) != 1:
                 raise ValueError('still image input required; animated media needs explicit frame handling')
             original_w, original_h = opened.size
             h, w, rows, columns = self.plan(original_w, original_h)
-            if len(encoded)+16*original_w*original_h+48*w*h > self.max_bytes:
+            if len(encoded)+16*original_w*original_h+48*w*h > budget:
                 raise MemoryError('decoded image and patch workspace exceed admission')
             image = opened.convert('RGB')
-            if self.aspect_limit is not None and original_w >= self.aspect_limit*original_h:
-                resized = image.resize((w, h), resample=Image.Resampling.BICUBIC)
-            else:
-                resized = ImageOps.pad(image, (w, h), method=Image.Resampling.BICUBIC,
-                    color=(127, 127, 127))
+            resized = None
             try:
+                if self.aspect_limit is not None and original_w >= self.aspect_limit*original_h:
+                    resized = image.resize((w, h), resample=Image.Resampling.BICUBIC)
+                else:
+                    resized = ImageOps.pad(image, (w, h), method=Image.Resampling.BICUBIC,
+                        color=(127, 127, 127))
                 pixels = np.asarray(resized, dtype=np.float32)
                 normalized = (pixels/255.0-0.5)/0.5
                 rounded = np.asarray(self.cast(normalized.reshape(-1)), dtype=np.float32)
@@ -168,8 +174,23 @@ class PublisherImageProcessor:
                 patches = np.ascontiguousarray(chw.reshape(3, vh, p, vw, p)
                     .transpose(1, 3, 0, 2, 4).reshape(vh*vw, 3*p*p))
             finally:
-                resized.close()
-                image.close()
+                primary = sys.exc_info()[1]
+                cleanup_error = None
+                for owned in (resized, image):
+                    if owned is None:
+                        continue
+                    try:
+                        owned.close()
+                    except BaseException as cleanup:
+                        if cleanup_error is None:
+                            cleanup_error = cleanup
+                        else:
+                            add_failure_note(cleanup_error,'additional publisher image cleanup failed: '+failure_summary(cleanup))
+                if cleanup_error is not None:
+                    if primary is not None:
+                        add_failure_note(primary,'publisher image cleanup failed: '+failure_summary(cleanup_error))
+                    else:
+                        raise cleanup_error
         # The language stream represents aligned output cells, not raw vision
         # patches. This allows non-unit aligner ratios without mismatching
         # image slots to projected embeddings.
@@ -197,7 +218,10 @@ class PublisherImageProcessor:
                 result.append(token)
                 types.append(-1)
                 continue
-            image = self.prepare(sources[source_index], start=len(result))
+            remaining=self.max_bytes-used
+            if remaining<=0:
+                raise MemoryError('combined prepared images exceed admission')
+            image = self.prepare(sources[source_index], start=len(result),max_bytes=remaining)
             source_index += 1
             used += image.patches.nbytes+image.types.nbytes
             if used > self.max_bytes:

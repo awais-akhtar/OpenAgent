@@ -110,9 +110,13 @@ class LatticeContract:
                 os.fsync(stream.fileno())
             os.replace(temporary, destination)
             temporary = None
-        finally:
+        except BaseException as primary:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except BaseException as cleanup:
+                    primary.add_note("E8 contract temporary cleanup pending: " + repr(cleanup))
+            raise
         return destination
 
     @classmethod

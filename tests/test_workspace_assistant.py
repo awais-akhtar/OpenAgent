@@ -105,7 +105,7 @@ class WorkspaceAssistantTests(unittest.TestCase):
 
             self.assertEqual(profile["preferences"]["tone"], "direct")
             self.assertEqual(task["status"], "open")
-            self.assertEqual(assistant.complete_task(task["id"])["status"], "completed")
+            self.assertEqual(assistant.complete_task(task["id"], project="core")["status"], "completed")
             self.assertIn("agenda", brief["brief"])
             self.assertGreaterEqual(len(summary["summary"]["action_items"]), 2)
             self.assertEqual(len(summary["summary"]["decisions"]), 1)

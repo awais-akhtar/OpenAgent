@@ -1,5 +1,6 @@
 export type ThemeMode = 'dark' | 'light' | 'system';
 const key = 'openagent.ui.v2.theme';
+const eventName = 'openagent:theme-changed';
 function resolve(mode: ThemeMode): 'dark'|'light' { return mode === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : mode; }
 function sync(mode: ThemeMode) {
   const resolved = resolve(mode);
@@ -11,7 +12,7 @@ export const theme = {
     try { const value = localStorage.getItem(key); return value === 'dark' || value === 'light' ? value : 'system'; }
     catch { return 'system'; }
   },
-  set(mode: ThemeMode) { try { localStorage.setItem(key, mode); } catch { /* Theme still applies for this session. */ } sync(mode); },
+  set(mode: ThemeMode) { try { localStorage.setItem(key, mode); } catch { /* Theme still applies for this session. */ } sync(mode); if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(eventName, { detail: mode })); },
   init() {
     sync(this.read());
     const media = matchMedia('(prefers-color-scheme: dark)');
@@ -19,4 +20,5 @@ export const theme = {
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   },
+  eventName,
 };

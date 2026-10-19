@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from contextlib import ExitStack
+from contextlib import contextmanager
 import hashlib
 import math
 import os
@@ -14,6 +14,7 @@ from typing import Any, BinaryIO, Callable, Iterable, Mapping
 
 from .expert_runtime import ExpertLayer, SparseExpertManifest
 from .expert_store import ExpertRegion
+from .failure_reporting import add_failure_note, failure_summary
 
 
 _DTYPES = {"F16": ("float16", 2), "F32": ("float32", 4)}
@@ -231,11 +232,7 @@ def pack_safetensors_directory_int8(
     target_names = tuple(destinations)
     manifest_layers: list[ExpertLayer] = []
     try:
-        with ExitStack() as stack:
-            writers = {
-                name: stack.enter_context(path.open("xb", buffering=0))
-                for name, path in temporaries.items()
-            }
+        with _open_expert_staging_writers(temporaries) as writers:
             for layer in layer_specs:
                 if not layer.experts:
                     raise ValueError(f"layer {layer.id} has no expert bindings")
@@ -389,12 +386,40 @@ def _source_stamp(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, creation_time)
 
 
+@contextmanager
+def _open_expert_staging_writers(temporaries):
+    """Close every opened staging writer without hiding the conversion error."""
+    writers = {}
+    primary = None
+    try:
+        for name, path in temporaries.items():
+            writers[name] = path.open("xb", buffering=0)
+        yield writers
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        cleanup_error = None
+        for writer in writers.values():
+            try:
+                writer.close()
+            except BaseException as cleanup:
+                if primary is not None:
+                    add_failure_note(primary, "expert staging writer close failed: " + failure_summary(cleanup))
+                elif cleanup_error is None:
+                    cleanup_error = cleanup
+                else:
+                    add_failure_note(cleanup_error, "another expert staging writer close failed: " + failure_summary(cleanup))
+        if primary is None and cleanup_error is not None:
+            raise cleanup_error
+
+
 def _cleanup_temporaries(paths,primary):
     pending=[]
     for path in paths:
         try:path.unlink(missing_ok=True)
         except BaseException as cleanup:
-            pending.append(str(path));primary.add_note('expert staging cleanup failed: '+repr(cleanup))
+            pending.append(str(path));add_failure_note(primary, 'expert staging cleanup failed: '+failure_summary(cleanup))
     if pending:primary.uncommitted_staging=tuple(pending)
 
 
@@ -430,7 +455,7 @@ def _publish_containers(temporaries,destinations):
                     raise RuntimeError('published container changed before failed-set cleanup')
                 destination.unlink()
             except BaseException as cleanup:
-                pending.append(str(destination));primary.add_note('uncommitted container cleanup failed: '+repr(cleanup))
+                pending.append(str(destination));add_failure_note(primary, 'uncommitted container cleanup failed: '+failure_summary(cleanup))
         if pending:primary.uncommitted_containers=tuple(pending)
         raise
 

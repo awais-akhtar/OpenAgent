@@ -45,6 +45,9 @@ class NativeGlmDsaRange(NativeGlmDsaDecoder):
 
     def __init__(self, config, tensors, *, begin, end, library, max_bytes, context_tokens=None,
                  expert_provider=None):
+        if expert_provider is not None:
+            raise ValueError(
+                'GLM-DSA packed experts are restricted until source-content identity is bound')
         source = deepcopy(dict(config))
         inventory = IndependentGlmDsaDecoder(source, {}, _inventory_only=True)
         c = inventory.config
@@ -95,6 +98,9 @@ class NativeGlmDsaRange(NativeGlmDsaDecoder):
     @classmethod
     def from_directory(cls, directory, *, begin, end, library, max_weight_bytes,
                        max_bytes, context_tokens=None, read_limits=None, cancel=None, expert_provider=None):
+        if expert_provider is not None:
+            raise ValueError(
+                'GLM-DSA packed experts are restricted until source-content identity is bound')
         from .native_checkpoint import read_native_text_checkpoint, _finish_decoder
         def select(config,records):
             c,shapes = admit_inventory(config,records)
@@ -108,7 +114,8 @@ class NativeGlmDsaRange(NativeGlmDsaDecoder):
                 raise MemoryError('selected DSA source conversion and ownership exceed admission')
             return names
         config,weights = read_native_text_checkpoint(directory,model_type='glm_moe_dsa',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='public-range')
         return _finish_decoder(cls(config,weights,begin=begin,end=end,library=library,
             max_bytes=max_bytes,context_tokens=context_tokens,expert_provider=expert_provider),cancel)
 
@@ -164,7 +171,8 @@ class NativeGlmDsaEdge:
                 raise MemoryError('DSA edge conversion and ownership exceed admission')
             return names
         config,weights=read_native_text_checkpoint(directory,model_type='glm_moe_dsa',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='public-range')
         return _finish_decoder(cls(config,weights,library=library,max_bytes=max_bytes),cancel)
 
     def _check(self,extra):

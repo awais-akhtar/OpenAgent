@@ -42,7 +42,9 @@ def convert_experts(experts, output, *, hidden_size, intermediate_size, group_si
     temporary = Path(name)
     regions = {}
     try:
-        with os.fdopen(descriptor, "wb") as stream:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None
+        with stream:
             for key, matrices in experts.items():
                 if not isinstance(matrices, (tuple, list)) or len(matrices) != 3:
                     raise ValueError("each expert must provide gate, up, down")
@@ -57,6 +59,17 @@ def convert_experts(experts, output, *, hidden_size, intermediate_size, group_si
         result = GroupedInt4ConversionResult(destination, hidden_size, intermediate_size,
                                              group_size, MappingProxyType(regions))
         os.link(temporary, destination)
-        return result
-    finally:
+    except BaseException as primary:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup:
+                primary.add_note("grouped INT4 conversion descriptor cleanup pending: " + repr(cleanup))
+        try:
+            temporary.unlink(missing_ok=True)
+        except BaseException as cleanup:
+            primary.add_note("grouped INT4 conversion temporary cleanup pending: " + repr(cleanup))
+        raise
+    else:
         temporary.unlink(missing_ok=True)
+        return result

@@ -1,4 +1,22 @@
 export type WorkspacePreviewBlock = { kind: 'heading' | 'paragraph' | 'list' | 'code'; text: string; level?: number };
+// Document import accepts JSON (base64 content), and the Python JSON request
+// body limit defaults to 1 MiB. Keep headroom for encoding and metadata.
+export const WORKSPACE_IMPORT_MAX_BYTES = 700 * 1024;
+
+export function workspaceImportRoute(filename: string) {
+  return /\.pdf$/i.test(filename) ? '/api/documents/import-pdf' : '/api/documents/import';
+}
+
+export async function workspaceImportPayload(file: File, project: string) {
+  if (file.size > WORKSPACE_IMPORT_MAX_BYTES) throw new Error('Choose a file smaller than 700 KB. This import route uses the service JSON request limit, which may be configured lower.');
+  const filename = file.name.split(/[\\/]/).pop()?.trim() || 'imported-document.txt';
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return { filename, title: filename.replace(/\.[^.]+$/, ''), project, content_base64: btoa(binary) };
+}
 
 export function workspaceLibraryPaths(project: string, query: string) {
   const scope = encodeURIComponent(project);

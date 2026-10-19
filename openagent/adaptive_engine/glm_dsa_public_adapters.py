@@ -2,6 +2,7 @@
 import ctypes as C
 import json
 import threading
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -17,7 +18,11 @@ from .segment_snapshot import _pairs
 class _Cancel:
     def __init__(self,request):self.request=request
     def is_set(self):
-        return bool(self.request.cancel and self.request.cancel(self.request.cancel_data))
+        if not self.request.cancel:return False
+        value=self.request.cancel(self.request.cancel_data)
+        if value not in (0,1):
+            raise ValueError('DSA cancellation callback must return exactly 0 or 1')
+        return value==1
 
 
 class _Read(_ReadStream):
@@ -53,10 +58,32 @@ class _Read(_ReadStream):
 
 
 class _Session:
-    def __init__(self,engine,model):self.engine,self.model=engine,model
+    def __init__(self,engine,model):
+        self.engine,self.model=engine,model
+        # The ABI may call run, snapshot, restore and destroy_session from
+        # different host threads.  The model lock protects individual model
+        # mutations, but cache codecs read/write several related physical
+        # fields and must not interleave with a forward or session close.
+        self.lock=threading.RLock()
+        self.operation_owner=None
+
+    @contextmanager
+    def operation(self):
+        with self.lock:
+            owner=threading.get_ident()
+            if self.operation_owner==owner:
+                raise RuntimeError('reentrant GLM-DSA public session operation rejected')
+            self.operation_owner=owner
+            try:
+                yield
+            finally:
+                self.operation_owner=None
+
     def close(self):
         with self.engine.lock:
-            self.model.close();self.engine.sessions.discard(self)
+            with self.operation():
+                self.model.close()
+                self.engine.sessions.discard(self)
 
 
 class _Engine:
@@ -81,6 +108,7 @@ class _Engine:
 
 
 class NativeGlmDsaPublicAdapters(NativeMixtralPublicAdapters):
+    _source_route_identity=('glm-dsa','glm_moe_dsa')
     wire_schema=b'openagent.glm-dsa.hidden.f32.v1'
     numeric_class=b'openagent.glm-dsa.native-fp32-double-dot.v1'
 
@@ -88,17 +116,19 @@ class NativeGlmDsaPublicAdapters(NativeMixtralPublicAdapters):
                  max_snapshot_bytes,max_batch_rows=32,max_sessions=64,tokenizer_path=None,
                  max_resource_bytes=None,segment_id='openagent-glm-dsa-native',edge_id='openagent-glm-dsa-edge',
                  expert_provider=None):
-        self.expert_provider=expert_provider
         if expert_provider is not None:
-            self.numeric_class=b'openagent.glm-dsa.native-selected-packed-experts.v1'
+            raise ValueError(
+                'GLM-DSA packed experts are restricted until source-content identity is bound')
+        self.expert_provider=None
         super().__init__(runtime_library,kernel_library=kernel_library,model_directory=model_directory,
             max_staging_bytes=max_staging_bytes,max_snapshot_bytes=max_snapshot_bytes,
             max_batch_rows=max_batch_rows,max_sessions=max_sessions,tokenizer_path=tokenizer_path,
             max_resource_bytes=max_resource_bytes,segment_id=segment_id,edge_id=edge_id)
 
     def _create_edge(self,budget):
-        return NativeGlmDsaEdge.from_directory(self.root,library=self.library,
-            max_weight_bytes=self.staging_bytes,max_bytes=budget)
+        return self._load_source_owner(lambda:NativeGlmDsaEdge.from_directory(
+            self.root,library=self.library,max_weight_bytes=self.staging_bytes,max_bytes=budget),
+            kind='edge')
 
     def create_execution_service(self,config,*,checkpoint_identity,context_tokens,native_memory_bytes,
             layers_per_range,max_transfer_bytes,max_new_tokens=256,max_sessions=1,
@@ -108,6 +138,7 @@ class NativeGlmDsaPublicAdapters(NativeMixtralPublicAdapters):
         from .execution_factories import create_segment_edge_execution_service
         if not self.registered_segment or not self.registered_edge:
             raise RuntimeError('register both DSA adapters before creating a service')
+        self._source_snapshot.assert_unchanged()
         c=IndependentGlmDsaDecoder(config,{},_inventory_only=True).config
         if type(context_tokens) is not int or not 0<context_tokens<=c.max_position_embeddings:
             raise ValueError('bounded DSA service context required')
@@ -116,6 +147,7 @@ class NativeGlmDsaPublicAdapters(NativeMixtralPublicAdapters):
         return create_segment_edge_execution_service(self.runtime_library,
             edge_adapter=self.edge_id.decode(),model_directory=str(self.root),
             checkpoint_identity=checkpoint_identity,ranges=ranges,vocabulary=c.vocab_size,
+            source_family='glm-dsa',model_type='glm_moe_dsa',arithmetic='fp32',
             context_tokens=context_tokens,native_memory_bytes=native_memory_bytes,
             max_transfer_bytes=max_transfer_bytes,max_snapshot_bytes=self.snapshot_bytes,
             max_new_tokens=max_new_tokens,max_sessions=max_sessions,prefill_chunk_tokens=prefill_chunk_tokens,
@@ -124,42 +156,81 @@ class NativeGlmDsaPublicAdapters(NativeMixtralPublicAdapters):
     def _segment_record(self):
         def open_engine(output,caps,raw_options):
             options=raw_options.contents
-            self._allowed(options.model,options.plan,options.plan_size,options.backend)
+            self._allowed(options)
+            begin,end=int(options.begin),int(options.end)
+            if not 0<=begin<end<=4096:
+                raise ValueError('DSA public layer range must be nonempty and within the admitted layer ceiling')
             budget=_integer(int(options.memory),'explicit DSA engine budget',maximum=(1<<63)-1)
-            template=NativeGlmDsaRange.from_directory(self.root,begin=int(options.begin),end=int(options.end),
+            template=self._load_source_owner(lambda:NativeGlmDsaRange.from_directory(
+                self.root,begin=begin,end=end,
                 library=self.library,context_tokens=int(options.context) or None,
-                max_weight_bytes=self.staging_bytes,max_bytes=budget,expert_provider=self.expert_provider)
+                max_weight_bytes=self.staging_bytes,max_bytes=budget,expert_provider=self.expert_provider),
+                kind='engine')
             engine=_Engine(template,self.max_sessions)
             c=template.config
-            record=_SegmentCaps(version=1,flags=(1<<8)|2|4|8,engine=self.segment_id,
-                schema=self.wire_schema,numeric=self.numeric_class,dtype=1,width=c.hidden_size,
-                rows=self.rows,context=template.capacity,layers=template.source_config['num_hidden_layers'])
-            C.memmove(caps,C.byref(record),C.sizeof(record));self._publish(engine,'engine',output)
+            try:
+                record=_SegmentCaps(version=1,flags=(1<<8)|2|4|8,engine=self.segment_id,
+                    schema=self.wire_schema,numeric=self.numeric_class,dtype=1,width=c.hidden_size,
+                    rows=self.rows,context=template.capacity,layers=template.source_config['num_hidden_layers'])
+                C.memmove(caps,C.byref(record),C.sizeof(record))
+            except BaseException as error:
+                # The public handle has not adopted this engine yet. Keep the
+                # template's mapped weights and provider lease from leaking if
+                # capability construction fails before _publish.
+                try:
+                    engine.close()
+                except BaseException as cleanup:
+                    with self.lock:
+                        orphan=-id(engine)
+                        self.objects[orphan]=('engine',engine)
+                        self.pending[orphan]=cleanup
+                    error.add_note('DSA range construction cleanup pending: '+str(cleanup))
+                raise
+            self._publish(engine,'engine',output)
         def create(engine_id,output,raw_options):
             engine=self._get(engine_id,'engine');options=raw_options.contents
             budget=_integer(int(options.memory),'explicit DSA session budget',maximum=(1<<63)-1)
             self._publish(engine.create(int(options.context) or engine.template.capacity,budget),'session',output)
         def run(session_id,raw_request):
-            model=self._get(session_id,'session').model;request=raw_request.contents
-            with model._lock:
-                model._check_open()
-                rows,width=int(request.rows),model.config.hidden_size
-                if int(request.position)!=model.position or not 0<rows<=self.rows:
-                    raise ValueError('DSA range position or row admission differs')
-                if (not request.input or not request.output or request.input_bytes<rows*width*4
-                        or request.output_bytes<rows*width*4):
-                    raise ValueError('DSA activation transfer capacity differs')
-                hidden=np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
-                    shape=(rows*width,)).reshape(1,rows,width)
-                with model.cancellation_scope(_Cancel(request)):
-                    result=model.forward_hidden(hidden)[0]
-                C.memmove(request.output,result.ctypes.data,result.nbytes)
+            session=self._get(session_id,'session');request=raw_request.contents
+            with session.operation():
+                model=session.model
+                with model._lock:
+                    model._check_open()
+                    rows,width=int(request.rows),model.config.hidden_size
+                    if (int(request.size)!=C.sizeof(type(request)) or
+                            int(request.position)!=model.position or not 0<rows<=self.rows):
+                        raise ValueError('DSA range position or row admission differs')
+                    if request.tokens or request.token_count or any(request.reserved):
+                        raise ValueError('DSA hidden-activation ABI does not accept token or reserved fields')
+                    # This ABI describes one exact hidden-state tensor, not a
+                    # capacity-bearing buffer. Reject trailing bytes as well
+                    # as truncation so callers cannot accidentally pair a
+                    # wider allocation/schema with the DSA kernel contract.
+                    expected_bytes=rows*width*4
+                    if (not request.input or not request.output or
+                            int(request.input_bytes)!=expected_bytes or
+                            int(request.output_bytes)!=expected_bytes):
+                        raise ValueError('DSA activation transfer extent differs')
+                    hidden=np.ctypeslib.as_array(C.cast(request.input,C.POINTER(C.c_float)),
+                        shape=(rows*width,)).reshape(1,rows,width)
+                    if not np.isfinite(hidden).all():
+                        raise ValueError('DSA activation input must be finite')
+                    with model.cancellation_scope(_Cancel(request)):
+                        result=model.forward_hidden(hidden)[0]
+                    if not np.isfinite(result).all():
+                        raise ValueError('DSA activation output must be finite')
+                    C.memmove(request.output,result.ctypes.data,result.nbytes)
         def snapshot(session_id,callback,user):
-            write_cache(self._get(session_id,'session').model,
-                _WriteStream(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
+            session=self._get(session_id,'session')
+            with session.operation():
+                write_cache(session.model,_WriteStream(callback,user,self.snapshot_bytes),
+                    max_bytes=self.snapshot_bytes)
         def restore(session_id,callback,user):
-            restore_cache(self._get(session_id,'session').model,
-                _Read(callback,user,self.snapshot_bytes),max_bytes=self.snapshot_bytes)
+            session=self._get(session_id,'session')
+            with session.operation():
+                restore_cache(session.model,_Read(callback,user,self.snapshot_bytes),
+                    max_bytes=self.snapshot_bytes)
         return _SegmentAdapter(version=1,engine=self.segment_id,open=self._guard(_SOPEN,open_engine),
             destroy=self._destroy('engine'),create=self._guard(_CREATE,create),
             destroy_session=self._destroy('session'),run=self._guard(_RUN,run),

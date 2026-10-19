@@ -72,6 +72,15 @@ class OlmoeConfig:
             raise ValueError("RoPE requires an even attention head dimension")
         if config.eos_token_id >= config.vocab_size:
             raise ValueError("eos_token_id must be inside the vocabulary")
+        # Bind a geometrically valid family config to the concrete decoder
+        # class. Keep schema/geometry diagnostics useful for malformed config
+        # documents while still failing closed before any checkpoint tensors
+        # or native libraries are admitted.
+        architectures = raw.get("architectures")
+        if (type(architectures) is not list or len(architectures) != 1 or
+                architectures[0] != "OlmoeForCausalLM"):
+            raise ValueError(
+                "OLMoE route requires the exact OlmoeForCausalLM architecture declaration")
         return config
 
     def expert_bindings(self) -> tuple[ExpertLayerBinding, ...]:

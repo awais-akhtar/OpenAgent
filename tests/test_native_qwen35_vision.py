@@ -1,5 +1,6 @@
 """Compiled vertical subset against installed official Transformers 5.16.1."""
 import gc
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -40,6 +41,10 @@ def build_vision(directory):
     return output
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec('torch') is not None and
+    importlib.util.find_spec('transformers') is not None,
+    'optional engine-torch and engine-hf-moe oracle dependencies are unavailable')
 class Qwen35VisionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

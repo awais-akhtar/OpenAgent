@@ -8,7 +8,8 @@ from openagent.adaptive_engine.olmoe import OlmoeConfig
 
 class ConfigValidationTests(unittest.TestCase):
     def read(self, **overrides):
-        config = dict(model_type="olmoe", hidden_size=8, intermediate_size=12,
+        config = dict(model_type="olmoe", architectures=["OlmoeForCausalLM"],
+                      hidden_size=8, intermediate_size=12,
                       num_hidden_layers=2, num_attention_heads=2,
                       num_key_value_heads=2, num_experts=4,
                       num_experts_per_tok=2, vocab_size=16,

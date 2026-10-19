@@ -16,6 +16,8 @@ from .device_qwen35_layers import qwen35_device_attention,qwen35_device_moe
 from .device_logits import device_logits
 from .device_execution_policy import admit_no_fallback,admit_fp32
 
+_SOURCE_ADMISSION = object()
+
 
 @dataclass(frozen=True)
 class TorchQwen35Snapshot:
@@ -29,7 +31,10 @@ class TorchQwen35Decoder:
     implementation = 'torch-qwen35-device-fp32'
 
     def __init__(self,config,tensors,*,device,max_bytes,max_snapshots=4,
-                 max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,projection_provider=None,context_tokens=None):
+                 max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,projection_provider=None,context_tokens=None,
+                 _source_admission=None):
+        if _source_admission is not _SOURCE_ADMISSION:
+            raise ValueError('Qwen3.5 device construction requires metadata-admitted source tensors')
         admit_no_fallback(device)
         inventory = IndependentQwen35TextDecoder(config,{},_inventory_only=True)
         self.config,self.rotary_dim,self.theta = inventory.config,inventory.rotary_dim,inventory.theta
@@ -131,6 +136,10 @@ class TorchQwen35Decoder:
     @classmethod
     def from_directory(cls,directory,*,device,max_weight_bytes,max_bytes,read_limits=None,cancel=None,expert_provider=None,projection_provider=None,**options):
         from .native_checkpoint import read_native_text_checkpoint,_finish_decoder
+        if expert_provider is not None:
+            raise ValueError('Qwen3.5 external experts are disabled until packed/source tensor content identity is bound')
+        if projection_provider is not None:
+            raise ValueError('Qwen3.5 external projections require verified checkpoint source-content identity')
         def select(config,inventory):
             capacity=options.get('context_tokens',config['max_position_embeddings'])
             if capacity is None:capacity=config['max_position_embeddings']
@@ -139,18 +148,50 @@ class TorchQwen35Decoder:
             expected = IndependentQwen35TextDecoder(config,{},_inventory_only=True).tensor_shapes
             if config.get('tie_word_embeddings',False) and 'lm_head.weight' not in inventory:
                 expected = {name:shape for name,shape in expected.items() if name!='lm_head.weight'}
-            if set(expected)!=set(inventory) or any(tuple(inventory[name]['shape'])!=shape for name,shape in expected.items()):
+            if set(expected)!=set(inventory) or any(
+                    tuple(inventory[name]['shape'])!=shape or
+                    inventory[name].get('dtype') not in ('F32','F16','BF16')
+                    for name,shape in expected.items()):
                 raise ValueError('exact Qwen3.5 checkpoint inventory required')
             names = tuple(sorted(expected))
             if expert_provider is not None:
+                from .torch_qwen35_experts import TorchQwen35Experts
+                from .qwen35_publisher_experts import DeviceQwen35PublisherExperts
+                from .qwen35_streamed_experts import qwen35_metadata_fingerprint
+                provider_fingerprint=(expert_provider.manifest.fingerprint
+                    if type(expert_provider) is TorchQwen35Experts else
+                    getattr(expert_provider,'fingerprint',None))
+                provider_architecture=(expert_provider.manifest.architecture
+                    if type(expert_provider) is TorchQwen35Experts else
+                    'qwen3_5_moe_text')
+                if (type(expert_provider) not in (TorchQwen35Experts,DeviceQwen35PublisherExperts)
+                        or provider_architecture!='qwen3_5_moe_text'
+                        or provider_fingerprint!=qwen35_metadata_fingerprint(config)
+                        or len(expert_provider.layers)!=config['num_hidden_layers']
+                        or (expert_provider.hidden_size,expert_provider.intermediate_size,
+                            expert_provider.expert_count,expert_provider.selected_experts)!=
+                           (config['hidden_size'],config['moe_intermediate_size'],
+                            config['num_experts'],config['num_experts_per_tok'])):
+                    raise ValueError('Qwen3.5 expert manifest/config identity must be admitted before checkpoint payload reads')
                 names = tuple(name for name in names if not name.endswith(('mlp.experts.gate_up_proj','mlp.experts.down_proj')))
-            if projection_provider is not None:names=tuple(name for name in names if name not in projection_provider.matrices)
+            if projection_provider is not None:
+                from .publisher_checkpoint.storage import freeze
+                snapshot=projection_provider.reader.snapshot
+                snapshot.assert_unchanged()
+                if snapshot.config!=freeze(config):
+                    raise ValueError('projection checkpoint configuration differs before Qwen3.5 payload loading')
+                for name,value in projection_provider.matrices.items():
+                    if name not in expected or tuple(value.shape)!=tuple(expected[name]):
+                        raise ValueError('Qwen3.5 streamed projection is outside the admitted inventory: '+name)
+                names=tuple(name for name in names if name not in projection_provider.matrices)
             if 4*sum(math.prod(expected[name])*4 for name in names)+getattr(expert_provider,'max_bytes',0)+getattr(projection_provider,'max_bytes',0)>max_bytes:
                 raise MemoryError('Qwen3.5 checkpoint conversion exceeds admission')
             return names
         config,weights = read_native_text_checkpoint(directory,model_type='qwen3_5_moe_text',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='device')
         return _finish_decoder(cls(config,weights,device=device,max_bytes=max_bytes,expert_provider=expert_provider,
+            _source_admission=_SOURCE_ADMISSION,
             projection_provider=projection_provider,**options),cancel)
 
     def _check(self):

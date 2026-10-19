@@ -23,6 +23,7 @@ from .memory import VirtualKVCache
 from .expert_store import DiskExpertStore, ExpertRegion, routed_swiglu
 from .expert_runtime import SparseExpertManifest, SparseExpertRuntime
 from .scheduler import DeadlineBatchScheduler, InferenceRequest, RequestPhase, RequestPriority
+from .universal_engine import UniversalEngine, ModelRoute, UniversalSession
 
 
 MODEL_ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -84,7 +85,19 @@ class AdaptiveExecutionEngine:
         self.autotuner = DeviceAutoTuner(store, self.openvino)
         self.scheduler = DeadlineBatchScheduler(max_batch_size=8, interactive_reserve=2)
         self.kv_cache = VirtualKVCache(256 * 1024 * 1024, block_tokens=16, bytes_per_token=64 * 1024)
+        # One shared lifecycle/dispatch boundary; family implementations are
+        # registered as exact adapters rather than reimplementing serving logic.
+        self.universal = UniversalEngine()
         self.initialize()
+
+    def register_universal_adapter(self, model_type: str, opener, *, route_resolver=None) -> None:
+        """Register one exact family adapter behind the shared runtime."""
+        self.universal.register(model_type, opener, route_resolver=route_resolver)
+
+    def open_universal_model(self, model_directory, *, route: ModelRoute | None = None,
+                             **options) -> UniversalSession:
+        """Open any registered family through the common lifecycle boundary."""
+        return self.universal.open(model_directory, route=route, **options)
 
     def initialize(self) -> None:
         with self.store.session() as connection:
@@ -902,7 +915,20 @@ class AdaptiveExecutionEngine:
             raise AdaptiveRuntimeError(str(exc)) from exc
 
     def close(self) -> None:
-        self.direct.close()
+        primary = None
+        try:
+            self.universal.close_all()
+        except BaseException as error:
+            primary = error
+        try:
+            self.direct.close()
+        except BaseException as error:
+            if primary is None:
+                primary = error
+            else:
+                primary.add_note("direct runtime close failure: " + repr(error))
+        if primary is not None:
+            raise primary
 
     def benchmark_device(
         self,
@@ -1058,9 +1084,10 @@ class AdaptiveExecutionEngine:
         for device in devices:
             if openvino_device_id(device).upper() == target.upper():
                 return device.id
-        root = target.split(".", 1)[0].split(":", 1)[0].lower()
-        match = next((item for item in devices if item.kind == root and "openvino" in item.backends), None)
-        return match.id if match else ""
+        # Never infer a profile from a backend family prefix: GPU.1 and GPU.0
+        # are distinct physical targets, and a profile without an exact
+        # provider identity cannot certify which one owns the execution.
+        return ""
 
     def _direct_target(self, devices: tuple[DeviceProfile, ...], requested: str) -> tuple[DeviceProfile, str]:
         clean = requested.strip()

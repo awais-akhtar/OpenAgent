@@ -118,8 +118,11 @@ class IQ3Grid:
         try:
             try:
                 output = os.fdopen(descriptor, 'wb')
-            except BaseException:
-                os.close(descriptor)
+            except BaseException as primary:
+                try:
+                    os.close(descriptor)
+                except BaseException as cleanup:
+                    primary.add_note('IQ3 grid descriptor cleanup failed: '+repr(cleanup))
                 raise
             with output:
                 output.write(b'OAIQ3G01')
@@ -132,13 +135,22 @@ class IQ3Grid:
                 directory = os.open(path.parent, os.O_RDONLY)
                 try:
                     os.fsync(directory)
-                finally:
+                except BaseException as primary:
+                    try:
+                        os.close(directory)
+                    except BaseException as cleanup:
+                        primary.add_note('IQ3 grid directory descriptor cleanup failed: '+repr(cleanup))
+                    raise
+                else:
                     os.close(directory)
-        finally:
+        except BaseException as primary:
             try:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+            except BaseException as cleanup:
+                primary.add_note('IQ3 grid temporary cleanup failed: '+repr(cleanup))
+            raise
 
     @classmethod
     def read(cls, source, *, expected_sha256):
@@ -198,14 +210,21 @@ def decode_iq3(payload, *, rows, cols, grid, max_bytes):
         raise ValueError('binary IQ3 payload required')
     if len(raw) != size:
         raise ValueError('IQ3 payload extent mismatch')
-    output = np.empty((rows, cols), dtype=np.float32)
+    # Admit every block's scalar metadata before allocating the decoded matrix.
+    # Otherwise a malformed late block can fail after a potentially large
+    # output array has already been allocated and partly populated.
     blocks = cols//BLOCK_WEIGHTS
     for row in range(rows):
         for block in range(blocks):
             offset = (row*blocks+block)*BLOCK_BYTES
             scale = struct.unpack_from('<e', raw, offset+96)[0]
-            if not math.isfinite(scale) or raw[offset+97] & 128:
+            if not math.isfinite(scale) or scale < 0 or raw[offset+97] & 128:
                 raise ValueError('invalid IQ3 FP16 super-scale')
+    output = np.empty((rows, cols), dtype=np.float32)
+    for row in range(rows):
+        for block in range(blocks):
+            offset = (row*blocks+block)*BLOCK_BYTES
+            scale = struct.unpack_from('<e', raw, offset+96)[0]
             for sub in range(8):
                 word = struct.unpack_from('<I', raw, offset+64+sub*4)[0]
                 factor = scale*(0.5+(word >> 28))*0.25

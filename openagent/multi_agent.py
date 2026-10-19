@@ -5,7 +5,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
+import threading
 from typing import Any
+from uuid import uuid4
 
 from .agents import AgentRegistry
 from .model_gateway import ModelGateway
@@ -26,6 +28,8 @@ class MultiAgentRuntime:
         self.store = store
         self.gateway = gateway
         self.registry = AgentRegistry(store, gateway)
+        self._job_lock = threading.Lock()
+        self._job_cancellations: dict[str, threading.Event] = {}
         self.initialize()
 
     def initialize(self) -> None:
@@ -98,6 +102,28 @@ class MultiAgentRuntime:
                 CREATE INDEX IF NOT EXISTS idx_agent_verifications_project_created
                     ON agent_verifications(project, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS agent_execution_jobs (
+                    id TEXT PRIMARY KEY,
+                    project TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    goal TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    current_step TEXT NOT NULL DEFAULT '',
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    attempt INTEGER NOT NULL DEFAULT 1,
+                    retry_of TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_execution_jobs_owner_project
+                    ON agent_execution_jobs(owner, project, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS agent_manifests (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -108,7 +134,181 @@ class MultiAgentRuntime:
                 );
                 """
             )
+        self._reconcile_unfinished_jobs()
         self.seed_defaults()
+
+    def _reconcile_unfinished_jobs(self) -> None:
+        """Close jobs whose worker thread cannot have survived this process.
+
+        Cancellation remains cancellation. Other unfinished work is marked failed
+        with an explicit restart reason so the existing retry operation can resume
+        it deliberately; it is never silently replayed during startup.
+        """
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                """UPDATE agent_execution_jobs
+                   SET status='cancelled', current_step='Cancelled during application restart',
+                       result_json='{}', error='', updated_at=?, completed_at=?
+                   WHERE status IN ('queued','running','cancelling') AND cancel_requested=1""",
+                (now, now),
+            )
+            connection.execute(
+                """UPDATE agent_execution_jobs
+                   SET status='failed', current_step='Interrupted by application restart',
+                       error='The local agent worker stopped when OpenAgent restarted. Retry this job to continue.',
+                       updated_at=?, completed_at=?
+                   WHERE status IN ('queued','running','cancelling') AND cancel_requested=0""",
+                (now, now),
+            )
+
+    def start_job(
+        self, agent_id: str, goal: str, *, project: str = "default", owner: str = "local",
+        retry_of: str = "", attempt: int = 1,
+    ) -> dict[str, Any]:
+        goal = goal.strip()
+        project = project.strip() or "default"
+        owner = owner.strip() or "local"
+        if not goal:
+            raise ValueError("A goal is required.")
+        self.require_permission(agent_id, "agent.run", project=project)
+        if not self.store.claim_agent_run_project(project, owner):
+            raise PermissionDenied("Project not found.")
+        job_id = uuid4().hex
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_execution_jobs (
+                    id, project, owner, agent, goal, status, progress, current_step,
+                    attempt, retry_of, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'queued', 0, 'Queued for local execution', ?, ?, ?, ?)
+                """,
+                (job_id, project, owner, agent_id, goal, max(1, int(attempt)), retry_of, now, now),
+            )
+        cancel = threading.Event()
+        with self._job_lock:
+            self._job_cancellations[job_id] = cancel
+        threading.Thread(
+            target=self._execute_job, args=(job_id, cancel), name=f"openagent-agent-{job_id[:8]}", daemon=True,
+        ).start()
+        return self.get_job(job_id, owner=owner) or {}
+
+    def _execute_job(self, job_id: str, cancel: threading.Event) -> None:
+        try:
+            job = self.get_job(job_id)
+            if not job or cancel.is_set() or job["cancel_requested"]:
+                self._finish_cancelled(job_id)
+                return
+            # Progress is a lifecycle milestone, not an estimate of model work.
+            self._update_job(job_id, status="running", progress=10, current_step="Agent invocation started")
+            result = self.run_agent(
+                str(job["agent"]), str(job["goal"]), project=str(job["project"]), owner=str(job["owner"]),
+            )
+            if cancel.is_set() or self._cancel_requested(job_id):
+                self._finish_cancelled(job_id)
+                return
+            if not self._update_job(job_id, status="running", progress=90, current_step="Agent response recorded"):
+                self._finish_cancelled(job_id)
+                return
+            now = utc_now()
+            with self.store.session() as connection:
+                completed = connection.execute(
+                    """UPDATE agent_execution_jobs SET status='completed', progress=100,
+                       current_step='Result persisted', result_json=?, error='', updated_at=?, completed_at=?
+                       WHERE id=? AND cancel_requested=0 AND status='running'""",
+                    (json.dumps(result, sort_keys=True), now, now, job_id),
+                ).rowcount
+            if not completed:
+                self._finish_cancelled(job_id)
+        except Exception as exc:
+            if cancel.is_set() or self._cancel_requested(job_id):
+                self._finish_cancelled(job_id)
+                return
+            now = utc_now()
+            with self.store.session() as connection:
+                connection.execute(
+                    """UPDATE agent_execution_jobs SET status='failed', current_step='Failed', error=?,
+                       updated_at=?, completed_at=? WHERE id=?""",
+                    (str(exc), now, now, job_id),
+                )
+        finally:
+            with self._job_lock:
+                self._job_cancellations.pop(job_id, None)
+
+    def jobs(self, *, project: str, owner: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self.store.session() as connection:
+            rows = connection.execute(
+                """SELECT * FROM agent_execution_jobs WHERE project=? AND owner=?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (project, owner, max(1, min(int(limit), 100))),
+            ).fetchall()
+        return [agent_job_row(row) for row in rows]
+
+    def get_job(self, job_id: str, *, owner: str | None = None) -> dict[str, Any] | None:
+        sql = "SELECT * FROM agent_execution_jobs WHERE id=?"
+        params: tuple[Any, ...] = (job_id,)
+        if owner is not None:
+            sql += " AND owner=?"
+            params = (job_id, owner)
+        with self.store.session() as connection:
+            row = connection.execute(sql, params).fetchone()
+        return agent_job_row(row) if row else None
+
+    def cancel_job(self, job_id: str, *, owner: str) -> dict[str, Any]:
+        job = self.get_job(job_id, owner=owner)
+        if not job:
+            raise KeyError("Agent job not found.")
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return job
+        with self._job_lock:
+            event = self._job_cancellations.get(job_id)
+            if event:
+                event.set()
+        now = utc_now()
+        status = "cancelled" if job["status"] == "queued" else "cancelling"
+        with self.store.session() as connection:
+            connection.execute(
+                """UPDATE agent_execution_jobs SET cancel_requested=1, status=?, progress=CASE WHEN ?='cancelled' THEN 0 ELSE progress END,
+                   current_step=?, updated_at=?, completed_at=CASE WHEN ?='cancelled' THEN ? ELSE completed_at END WHERE id=?""",
+                (status, status, "Cancelled before execution" if status == "cancelled" else "Cancellation requested", now, status, now, job_id),
+            )
+        return self.get_job(job_id, owner=owner) or job
+
+    def retry_job(self, job_id: str, *, owner: str) -> dict[str, Any]:
+        job = self.get_job(job_id, owner=owner)
+        if not job:
+            raise KeyError("Agent job not found.")
+        if job["status"] not in {"failed", "cancelled"}:
+            raise ValueError("Only failed or cancelled agent jobs can be retried.")
+        return self.start_job(
+            str(job["agent"]), str(job["goal"]), project=str(job["project"]), owner=owner,
+            retry_of=job_id, attempt=int(job["attempt"]) + 1,
+        )
+
+    def _cancel_requested(self, job_id: str) -> bool:
+        with self.store.session() as connection:
+            row = connection.execute("SELECT cancel_requested FROM agent_execution_jobs WHERE id=?", (job_id,)).fetchone()
+        return bool(row and row[0])
+
+    def _update_job(self, job_id: str, *, status: str, progress: int, current_step: str) -> bool:
+        with self.store.session() as connection:
+            changed = connection.execute(
+                """UPDATE agent_execution_jobs SET status=?, progress=?, current_step=?, updated_at=?
+                   WHERE id=? AND cancel_requested=0 AND status NOT IN ('completed','failed','cancelled')""",
+                (status, max(0, min(100, progress)), current_step, utc_now(), job_id),
+            ).rowcount
+        return bool(changed)
+
+    def _finish_cancelled(self, job_id: str) -> None:
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                """UPDATE agent_execution_jobs SET status='cancelled', current_step='Cancellation confirmed',
+                   result_json='{}', error='', updated_at=?, completed_at=?
+                   WHERE id=? AND status NOT IN ('completed','failed','cancelled')""",
+                (now, now, job_id),
+            )
 
     def seed_defaults(self) -> None:
         scopes = [
@@ -195,6 +395,7 @@ class MultiAgentRuntime:
         require_approval: bool = False,
         approval_id: str | None = None,
         verify: bool = True,
+        owner: str | None = None,
     ) -> dict[str, Any]:
         self.require_permission(agent_id, "agent.run", project=project)
         if require_approval and not self.approval_is_approved(approval_id):
@@ -206,7 +407,7 @@ class MultiAgentRuntime:
                 payload={"agent": agent_id, "goal": goal},
             )
             raise ApprovalRequired(json.dumps(approval, sort_keys=True))
-        run = self.registry.run(agent_id, goal, project=project)
+        run = self.registry.run(agent_id, goal, project=project, owner=owner)
         verification = self.verify_run(run, project=project) if verify else None
         return {"run": run, "verification": verification}
 
@@ -456,4 +657,25 @@ def approval_row(row: Any) -> dict[str, Any]:
         "payload": json.loads(row["payload_json"]),
         "created_at": row["created_at"],
         "resolved_at": row["resolved_at"],
+    }
+
+
+def agent_job_row(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "project": row["project"],
+        "owner": row["owner"],
+        "agent": row["agent"],
+        "goal": row["goal"],
+        "status": row["status"],
+        "progress": int(row["progress"]),
+        "current_step": row["current_step"],
+        "cancel_requested": bool(row["cancel_requested"]),
+        "attempt": int(row["attempt"]),
+        "retry_of": row["retry_of"],
+        "result": json.loads(row["result_json"] or "{}"),
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "completed_at": row["completed_at"],
     }

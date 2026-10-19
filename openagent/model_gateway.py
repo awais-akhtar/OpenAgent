@@ -22,12 +22,60 @@ from typing import Any, Iterator, Protocol
 
 from .core_runtime import CPU_MODEL_STACK, model_request_options, smooth_runtime_profile
 from .egress import EgressClient
+from .adaptive_engine.execution_service import ExecutionCancelled
 from .inference_accelerator import (
     AdaptiveCPUInferenceEngine,
     active_runtime_options,
     estimate_messages_tokens,
     infer_task,
 )
+
+
+def _closing_provider_stream(chunks: Iterator["StreamChunk"]) -> Iterator["StreamChunk"]:
+    """Forward provider chunks and deterministically release the upstream iterator.
+
+    A caller closing the gateway stream (for example after an HTTP disconnect)
+    must not leave a provider response/socket owned only by a suspended iterator.
+    Cleanup failures are surfaced on normal completion, but never replace the
+    provider/consumer exception that caused unwinding.
+    """
+    source = iter(chunks)
+    primary: BaseException | None = None
+    try:
+        for chunk in source:
+            yield chunk
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        close = getattr(source, "close", None)
+        if callable(close):
+            try:
+                close()
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                try:
+                    primary.add_note("provider stream cleanup failed: " + repr(cleanup))
+                except BaseException:
+                    pass
+
+
+def _validate_stream_chunk(chunk: object, *, provider_id: str,
+                           terminal_seen: bool) -> bool:
+    """Validate provider event shape and enforce terminal-is-final ordering."""
+    if terminal_seen:
+        raise ProviderUnavailableError(
+            f"Provider '{provider_id}' emitted an event after its terminal stream event"
+        )
+    if (not isinstance(chunk, StreamChunk) or type(chunk.provider) is not str
+            or not chunk.provider or type(chunk.model) is not str or not chunk.model
+            or type(chunk.content) is not str or type(chunk.done) is not bool
+            or type(chunk.metadata) is not dict):
+        raise ProviderUnavailableError(
+            f"Provider '{provider_id}' emitted an invalid stream event"
+        )
+    return chunk.done
 
 
 @dataclass(frozen=True)
@@ -388,16 +436,42 @@ class OllamaProvider(BaseProvider):
             {"model": selected_model, "messages": messages, "stream": True, "options": options, "keep_alive": keep_alive},
             headers={},
         )
-        for item in response:
-            content = item.get("message", {}).get("content", "")
-            done = bool(item.get("done"))
-            yield StreamChunk(
-                provider=self.id,
-                model=selected_model,
-                content=content,
-                done=done,
-                metadata={"base_url": self.base_url, "network": True, "local_network": True, "smooth_options": options},
-            )
+        primary: BaseException | None = None
+        done_seen = False
+        try:
+            for item in response:
+                content = item.get("message", {}).get("content", "")
+                done = bool(item.get("done"))
+                if done:
+                    done_seen = True
+                yield StreamChunk(
+                    provider=self.id,
+                    model=selected_model,
+                    content=content,
+                    done=done,
+                    metadata={"base_url": self.base_url, "network": True, "local_network": True, "smooth_options": options},
+                )
+                if done:
+                    # Ollama's done record is the protocol terminal boundary;
+                    # do not dispatch trailing records as more assistant text.
+                    break
+            if not done_seen:
+                raise ProviderUnavailableError("Ollama stream ended without a done record")
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("Ollama stream cleanup failed: " + repr(cleanup))
+                    except BaseException:
+                        pass
 
     def embed(
         self,
@@ -488,7 +562,7 @@ class LlamaCppProvider(BaseProvider):
     ) -> Iterator[StreamChunk]:
         selected_model = model or self.default_model
         options = provider_request_options(messages)
-        for item in stream_sse_json(
+        response = stream_sse_json(
             f"{self.base_url}/v1/chat/completions",
             {
                 "model": selected_model,
@@ -500,16 +574,41 @@ class LlamaCppProvider(BaseProvider):
                 "cache_prompt": True,
             },
             headers={},
-        ):
-            content = delta_content(item)
-            done = item.get("done") is True
-            yield StreamChunk(
-                provider=self.id,
-                model=selected_model,
-                content=content,
-                done=done,
-                metadata={"base_url": self.base_url, "network": True, "local_network": True, "smooth_options": options},
-            )
+        )
+        primary: BaseException | None = None
+        done_seen = False
+        try:
+            for item in response:
+                content = delta_content(item)
+                done = item.get("done") is True
+                if done:
+                    done_seen = True
+                yield StreamChunk(
+                    provider=self.id,
+                    model=selected_model,
+                    content=content,
+                    done=done,
+                    metadata={"base_url": self.base_url, "network": True, "local_network": True, "smooth_options": options},
+                )
+                if done:
+                    break
+            if not done_seen:
+                raise ProviderUnavailableError("llama.cpp stream ended without a done marker")
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("llama.cpp stream cleanup failed: " + repr(cleanup))
+                    except BaseException:
+                        pass
 
 
 class OpenVINODirectProvider(BaseProvider):
@@ -598,17 +697,36 @@ class OpenVINODirectProvider(BaseProvider):
         }
         emitted = False
         final: dict[str, Any] = {}
-        for event in self.client.stream_generate(model_id, messages=runtime_messages, generation=generation):
-            if event.get("type") == "token":
-                content = str(event.get("content", ""))
-                if content:
-                    emitted = True
-                    yield StreamChunk(
-                        self.id, model_id, content, False,
-                        {"network": False, "direct_hardware": True, "device": self.device, "streamed": True},
-                    )
-            elif event.get("type") == "done":
-                final = event
+        events = self.client.stream_generate(model_id, messages=runtime_messages, generation=generation)
+        primary: BaseException | None = None
+        try:
+            for event in events:
+                if event.get("type") == "token":
+                    content = str(event.get("content", ""))
+                    if content:
+                        emitted = True
+                        yield StreamChunk(
+                            self.id, model_id, content, False,
+                            {"network": False, "direct_hardware": True, "device": self.device, "streamed": True},
+                        )
+                elif event.get("type") == "done":
+                    final = event
+                    break
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("OpenVINO stream cleanup failed: " + repr(cleanup))
+                    except BaseException:
+                        pass
         if not emitted and final.get("text"):
             yield StreamChunk(
                 self.id, model_id, str(final["text"]), False,
@@ -1037,18 +1155,36 @@ class OpenAICompatibleProvider(BaseProvider):
     ) -> Iterator[StreamChunk]:
         self.require_configured()
         selected_model = model or self.default_model
-        for item in stream_sse_json(
+        response = stream_sse_json(
             f"{self.base_url}/chat/completions",
             {"model": selected_model, "messages": messages, "stream": True},
             headers={"Authorization": f"Bearer {self.api_key}"},
-        ):
-            yield StreamChunk(
-                provider=self.id,
-                model=selected_model,
-                content=delta_content(item),
-                done=item.get("done") is True,
-                metadata={"base_url": self.base_url, "network": True, "external": True},
-            )
+        )
+        primary: BaseException | None = None
+        try:
+            for item in response:
+                yield StreamChunk(
+                    provider=self.id,
+                    model=selected_model,
+                    content=delta_content(item),
+                    done=item.get("done") is True,
+                    metadata={"base_url": self.base_url, "network": True, "external": True},
+                )
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("OpenAI-compatible stream cleanup failed: " + repr(cleanup))
+                    except BaseException:
+                        pass
 
     def embed(
         self,
@@ -1472,6 +1608,10 @@ class ModelGateway:
                 "fallback_policy": self.fallback_policy,
             }
         except Exception as exc:
+            # Cancellation is a request outcome, not a provider failure to
+            # recover by replaying the prompt against a fallback backend.
+            if isinstance(exc, (InterruptedError, ExecutionCancelled, _ModelStreamCancelled)):
+                raise
             fallback = self.select_fallback(provider.id)
             if fallback is None:
                 raise
@@ -1606,32 +1746,51 @@ class ModelGateway:
             return
         iterator = None
         first_token_ms = None
+        primary = None
+        terminal_seen = False
         try:
             with _approve_model_egress(allow_external):
-                iterator = iter(stream(messages, image, media_type=media_type, model=selected_model,
-                                       max_output_tokens=max_output_tokens))
+                iterator = _closing_provider_stream(iter(stream(
+                    messages, image, media_type=media_type, model=selected_model,
+                    max_output_tokens=max_output_tokens)))
                 for chunk in iterator:
+                    terminal_seen = _validate_stream_chunk(
+                        chunk, provider_id=provider.id, terminal_seen=terminal_seen)
                     if chunk.content and first_token_ms is None:
                         first_token_ms = (time.perf_counter()-started)*1000
                     metadata = {**chunk.metadata, 'modality': 'vision',
                         'routing_policy': self.routing_policy,
                         'external_approved': bool(allow_external and not provider.local),
                         'streaming_mode': 'native-vision'}
-                    if chunk.done:
+                    if terminal_seen:
                         metadata.update(latency_ms=round((time.perf_counter()-started)*1000, 3),
                                         first_token_ms=None if first_token_ms is None else round(first_token_ms, 3))
                     yield StreamChunk(chunk.provider, chunk.model, chunk.content, chunk.done, metadata)
-                    if chunk.done:
+                    if terminal_seen:
                         return
                 raise ProviderUnavailableError('Vision stream ended without a completion event.')
-        except ProviderUnavailableError:
+        except ProviderUnavailableError as exc:
+            primary = exc
             raise
         except Exception as exc:
-            raise ProviderUnavailableError(f"Vision streaming failed through provider '{provider.id}': {exc}") from exc
+            primary = ProviderUnavailableError(
+                f"Vision streaming failed through provider '{provider.id}': {exc}")
+            raise primary from exc
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
             close = getattr(iterator, 'close', None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note('vision provider iterator cleanup failed: '+repr(cleanup))
+                    except BaseException:
+                        pass
 
     def _select_vision_provider(self, provider_id: str, *, allow_external: bool) -> ModelProvider:
         if provider_id == "auto":
@@ -1711,47 +1870,77 @@ class ModelGateway:
         final_model = selected_model or provider.default_model
         final_metadata: dict[str, Any] = {}
         fallback_used = False
+        stream_started = False
+        terminal_seen = False
         try:
-            with self.inference.activate(plan), _approve_model_egress(allow_external):
-                for chunk in provider.stream_complete(plan.messages, model=selected_model):
-                    if chunk.content:
-                        parts.append(chunk.content)
-                        if first_token_ms is None:
-                            first_token_ms = (time.perf_counter() - started) * 1000
-                    final_provider = chunk.provider
-                    final_model = chunk.model
-                    final_metadata = {
-                        **chunk.metadata,
-                        "cache_hit": False,
-                        "inference": plan.metadata(),
-                        "routing_policy": self.routing_policy,
-                        "fallback_policy": self.fallback_policy,
-                    }
-                    yield StreamChunk(chunk.provider, chunk.model, chunk.content, chunk.done, final_metadata)
+            stream = _closing_provider_stream(
+                provider.stream_complete(plan.messages, model=selected_model))
+            try:
+                with self.inference.activate(plan), _approve_model_egress(allow_external):
+                    for chunk in stream:
+                        terminal_seen = _validate_stream_chunk(
+                            chunk, provider_id=provider.id, terminal_seen=terminal_seen)
+                        if chunk.content:
+                            parts.append(chunk.content)
+                            if first_token_ms is None:
+                                first_token_ms = (time.perf_counter() - started) * 1000
+                        final_provider = chunk.provider
+                        final_model = chunk.model
+                        final_metadata = {
+                            **chunk.metadata,
+                            "cache_hit": False,
+                            "inference": plan.metadata(),
+                            "routing_policy": self.routing_policy,
+                            "fallback_policy": self.fallback_policy,
+                        }
+                        # Once any event is visible to the caller, replaying the
+                        # whole prompt through a fallback would splice two
+                        # providers' output into one response. Fail the stream
+                        # instead of publishing a mixed/duplicated completion.
+                        stream_started = True
+                        yield StreamChunk(chunk.provider, chunk.model, chunk.content, chunk.done, final_metadata)
+                    if not terminal_seen:
+                        raise ProviderUnavailableError(
+                            f"Provider '{provider.id}' stream ended without a terminal event"
+                        )
+            finally:
+                stream.close()
         except Exception as exc:
             fallback = self.select_fallback(provider.id)
-            if fallback is None:
+            if fallback is None or stream_started:
                 raise
             fallback_used = True
             parts = []
-            with self.inference.activate(plan):
-                for chunk in fallback.stream_complete(plan.messages, model=None):
-                    if chunk.content:
-                        parts.append(chunk.content)
-                        if first_token_ms is None:
-                            first_token_ms = (time.perf_counter() - started) * 1000
-                    final_provider = chunk.provider
-                    final_model = chunk.model
-                    final_metadata = {
-                        **chunk.metadata,
-                        "fallback_from": provider.id,
-                        "fallback_error": str(exc),
-                        "cache_hit": False,
-                        "inference": plan.metadata(),
-                        "routing_policy": self.routing_policy,
-                        "fallback_policy": self.fallback_policy,
-                    }
-                    yield StreamChunk(chunk.provider, chunk.model, chunk.content, chunk.done, final_metadata)
+            terminal_seen = False
+            stream = _closing_provider_stream(
+                fallback.stream_complete(plan.messages, model=None))
+            try:
+                with self.inference.activate(plan):
+                    for chunk in stream:
+                        terminal_seen = _validate_stream_chunk(
+                            chunk, provider_id=fallback.id, terminal_seen=terminal_seen)
+                        if chunk.content:
+                            parts.append(chunk.content)
+                            if first_token_ms is None:
+                                first_token_ms = (time.perf_counter() - started) * 1000
+                        final_provider = chunk.provider
+                        final_model = chunk.model
+                        final_metadata = {
+                            **chunk.metadata,
+                            "fallback_from": provider.id,
+                            "fallback_error": str(exc),
+                            "cache_hit": False,
+                            "inference": plan.metadata(),
+                            "routing_policy": self.routing_policy,
+                            "fallback_policy": self.fallback_policy,
+                        }
+                        yield StreamChunk(chunk.provider, chunk.model, chunk.content, chunk.done, final_metadata)
+                    if not terminal_seen:
+                        raise ProviderUnavailableError(
+                            f"Fallback provider '{fallback.id}' stream ended without a terminal event"
+                        )
+            finally:
+                stream.close()
         latency_ms = (time.perf_counter() - started) * 1000
         final_metadata = {**final_metadata, "latency_ms": round(latency_ms, 3)}
         if parts and not fallback_used:
@@ -2279,13 +2468,36 @@ def _stream_model_lines(
         cancelled.set()
 
 
+def _closing_model_lines(lines: Iterator[str]) -> Iterator[str]:
+    """Ensure parser/consumer exits cancel the underlying HTTP stream."""
+    source = iter(lines)
+    primary: BaseException | None = None
+    try:
+        yield from source
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        close = getattr(source, "close", None)
+        if callable(close):
+            try:
+                close()
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                try:
+                    primary.add_note("model line stream cleanup failed: " + repr(cleanup))
+                except BaseException:
+                    pass
+
+
 def stream_json_lines(
     url: str,
     payload: dict[str, Any],
     *,
     headers: dict[str, str],
 ) -> Iterator[dict[str, Any]]:
-    for line in _stream_model_lines(url, payload, headers=headers):
+    for line in _closing_model_lines(_stream_model_lines(url, payload, headers=headers)):
         raw = line.strip()
         if raw:
             yield json.loads(raw)
@@ -2297,17 +2509,34 @@ def stream_sse_json(
     *,
     headers: dict[str, str],
 ) -> Iterator[dict[str, Any]]:
-    for line in _stream_model_lines(url, payload, headers=headers):
+    done_seen = False
+    bare_terminal_seen = False
+    for line in _closing_model_lines(_stream_model_lines(url, payload, headers=headers)):
         raw = line.strip()
         if not raw:
             continue
-        if raw == "data: [DONE]":
-            yield {"done": True}
-            break
-        if raw.startswith("data: "):
-            yield json.loads(raw.removeprefix("data: "))
+        if raw.startswith(":") or raw.startswith(("event:", "id:", "retry:")):
+            # SSE comments and control fields do not carry model payload.
+            continue
+        if raw.startswith("data:"):
+            data = raw[5:].lstrip()
+            if data == "[DONE]":
+                done_seen = True
+                yield {"done": True}
+                break
+            yield json.loads(data)
         else:
-            yield json.loads(raw)
+            # Some local OpenAI-compatible servers emit bare JSONL records.
+            # Keep that supported when they provide their own done record.
+            item = json.loads(raw)
+            bare_terminal_seen = bare_terminal_seen or (
+                isinstance(item, dict) and item.get("done") is True
+            )
+            yield item
+    if not done_seen and not bare_terminal_seen:
+        raise ProviderUnavailableError(
+            "OpenAI-compatible stream ended without a [DONE] marker or bare-JSON done record"
+        )
 
 
 def model_timeout_seconds() -> float:

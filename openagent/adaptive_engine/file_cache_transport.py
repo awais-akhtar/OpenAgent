@@ -15,6 +15,17 @@ from .generation_checkpoint_files import _remove_staging
 _CHUNK = 1024*1024
 
 
+def _create_staging_path(scratch_directory):
+    descriptor, name = tempfile.mkstemp(prefix='openagent-cache-', dir=scratch_directory)
+    path = Path(name)
+    try:
+        os.close(descriptor)
+    except BaseException as primary:
+        _remove_staging(path, primary)
+        raise
+    return path
+
+
 def transport_cache(model, stream, codec, *, max_bytes, restoring=False,
                     scratch_directory=None):
     if type(max_bytes) is not int or not 64<=max_bytes<=2**63-1:
@@ -32,9 +43,7 @@ def transport_cache(model, stream, codec, *, max_bytes, restoring=False,
         check_cancel=getattr(model,'_check_cancelled',None)
         if not callable(check_cancel):check_cancel=getattr(model,'_cancel_rows',None)
         if not callable(check_cancel):raise TypeError('complete family cancellation boundary required')
-        descriptor,name=tempfile.mkstemp(prefix='openagent-cache-',dir=scratch_directory)
-        os.close(descriptor)
-        path=Path(name)
+        path=_create_staging_path(scratch_directory)
         try:
             if restoring:
                 model._busy=True

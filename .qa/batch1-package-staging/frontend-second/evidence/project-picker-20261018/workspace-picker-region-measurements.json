@@ -1,0 +1,111 @@
+{
+  "canonical": "reference/frontend-final-approved.html",
+  "canonicalSha256": "BDCF0F5E24121A94C562B524EF49AB2F9B8582ED5F083B79045AE3C01AAC6CE1",
+  "deviceScaleFactor": 1,
+  "measurements": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "canonicalBounds": {
+        "x": 415,
+        "y": 99,
+        "width": 610,
+        "height": 439.5625
+      },
+      "reactBounds": {
+        "x": 415,
+        "y": 99,
+        "width": 610,
+        "height": 439.5625
+      },
+      "dialogGeometryDelta": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "dialogRegionStrictRgbaPercent": 99.42
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "canonicalBounds": {
+        "x": 415,
+        "y": 99,
+        "width": 610,
+        "height": 439.5625
+      },
+      "reactBounds": {
+        "x": 415,
+        "y": 99,
+        "width": 610,
+        "height": 439.5625
+      },
+      "dialogGeometryDelta": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "dialogRegionStrictRgbaPercent": 99.42
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "light",
+      "canonicalBounds": {
+        "x": 335,
+        "y": 88,
+        "width": 610,
+        "height": 439.5625
+      },
+      "reactBounds": {
+        "x": 335,
+        "y": 88,
+        "width": 610,
+        "height": 439.5625
+      },
+      "dialogGeometryDelta": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "dialogRegionStrictRgbaPercent": 99.42
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "dark",
+      "canonicalBounds": {
+        "x": 335,
+        "y": 88,
+        "width": 610,
+        "height": 439.5625
+      },
+      "reactBounds": {
+        "x": 335,
+        "y": 88,
+        "width": 610,
+        "height": 439.5625
+      },
+      "dialogGeometryDelta": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "dialogRegionStrictRgbaPercent": 99.42
+    }
+  ]
+}

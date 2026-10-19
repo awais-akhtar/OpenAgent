@@ -42,7 +42,9 @@ def convert_experts(experts, output, *, hidden_size, intermediate_size, block_co
     temporary = Path(name)
     regions = {}
     try:
-        with os.fdopen(descriptor, "wb") as stream:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None
+        with stream:
             for key, projections in experts.items():
                 if not isinstance(projections, (tuple, list)) or len(projections) != 3:
                     raise ValueError("each expert must provide gate, up, down")
@@ -57,6 +59,17 @@ def convert_experts(experts, output, *, hidden_size, intermediate_size, block_co
             os.fsync(stream.fileno())
         metadata = Q5_1ConversionResult(destination, hidden_size, intermediate_size, MappingProxyType(regions))
         os.link(temporary, destination)
-        return metadata
-    finally:
+    except BaseException as primary:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup:
+                primary.add_note("Q5_1 conversion descriptor cleanup pending: " + repr(cleanup))
+        try:
+            temporary.unlink(missing_ok=True)
+        except BaseException as cleanup:
+            primary.add_note("Q5_1 conversion temporary cleanup pending: " + repr(cleanup))
+        raise
+    else:
         temporary.unlink(missing_ok=True)
+        return metadata

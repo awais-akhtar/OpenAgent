@@ -57,11 +57,14 @@ class DeepOperationalModuleTests(unittest.TestCase):
     def test_safe_terminal_records_buffered_stream_events(self) -> None:
         with TemporaryDirectory() as tmp:
             terminal = SafeTerminal(OpenAgentStore(tmp), workspace_root=tmp)
-            run = terminal.run(command=["python", "--version"], cwd=tmp, project="core")
+            run = terminal.run(command=["python", "--version"], cwd=tmp, project="core", owner="u1")
 
             self.assertEqual(run["status"], "completed")
             self.assertEqual(run["exit_code"], 0)
             self.assertIn("events", run)
+            self.assertEqual(terminal.get_run(run["id"], owner="u1")["id"], run["id"])
+            with self.assertRaises(KeyError):
+                terminal.get_run(run["id"], owner="u2")
 
     def test_mcp_runtime_registers_servers_tools_and_permissions(self) -> None:
         with TemporaryDirectory() as tmp:

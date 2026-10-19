@@ -31,7 +31,13 @@ from .security_privacy import SecurityPrivacyManager
 from .semantic_memory import SemanticMemoryManager
 from .storage import OpenAgentStore
 from .voice import VoiceRuntime, synthesize_tone_wav
-from .workbench import configured_workbench_port, launch_workbench, maybe_reexec_project_venv, workbench_status
+from .workbench import (
+    configured_workbench_port,
+    launch_workbench,
+    maybe_reexec_project_venv,
+    show_desktop_launch_error,
+    workbench_status,
+)
 from .workflows import WorkflowEngine
 from .workspace import WorkspaceManager
 
@@ -335,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stable localhost port. Installed desktop launches always default to 8765.",
     )
     parser.add_argument("--no-open", action="store_true", help="Start the modern workbench server without opening an app window.")
+    parser.add_argument("--ui-root", default=None, help="Override the built static UI folder for local acceptance testing.")
     parser.add_argument("--legacy-tk", action="store_true", help="Open the legacy Tk desktop shell instead of the modern workbench.")
     parser.add_argument(
         "--status-json",
@@ -1425,9 +1432,10 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             open_window=not args.no_open,
+            ui_root=args.ui_root,
         )
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
+    except (RuntimeError, OSError) as exc:
+        show_desktop_launch_error(f"{type(exc).__name__}: {exc}")
         return 2
 
 

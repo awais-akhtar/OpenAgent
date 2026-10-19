@@ -1,4 +1,4 @@
-"""Run supported local Transformers MoE checkpoints with explicit placement."""
+"""Inspect local Transformers MoE placement; execution requires P02 route admission."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 import sys
 
-from .hf_moe import HFMoeAdapter, HFMoeManifest, expert_module_names
+from .hf_moe import (HFMoeAdapter, HFMoeManifest, expert_module_names,
+                     require_hf_moe_execution_admission)
 
 
 def expert_placement(manifest: HFMoeManifest, resident_device: str, *, disk: bool) -> dict[str, str]:
@@ -29,9 +30,10 @@ def main(argv=None) -> int:
     if not args.prompt.strip() or args.max_tokens <= 0:
         parser.error("prompt and positive max-tokens are required")
     try:
+        manifest = HFMoeManifest.read(args.model)
+        require_hf_moe_execution_admission(manifest)
         from transformers import AutoTokenizer
 
-        manifest = HFMoeManifest.read(args.model)
         placement = expert_placement(manifest, args.resident_device, disk=args.offload_directory is not None)
         adapter = HFMoeAdapter.load(args.model, resident_device=args.resident_device,
                                   expert_placement=placement, offload_directory=args.offload_directory)

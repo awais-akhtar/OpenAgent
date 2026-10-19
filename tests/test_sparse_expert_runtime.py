@@ -210,6 +210,7 @@ class OlmoeContractTests(unittest.TestCase):
             root = Path(temp)
             config = {
                 "model_type": "olmoe",
+                "architectures": ["OlmoeForCausalLM"],
                 "hidden_size": 2048,
                 "intermediate_size": 1024,
                 "num_hidden_layers": 16,
@@ -234,7 +235,8 @@ class OlmoeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = {
-                "model_type": "olmoe", "hidden_size": 8, "intermediate_size": 4,
+                "model_type": "olmoe", "architectures": ["OlmoeForCausalLM"],
+                "hidden_size": 8, "intermediate_size": 4,
                 "num_hidden_layers": 1, "num_attention_heads": 2, "num_key_value_heads": 2,
                 "num_experts": 2, "num_experts_per_tok": 3, "vocab_size": 32,
                 "max_position_embeddings": 16, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
@@ -247,7 +249,8 @@ class OlmoeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = {
-                "model_type": "olmoe", "hidden_size": 4, "intermediate_size": 3,
+                "model_type": "olmoe", "architectures": ["OlmoeForCausalLM"],
+                "hidden_size": 4, "intermediate_size": 3,
                 "num_hidden_layers": 1, "num_attention_heads": 2, "num_key_value_heads": 2,
                 "num_experts": 2, "num_experts_per_tok": 1, "vocab_size": 8,
                 "max_position_embeddings": 8, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,

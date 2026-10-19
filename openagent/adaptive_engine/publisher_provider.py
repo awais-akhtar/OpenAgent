@@ -9,8 +9,10 @@ from contextlib import contextmanager
 from queue import Empty, Full, Queue
 
 from ..model_gateway import BaseProvider, ModelResult, StreamChunk, ProviderConfigurationError, ProviderUnavailableError
+from .admission_scheduler import AdmissionScheduler, AdmissionRejected, AdmissionTimedOut
 from .session_recovery import _path
 from .native_library_identity import _stamp
+from .failure_reporting import add_failure_note, failure_summary
 
 
 def _metadata(path,max_bytes):
@@ -50,10 +52,63 @@ class NativePublisherProvider(BaseProvider):
         self._construction_cleanup = None
         self._stream_lock = threading.Lock()
         self._stream_thread = None
+        # The HTTP compatibility surface has one native session owner. Bound
+        # both active and pending work so overload is observable and finite.
+        self._request_admission = AdmissionScheduler(max_active=1, max_bytes=1, max_waiting=64)
+        self._request_local = threading.local()
+
+    @staticmethod
+    def _require_source_route(config, args, root):
+        family=getattr(args,'family',None) or config.get('family')
+        if family == 'kimi_k3':
+            # The K3 CLI has no --family option, so resolve its route from the
+            # provider's validated configuration and gate it here as well as
+            # in PublisherSession. Gateway construction must not infer tuple
+            # admission from reaching the CLI later in the request.
+            from .source_scope import require_source_family_backend_admission
+            bf16 = getattr(args, 'arithmetic_device', None) is not None
+            fla = bf16 and getattr(args, 'fla_version', None) is not None
+            require_source_family_backend_admission(
+                family='kimi-k3', model_type='kimi_k3',
+                backend='fla' if fla else 'device' if bf16 else 'native',
+                arithmetic='bf16' if bf16 else 'fp32-approximate')
+        elif family == 'deepseek_v41':
+            # V4.1 consumes three independently encoded local banks; all are
+            # required by its ordinary service factory. Gate each row before
+            # artifact fingerprinting or warm-session reuse.
+            from .source_scope import require_source_matrix_admission
+            backend = 'device' if getattr(args, 'device', None) is not None else 'native'
+            for source_format, persisted_format in (
+                    ('BF16', 'bf16'), ('FP8', 'fp8'), ('FP4', 'fp4')):
+                require_source_matrix_admission(
+                    family='deepseek-v41', model_type='deepseek_v41',
+                    backend=backend, arithmetic='publisher-bf16-fp8-fp4',
+                    source_format=source_format,
+                    persisted_format=persisted_format)
+        source_family={'mixtral':'mixtral','qwen3_5_moe_text':'qwen35',
+            'qwen4_exp_text':'qwen4','glm5_next_text':'glm5-next',
+            'glm5_next':'glm5-next','inkling_text':'inkling',
+            'glm_moe_dsa':'glm-dsa','qwen3_5_moe':'qwen35',
+            'qwen4_exp':'qwen4','inkling_mm_model':'inkling'}.get(family)
+        if source_family is not None:
+            from .source_scope import require_checkpoint_inventory_admission
+            model_type=family
+            backend=('public-range' if getattr(args,'segment_runtime_library',None) is not None else
+                     'device' if (getattr(args,'device',None) is not None or
+                                  getattr(args,'text_device',None) is not None) else 'native')
+            maximum=getattr(args,'metadata_mib',None)
+            if type(maximum) is not int or maximum<=0:
+                maximum=getattr(args,'staging_mib',None)
+            if type(maximum) is not int or maximum<=0:
+                maximum=256
+            maximum*=1024**2
+            require_checkpoint_inventory_admission(root,family=source_family,
+                model_type=model_type,backend=backend,max_metadata_bytes=maximum)
 
     @staticmethod
     def _residency_key(config, args):
         root = _path(args.checkpoint).resolve(strict=True)
+        NativePublisherProvider._require_source_route(config, args, root)
         paths = [root/'config.json', root/'model.safetensors.index.json',
                  args.tokenizer or root/'tokenizer.json']
         paths.extend(root.glob('*.safetensors'))
@@ -165,7 +220,7 @@ class NativePublisherProvider(BaseProvider):
                                       allow_nan=False)
             except (TypeError, ValueError) as error:
                 raise ProviderConfigurationError(label+' must be JSON-serializable') from error
-            if len(rendered.encode('utf-8')) > 1024**2:
+            if NativePublisherProvider._utf8_size(rendered, label=label) > 1024**2:
                 raise ProviderConfigurationError(label+' exceeds the 1 MiB serialized limit')
             return rendered
         raise ProviderConfigurationError(label+' must be text, object or array')
@@ -181,11 +236,13 @@ class NativePublisherProvider(BaseProvider):
                 except BaseException as failure:
                     self._construction_cleanup=cleanup
                     self._cleanup_error=str(failure)
-                    primary.add_note('gateway retains failed construction cleanup: '+repr(failure))
+                    add_failure_note(primary, 'gateway retains failed construction cleanup: '+failure_summary(failure))
                 else:primary.cleanup=None
             raise
 
     def close(self, cancelled=None):
+        # Wake bounded-queue waiters before waiting for the live session owner.
+        self._request_admission.close()
         with self._lifecycle_lock(cancelled):
             self._release_session()
             self._closed = True
@@ -208,10 +265,12 @@ class NativePublisherProvider(BaseProvider):
             self._release_session()
 
     def status(self):
+        request_queue = self._request_admission.status()
         if not self._lock.acquire(blocking=False):
             return dict(closed=self._closed, active=self._active, busy=True,
                         stream_worker_active=self._stream_lock.locked(),
                         execution_runtime=self._execution_runtime_status(),
+                        request_queue=request_queue,
                         resident=self._session is not None,
                         eviction_policy='lazy', cleanup_pending=self._cleanup_error is not None)
         try:
@@ -225,6 +284,7 @@ class NativePublisherProvider(BaseProvider):
             return dict(closed=self._closed, active=self._active, busy=self._active,
                         stream_worker_active=self._stream_lock.locked(),
                         execution_runtime=execution_runtime,
+                        request_queue=request_queue,
                         resident=self._session is not None,
                         reusable=not self._closed and self._session_key is not None and
                                  self._cleanup_error is None,
@@ -334,6 +394,7 @@ class NativePublisherProvider(BaseProvider):
             config = self._configuration()
             _, args = self._operator(config)
             root = _path(args.checkpoint).resolve(strict=True)
+            self._require_source_route(config, args, root)
             if not root.is_dir() or not (root/'config.json').is_file():
                 return False
             tokenizer = _path(args.tokenizer or root/'tokenizer.json').resolve(strict=True)
@@ -393,36 +454,61 @@ class NativePublisherProvider(BaseProvider):
             self._lock.release()
 
     @contextmanager
-    def _request_lock(self, cancelled):
-        with self._lifecycle_lock(cancelled):
-            self._evict_expired()
-            self._active = True
-            failed = False
+    def _request_lock(self, cancelled, queue_timeout=None):
+        lease = None
+        previous_queue_wait = getattr(self._request_local, 'queue_wait_seconds', None)
+        previous_queue_position = getattr(self._request_local, 'queue_position', None)
+        try:
             try:
-                yield
-            except BaseException as error:
-                failed = True
+                if queue_timeout == 0:
+                    lease = self._request_admission.try_acquire(1)
+                else:
+                    lease = self._request_admission.acquire(1, cancelled=cancelled,
+                                                             timeout=queue_timeout)
+            except InterruptedError as error:
+                from .execution_service import ExecutionCancelled
+                raise ExecutionCancelled('native request cancelled during admission') from error
+            self._request_local.queue_wait_seconds = lease.queue_wait_seconds
+            self._request_local.queue_position = lease.queue_position
+            with self._lifecycle_lock(cancelled):
+                self._evict_expired()
+                self._active = True
+                failed = False
                 try:
-                    self._release_session()
-                except BaseException as cleanup_error:
-                    if hasattr(error, 'add_note'):
-                        error.add_note('native session cleanup remains pending: '+str(cleanup_error))
-                raise
-            finally:
-                self._active = False
-                if self._session is not None and self._cleanup_error is None:
-                    self._last_used = time.monotonic()
-                if not failed:
-                    # Eviction errors retain ownership for a later explicit retry.
-                    # They do not turn an already completed generation into failure.
+                    yield
+                except BaseException as error:
+                    failed = True
                     try:
-                        self._evict_expired()
-                    except Exception:
-                        pass
+                        self._release_session()
+                    except BaseException as cleanup_error:
+                        if hasattr(error, 'add_note'):
+                            add_failure_note(error, 'native session cleanup remains pending: '+failure_summary(cleanup_error))
+                    raise
+                finally:
+                    self._active = False
+                    if self._session is not None and self._cleanup_error is None:
+                        self._last_used = time.monotonic()
+                    if not failed:
+                        # Eviction errors retain ownership for a later explicit retry.
+                        try:
+                            self._evict_expired()
+                        except Exception:
+                            pass
+        finally:
+            if lease is not None:
+                self._request_admission.release(lease)
+            if previous_queue_wait is None:
+                self._request_local.__dict__.pop('queue_wait_seconds', None)
+                self._request_local.__dict__.pop('queue_position', None)
+            else:
+                self._request_local.queue_wait_seconds = previous_queue_wait
+                self._request_local.queue_position = previous_queue_position
 
-    def complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=()):
+    def complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=(),
+                 cancelled=None, queue_timeout=None):
         return self._run(messages, model=model, max_output_tokens=max_output_tokens,
-                         stop_prefixes=stop_prefixes)
+                         stop_prefixes=stop_prefixes,cancelled=cancelled,
+                         queue_timeout=queue_timeout)
 
     def score_options(self, prompt, options, *, model=None, normalize='mean', cancelled=None):
         return self.score_option_groups([prompt], [options], [normalize],
@@ -437,10 +523,13 @@ class NativePublisherProvider(BaseProvider):
                 any(normalize not in ('mean', 'sum') for normalize in normalizations) or
                 type(option_limit) is not int or option_limit not in (64, 255)):
             raise ProviderConfigurationError('bounded matching Brio prompt and option groups required')
-        if any(type(prompt) is not str or not prompt or len(prompt) > 2 * 1024**2 or
-               len(prompt.encode('utf-8')) > 2 * 1024**2 for prompt in prompts):
+        if any(type(prompt) is not str or not prompt or len(prompt) > 2 * 1024**2
+               for prompt in prompts):
             raise ProviderConfigurationError('bounded nonempty Brio prompts required')
-        if sum(len(prompt.encode('utf-8')) for prompt in prompts) > 8 * 1024**2:
+        prompt_sizes = [self._utf8_size(prompt, label='Brio prompt') for prompt in prompts]
+        if any(size > 2 * 1024**2 for size in prompt_sizes):
+            raise ProviderConfigurationError('individual Brio prompt exceeds the 2 MiB UTF-8 budget')
+        if sum(prompt_sizes) > 8 * 1024**2:
             raise ProviderConfigurationError('Brio prompt groups exceed the 8 MiB budget')
         if cache_slot is not None and (type(cache_slot) is not int or not 0 <= cache_slot < 16):
             raise ProviderConfigurationError('cache_slot must be an integer from 0 through 15')
@@ -452,6 +541,8 @@ class NativePublisherProvider(BaseProvider):
                     any(type(option) is not str or not option.strip() or len(option) > 1024**2
                         for option in options) or len(set(options)) != len(options)):
                 raise ProviderConfigurationError('each Brio group exceeds its option limit or contains invalid choices')
+            if sum(self._utf8_size(option, label='Brio option') for option in options) > 8 * 1024**2:
+                raise ProviderConfigurationError('Brio option group exceeds the 8 MiB UTF-8 budget')
         if cancelled is not None and not callable(cancelled):
             raise ProviderConfigurationError('cancellation callback must be callable')
         if cache_slot is not None:
@@ -502,7 +593,7 @@ class NativePublisherProvider(BaseProvider):
             raise ProviderConfigurationError('Brio state must be text')
         if not state and not question.strip():
             raise ProviderConfigurationError('Brio requires state or a question')
-        if len(state.encode('utf-8')) > 1024**2:
+        if NativePublisherProvider._utf8_size(state, label='Brio state') > 1024**2:
             raise ProviderConfigurationError('Brio state exceeds the 1 MiB input limit')
         content = ('Context:\n' + state + '\n\n') if state else ''
         if question:
@@ -520,7 +611,7 @@ class NativePublisherProvider(BaseProvider):
                 add_generation_prompt=True, **config.get('template_variables', {}))
         except TemplateError as error:
             raise ProviderConfigurationError('native Brio prompt template could not render: '+str(error)) from error
-        if len(prompt.encode('utf-8')) > 2 * 1024**2:
+        if NativePublisherProvider._utf8_size(prompt, label='rendered Brio prompt') > 2 * 1024**2:
             raise ProviderConfigurationError('rendered Brio prompt exceeds 2 MiB')
         return prompt
 
@@ -540,7 +631,7 @@ class NativePublisherProvider(BaseProvider):
                              normalize='mean', cancelled=None, option_limit=64,
                              cache_slot=None, jev_model_alias=False):
         state = self._serialize_jev_text(state, 'state')
-        if (not state or len(state.encode('utf-8')) > 1024**2 or
+        if (not state or self._utf8_size(state, label='Brio state') > 1024**2 or
                 type(questions) is not list or not questions or len(questions) > 64):
             raise ProviderConfigurationError('Brio questions must be a bounded nonempty array')
         if normalize not in ('mean', 'sum'):
@@ -559,7 +650,7 @@ class NativePublisherProvider(BaseProvider):
             if (type(entry) is not dict or set(entry) - {'question', 'options', 'normalize'} or
                     type(entry.get('question')) is not str or not entry['question'].strip()):
                 raise ProviderConfigurationError('each Brio question requires question and options')
-            question_bytes += len(entry['question'].encode('utf-8'))
+            question_bytes += self._utf8_size(entry['question'], label='Brio question')
             if question_bytes > 1024**2:
                 raise ProviderConfigurationError('Brio batch questions exceed the 1 MiB text budget')
             per_normalize = entry.get('normalize', normalize)
@@ -571,7 +662,7 @@ class NativePublisherProvider(BaseProvider):
                     len(set(options)) != len(options)):
                 raise ProviderConfigurationError('each Brio question requires distinct nonempty bounded options')
             rendered = self._render_brio_prompt(config, state, entry['question'])
-            prompt_bytes += len(rendered.encode('utf-8'))
+            prompt_bytes += self._utf8_size(rendered, label='rendered Brio prompt')
             if prompt_bytes > 8 * 1024**2:
                 raise ProviderConfigurationError('Brio rendered prompt groups exceed the 8 MiB budget')
             prompts.append(rendered)
@@ -600,7 +691,7 @@ class NativePublisherProvider(BaseProvider):
     def score_brio_schema(self, state, schema, *, task='', model=None,
                           normalize='mean', cancelled=None, cache_slot=None):
         state = self._serialize_jev_text(state, 'state')
-        if (not state or len(state.encode('utf-8')) > 1024**2 or
+        if (not state or self._utf8_size(state, label='Brio state') > 1024**2 or
                 type(schema) is not dict or not schema or len(schema) > 64):
             raise ProviderConfigurationError('Brio schema must be a nonempty bounded object')
         if type(task) is not str or len(task) > 1024**2:
@@ -633,13 +724,13 @@ class NativePublisherProvider(BaseProvider):
                     any(type(option) is not str or not option.strip() for option in options) or
                     len(set(options)) != len(options)):
                 raise ProviderConfigurationError('each Brio schema field requires 2 to 64 distinct choices')
-            option_bytes += sum(len(option.encode('utf-8')) for option in options)
+            option_bytes += sum(self._utf8_size(option, label='Brio schema option') for option in options)
             if option_bytes > 512 * 1024:
                 raise ProviderConfigurationError('Brio schema choices exceed the 512 KiB aggregate limit')
             rendered = self._render_brio_prompt(
                 config, state, (task+'\n' if task else '')+
                 'Choose a value for '+field+'.\nValues already chosen: ')
-            prompt_bytes += len(rendered.encode('utf-8'))
+            prompt_bytes += self._utf8_size(rendered, label='rendered Brio schema prompt')
             if prompt_bytes > 8 * 1024**2:
                 raise ProviderConfigurationError('Brio schema prompts exceed the 8 MiB aggregate limit')
             prepared.append(rendered)
@@ -700,7 +791,7 @@ class NativePublisherProvider(BaseProvider):
                     context_suffix = json.dumps(answers, ensure_ascii=False,
                         separators=(',', ':'), allow_nan=False)
                     full_prompt = prepared[field_index] + context_suffix
-                    if len(full_prompt.encode('utf-8')) > 2 * 1024**2:
+                    if self._utf8_size(full_prompt, label='Brio schema field prompt') > 2 * 1024**2:
                         raise ProviderConfigurationError('Brio schema field prompt exceeds the 2 MiB limit')
                     full_ids = tuple(tokenizer.encode(full_prompt,
                         add_special_tokens=False).ids)
@@ -789,69 +880,133 @@ class NativePublisherProvider(BaseProvider):
             raise ProviderConfigurationError('bounded unique stop-prefix inventory required')
         return tuple(tuple(prefix) for prefix in value)
 
-    def complete_media(self,messages,media_items,*,model=None,max_output_tokens=None,stop_prefixes=()):
-        items,_=self._validate_decoded_media(media_items,max_output_tokens)
-        items=self._freeze_decoded_media(items)
-        return self._run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens,
-                         stop_prefixes=stop_prefixes)
+    @staticmethod
+    def _utf8_size(value, *, label):
+        try:
+            return len(value.encode('utf-8'))
+        except UnicodeEncodeError as error:
+            raise ProviderConfigurationError(label+' must be valid UTF-8 text') from error
 
-    def stream_complete_media(self,messages,media_items,*,model=None,max_output_tokens=None,stop_prefixes=()):
+    def complete_media(self,messages,media_items,*,model=None,max_output_tokens=None,stop_prefixes=(),cancelled=None):
         items,_=self._validate_decoded_media(media_items,max_output_tokens)
-        items=self._freeze_decoded_media(items)
-        return self._stream_run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens,
-                                stop_prefixes=stop_prefixes)
+        items=self._freeze_decoded_media(items,cancelled=cancelled)
+        return self._run(messages,model=model,media_items=items,max_output_tokens=max_output_tokens,
+                         stop_prefixes=stop_prefixes,cancelled=cancelled)
+
+    def stream_complete_media(self,messages,media_items,*,model=None,max_output_tokens=None,stop_prefixes=(),cancelled=None):
+        # Detach borrowed caller buffers before returning the iterator. Deferring
+        # this copy until first iteration lets a caller mutate/reuse its frames
+        # after stream creation and silently changes the media bound to the
+        # request. Eager staging may cost work for an abandoned stream, but it
+        # preserves stable request ownership; cancellation is checked during
+        # the bounded copy and the generation/worker still receives the same
+        # cancellation predicate.
+        items,_=self._validate_decoded_media(media_items,max_output_tokens)
+        items=self._freeze_decoded_media(items,cancelled=cancelled)
+        return self._stream_run(messages,model=model,media_items=items,
+            max_output_tokens=max_output_tokens,stop_prefixes=stop_prefixes,cancelled=cancelled)
 
     @staticmethod
-    def _freeze_decoded_media(items):
-        """Detach asynchronous worker inputs from caller-owned frame buffers."""
+    def _freeze_decoded_media(items, *, cancelled=None):
+        """Detach asynchronous worker inputs, checking cancellation between copy chunks."""
         import numpy as np
         from .k3_execution.video_input import K3VideoInput
         from .publisher_media_inputs import PublisherVideoInput
+        if cancelled is not None and not callable(cancelled):
+            raise ProviderConfigurationError('media-freeze cancellation must be callable')
+        def boundary():
+            if cancelled is not None and cancelled():
+                from .execution_service import ExecutionCancelled
+                raise ExecutionCancelled('decoded media staging cancelled')
         def frame_copy(frame):
+            boundary()
             if isinstance(frame,np.ndarray):
                 source = frame[..., :3] if frame.ndim == 3 and frame.shape[2] == 4 else frame
-                copied = np.frombuffer(source.tobytes(order='C'),dtype=np.uint8).reshape(source.shape)
+                if source.dtype != np.uint8 or source.ndim != 3 or source.shape[2] != 3:
+                    raise ProviderConfigurationError('decoded media frame changed after admission')
+                copied=np.empty(source.shape,dtype=np.uint8,order='C')
+                # Keep large frame staging cancellable instead of hiding one
+                # full-frame bytes conversion between request cancellation
+                # checkpoints.  Row slices preserve the same contiguous RGB
+                # bytes and stable detached ownership.
+                rows=max(1,min(source.shape[0],(1024**2)//max(1,source.shape[1]*3)))
+                for start in range(0,source.shape[0],rows):
+                    boundary()
+                    end=min(source.shape[0],start+rows)
+                    copied[start:end]=source[start:end]
+                boundary()
                 copied.flags.writeable = False
                 return copied
-            copied = np.asarray(frame.convert('RGB'), dtype=np.uint8, order='C').copy()
+            converted = frame.convert('RGB')
+            try:
+                boundary()
+                copied = np.asarray(converted, dtype=np.uint8, order='C').copy()
+                boundary()
+            except BaseException as primary:
+                close = getattr(converted, 'close', None)
+                if callable(close):
+                    try:
+                        close()
+                    except BaseException as cleanup:
+                        add_failure_note(primary, 'temporary publisher RGB conversion cleanup failed: '+failure_summary(cleanup))
+                raise
+            close = getattr(converted, 'close', None)
+            if callable(close):
+                close()
             copied.flags.writeable = False
             return copied
         result=[]
         for item in items:
+            boundary()
             if type(item) is K3VideoInput:
-                result.append(K3VideoInput(tuple(frame_copy(frame) for frame in item.frames),
+                # frame_copy returns immutable detached RGB arrays. Adopt
+                # them directly rather than passing through the public
+                # borrowed-input constructor, which would perform a second
+                # uninterruptible full-frame copy.
+                result.append(K3VideoInput._from_owned_frames(
+                    tuple(frame_copy(frame) for frame in item.frames),
                     item.timestamps,item.selection_identity))
             elif type(item) is PublisherVideoInput:
-                result.append(PublisherVideoInput(tuple(frame_copy(frame) for frame in item.frames),
+                # frame_copy already creates immutable, private RGB arrays
+                # with cancellation checks per chunk. Re-entering the public
+                # constructor here would duplicate each full frame in one
+                # uncancellable copy, so transfer those private arrays through
+                # its invariant-checking adoption path instead.
+                result.append(PublisherVideoInput._from_owned_frames(
+                    tuple(frame_copy(frame) for frame in item.frames),
                     item.frames_indices,item.total_num_frames,item.fps))
             else:result.append(frame_copy(item))
+        boundary()
         return tuple(result)
 
     def complete_checkpointed(self,messages,*,checkpoint_sink,checkpoint_max_bytes,
-                              model=None,max_output_tokens=None,media_items=None,stop_prefixes=()):
+                              model=None,max_output_tokens=None,media_items=None,stop_prefixes=(),cancelled=None):
         """Generate locally while a caller-owned store publishes recovery frames."""
         if not callable(checkpoint_sink) or type(checkpoint_max_bytes) is not int or checkpoint_max_bytes<=0:
             raise ProviderConfigurationError('checkpoint sink and positive complete frame budget required')
         if media_items is not None:
             self._validate_decoded_media(media_items,max_output_tokens)
-            media_items=self._freeze_decoded_media(media_items)
+            media_items=self._freeze_decoded_media(media_items,cancelled=cancelled)
         return self._run(messages,model=model,max_output_tokens=max_output_tokens,media_items=media_items,
-            stop_prefixes=stop_prefixes,
+            stop_prefixes=stop_prefixes,cancelled=cancelled,
             checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
 
     def stream_complete_checkpointed(self,messages,*,checkpoint_sink,checkpoint_max_bytes,
-                                     model=None,max_output_tokens=None,media_items=None,stop_prefixes=()):
+                                     model=None,max_output_tokens=None,media_items=None,stop_prefixes=(),cancelled=None):
         if not callable(checkpoint_sink) or type(checkpoint_max_bytes) is not int or checkpoint_max_bytes<=0:
             raise ProviderConfigurationError('checkpoint sink and positive complete frame budget required')
         if media_items is not None:
             self._validate_decoded_media(media_items,max_output_tokens)
-            media_items=self._freeze_decoded_media(media_items)
-        yield from self._stream_run(messages,model=model,max_output_tokens=max_output_tokens,
-            media_items=media_items,stop_prefixes=stop_prefixes,
+            media_items=self._freeze_decoded_media(media_items,cancelled=cancelled)
+        # Keep stream construction a normal function (not a generator body) so
+        # decoded media is detached before control returns to the caller. This
+        # prevents mutation/reuse between iterator creation and its first pull.
+        return self._stream_run(messages,model=model,max_output_tokens=max_output_tokens,
+            media_items=media_items,stop_prefixes=stop_prefixes,cancelled=cancelled,
             checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
 
     def complete_checkpoint_file(self,messages,destination,*,checkpoint_max_bytes,
-                                 model=None,max_output_tokens=None,media_items=None,stop_prefixes=()):
+                                 model=None,max_output_tokens=None,media_items=None,stop_prefixes=(),cancelled=None):
         """Publish complete recovery frames to one caller-selected local file."""
         from .generation_checkpoint_files import AtomicGenerationCheckpoint
         store=AtomicGenerationCheckpoint(destination,max_bytes=checkpoint_max_bytes)
@@ -859,7 +1014,7 @@ class NativePublisherProvider(BaseProvider):
             result=self.complete_checkpointed(messages,checkpoint_sink=store,
                 checkpoint_max_bytes=checkpoint_max_bytes,model=model,
                 max_output_tokens=max_output_tokens,media_items=media_items,
-                stop_prefixes=stop_prefixes)
+                stop_prefixes=stop_prefixes,cancelled=cancelled)
             metadata=dict(result.metadata,checkpoint_receipt=store.receipt)
             return ModelResult(result.provider,result.model,result.content,metadata)
         finally:store.close()
@@ -890,15 +1045,16 @@ class NativePublisherProvider(BaseProvider):
             finally:reader.close()
 
     def stream_resume_checkpoint(self,source,*,checkpoint_max_bytes,max_output_tokens,
-                                 model=None,checkpoint_sink=None,stop_prefixes=()):
+                                 model=None,checkpoint_sink=None,stop_prefixes=(),cancelled=None):
         """Stream recovered tokens using the same cancellation and bounded queue."""
         yield from self._stream_run(None,model=model,max_output_tokens=max_output_tokens,
             recovery_source=source,checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes,
-            stop_prefixes=stop_prefixes)
+            stop_prefixes=stop_prefixes,cancelled=cancelled)
 
     def resume_checkpoint(self,source,*,checkpoint_max_bytes,max_output_tokens,model=None,
                           checkpoint_sink=None,emit=None,cancelled=None,stop_prefixes=()):
         """Restore a complete supported decoder and sampler boundary under gateway ownership."""
+        from .execution_service import ExecutionCancelled
         if (type(checkpoint_max_bytes) is not int or checkpoint_max_bytes<=0
                 or type(max_output_tokens) is not int or not 1<=max_output_tokens<=100000
                 or (checkpoint_sink is not None and not callable(checkpoint_sink))):
@@ -921,6 +1077,8 @@ class NativePublisherProvider(BaseProvider):
                 self._release_session()
                 started=time.monotonic()
                 try:self._session=self._construct_session(operator,args,cancelled)
+                except ExecutionCancelled:
+                    raise
                 except (ValueError,OSError,MemoryError,RuntimeError,ImportError) as error:
                     raise ProviderUnavailableError('recovery session could not load: '+str(error)) from error
                 self._session_key=key;self._loaded_at=started;self._last_used=time.monotonic()
@@ -963,7 +1121,8 @@ class NativePublisherProvider(BaseProvider):
                         delta = ''
                     stopped=True;stop_match=matched
                 if delta:emit(StreamChunk(self.id,config['model'],delta,False,
-                    dict(network=False,offline=True,recovered=True,token_ids=list(row['token_ids']))))
+                    dict(network=False,offline=True,recovered=True,committed=False,
+                         token_ids=list(row['token_ids']))))
                 emitted=text
             try:
                 if config['family']=='kimi_k3':
@@ -984,18 +1143,21 @@ class NativePublisherProvider(BaseProvider):
                         content=content[:-len(decoded_stop)]
                 if emit is not None and len(content)>len(emitted):
                     emit(StreamChunk(self.id,config['model'],content[len(emitted):],False,
-                        dict(network=False,offline=True,recovered=True)))
+                        dict(network=False,offline=True,recovered=True,committed=True)))
                 return ModelResult(self.id,config['model'],content[len(prior):],
                     dict(network=False,offline=True,recovered=True,family=config['family'],runtime=output,
                         resident_session_reused=reused,numerical_parity_verified=False,platform_certified=False))
+            except ExecutionCancelled:
+                raise
             except (ValueError,OSError,MemoryError,RuntimeError,ArithmeticError) as error:
                 try:self._release_session()
-                except Exception as cleanup:error.add_note('recovery session release failed: '+repr(cleanup))
+                except Exception as cleanup:add_failure_note(error, 'recovery session release failed: '+failure_summary(cleanup))
                 raise ProviderUnavailableError('native recovery failed: '+str(error)) from error
 
     def _run(self, messages, *, model=None, emit=None, cancelled=None, image=None,
              max_output_tokens=None,media_items=None,stop_prefixes=(),
-             checkpoint_sink=None,checkpoint_max_bytes=None):
+             checkpoint_sink=None,checkpoint_max_bytes=None,queue_timeout=None):
+        from .execution_service import ExecutionCancelled
         if image is not None and media_items is not None:
             raise ProviderConfigurationError('one encoded image or decoded media sequence required')
         if media_items is not None:
@@ -1020,9 +1182,14 @@ class NativePublisherProvider(BaseProvider):
                     ('system', 'user', 'assistant', 'tool') or type(item.get('content')) is not str
                     for item in messages)):
             raise ProviderConfigurationError('validated textual chat messages required')
-        if sum(len(item['content'].encode('utf-8')) for item in messages) > 1024**2:
+        message_bytes = sum(self._utf8_size(item['content'], label='native chat message')
+                            for item in messages)
+        if message_bytes > 1024**2:
             raise ProviderConfigurationError('native chat input exceeds 1 MiB')
-        with self._request_lock(cancelled):
+        if queue_timeout is not None and (type(queue_timeout) not in (int, float) or
+                not math.isfinite(queue_timeout) or queue_timeout < 0 or queue_timeout > 300):
+            raise ProviderConfigurationError('queue timeout must be between 0 and 300 seconds')
+        with self._request_lock(cancelled, queue_timeout=queue_timeout):
             if self._closed:
                 raise ProviderUnavailableError('native provider is closed')
             config = self._configuration()
@@ -1065,8 +1232,9 @@ class NativePublisherProvider(BaseProvider):
                     aggregate=getattr(args,'media_mib',None)
                     if aggregate is not None and media_bytes>aggregate*1024**2:
                         raise ProviderConfigurationError('decoded media exceeds configured aggregate budget')
+                video_placeholder=config.get('video_placeholder')
                 if any(placeholder in item['content'] or
-                       (videos and config['video_placeholder'] in item['content'])
+                       (video_placeholder is not None and video_placeholder in item['content'])
                        for item in rendered_messages):
                     raise ProviderConfigurationError('vision placeholder must be inserted by the gateway')
                 index = next((i for i in range(len(rendered_messages)-1, -1, -1)
@@ -1088,7 +1256,7 @@ class NativePublisherProvider(BaseProvider):
                     add_generation_prompt=True, **config.get('template_variables', {}))
             except TemplateError as error:
                 raise ProviderConfigurationError('native chat template could not render: '+str(error)) from error
-            if len(prompt.encode('utf-8')) > 2*1024**2:
+            if self._utf8_size(prompt, label='rendered native prompt') > 2*1024**2:
                 raise ProviderConfigurationError('rendered native prompt exceeds 2 MiB')
             key = self._residency_key(config, args)
             reused = self._session is not None and self._session_key == key
@@ -1097,6 +1265,8 @@ class NativePublisherProvider(BaseProvider):
                 loading_started = time.monotonic()
                 try:
                     self._session = self._construct_session(operator,args,cancelled)
+                except ExecutionCancelled:
+                    raise
                 except (ValueError, OSError, MemoryError, RuntimeError, ImportError) as error:
                     raise ProviderUnavailableError('native session could not load: '+str(error)) from error
                 self._session_key = key
@@ -1137,7 +1307,10 @@ class NativePublisherProvider(BaseProvider):
                 delta = text[len(emitted):]
                 if delta:
                     emit(StreamChunk(self.id, config['model'], delta, False,
-                        dict(network=False, offline=True, token_ids=list(event['token_ids']))))
+                        dict(network=False, offline=True, committed=False,
+                             token_ids=list(event['token_ids']), prompt_tokens=len(prompt_ids),
+                             queue_wait_ms=round(getattr(self._request_local,
+                                 'queue_wait_seconds', 0.0)*1000))))
                     emitted = text
             try:
                 if media_items is None and checkpoint_sink is None:
@@ -1151,6 +1324,8 @@ class NativePublisherProvider(BaseProvider):
                     output=self._session.generate(_request_args=args,media_items=media_items,
                         emit=on_event if emit is not None else None,cancelled=cancelled,
                         checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
+            except ExecutionCancelled:
+                raise
             except (ValueError, OSError, MemoryError, RuntimeError, ArithmeticError) as error:
                 try:
                     self._release_session()
@@ -1168,7 +1343,10 @@ class NativePublisherProvider(BaseProvider):
                     raise ProviderUnavailableError('final output differs from streamed tokenizer text')
                 if len(content) > len(emitted):
                     emit(StreamChunk(self.id, config['model'], content[len(emitted):], False,
-                        dict(network=False, offline=True)))
+                        dict(network=False, offline=True, committed=True,
+                             prompt_tokens=len(prompt_ids),
+                             queue_wait_ms=round(getattr(self._request_local,
+                                 'queue_wait_seconds', 0.0)*1000))))
             return ModelResult(self.id, config['model'], content,
                 dict(network=False, offline=True, family=config['family'],
                      engine='openagent-native-publisher',
@@ -1179,16 +1357,23 @@ class NativePublisherProvider(BaseProvider):
                      residency_idle_timeout_seconds=self._idle_seconds,
                      residency_max_seconds=self._lifetime_seconds,
                      residency_eviction_policy='lazy-between-requests-or-status',
-                     resident_session_reused=reused))
+                     resident_session_reused=reused,
+                     queue_wait_ms=round(getattr(self._request_local, 'queue_wait_seconds', 0.0)*1000),
+                     queue_position=getattr(self._request_local, 'queue_position', 0)))
 
-    def stream_complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=()):
+    def stream_complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=(),
+                        cancelled=None, queue_timeout=None):
         return self._stream_run(messages, model=model, max_output_tokens=max_output_tokens,
-                                stop_prefixes=stop_prefixes)
+                                stop_prefixes=stop_prefixes, cancelled=cancelled,
+                                queue_timeout=queue_timeout)
 
     def _stream_run(self, messages, *, model=None, image=None, max_output_tokens=None,media_items=None,
                     stop_prefixes=(),
-                    checkpoint_sink=None,checkpoint_max_bytes=None,recovery_source=None):
+                    checkpoint_sink=None,checkpoint_max_bytes=None,recovery_source=None,
+                    cancelled=None, queue_timeout=None):
         from .execution_service import ExecutionCancelled
+        if cancelled is not None and not callable(cancelled):
+            raise ProviderConfigurationError('stream cancellation must be callable')
         if (max_output_tokens is not None and
                 (type(max_output_tokens) is not int or max_output_tokens <= 0)):
             raise ProviderConfigurationError('positive integer output limit required')
@@ -1199,11 +1384,21 @@ class NativePublisherProvider(BaseProvider):
                         ('system','user','assistant','tool') or type(item.get('content')) is not str
                         for item in messages)):
                 raise ProviderConfigurationError('validated textual chat messages required')
-            if sum(len(item['content'].encode('utf-8')) for item in messages)>1024**2:
+            message_bytes = sum(self._utf8_size(item['content'], label='native chat message')
+                                for item in messages)
+            if message_bytes>1024**2:
                 raise ProviderConfigurationError('native chat input exceeds 1 MiB')
             messages=[{'role':item['role'],'content':item['content']} for item in messages]
         queue = Queue(maxsize=8)
         stopped = threading.Event()
+        def request_cancelled():
+            if cancelled is None:return False
+            # User callbacks belong to the iterator consumer thread. The
+            # worker observes only the event set by that consumer, avoiding
+            # cross-thread callback reentry and thread-affinity surprises.
+            return bool(cancelled())
+        def is_cancelled():
+            return stopped.is_set()
         def put(item):
             while not stopped.is_set():
                 try:
@@ -1211,19 +1406,24 @@ class NativePublisherProvider(BaseProvider):
                     return
                 except Full:
                     pass
-            raise ExecutionCancelled('native stream consumer closed')
+            raise ExecutionCancelled('native stream consumer closed or request cancelled')
         def worker():
             try:
                 if recovery_source is not None:
-                    result=self.resume_checkpoint(recovery_source,model=model,emit=put,cancelled=stopped.is_set,
+                    result=self.resume_checkpoint(recovery_source,model=model,emit=put,cancelled=is_cancelled,
                         checkpoint_max_bytes=checkpoint_max_bytes,max_output_tokens=max_output_tokens,
                         checkpoint_sink=checkpoint_sink,stop_prefixes=stop_prefixes)
                 else:
-                    result = self._run(messages, model=model, emit=put, cancelled=stopped.is_set,
+                    result = self._run(messages, model=model, emit=put, cancelled=is_cancelled,
                         image=image, max_output_tokens=max_output_tokens,media_items=media_items,
                         stop_prefixes=stop_prefixes,
-                        checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes)
-                put(StreamChunk(result.provider, result.model, '', True, result.metadata))
+                        checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes,
+                        queue_timeout=queue_timeout)
+                # This terminal event is delivered only after the request
+                # transaction returns successfully, unlike provisional token
+                # deltas sent from the callback during generation.
+                put(StreamChunk(result.provider, result.model, '', True,
+                    {**result.metadata, 'committed': True}))
             except BaseException as error:
                 if not stopped.is_set():
                     try:
@@ -1260,9 +1460,18 @@ class NativePublisherProvider(BaseProvider):
                 try:
                     item = queue.get(timeout=0.1)
                 except Empty:
+                    if request_cancelled():
+                        stopped.set()
+                        raise ExecutionCancelled('native stream request cancelled')
                     if not thread.is_alive():
                         raise ProviderUnavailableError('native stream ended without a completion event')
                     continue
+                # Cancellation can arrive while events are already buffered;
+                # checking only on Queue.Empty would still publish those stale
+                # token events after the caller had stopped the request.
+                if request_cancelled():
+                    stopped.set()
+                    raise ExecutionCancelled('native stream request cancelled before event dispatch')
                 if isinstance(item, BaseException):
                     raise item
                 yield item

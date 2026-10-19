@@ -144,37 +144,46 @@ def restore_mixtral_cache(model, source, *, max_bytes):
                      + model._scratch_bytes + _CHUNK * 3)
         digest = hashlib.sha256(prefix + encoded)
         arrays = []
-        for _ in range(count):
-            array = np.zeros(full_shape, dtype=np.float32)
-            # Per-batch active prefixes are contiguous; unused slots stay zero.
-            for row in range(batch):
-                target = array[row, :position].reshape(-1)
-                for start in range(0, target.size, _CHUNK // 4):
-                    size = min(_CHUNK // 4, target.size - start)
-                    data = _read(source, size * 4)
+        mask=array=target=values=data=cache=None
+        committed=False
+        try:
+            for _ in range(count):
+                array = np.zeros(full_shape, dtype=np.float32)
+                # Per-batch active prefixes are contiguous; unused slots stay zero.
+                for row in range(batch):
+                    target = array[row, :position].reshape(-1)
+                    for start in range(0, target.size, _CHUNK // 4):
+                        size = min(_CHUNK // 4, target.size - start)
+                        data = _read(source, size * 4)
+                        digest.update(data)
+                        values = np.frombuffer(data, dtype='<f4')
+                        if not np.isfinite(values).all():
+                            raise ValueError('nonfinite Mixtral checkpoint cache')
+                        target[start:start + size] = values
+                arrays.append(array)
+                array=target=values=data=None
+            mask = None if not batch else np.empty((batch, position), dtype=np.uint8)
+            if mask is not None:
+                target = mask.reshape(-1)
+                for start in range(0, target.size, _CHUNK):
+                    size = min(_CHUNK, target.size - start)
+                    data = _read(source, size)
                     digest.update(data)
-                    values = np.frombuffer(data, dtype='<f4')
-                    if not np.isfinite(values).all():
-                        raise ValueError('nonfinite Mixtral checkpoint cache')
+                    values = np.frombuffer(data, dtype=np.uint8)
+                    if np.any(values > 1):
+                        raise ValueError('invalid Mixtral checkpoint padding mask')
                     target[start:start + size] = values
-            arrays.append(array)
-        mask = None if not batch else np.empty((batch, position), dtype=np.uint8)
-        if mask is not None:
-            target = mask.reshape(-1)
-            for start in range(0, target.size, _CHUNK):
-                size = min(_CHUNK, target.size - start)
-                data = _read(source, size)
-                digest.update(data)
-                values = np.frombuffer(data, dtype=np.uint8)
-                if np.any(values > 1):
-                    raise ValueError('invalid Mixtral checkpoint padding mask')
-                target[start:start + size] = values
-        if not hmac.compare_digest(bytes(_read(source, 32)), digest.digest()):
-            raise ValueError('Mixtral checkpoint checksum mismatch')
-        if source.read(1) != b'':
-            raise ValueError('trailing Mixtral checkpoint bytes')
-        if mask is not None and not np.all(mask) and model._run_inputs is None:
-            raise ValueError('loaded Mixtral native ABI cannot continue masked state')
-        cache = None if not batch else [tuple(arrays[i:i + 2]) for i in range(0, count, 2)]
-        model._cache, model._position, model._mask = cache, position, mask
-        return position
+            if not hmac.compare_digest(bytes(_read(source, 32)), digest.digest()):
+                raise ValueError('Mixtral checkpoint checksum mismatch')
+            if source.read(1) != b'':
+                raise ValueError('trailing Mixtral checkpoint bytes')
+            if mask is not None and not np.all(mask) and model._run_inputs is None:
+                raise ValueError('loaded Mixtral native ABI cannot continue masked state')
+            cache = None if not batch else [tuple(arrays[i:i + 2]) for i in range(0, count, 2)]
+            model._cache, model._position, model._mask = cache, position, mask
+            committed=True
+            return position
+        finally:
+            if not committed:
+                arrays.clear();mask=None;cache=None
+            array=target=values=data=None

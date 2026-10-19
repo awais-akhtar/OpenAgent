@@ -44,6 +44,28 @@ class MigrationTests(unittest.TestCase):
                     upgraded.execute("SELECT name FROM sqlite_master WHERE name='events'").fetchone()
                 )
 
+    def test_legacy_agent_runs_remain_unowned_after_owner_binding_migration(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = f"{tmp}/openagent.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.row_factory = sqlite3.Row
+            MigrationRunner(connection, MIGRATIONS[:23]).run()
+            connection.execute(
+                "INSERT INTO agent_runs(agent, goal, response_json, project, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("legacy", "legacy goal", '{"response":"legacy result"}', "legacy-project", "2020-01-01T00:00:00+00:00"),
+            )
+            connection.commit()
+            connection.close()
+
+            store = OpenAgentStore(path)
+            with store.session() as upgraded:
+                row = upgraded.execute("SELECT owner FROM agent_runs WHERE project = 'legacy-project'").fetchone()
+                project = upgraded.execute(
+                    "SELECT owner FROM agent_run_projects WHERE project = 'legacy-project'"
+                ).fetchone()
+            self.assertEqual(row["owner"], "")
+            self.assertIsNone(project)
+
     def test_checksum_drift_is_rejected(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

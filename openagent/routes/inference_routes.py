@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from datetime import datetime, timezone
 from http import HTTPStatus
 import math
+import sys
 from time import time
 from typing import Any
 
+from ..adaptive_engine.execution_service import ExecutionCancelled
+from ..adaptive_engine.admission_scheduler import AdmissionRejected, AdmissionTimedOut
 from ..model_gateway import ModelGateway, ProviderConfigurationError, ProviderUnavailableError
 from ..models import AuditEvent
 from ..storage import OpenAgentStore
-from . import JsonRouteResult
+from . import JsonRouteResult, ServerSentEvent, StreamRouteResult
 from ._contracts import route_contract
 
 
@@ -44,6 +48,8 @@ class InferenceRouteDependencies:
     gateway: ModelGateway
     store: OpenAgentStore
     read_json: Any
+    cancelled: Any = None
+    anthropic_version: str | None = None
 
 
 def handle_get(path: str, query: str, deps: InferenceRouteDependencies) -> JsonRouteResult | None:
@@ -63,6 +69,7 @@ def handle_get(path: str, query: str, deps: InferenceRouteDependencies) -> JsonR
         runtime = state.get("execution_runtime")
         scheduler = runtime.get("scheduler") if type(runtime) is dict else None
         queueing = type(scheduler) is dict
+        request_queue = state.get("request_queue")
         return JsonRouteResult({"status": "ok", "scheduler": {
             "active": scheduler.get("active") if queueing else int(bool(state.get("active"))),
             "queued": scheduler.get("waiting") if queueing else None,
@@ -72,7 +79,8 @@ def handle_get(path: str, query: str, deps: InferenceRouteDependencies) -> JsonR
             "max_bytes": scheduler.get("max_bytes") if queueing else None,
             "queueing": queueing,
             "queue_metrics_available": queueing,
-            "native_provider_configured": native is not None}}, HTTPStatus.OK)
+            "native_provider_configured": native is not None},
+            "request_queue": request_queue if type(request_queue) is dict else None}, HTTPStatus.OK)
     if path == "/v1/models" or path.startswith("/v1/models/"):
         provider = deps.gateway.providers.get("native-publisher")
         if provider is None:
@@ -101,7 +109,7 @@ def handle_get(path: str, query: str, deps: InferenceRouteDependencies) -> JsonR
     return None
 
 
-def handle_post(path: str, deps: InferenceRouteDependencies) -> JsonRouteResult | None:
+def handle_post(path: str, deps: InferenceRouteDependencies) -> JsonRouteResult | StreamRouteResult | None:
     if path not in {
         "/v1/brio",
         "/v1/systemone",
@@ -190,7 +198,11 @@ def handle_post(path: str, deps: InferenceRouteDependencies) -> JsonRouteResult 
                 metadata.append((name, details))
             batch = deps.gateway.score_brio_questions(state, entries,
                 model=payload.get("model"), normalize="mean", option_limit=255,
-                jev_model_alias=True)
+                jev_model_alias=True,cancelled=deps.cancelled)
+            if deps.cancelled is not None and deps.cancelled():
+                raise ExecutionCancelled("Jev request cancelled before response publication")
+        except ExecutionCancelled as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.REQUEST_TIMEOUT)
         except (ValueError, TypeError, ProviderConfigurationError) as exc:
             return JsonRouteResult({"error": str(exc)}, HTTPStatus.UNPROCESSABLE_ENTITY)
         except ProviderUnavailableError as exc:
@@ -240,20 +252,36 @@ def handle_post(path: str, deps: InferenceRouteDependencies) -> JsonRouteResult 
                     not 0 <= payload["cache_slot"] < 16)) or
                 payload.get("normalize", "mean") not in ("mean", "sum")):
             return JsonRouteResult({"error": "invalid Brio request fields"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+        # Do not let a syntactically valid cache_slot look like a supported
+        # session-history feature. This route currently scores each request
+        # independently; the provider has no persistent, isolated KV snapshot
+        # owner for cross-request Brio history.
+        if "cache_slot" in payload:
+            from ..adaptive_engine.colibri_capabilities import require_colibri_capability
+            try:
+                require_colibri_capability("brio_cache_slot", operation="Brio cache_slot")
+            except ValueError as exc:
+                return JsonRouteResult({"error": str(exc)}, HTTPStatus.UNPROCESSABLE_ENTITY)
         try:
             state = payload["state"] if "state" in payload else _brio_messages_to_state(payload["messages"])
             if forms[0] == "options":
                 result = deps.gateway.score_brio(state, payload["options"],
                     question=payload.get("question", ""), model=payload.get("model"),
-                    normalize=payload.get("normalize", "mean"), cache_slot=payload.get("cache_slot"))
+                    normalize=payload.get("normalize", "mean"), cache_slot=payload.get("cache_slot"),
+                    cancelled=deps.cancelled)
             elif forms[0] == "questions":
                 result = deps.gateway.score_brio_questions(state, payload["questions"],
                     model=payload.get("model"), normalize=payload.get("normalize", "mean"),
-                    cache_slot=payload.get("cache_slot"))
+                    cache_slot=payload.get("cache_slot"),cancelled=deps.cancelled)
             else:
                 result = deps.gateway.score_brio_schema(state, payload["schema"],
                     task=payload.get("task", ""), model=payload.get("model"),
-                    normalize=payload.get("normalize", "mean"), cache_slot=payload.get("cache_slot"))
+                    normalize=payload.get("normalize", "mean"), cache_slot=payload.get("cache_slot"),
+                    cancelled=deps.cancelled)
+            if deps.cancelled is not None and deps.cancelled():
+                raise ExecutionCancelled("Brio request cancelled before response publication")
+        except ExecutionCancelled as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.REQUEST_TIMEOUT)
         except (ValueError, ProviderConfigurationError, TypeError) as exc:
             return JsonRouteResult({"error": str(exc)}, HTTPStatus.UNPROCESSABLE_ENTITY)
         except ProviderUnavailableError as exc:
@@ -316,18 +344,21 @@ def _as_int(value: object, default: int) -> int:
 
 
 def _handle_compat_completion(path: str, payload: object,
-                              deps: InferenceRouteDependencies) -> JsonRouteResult:
+                              deps: InferenceRouteDependencies) -> JsonRouteResult | StreamRouteResult:
     """Serve a deliberately local-only OpenAI/Anthropic text compatibility subset."""
+    from ..adaptive_engine.colibri_capabilities import require_colibri_capability
     if type(payload) is not dict:
         return JsonRouteResult({"error": {"message": "request must be an object",
             "type": "invalid_request_error"}}, HTTPStatus.BAD_REQUEST)
     anthropic = path == "/v1/messages"
     allowed = ({"model", "messages", "max_tokens", "temperature", "top_p", "stop_sequences",
-                "stream", "system", "tools", "tool_choice", "metadata", "thinking", "stream_options"} if anthropic else
+                "stream", "system", "tools", "tool_choice", "metadata", "thinking",
+                "queue", "queue_timeout", "wait_timeout", "wait_for_slot", "priority"} if anthropic else
                {"model", "messages", "prompt", "max_tokens", "max_completion_tokens", "temperature",
                 "top_p", "stop", "stream", "n", "presence_penalty", "frequency_penalty",
                 "seed", "user", "response_format", "stream_options", "tools", "tool_choice", "logprobs",
-                "top_logprobs", "echo", "best_of", "suffix"})
+                "top_logprobs", "echo", "best_of", "suffix", "queue", "queue_timeout",
+                "wait_timeout", "wait_for_slot", "priority"})
     def error(message, status=HTTPStatus.BAD_REQUEST, kind="invalid_request_error"):
         if anthropic:
             anthropic_kind = {
@@ -338,17 +369,57 @@ def _handle_compat_completion(path: str, payload: object,
             return JsonRouteResult({"type": "error", "error": {
                 "type": anthropic_kind, "message": message}}, status)
         return JsonRouteResult({"error": {"message": message, "type": kind}}, status)
+    def utf8_size(value: str) -> int | None:
+        # JSON can carry escaped lone surrogates even though they are not
+        # valid UTF-8 text. Treat these as request validation failures rather
+        # than allowing encode() to escape the compatibility handler as a 500.
+        try:
+            return len(value.encode("utf-8"))
+        except UnicodeEncodeError:
+            return None
     if set(payload) - allowed:
         return error("unsupported request fields: " + ", ".join(sorted(set(payload)-allowed)))
-    if payload.get("stream", False) is not False:
-        return error("streaming is not supported by this compatibility route", kind="unsupported_feature")
-    if payload.get("stream_options") not in (None, {}) and not (
-            not anthropic and type(payload.get("stream_options")) is dict and
-            set(payload["stream_options"]) == {"include_usage"} and
-            type(payload["stream_options"]["include_usage"]) is bool):
-        return error("unsupported stream_options fields")
+    unsupported_queue_controls = {"priority", "wait_timeout", "wait_for_slot"}.intersection(payload)
+    if unsupported_queue_controls:
+        return error("unsupported queue controls: " + ", ".join(sorted(unsupported_queue_controls)),
+                     kind="unsupported_feature")
+    queue_requested = payload.get("queue", False)
+    if type(queue_requested) is not bool:
+        return error("queue must be boolean")
+    queue_timeout = payload.get("queue_timeout")
+    if queue_timeout is not None and (type(queue_timeout) not in (int, float) or
+            not math.isfinite(queue_timeout) or not 0 < queue_timeout <= 300):
+        return error("queue_timeout must be between 0 and 300 seconds")
+    if queue_timeout is not None and not queue_requested:
+        return error("queue_timeout requires queue=true")
+    # Without opt-in, compatibility calls are admitted immediately and fail
+    # with 429 under contention. Opt-in calls enter the bounded FIFO queue.
+    admission_timeout = (queue_timeout if queue_timeout is not None else 30.0) if queue_requested else 0
+    stream = payload.get("stream", False)
+    if type(stream) is not bool:
+        return error("stream must be boolean")
+    stream_options = payload.get("stream_options")
+    if anthropic and stream_options not in (None, {}):
+        return error("stream_options are not supported by the Anthropic compatibility route",
+                     kind="unsupported_feature")
+    include_usage = False
+    if not anthropic and stream_options not in (None, {}):
+        if (path != "/v1/chat/completions" or not stream or type(stream_options) is not dict or
+                set(stream_options) - {"include_usage"} or
+                ("include_usage" in stream_options and type(stream_options["include_usage"]) is not bool)):
+            return error("stream_options require streaming and support only boolean include_usage",
+                         kind="unsupported_feature")
+        include_usage = stream_options.get("include_usage", False)
     if anthropic:
-        if payload.get("tools") or payload.get("tool_choice") or payload.get("thinking"):
+        tools_value = payload.get("tools")
+        if tools_value is not None and type(tools_value) is not list:
+            return error("tools must be an array")
+        if ((tools_value is not None and tools_value) or
+                payload.get("tool_choice") is not None or payload.get("thinking") is not None):
+            try:
+                require_colibri_capability("family_tool_protocols", operation="tool protocol")
+            except ValueError as exc:
+                return error(str(exc), kind="unsupported_feature")
             return error("tool calls and thinking blocks are not admitted on the Anthropic compatibility route",
                          kind="unsupported_feature")
         if "temperature" in payload or "top_p" in payload:
@@ -359,12 +430,31 @@ def _handle_compat_completion(path: str, payload: object,
         max_tokens = payload.get("max_tokens")
         raw_messages = payload.get("messages")
     else:
-        if payload.get("tools") or payload.get("tool_choice"):
+        tools_value = payload.get("tools")
+        if tools_value is not None and type(tools_value) is not list:
+            return error("tools must be an array")
+        if ((tools_value is not None and tools_value) or payload.get("tool_choice") is not None):
+            try:
+                require_colibri_capability("family_tool_protocols", operation="tool protocol")
+            except ValueError as exc:
+                return error(str(exc), kind="unsupported_feature")
             return error("tool calls are not admitted on the compatibility route", kind="unsupported_feature")
+        # The OpenAI `user` identifier is intended for request attribution and
+        # abuse monitoring. This local adapter has no durable caller identity
+        # or attribution sink, so accepting it would silently promise a
+        # behavior that is not implemented.
+        if "user" in payload:
+            return error("user attribution is not supported by this compatibility route",
+                         kind="unsupported_feature")
         if payload.get("response_format") is not None:
             response_format = payload["response_format"]
             if (type(response_format) is not dict or response_format.get("type") != "text" or
                     set(response_format) != {"type"}):
+                try:
+                    require_colibri_capability("gbnf_constrained_generation",
+                                               operation="constrained generation")
+                except ValueError as exc:
+                    return error(str(exc), kind="unsupported_feature")
                 return error("only response_format type=text is supported", kind="unsupported_feature")
         if payload.get("logprobs") not in (None, False) or payload.get("top_logprobs") is not None:
             return error("logprobs are not supported", kind="unsupported_feature")
@@ -377,6 +467,12 @@ def _handle_compat_completion(path: str, payload: object,
             return error("presence and frequency penalties are not wired to the native session",
                          kind="unsupported_feature")
         if path == "/v1/completions":
+            if "messages" in payload:
+                return error("messages is not supported by the text completion route",
+                             kind="unsupported_feature")
+            if "max_completion_tokens" in payload:
+                return error("max_completion_tokens is supported only by chat completions",
+                             kind="unsupported_feature")
             if "echo" in payload and type(payload["echo"]) is not bool:
                 return error("echo must be boolean")
             raw_prompt = payload.get("prompt")
@@ -384,6 +480,9 @@ def _handle_compat_completion(path: str, payload: object,
                 return error("prompt must be a string")
             raw_messages = [{"role": "user", "content": raw_prompt}]
         else:
+            if "prompt" in payload:
+                return error("prompt is supported only by the text completion route",
+                             kind="unsupported_feature")
             raw_messages = payload.get("messages")
         max_tokens = payload.get("max_completion_tokens", payload.get("max_tokens"))
     if max_tokens is None and (anthropic or path == "/v1/chat/completions"):
@@ -396,8 +495,11 @@ def _handle_compat_completion(path: str, payload: object,
         value = payload.get(key)
         if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not -2 <= value <= 2):
             return error(f"{key} must be between -2 and 2")
-    if not anthropic and "best_of" in payload and payload["best_of"] != 1:
-        return error("only best_of=1 is supported", kind="unsupported_feature")
+    if not anthropic and "best_of" in payload:
+        if type(payload["best_of"]) is not int:
+            return error("best_of must be an integer")
+        if payload["best_of"] != 1:
+            return error("only best_of=1 is supported", kind="unsupported_feature")
     if not anthropic and payload.get("suffix") not in (None, ""):
         return error("suffix is not supported", kind="unsupported_feature")
     for key in ("temperature", "top_p"):
@@ -417,7 +519,8 @@ def _handle_compat_completion(path: str, payload: object,
     if isinstance(stop_sequences, str):
         stop_sequences = (stop_sequences,)
     if (type(stop_sequences) not in (list, tuple) or len(stop_sequences) > 4 or
-            any(type(item) is not str or not item or len(item.encode("utf-8")) > 4096
+            any(type(item) is not str or not item or
+                (size := utf8_size(item)) is None or size > 4096
                 for item in stop_sequences)):
         return error("stop must be a string or an array of at most four bounded strings")
     # Native PublisherSession stop-prefix arguments are token-ID sequences,
@@ -447,8 +550,21 @@ def _handle_compat_completion(path: str, payload: object,
         if system is None:
             return error("system must contain text only")
         messages.insert(0, {"role": "system", "content": system})
-    if sum(len(item["content"].encode("utf-8")) for item in messages) > 1024**2:
+    message_sizes = [utf8_size(item["content"]) for item in messages]
+    if any(size is None for size in message_sizes):
+        return error("message content must contain valid Unicode text")
+    if sum(size for size in message_sizes if size is not None) > 1024**2:
         return error("input exceeds 1 MiB")
+    if anthropic:
+        version = deps.anthropic_version
+        try:
+            valid_version = (type(version) is str and len(version) == 10 and
+                             version[4] == "-" and version[7] == "-" and
+                             date.fromisoformat(version).isoformat() == version)
+        except ValueError:
+            valid_version = False
+        if not valid_version:
+            return error("anthropic-version header must be a valid YYYY-MM-DD date")
     model = payload.get("model")
     if type(model) is not str or not model:
         return error("model is required")
@@ -457,36 +573,233 @@ def _handle_compat_completion(path: str, payload: object,
         return error("native publisher is not configured", HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
     try:
         configured = provider._configuration()["model"]
+    except (ProviderConfigurationError, ProviderUnavailableError, OSError, ValueError, TypeError) as exc:
+        return error(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
+    try:
         if model != configured:
             return error("requested model differs from configured native checkpoint")
+        if stream:
+            stream_iterator = None
+            stream_transferred = False
+            try:
+                stream_iterator = iter(provider.stream_complete(
+                    messages, model=model, max_output_tokens=max_tokens,
+                    stop_prefixes=(), cancelled=deps.cancelled,
+                    queue_timeout=admission_timeout))
+                first_event = next(stream_iterator)
+                first_metadata = getattr(first_event, "metadata", {})
+                queue_wait_ms = first_metadata.get("queue_wait_ms", 0) if type(first_metadata) is dict else 0
+                if type(queue_wait_ms) is not int or queue_wait_ms < 0:
+                    queue_wait_ms = 0
+                result = StreamRouteResult(_compat_sse_events(
+                    stream_iterator, first_event, path=path, model=model,
+                    prompt=payload.get("prompt", ""), echo=payload.get("echo", False),
+                    anthropic=anthropic, include_usage=include_usage,
+                    request_cancelled=deps.cancelled),
+                    headers={"X-Queue-Wait-Ms": str(queue_wait_ms)})
+                # Ownership moves to the response iterator only after the
+                # first event has been validated and the route result exists.
+                stream_transferred = True
+                return result
+            except StopIteration as exc:
+                raise ProviderUnavailableError("native stream ended without a completion event") from exc
+            finally:
+                if not stream_transferred and stream_iterator is not None:
+                    close = getattr(stream_iterator, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            # Preserve the admission/provider failure that is
+                            # mapped by the outer handler; this path has not
+                            # emitted headers and cannot report cleanup over SSE.
+                            pass
         result = provider.complete(messages, model=model, max_output_tokens=max_tokens,
-                                   stop_prefixes=())
+                                   stop_prefixes=(),cancelled=deps.cancelled,
+                                   queue_timeout=admission_timeout)
+        if deps.cancelled is not None and deps.cancelled():
+            raise ExecutionCancelled("completion request cancelled before response publication")
+    except AdmissionRejected as exc:
+        return JsonRouteResult(error(str(exc), HTTPStatus.TOO_MANY_REQUESTS, "server_error").payload,
+                               HTTPStatus.TOO_MANY_REQUESTS, {"Retry-After": "1"})
+    except AdmissionTimedOut as exc:
+        return JsonRouteResult(error(str(exc), HTTPStatus.TOO_MANY_REQUESTS, "server_error").payload,
+                               HTTPStatus.TOO_MANY_REQUESTS, {"Retry-After": "1"})
+    except ExecutionCancelled as exc:
+        return error(str(exc), HTTPStatus.REQUEST_TIMEOUT, "request_cancelled")
     except (ProviderConfigurationError, ValueError, TypeError) as exc:
         return error(str(exc))
     except ProviderUnavailableError as exc:
         return error(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
+    except RuntimeError as exc:
+        return error(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
     created = int(time())
     runtime = result.metadata.get("runtime", {})
-    prompt_tokens = runtime.get("expanded_prompt_tokens", runtime.get("prompt_tokens", 0))
+    prompt_tokens = runtime.get("expanded_prompt_tokens",
+        runtime.get("prompt_tokens", len(runtime.get("prompt_ids", ()))))
     completion_tokens = len(runtime.get("generated_ids", ()))
+    queue_headers = {"X-Queue-Wait-Ms": str(max(0, int(result.metadata.get("queue_wait_ms", 0))))}
     if anthropic:
         return JsonRouteResult({"id": "msg_" + str(created), "type": "message", "role": "assistant",
             "model": result.model, "content": [{"type": "text", "text": result.content}],
             "stop_reason": "max_tokens" if runtime.get("finish_reason") == "length" else "end_turn",
             "stop_sequence": None,
-            "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}})
+            "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}},
+            headers=queue_headers)
     if path == "/v1/completions":
         text = ((payload.get("prompt", "")) if payload.get("echo", False) else "") + result.content
         return JsonRouteResult({"id": "cmpl-" + str(created), "object": "text_completion", "created": created,
             "model": result.model, "choices": [{"text": text, "index": 0,
                 "finish_reason": "length" if runtime.get("finish_reason") == "length" else "stop"}],
             "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-                      "total_tokens": prompt_tokens + completion_tokens}})
+                      "total_tokens": prompt_tokens + completion_tokens}}, headers=queue_headers)
     return JsonRouteResult({"id": "chatcmpl-" + str(created), "object": "chat.completion", "created": created,
         "model": result.model, "choices": [{"index": 0, "message": {"role": "assistant", "content": result.content},
                                              "finish_reason": "length" if runtime.get("finish_reason") == "length" else "stop"}],
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-                  "total_tokens": prompt_tokens + completion_tokens}})
+                  "total_tokens": prompt_tokens + completion_tokens}}, headers=queue_headers)
+
+
+def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, echo,
+                       anthropic, include_usage, request_cancelled):
+    """Translate native transactional deltas into OpenAI or Anthropic SSE frames."""
+    from uuid import uuid4
+
+    request_id = uuid4().hex
+    created = int(time())
+
+    def frames():
+        source_closed = False
+
+        def close_source(primary=None):
+            nonlocal source_closed
+            if source_closed:
+                return
+            source_closed = True
+            close = getattr(stream_iterator, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("compatibility stream cleanup failed: " + repr(cleanup))
+                    except BaseException:
+                        pass
+
+        try:
+            if anthropic:
+                first_meta = getattr(first_event, "metadata", {})
+                prompt_tokens = first_meta.get("prompt_tokens") if type(first_meta) is dict else None
+                if prompt_tokens is None and type(first_meta) is dict:
+                    # An immediate terminal chunk has no per-token metadata;
+                    # its prompt usage is carried in the committed runtime
+                    # receipt instead. Keep Anthropic message_start usage
+                    # consistent with the non-streaming response in that case.
+                    runtime = first_meta.get("runtime", {})
+                    if type(runtime) is dict:
+                        prompt_tokens = runtime.get("expanded_prompt_tokens",
+                            runtime.get("prompt_tokens", len(runtime.get("prompt_ids", ()))))
+                if type(prompt_tokens) is not int or prompt_tokens < 0:
+                    prompt_tokens = 0
+                message_id = "msg_" + request_id
+                yield ServerSentEvent({"type": "message_start", "message": {
+                    "id": message_id, "type": "message", "role": "assistant", "model": model,
+                    "content": [], "stop_reason": None, "stop_sequence": None,
+                    "usage": {"input_tokens": prompt_tokens, "output_tokens": 0}}},
+                    event="message_start")
+                yield ServerSentEvent({"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""}}, event="content_block_start")
+            elif path == "/v1/chat/completions":
+                yield ServerSentEvent({"id": "chatcmpl-" + request_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
+            elif echo and prompt:
+                yield ServerSentEvent({"id": "cmpl-" + request_id, "object": "text_completion",
+                    "created": created, "model": model,
+                    "choices": [{"text": prompt, "index": 0, "finish_reason": None}]})
+
+            completion_tokens = 0
+            finish_reason = "stop"
+            prompt_tokens = 0
+            terminal_seen = False
+            from itertools import chain
+            for chunk in chain((first_event,), stream_iterator):
+                metadata = chunk.metadata if type(chunk.metadata) is dict else {}
+                if chunk.done:
+                    terminal_seen = True
+                    runtime = metadata.get("runtime", {})
+                    if type(runtime) is dict:
+                        prompt_tokens = runtime.get("expanded_prompt_tokens",
+                            runtime.get("prompt_tokens", len(runtime.get("prompt_ids", ()))))
+                        completion_tokens = len(runtime.get("generated_ids", ()))
+                        if runtime.get("finish_reason") == "length":
+                            finish_reason = "length"
+                    break
+                prompt_tokens = metadata.get("prompt_tokens", prompt_tokens)
+                if not chunk.content:
+                    continue
+                if anthropic:
+                    yield ServerSentEvent({"type": "content_block_delta", "index": 0,
+                        "delta": {"type": "text_delta", "text": chunk.content}},
+                        event="content_block_delta")
+                elif path == "/v1/chat/completions":
+                    yield ServerSentEvent({"id": "chatcmpl-" + request_id,
+                        "object": "chat.completion.chunk", "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"content": chunk.content},
+                                     "finish_reason": None}]})
+                else:
+                    yield ServerSentEvent({"id": "cmpl-" + request_id, "object": "text_completion",
+                        "created": created, "model": model,
+                        "choices": [{"text": chunk.content, "index": 0, "finish_reason": None}]})
+
+            if not terminal_seen:
+                raise ProviderUnavailableError("native stream ended without a committed terminal event")
+
+            # Do not publish a successful protocol terminal until upstream
+            # resources are released. A cleanup failure must become an error
+            # event before [DONE]/message_stop, never an exception after the
+            # client has observed successful completion.
+            close_source()
+
+            if anthropic:
+                yield ServerSentEvent({"type": "content_block_stop", "index": 0}, event="content_block_stop")
+                yield ServerSentEvent({"type": "message_delta", "delta": {
+                    "stop_reason": "max_tokens" if finish_reason == "length" else "end_turn",
+                    "stop_sequence": None}, "usage": {"output_tokens": completion_tokens}},
+                    event="message_delta")
+                yield ServerSentEvent({"type": "message_stop"}, event="message_stop", terminal=True)
+            else:
+                if path == "/v1/chat/completions":
+                    yield ServerSentEvent({"id": "chatcmpl-" + request_id,
+                        "object": "chat.completion.chunk", "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]})
+                else:
+                    yield ServerSentEvent({"id": "cmpl-" + request_id, "object": "text_completion",
+                        "created": created, "model": model,
+                        "choices": [{"text": "", "index": 0, "finish_reason": finish_reason}]})
+                if include_usage:
+                    yield ServerSentEvent({"id": ("chatcmpl-" if path == "/v1/chat/completions" else "cmpl-") + request_id,
+                        "object": "chat.completion.chunk" if path == "/v1/chat/completions" else "text_completion",
+                        "created": created, "model": model, "choices": [],
+                        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                                  "total_tokens": prompt_tokens + completion_tokens}})
+                yield ServerSentEvent("[DONE]", raw_data=True, terminal=True)
+        except Exception as exc:
+            close_source(primary=exc)
+            if request_cancelled is not None and request_cancelled():
+                return
+            message = str(exc)[:2048]
+            if anthropic:
+                yield ServerSentEvent({"type": "error", "error": {
+                    "type": "api_error", "message": message}}, event="error", terminal=True)
+            else:
+                yield ServerSentEvent({"error": {"message": message, "type": "server_error"}})
+                yield ServerSentEvent("[DONE]", raw_data=True, terminal=True)
+        finally:
+            close_source(primary=sys.exc_info()[1])
+    return frames()
 
 
 def _prometheus_metrics(gateway: ModelGateway) -> str:
@@ -517,6 +830,38 @@ def _prometheus_metrics(gateway: ModelGateway) -> str:
             if type(value) is int and value >= 0:
                 lines.extend((f'# HELP {metric} {help_text}', f'# TYPE {metric} gauge',
                               f'{metric} {value}'))
+    request_queue = state.get("request_queue")
+    if type(request_queue) is dict:
+        for metric, key, help_text in (
+                ('openagent_native_request_queue_active', 'active', 'Native HTTP requests admitted and owning capacity.'),
+                ('openagent_native_request_queue_waiting', 'waiting', 'Native HTTP requests waiting in the bounded FIFO queue.'),
+                ('openagent_native_request_queue_admitted_total', 'admitted', 'Native HTTP requests admitted.'),
+                ('openagent_native_request_queue_rejected_total', 'rejected', 'Native HTTP requests rejected at admission.'),
+                ('openagent_native_request_queue_timed_out_total', 'timed_out', 'Native HTTP request queue waits that timed out.'),
+                ('openagent_native_request_queue_cancelled_total', 'cancelled', 'Native HTTP request queue waits cancelled.'),
+                ('openagent_native_request_queue_wait_seconds_total', 'wait_seconds', 'Cumulative native HTTP request admission wait time in seconds.')):
+            value = request_queue.get(key)
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                lines.extend((f'# HELP {metric} {help_text}', f'# TYPE {metric} ' +
+                              ('gauge' if key in ('active', 'waiting') else 'counter'),
+                              f'{metric} {value}'))
+        buckets = request_queue.get("wait_buckets")
+        histogram = request_queue.get("wait_histogram")
+        if (type(buckets) is list and type(histogram) is list and len(histogram) == len(buckets)+1 and
+                all(type(value) in (int, float) and math.isfinite(value) and value >= 0 for value in buckets) and
+                all(type(value) is int and value >= 0 for value in histogram) and
+                type(request_queue.get("wait_seconds")) in (int, float) and
+                math.isfinite(request_queue["wait_seconds"]) and request_queue["wait_seconds"] >= 0):
+            lines.extend(('# HELP openagent_native_request_queue_wait_seconds Queue wait duration in seconds.',
+                          '# TYPE openagent_native_request_queue_wait_seconds histogram'))
+            cumulative = 0
+            for bound, count in zip(buckets, histogram):
+                cumulative += count
+                lines.append(f'openagent_native_request_queue_wait_seconds_bucket{{le="{bound}"}} {cumulative}')
+            cumulative += histogram[-1]
+            lines.extend((f'openagent_native_request_queue_wait_seconds_bucket{{le="+Inf"}} {cumulative}',
+                          f'openagent_native_request_queue_wait_seconds_count {cumulative}',
+                          f'openagent_native_request_queue_wait_seconds_sum {request_queue["wait_seconds"]}'))
     return '\n'.join(lines) + '\n'
 
 
@@ -532,8 +877,9 @@ def _brio_messages_to_state(messages: object) -> str:
     parts = []
     total_bytes = 0
     for message in messages:
-        if type(message) is not dict or message.get('role', 'user') not in (
-                'system', 'user', 'assistant', 'tool'):
+        if (type(message) is not dict or set(message) - {'role', 'content'} or
+                message.get('role', 'user') not in (
+                'system', 'user', 'assistant', 'tool')):
             raise ValueError('Brio messages require a supported role and object shape')
         content = message.get('content')
         if type(content) is str:
@@ -541,7 +887,8 @@ def _brio_messages_to_state(messages: object) -> str:
         elif type(content) is list:
             pieces = []
             for block in content:
-                if type(block) is dict and type(block.get('text')) is str:
+                if (type(block) is dict and set(block) == {'type', 'text'} and
+                        block.get('type') == 'text' and type(block.get('text')) is str):
                     pieces.append(block['text'])
                 else:
                     raise ValueError('Brio message content blocks must contain text only')

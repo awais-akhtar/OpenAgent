@@ -15,10 +15,10 @@ describe('navigation registry', () => {
     expect(isViewId('missing')).toBe(false);
   });
 
-  it('keeps specialist destinations compact while mapping the old dashboard landing to chat', () => {
-    expect(primaryNavigation.map(item => item.id)).toEqual(['agents', 'automation']);
+  it('prioritizes the task-oriented workspaces and preserves every explicit view link', () => {
+    expect(primaryNavigation.map(item => item.id)).toEqual(['dashboard', 'codebase', 'agents', 'research', 'workspace', 'automation', 'calendar', 'models']);
     expect(migrateLegacyView(null)).toBe('chat');
-    expect(migrateLegacyView('dashboard')).toBe('chat');
-    for (const { id } of views) expect(migrateLegacyView(id)).toBe(id === 'dashboard' ? 'chat' : id);
+    expect(migrateLegacyView('dashboard')).toBe('dashboard');
+    for (const { id } of views) expect(migrateLegacyView(id)).toBe(id);
   });
 });

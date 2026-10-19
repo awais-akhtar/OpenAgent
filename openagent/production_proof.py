@@ -164,25 +164,35 @@ def run_production_proof(data_dir: str | Path, *, queue_jobs: int = 100) -> dict
 
     def browser_e2e_contract_check() -> dict[str, Any]:
         package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-        config = (root / "playwright.config.js").read_text(encoding="utf-8")
-        spec = (root / "tests" / "e2e" / "openagent.spec.js").read_text(encoding="utf-8")
+        frontend_package = json.loads(
+            (root / "frontend-second" / "package.json").read_text(encoding="utf-8"))
+        config = (root / "frontend-second" / "playwright.config.ts").read_text(encoding="utf-8")
+        spec = (root / "frontend-second" / "tests" / "e2e" / "screens.spec.ts").read_text(encoding="utf-8")
+        functional_spec = (root / "frontend-second" / "tests" / "e2e" /
+                           "all-workspaces-functional-smoke.spec.ts").read_text(encoding="utf-8")
         workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         required = [
-            package.get("scripts", {}).get("test:e2e", "").endswith("playwright test"),
-            "reuseExistingServer:" in config,
-            "OPENAGENT_E2E_PORT" in config,
-            "pageErrors" in spec,
-            "all 22 active views open" in spec,
-            "new conversation sends a project-scoped" in spec,
-            "conversation search opens a saved result" in spec,
-            "representative screen actions preserve API contracts and safety gates" in spec,
-            "Python server exposes live health, capability and conversation contracts" in spec,
+            package.get("scripts", {}).get("test:e2e", "").startswith(
+                "npm --prefix frontend-second run test:e2e"),
+            frontend_package.get("scripts", {}).get("test:e2e", "").endswith("playwright test"),
+            "testDir: './tests/e2e'" in config,
+            "browserName: 'chromium'" in config,
+            "page.on('pageerror'" in spec,
+            "all 23 reference routes render from deep links" in spec,
+            "representative screens fit desktop and mobile widths" in spec,
+            "pageErrors" in functional_spec,
+            "apiRequests" in functional_spec,
+            "expect(apiRequests).toEqual([])" in functional_spec,
             "npm run test:e2e" in workflow,
             "playwright install --with-deps chromium" in workflow,
         ]
         if not all(required):
-            raise AssertionError("Playwright browser acceptance gate is incomplete")
-        return {"runner": "playwright", "browser": "chromium", "page_error_gate": True, "ci_enforced": True}
+            missing = [str(index) for index, passed in enumerate(required) if not passed]
+            raise AssertionError("active Playwright browser acceptance gate is incomplete; "
+                                 "missing contract checks at indexes " + ",".join(missing))
+        return {"runner": "frontend-second Playwright", "browser": "chromium",
+                "route_coverage": 23, "page_error_gate": True,
+                "backend_isolation_gate": True, "ci_enforced": True}
 
     for name, function in (
         ("migrations", migration_check), ("crash-recovery", queue_recovery_check), ("queue-soak", queue_soak_check),

@@ -141,6 +141,7 @@ class IntegrationHubTests(unittest.TestCase):
                         {"project": "core", "command_key": "echo hello"},
                     )
                 self.assertEqual(ctx.exception.code, 400)
+                ctx.exception.close()
 
                 parity = read_json(f"{base_url}/api/integrations/parity?project=core")
                 self.assertEqual(parity["status"], "ready")

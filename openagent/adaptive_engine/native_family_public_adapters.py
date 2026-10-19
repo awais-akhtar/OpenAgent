@@ -43,6 +43,17 @@ class NativeFamilyPublicAdapters:
             raise ValueError('explicit aggregate native resource/work and row limits required')
         root=_safe_path(model_directory).resolve(strict=True)
         if not root.is_dir(): raise ValueError('admitted local checkpoint root required')
+        source_family,model_type=(('glm5-next','glm5_next_text')
+            if type(decoder) is NativeGlm5NextTextDecoder else ('inkling','inkling_text'))
+        # An already-materialized decoder does not prove that its source
+        # checkpoint belongs to an admitted public-ABI route. Reconcile the
+        # persisted headers before opening either native library.
+        from .source_scope import require_checkpoint_inventory_admission
+        inventory=require_checkpoint_inventory_admission(root,family=source_family,
+            model_type=model_type,backend='public-range',arithmetic='fp32',
+            max_metadata_bytes=max_resource_bytes)
+        from .family_source_binding import require_decoder_snapshot
+        require_decoder_snapshot(decoder,inventory,family=source_family,model_type=model_type)
         self._lock=threading.RLock();self._closed=False;self._model_id=None
         self._decoder=decoder if own_decoder else None
         self.native=self.kernel=self._kernel_release=None
@@ -173,6 +184,11 @@ class NativeFamilyPublicAdapters:
             value=np.asarray(wire)
             if value.dtype!=np.float32 or value.ndim!=2 or not 0<value.shape[0]<=self.rows or value.shape[1]!=self.transport_width:
                 raise ValueError('bounded native GLM stream rows required')
+            # This method is a public activation boundary. Reject non-finite
+            # values before crossing into native code, and do not publish a
+            # non-finite result as a valid hidden-state tensor.
+            if not np.isfinite(value).all():
+                raise ValueError('native GLM stream activations must be finite')
             if value.nbytes*2+value.shape[0]*self.hidden_size*8>self.max_work_bytes:
                 raise MemoryError('native GLM final hidden transport exceeds admission')
             value=np.ascontiguousarray(value);output=np.empty((value.shape[0],self.hidden_size),np.float32)
@@ -182,6 +198,8 @@ class NativeFamilyPublicAdapters:
             if operation(self._model_id,value.ctypes.data,value.shape[0],value.size,
                     output.ctypes.data,output.size,error,len(error)):
                 raise RuntimeError(error.value.decode('utf-8',errors='replace'))
+            if not np.isfinite(output).all():
+                raise FloatingPointError('native GLM final hidden output is non-finite')
             return output
 
     def close(self):

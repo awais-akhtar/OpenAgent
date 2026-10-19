@@ -1,7 +1,9 @@
 """Pinned K3 still-image preprocessing, without importing publisher code."""
 import math
+import sys
 
 import numpy as np
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 def preprocess_images(images, *, max_bytes=256 * 1024 * 1024, cancelled=None):
@@ -52,30 +54,73 @@ def preprocess_images(images, *, max_bytes=256 * 1024 * 1024, cancelled=None):
         required = 64 * (nw + pw) * (nh + ph) + 16 * width * height
         if required > available:
             raise ValueError("image preprocessing budget exceeded")
-        if isinstance(image,np.ndarray):
-            image=Image.fromarray(image)
-        boundary()
-        resized = image.resize((nw, nh), resample=Image.Resampling.BICUBIC)
-        boundary()
-        alpha_present = "A" in resized.getbands() or "transparency" in resized.info
-        if alpha_present:
-            rgba = np.asarray(resized.convert("RGBA"))
-            yy, xx = np.indices((nh, nw))
-            background = np.where(((yy // 8 + xx // 8) % 2)[..., None] == 0, 255, 180).astype(np.uint8)
-            alpha = rgba[..., 3:4].astype(np.float32) / 255.0
-            rgb = (alpha * rgba[..., :3] + (1 - alpha) * background).astype(np.uint8)
-        else:
-            rgb = np.asarray(resized.convert("RGB"))
-        boundary()
-        rgb = np.pad(rgb, ((0, ph), (0, pw), (0, 0)), mode="constant", constant_values=0)
-        normalized = (rgb / 255.0).astype(np.float32)
-        normalized -= np.array([0.5, 0.5, 0.5])
-        normalized *= np.array([2.0, 2.0, 2.0])
-        gh, gw = (nh + ph) // 14, (nw + pw) // 14
-        patches = normalized.reshape(1, gh, 14, gw, 14, 3).transpose(0, 1, 3, 5, 2, 4)
-        patches = np.ascontiguousarray(patches.reshape(-1, 3, 14, 14))
-        boundary()
-        return patches,(1,gh,gw)
+        temporary_source = Image.fromarray(image) if isinstance(image,np.ndarray) else None
+        source = temporary_source if temporary_source is not None else image
+        resized = None
+        try:
+            boundary()
+            resized = source.resize((nw, nh), resample=Image.Resampling.BICUBIC)
+            boundary()
+            alpha_present = "A" in resized.getbands() or "transparency" in resized.info
+            if alpha_present:
+                converted = resized.convert("RGBA")
+                try:
+                    rgba = np.asarray(converted)
+                except BaseException as primary:
+                    try:
+                        converted.close()
+                    except BaseException as cleanup:
+                        add_failure_note(primary, 'K3 RGBA image cleanup failed: '+failure_summary(cleanup))
+                    raise
+                else:
+                    converted.close()
+                yy, xx = np.indices((nh, nw))
+                background = np.where(((yy // 8 + xx // 8) % 2)[..., None] == 0, 255, 180).astype(np.uint8)
+                alpha = rgba[..., 3:4].astype(np.float32) / 255.0
+                rgb = (alpha * rgba[..., :3] + (1 - alpha) * background).astype(np.uint8)
+            else:
+                converted = resized.convert("RGB")
+                try:
+                    rgb = np.asarray(converted)
+                except BaseException as primary:
+                    try:
+                        converted.close()
+                    except BaseException as cleanup:
+                        add_failure_note(primary, 'K3 RGB image cleanup failed: '+failure_summary(cleanup))
+                    raise
+                else:
+                    converted.close()
+            boundary()
+            rgb = np.pad(rgb, ((0, ph), (0, pw), (0, 0)), mode="constant", constant_values=0)
+            normalized = (rgb / 255.0).astype(np.float32)
+            normalized -= np.array([0.5, 0.5, 0.5])
+            normalized *= np.array([2.0, 2.0, 2.0])
+            gh, gw = (nh + ph) // 14, (nw + pw) // 14
+            patches = normalized.reshape(1, gh, 14, gw, 14, 3).transpose(0, 1, 3, 5, 2, 4)
+            patches = np.ascontiguousarray(patches.reshape(-1, 3, 14, 14))
+            boundary()
+            return patches,(1,gh,gw)
+        finally:
+            # These PIL objects own decoder/resizer resources.  In particular,
+            # cancellation after resize must not defer cleanup until cyclic or
+            # implementation-specific garbage collection.
+            primary = sys.exc_info()[1]
+            cleanup_error = None
+            for owned in (resized, temporary_source):
+                if owned is None:
+                    continue
+                try:
+                    owned.close()
+                except BaseException as cleanup:
+                    if cleanup_error is None:
+                        cleanup_error = cleanup
+                    else:
+                        add_failure_note(cleanup_error, 'additional K3 image cleanup failed: '+failure_summary(cleanup))
+            if cleanup_error is not None:
+                if primary is not None:
+                    add_failure_note(primary, 'K3 image cleanup failed: '+failure_summary(cleanup_error))
+                else:
+                    raise cleanup_error
     for image in images:
         width,height=geometry(image)
         patches,grid=prepare(image,max_bytes-allocated-decoded_bytes+16*width*height-len(images)*128)

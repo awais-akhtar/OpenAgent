@@ -47,6 +47,7 @@ class MediaRouteDependencies:
     voice: Any
     read_json: Callable[[], dict[str, Any]]
     handle_voice_upload: Callable[[], None]
+    personal_remote: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,11 @@ def handle_post(path: str, deps: MediaRouteDependencies) -> JsonRouteResult | Re
     if path == "/api/media/ingest":
         try:
             if payload.get("path"):
+                if deps.personal_remote:
+                    return JsonRouteResult(
+                        {"error": "server-path media ingestion is disabled in personal_remote; upload the file contents instead."},
+                        HTTPStatus.FORBIDDEN,
+                    )
                 asset = deps.media.ingest_file(
                     str(payload.get("path", "")).strip(), project=project,
                     title=str(payload.get("title", "")).strip(),

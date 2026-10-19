@@ -30,6 +30,93 @@ describe('dedicated platform workspaces', () => {
     expect(specialistFacts({ name: 'Local model', status: 'ready', settings: { password: 'secret' }, raw: { x: 1 } })).toEqual([['name', 'Local model'], ['status', 'ready']]);
   });
 
+  describe('task-led defaults', () => {
+    let host: HTMLDivElement; let root: Root;
+    beforeEach(() => {
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+      localStorage.clear(); history.replaceState({}, '', '/');
+      apiMocks.get.mockReset().mockImplementation(async (path: string) => {
+        if (path.includes('/adaptive-engine/status')) return { status: 'ready' };
+        if (path.includes('/adaptive-engine/hardware')) return { profile: { platform: 'Linux', cpu_threads: 16, devices: [{ id: 'gpu-1', name: 'NVIDIA RTX 5000', available: true }] } };
+        if (path.includes('/adaptive-engine/plans')) return { plans: [{ id: 'plan-1', name: 'Local inference' }] };
+        if (path.includes('/adaptive-engine/benchmarks')) return { benchmarks: [{ id: 'bench-1', device_name: 'NVIDIA RTX 5000', status: 'complete' }] };
+        if (path.includes('/finetune/status')) return { status: 'ready' };
+        if (path.includes('/finetune/datasets')) return { datasets: [{ id: 'data-1', name: 'Support examples' }] };
+        if (path.includes('/finetune/jobs')) return { jobs: [{ id: 'job-1', base_model: 'local-3b', state: 'queued' }] };
+        if (path.includes('/finetune/adapters')) return { adapters: [{ id: 'adapter-1', name: 'Support adapter', status: 'registered' }] };
+        if (path.includes('/finetune/templates')) return { templates: [{ id: 'recipe-1', name: 'LoRA starter' }] };
+        if (path.includes('/science/status')) return { status: 'ready' };
+        if (path.includes('/science/tools')) return { tools: [{ id: 'tool-1', name: 'Materials solver', status: 'available' }] };
+        if (path.includes('/science/materials/catalog')) return { datasets: [{ dataset_id: 'mat-1', name: 'Crystal properties', license: 'CC-BY-4.0' }] };
+        if (path.includes('/science/materials/datasets')) return { datasets: [{ id: 'mat-local', name: 'Local measurements' }] };
+        if (path.includes('/science/memory')) return { memory: [{ id: 'note-1', name: 'Lattice note' }] };
+        if (path.includes('/scraper/status')) return { status: 'ready' };
+        if (path.includes('/scraper/jobs')) return { jobs: [{ id: 'scrape-1', label: 'Docs refresh', url: 'https://example.org/docs', next_run_at: 'Tomorrow' }] };
+        if (path.includes('/developer/status')) return { status: 'ready' };
+        if (path.includes('/developer/tools')) return { tools: [{ id: 'tool-1', name: 'Repo search' }] };
+        if (path.includes('/developer/plugins')) return { plugins: [{ id: 'plugin-1', name: 'Local runner' }] };
+        if (path.includes('/developer/mcp/servers')) return { servers: [{ id: 'server-1', name: 'Workspace MCP' }] };
+        if (path.includes('/developer/webhooks')) return { webhooks: [] };
+        if (path.includes('/developer/api-keys')) return { api_keys: [] };
+        return {};
+      });
+      host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+    });
+    afterEach(async () => { await act(async () => root.unmount()); host.remove(); });
+
+    it.each([
+      ['engine', 'Local inference capacity', 'NVIDIA RTX 5000', 'Benchmark a device'],
+      ['finetune', 'Dataset to adapter', 'Support examples', 'Create a training job'],
+      ['science', 'Choose data and run an analysis', 'Crystal properties', 'Analyze a catalog dataset'],
+      ['scraper', 'Scheduled scraping', 'Docs refresh', 'Schedule a scrape'],
+      ['developer', 'Integrations and credentials', 'Repo search', 'Create scoped API key'],
+    ] as const)('%s opens on its user workflow rather than endpoint navigation', async (id, heading, recordName, primaryAction) => {
+      const { PlatformWorkspaces } = await import('./PlatformWorkspaces');
+      await act(async () => root.render(createElement(PlatformWorkspaces, { id })));
+      expect(host.textContent).toContain(heading);
+      expect(host.textContent).toContain(recordName);
+      if (id === 'engine') expect(host.textContent).toContain('16 CPU threads');
+      expect([...host.querySelectorAll<HTMLButtonElement>('.platform-workflow-action')].some(button => button.textContent?.includes(primaryAction))).toBe(true);
+      const technical = host.querySelector<HTMLDetailsElement>('.platform-technical');
+      expect(technical?.open).toBe(false);
+      expect(host.textContent).not.toMatch(/\btrue\b|\bfalse\b/);
+      expect(apiMocks.get).toHaveBeenCalledTimes(resourcePageConfigs[id].reads.length);
+      expect(host.querySelector('.platform-technical[open] .platform-nav')).toBeNull();
+    });
+
+    it('opens a compact selected-record inspector from the runtime workbench list', async () => {
+      const { PlatformWorkspaces } = await import('./PlatformWorkspaces');
+      await act(async () => root.render(createElement(PlatformWorkspaces, { id: 'engine' })));
+      const device = [...host.querySelectorAll<HTMLButtonElement>('.platform-workflow-list button')].find(button => button.textContent?.includes('NVIDIA RTX 5000'));
+      expect(device).toBeTruthy();
+      await act(async () => device?.click());
+      expect(host.querySelector('[aria-label="Hardware inventory selected details"]')?.textContent).toContain('NVIDIA RTX 5000');
+      expect(host.querySelector('[aria-label="Hardware inventory selected details"]')?.textContent).not.toMatch(/\btrue\b/);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Close selected details"]')?.click());
+      expect(host.querySelector('[aria-label="Hardware inventory selected details"]')).toBeNull();
+    });
+
+    it('opens the endpoint inspector on demand and keeps API collections reachable', async () => {
+      const { PlatformWorkspaces } = await import('./PlatformWorkspaces');
+      await act(async () => root.render(createElement(PlatformWorkspaces, { id: 'engine' })));
+      await act(async () => host.querySelector<HTMLElement>('.platform-technical > summary')?.click());
+      const hardwareButton = [...host.querySelectorAll<HTMLButtonElement>('.platform-nav button')].find(button => button.textContent?.includes('Hardware inventory'));
+      await act(async () => hardwareButton?.click());
+      expect(host.querySelector('.platform-main')).toBeTruthy();
+      expect(host.textContent).toContain('NVIDIA RTX 5000');
+    });
+
+    it('populates the engine benchmark device selector from the hardware profile response', async () => {
+      const { PlatformWorkspaces } = await import('./PlatformWorkspaces');
+      await act(async () => root.render(createElement(PlatformWorkspaces, { id: 'engine' })));
+      const benchmark = [...host.querySelectorAll<HTMLButtonElement>('.platform-workflow-action')].find(button => button.textContent?.includes('Benchmark a device'));
+      await act(async () => benchmark?.click());
+      const deviceSelector = document.querySelector<HTMLSelectElement>('.platform-dialog select');
+      expect(deviceSelector).toBeTruthy();
+      expect([...deviceSelector?.options ?? []].map(option => option.textContent)).toContain('NVIDIA RTX 5000');
+    });
+  });
+
   describe('one-time developer API key', () => {
     let host: HTMLDivElement; let root: Root;
     beforeEach(() => {

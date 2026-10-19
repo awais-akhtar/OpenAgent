@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -122,12 +123,19 @@ def run(args):
 def _run_public(args, config, prompt, count, expected, tokenizer, library, started):
     from .segment_edge_adapters import NativeOlmoePublicAdapters
     from .segment_edge_runtime import SegmentEdgeExecution, SegmentRange
+    from .expert_runtime import SparseExpertManifest
 
     if not getattr(args, "checkpoint_identity", None):
         raise ValueError('--checkpoint-identity is required with --public-runtime-library')
+    manifest = SparseExpertManifest.read(args.manifest)
+    canonical_manifest = json.dumps(manifest.to_dict(), sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode('utf-8')
+    manifest_identity = hashlib.sha256(canonical_manifest).hexdigest()
+    if args.checkpoint_identity != manifest_identity:
+        raise ValueError('--checkpoint-identity must be the SHA-256 of the canonical parsed expert manifest')
     mib = 1024**2
     adapters = NativeOlmoePublicAdapters(args.public_runtime_library,
-        kernel_library=library, model_directory=args.model_directory, manifest=args.manifest,
+        kernel_library=library, model_directory=args.model_directory, manifest=manifest,
         expert_cache_bytes=args.cache_mib*mib, max_staging_bytes=args.staging_mib*mib,
         max_snapshot_bytes=args.snapshot_mib*mib,
         max_batch_rows=min(32, args.context_tokens)).register()
@@ -170,15 +178,25 @@ def _run_public(args, config, prompt, count, expected, tokenizer, library, start
         primary = error
         raise
     finally:
-        try:
-            if execution is not None:
+        cleanup_errors = []
+        if execution is not None:
+            try:
                 execution.close()
+            except BaseException as cleanup:
+                cleanup_errors.append(cleanup)
+        try:
             adapters.retry_cleanup()
         except BaseException as cleanup:
+            cleanup_errors.append(cleanup)
+        if cleanup_errors:
+            message = '; '.join(str(error) for error in cleanup_errors)
             if primary is not None:
-                primary.add_note('public native runtime cleanup failed: '+str(cleanup))
+                primary.add_note('public native runtime cleanup failed: '+message)
             else:
-                raise
+                first = cleanup_errors[0]
+                for secondary in cleanup_errors[1:]:
+                    first.add_note('additional public native runtime cleanup failure: '+str(secondary))
+                raise first
 
 
 def main(argv=None):

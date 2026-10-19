@@ -344,6 +344,11 @@ _EXPORTS = {
     "ModelIR": ("ir", "ModelIR"),
     "OpCode": ("ir", "OpCode"),
     "TensorSpec": ("ir", "TensorSpec"),
+    "UniversalAdapter": ("universal_engine", "UniversalAdapter"),
+    "ModelRoute": ("universal_engine", "ModelRoute"),
+    "ModelManifest": ("universal_engine", "ModelManifest"),
+    "UniversalEngine": ("universal_engine", "UniversalEngine"),
+    "UniversalSession": ("universal_engine", "UniversalSession"),
 }
 
 __all__ = list(_EXPORTS)

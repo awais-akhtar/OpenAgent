@@ -382,6 +382,27 @@ class EncryptedVault:
                 (log_id, entry_id, project, action, 1 if success else 0, "", now),
             )
 
+    def list_access_log(self, *, project: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+        """Return vault operation records without secret values or passphrases."""
+        bounded_limit = max(1, min(int(limit), 500))
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT id, entry_id, project, action, success, created_at "
+                "FROM vault_access_log WHERE project=? ORDER BY created_at DESC LIMIT ?",
+                (project, bounded_limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "entry_id": row["entry_id"],
+                "project": row["project"],
+                "action": row["action"],
+                "success": bool(row["success"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------

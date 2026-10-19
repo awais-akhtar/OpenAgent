@@ -196,6 +196,7 @@ class DiskExpertStore:
         path = self._path(region)
         started = time.perf_counter()
         bytes_read = 0
+        payload: bytearray | memoryview | None = None
         try:
             if self.io_mode == "mmap":
                 with self._lock:
@@ -237,11 +238,22 @@ class DiskExpertStore:
                     raise ValueError("expert checksum mismatch")
                 with self._lock:
                     self._verified.add(key)
+        except BaseException as primary:
+            # A failed checksum, short read, or cancellation must not leave a
+            # partially materialized payload (or mmap view) live until GC.
+            try:
+                if isinstance(payload, memoryview):
+                    payload.release()
+            except BaseException as cleanup:
+                primary.add_note("failed expert payload cleanup also failed: " + repr(cleanup))
+            payload = None
+            raise
         finally:
             with self._lock:
                 counter = "mapped_bytes" if self.io_mode == "mmap" else "bytes_read"
                 self._stats[counter] += bytes_read
                 self._stats["read_seconds"] += time.perf_counter() - started
+        assert payload is not None
         return payload
 
     def _load(self, key: str, *, prefetch: bool = False, cancelled=None) -> _Entry | None:
@@ -249,9 +261,16 @@ class DiskExpertStore:
         if not self._make_room(region.size, prefetch=prefetch):
             return None
         payload = self._read_payload(key, cancelled)
-        entry = _Entry(payload, prefetched=prefetch)
-        self._entries[key] = entry
-        return entry
+        try:
+            entry = _Entry(payload, prefetched=prefetch)
+            self._entries[key] = entry
+            return entry
+        except BaseException as primary:
+            try:
+                self._release_payload(payload)
+            except BaseException as cleanup:
+                primary.add_note("failed expert cache admission cleanup also failed: " + repr(cleanup))
+            raise
 
     @contextmanager
     def acquire(self, key: str, *, cancelled=None) -> Iterator[memoryview]:
@@ -349,17 +368,27 @@ class DiskExpertStore:
                 self._reservations.pop(key, None)
                 self._stats["prefetch_errors"] += 1
             raise
-        with self._lock:
-            self._reservations.pop(key, None)
-            if self._closed or key in self._entries:
-                self._release_payload(payload)
-                return False
-            if not self._make_room(len(payload), prefetch=True):
-                self._stats["prefetch_dropped"] += 1
-                self._release_payload(payload)
-                return False
-            self._entries[key] = _Entry(payload, prefetched=True)
-            return True
+        try:
+            with self._lock:
+                self._reservations.pop(key, None)
+                if self._closed or key in self._entries:
+                    self._release_payload(payload)
+                    return False
+                if not self._make_room(len(payload), prefetch=True):
+                    self._stats["prefetch_dropped"] += 1
+                    self._release_payload(payload)
+                    return False
+                self._entries[key] = _Entry(payload, prefetched=True)
+                # Ownership has transferred to the cache entry.
+                payload = None
+                return True
+        except BaseException as primary:
+            if payload is not None:
+                try:
+                    self._release_payload(payload)
+                except BaseException as cleanup:
+                    primary.add_note("failed expert prefetch cleanup also failed: " + repr(cleanup))
+            raise
 
     def pin(self, keys: Iterable[str], *, load: bool = False) -> None:
         """Protect selected experts from eviction, optionally warming them first."""

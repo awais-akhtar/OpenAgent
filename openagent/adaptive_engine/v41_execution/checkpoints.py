@@ -9,6 +9,7 @@ import tempfile
 import numpy as np
 
 from .execution import V41CacheSnapshot, V41Execution, V41Snapshot
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 _MAGIC=b'OAV41S02'
@@ -94,18 +95,25 @@ def _save_v41_checkpoint(model,destination,*,max_payload_bytes):
         if temporary is not None: temporary.unlink(missing_ok=True)
 
 
-def load_v41_checkpoint(model,source,*,max_payload_bytes):
+def load_v41_checkpoint(model,source,*,max_payload_bytes,cancelled=None):
     if type(model) is not V41Execution: raise ValueError('current V4.1 executor required')
+    if cancelled is not None and not callable(cancelled):
+        raise ValueError('checkpoint cancellation predicate must be callable')
     source=Path(source).resolve(strict=True)
     with model._lock:
         if model._closed or model._active: raise RuntimeError('executor unavailable for recovery')
-        return _load_v41_checkpoint(model,source,max_payload_bytes=max_payload_bytes)
+        return _load_v41_checkpoint(model,source,max_payload_bytes=max_payload_bytes,
+                                    cancelled=cancelled)
 
 
-def _load_v41_checkpoint(model,source,*,max_payload_bytes):
+def _load_v41_checkpoint(model,source,*,max_payload_bytes,cancelled=None):
     """Hash and validate a complete staged file before mutating model state."""
     if type(model) is not V41Execution: raise ValueError('current V4.1 executor required')
     maximum=_limit(max_payload_bytes)
+    def check_cancelled():
+        if cancelled is not None and cancelled():
+            raise InterruptedError('V4.1 checkpoint restore cancelled')
+    check_cancelled()
     path=Path(source).resolve(strict=True)
     if not path.is_file() or path.drive.startswith('\\\\'):
         raise ValueError('existing local checkpoint file required')
@@ -118,6 +126,7 @@ def _load_v41_checkpoint(model,source,*,max_payload_bytes):
                                info.st_mtime_ns, info.st_ctime_ns))(path.stat()) != identity):
             raise ValueError('V4.1 checkpoint changed during opening')
         def read_exact(count):
+            check_cancelled()
             data=stream.read(count)
             if len(data)!=count: raise ValueError('truncated V4.1 checkpoint')
             return data
@@ -164,13 +173,14 @@ def _load_v41_checkpoint(model,source,*,max_payload_bytes):
         for record in expected:
             rows=[]
             for _ in range(record['rows']):
+                check_cancelled()
                 data=read_exact(record['width']); digest.update(data)
                 if record['kind']=='u32': rows.append(struct.unpack('<I',data)[0])
                 elif record['kind']=='f32': rows.append(np.frombuffer(data,dtype='<f4').astype(np.float32).tobytes())
                 else: rows.append(data)
             records[record['name']]=tuple(rows)
         checksum = read_exact(32)
-        model._check_cancelled()
+        check_cancelled()
         trailing = stream.read(1)
         if checksum != digest.digest() or trailing:
             raise ValueError('checkpoint hash mismatch or trailing bytes')
@@ -192,4 +202,17 @@ def _load_v41_checkpoint(model,source,*,max_payload_bytes):
         *(tuple(records[f'{layer}.{name}'] for layer in range(c.layers))
           for name in ('pending','gates','compressed','index')),
         tuple((kind,position,records[f'{layer}.engram']) for layer,kind in enumerate(kinds)))
-    model.restore(V41Snapshot(model._identity,tokens,state))
+    check_cancelled()
+    previous=model.snapshot()
+    try:
+        model.restore(V41Snapshot(model._identity,tokens,state))
+        # Cancellation can arrive during the final, atomic state publication.
+        # Recheck before reporting success and restore the old boundary if it
+        # did; restore() validates fully before its tuple assignment.
+        check_cancelled()
+    except BaseException as primary:
+        try:
+            model.restore(previous)
+        except BaseException as recovery:
+            add_failure_note(primary,'V4.1 checkpoint cancellation/restore rollback failed: '+failure_summary(recovery))
+        raise

@@ -122,6 +122,15 @@ class NativeLeasedOlmoeSegmentEngine(NativeOlmoeSegmentEngine):
         dtype = self.manifest.layers[begin].dtype
         if dtype not in _APPLY_ATTRIBUTES:
             raise ValueError("unsupported native leased dtype: "+dtype)
+        # Bind the original checkpoint inventory to the exact expert format
+        # selected by this leased executor before loading the native ABI or
+        # reading any tensor payload.  The manifest format is not inferable
+        # from the dense SafeTensors dtype.
+        from .source_scope import require_checkpoint_inventory_admission
+        source_inventory = require_checkpoint_inventory_admission(
+            self.root,family='olmoe',model_type='olmoe',backend='native',
+            arithmetic='fp32',max_metadata_bytes=self.max_snapshot_bytes,
+            persisted_format=dtype)
         self.dtype = dtype
         self.numeric_class = (f"c-fp32-dense-double-block-dot-native-{dtype}-leased-v1"
                               if dtype in _BLOCK_BYTES else NUMERIC_CLASS)
@@ -154,6 +163,7 @@ class NativeLeasedOlmoeSegmentEngine(NativeOlmoeSegmentEngine):
             else:
                 loader = OlmoeSegmentEngine(self.root,self.manifest,begin,end,self.context_tokens,
                     expert_cache_bytes=self.expert_cache_bytes,io_mode="buffered",storage_roots=storage_roots)
+            source_inventory.assert_unchanged()
             descriptors = (RangeLayer*(end-begin))()
             owned = []
             for index,layer in enumerate(loader.layers):

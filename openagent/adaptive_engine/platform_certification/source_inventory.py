@@ -18,7 +18,9 @@ AREAS={
     'model-families':('publisher_family_contracts.py','publisher_weight_mapping.py','family_conformance.py',
         'mixtral_inventory.py','resident_family_inventory.py','native_mixtral_decoder.py','native_qwen35.py','native_qwen4.py',
         'native_glm5_next.py','native_inkling.py','native_glm_dsa.py','qwen35_multimodal.py','qwen35_publisher_experts.py',
-        'publisher_conditional_loader.py','publisher_glm5_loader.py','inkling_media.py','qwen4_vision.py'),
+        'publisher_conditional_loader.py','publisher_glm5_loader.py','family_source_binding.py',
+        'inkling_media.py','inkling_multimodal.py','qwen4_vision.py','qwen4_multimodal.py',
+        'glm5_multimodal.py','multimodal_session.py'),
     'v41':('v41_execution/publisher.py','v41_execution/publisher_vision.py',
         'v41_execution/publisher_mtp.py','v41_execution/speculative.py','v41_distributed_session.py',
         'v41_execution/device_arithmetic.py','v41_execution/device_execution.py',
@@ -42,10 +44,13 @@ AREAS={
         'segment_edge_runtime.py','native_qwen4_public_adapters.py','mixtral_public_adapters.py',
         'qwen35_public_adapters.py','native_qwen35_ranges.py',
         'glm_dsa_public_adapters.py','native_glm_dsa_ranges.py',
-        'native_family_public_adapters.py','native_family_public_text.py',
+        'native_family_public_adapters.py','native_family_public_text.py','family_source_binding.py',
         'native/segment_edge_compat.h','native/qwen4_public_adapters.c','native/qwen4_public_session.c'),
     'serving':('execution_factories.py','execution_service.py','publisher_provider.py',
-        'publisher_media_inputs.py','publisher_media_processor.py','native_conditional_cli.py','publisher_k3_cli.py',
+        'publisher_conditional_loader.py',
+        'publisher_media_inputs.py','publisher_media_processor.py','multimodal_session.py',
+        'qwen35_multimodal.py','qwen4_multimodal.py','glm5_multimodal.py','inkling_multimodal.py',
+        'native_conditional_cli.py','publisher_k3_cli.py',
         'v41_generation_recovery.py','service_generation_checkpoint.py','generation_checkpoint_files.py'),
     'scale-recovery':('admission_scheduler.py','executor_budget.py','indexed_continuation_store.py',
         'cache_file_recovery.py','native_glm_dsa_cache.py',
@@ -53,6 +58,9 @@ AREAS={
         'v41_generation_recovery.py','service_generation_checkpoint.py','k3_generation_recovery.py',
         'distributed_recovery.py','distributed_generation_checkpoint.py'),
     'correctness-tooling':('wholemodel_validation/runner.py','platform_certification/decoder_matrix.py',
+        'platform_certification/source_inventory.py',
+        'wholemodel_validation/adapters.py','wholemodel_validation/cache_readers.py',
+        'wholemodel_validation/olmoe_native.py',
         'wholemodel_validation/glm_dsa_caches.py','wholemodel_validation/k3_media.py',
         'wholemodel_validation/k3.py','wholemodel_validation/k3_fla.py',
         'wholemodel_validation/qwen35_publisher_caches.py','wholemodel_validation/qwen35_routing_oracle.py',
@@ -66,7 +74,12 @@ AREAS={
 
 
 def _stamp(info):
-    return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    # Windows exposes st_ctime as creation time on path stats but as the
+    # underlying last-write timestamp on descriptor stats. Prefer the explicit
+    # birth-time field there so path and fstat stamps describe the same facts;
+    # POSIX platforms continue using ctime to detect metadata/content changes.
+    changed=getattr(info,'st_birthtime_ns',info.st_ctime_ns)
+    return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,changed)
 
 
 def _unlinked_path(value):
@@ -106,9 +119,12 @@ def source_inventory(root,*,max_files=4096,max_file_bytes=64*1024**2,max_total_b
             if not stat.S_ISREG(before.st_mode):raise ValueError('regular source file required')
             if before.st_size>max_file_bytes or before.st_size>max_total_bytes-total:
                 raise MemoryError('engine source byte inventory exceeds admission')
-            stream=os.fdopen(descriptor,'rb')
-        except BaseException:
-            os.close(descriptor);raise
+        except BaseException as primary:
+            from ..owned_file_descriptor import close_after_failure
+            close_after_failure(descriptor,primary,owner='source inventory input')
+            raise
+        from ..owned_file_descriptor import fdopen_owned
+        stream=fdopen_owned(descriptor,'rb',owner='source inventory input')
         digest=hashlib.sha256();size=0
         with stream:
             while True:
@@ -118,7 +134,7 @@ def source_inventory(root,*,max_files=4096,max_file_bytes=64*1024**2,max_total_b
                 if size>before.st_size:raise ValueError('source grew during inventory')
                 digest.update(block)
             if _stamp(before)!=_stamp(os.fstat(stream.fileno())) or _stamp(before)!=_stamp(path.stat()):
-                raise ValueError('source changed during inventory')
+                raise ValueError('source changed during inventory: '+path.relative_to(root).as_posix())
         if size!=before.st_size:raise ValueError('source was truncated during inventory')
         total+=size
         stamps.append((path,_stamp(before)))
@@ -166,8 +182,9 @@ def main(argv=None):
         path=args.output.absolute()
         descriptor,temporary=tempfile.mkstemp(prefix='.engine-sources-',dir=path.parent)
         try:
-            try:stream=os.fdopen(descriptor,'w',encoding='utf-8',newline='\n')
-            except BaseException:os.close(descriptor);raise
+            from ..owned_file_descriptor import fdopen_owned
+            stream=fdopen_owned(descriptor,'w',encoding='utf-8',newline='\n',
+                                owner='source inventory report')
             with stream:
                 stream.write(encoded);stream.flush();os.fsync(stream.fileno())
             os.replace(temporary,path)

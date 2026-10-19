@@ -65,7 +65,8 @@ def comparison_configuration(*, offline_root, oracle_factory, candidate_factory,
                              oracle_artifacts, candidate_artifacts, tokens,
                              oracle_options=None, candidate_options=None,
                              logits_tolerance, cache_tolerance, routing_evidence=(),
-                             generation_steps=8, seed=0, chunk_sizes=(2,7,32),continuation_restore=False):
+                             generation_steps=8, seed=0, chunk_sizes=(2,7,32),continuation_restore=False,
+                             execution_contract=None):
     """Create a complete comparison case with explicit logits/cache/routing policy.
 
     Artifact arguments are already pinned records, never guessed revisions.
@@ -94,6 +95,15 @@ def comparison_configuration(*, offline_root, oracle_factory, candidate_factory,
             schedules.append(schedule)
     if type(continuation_restore) is not bool:
         raise ValueError('explicit continuation comparison policy required')
+    if execution_contract is not None:
+        required_contract = {'family', 'model_type', 'backend', 'arithmetic',
+                             'source_format', 'persisted_format', 'media'}
+        if (type(execution_contract) is not dict or set(execution_contract) != required_contract
+                or any(type(execution_contract[key]) is not str or not execution_contract[key]
+                       for key in required_contract - {'media'})
+                or type(execution_contract['media']) is not bool):
+            raise ValueError('exact family/model/backend/arithmetic/source/persisted/media contract required')
+        execution_contract = dict(execution_contract)
     manifest = dict(schema='openagent.wholemodel-validation-input.v1',offline_root=str(offline_root),
         continuation_restore=continuation_restore,
         seed=seed,tokens=ids,generation_steps=generation_steps,chunk_schedules=schedules,
@@ -115,6 +125,29 @@ def comparison_configuration(*, offline_root, oracle_factory, candidate_factory,
             paths.add(row['path'])
         if not {'source','config','weights','tokenizer','dependency'}<=kinds:
             raise ValueError('complete artifact categories required for '+role)
+    if execution_contract is not None:
+        # Only canonicalize records after their shape and required fields have
+        # been admitted, so malformed input uses the explicit contract errors
+        # above rather than leaking KeyError from the binding construction.
+        # This remains an integrity join, not a runtime receipt or proof that
+        # the artifacts implement the execution row.
+        pin_records = {
+            role: sorted((dict(row) for row in manifest[role]['artifacts']),
+                         key=lambda row: (row['kind'], row['path'], row['sha256']))
+            for role in ('oracle', 'candidate')
+        }
+        bound_payload = dict(contract=execution_contract,
+                             oracle_factory=oracle_factory,
+                             candidate_factory=candidate_factory,
+                             artifact_pins=pin_records)
+        binding_sha256 = hashlib.sha256(json.dumps(
+            bound_payload, sort_keys=True, separators=(',', ':'),
+            allow_nan=False).encode('utf-8')).hexdigest()
+        # Adapters must still echo the exact row in metadata before comparison.
+        manifest['execution_binding'] = dict(
+            contract=execution_contract, oracle_factory=oracle_factory,
+            candidate_factory=candidate_factory, artifact_pins=pin_records,
+            binding_sha256=binding_sha256, receipt_required=True)
     for kind in ('config','weights','tokenizer'):
         pins = lambda role:sorted(row['sha256'] for row in manifest[role]['artifacts'] if row['kind']==kind)
         if pins('oracle')!=pins('candidate'):
@@ -132,7 +165,16 @@ def write_configuration(manifest, destination):
     descriptor,name = tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(descriptor,'wb') as output:
+        try:
+            output=os.fdopen(descriptor,'wb')
+        except BaseException as primary:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup:
+                primary.cleanup=lambda:os.close(descriptor)
+                primary.add_note('comparison configuration descriptor cleanup retained: '+repr(cleanup))
+            raise
+        with output:
             _write(output,raw)
             output.flush()
             os.fsync(output.fileno())

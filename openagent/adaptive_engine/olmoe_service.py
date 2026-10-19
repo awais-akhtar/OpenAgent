@@ -87,6 +87,7 @@ class OlmoeChatDecoder:
         ids = self._turn_boundary + list(self.model.encode(prompt))
         self._turn_boundary = []
         stream = iter(self.model.continue_id_stream(ids, max_tokens=max_tokens))
+        primary: BaseException | None = None
         try:
             for token in stream:
                 if cancelled():
@@ -100,10 +101,21 @@ class OlmoeChatDecoder:
                 rendered = text
                 if delta:
                     on_token(delta)
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
             close = getattr(stream, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("OLMoE token stream close failed while unwinding: " + repr(cleanup))
+                    except BaseException:
+                        pass
         # The model stream consumes yielded tokens on resumption, but never
         # consumes EOS. Replay the turn delimiter with the next prompt.
         eos = getattr(getattr(self.model, "config", None), "eos_token_id", None)
@@ -570,12 +582,18 @@ class OlmoeService:
             nonlocal output_chars
             if not text:
                 return
-            output_chars += len(text)
-            if output_chars > self._session_capacity_chars:
-                raise ServiceRequestError(request.request_id, "resource_limit", "output exceeds character capacity")
-            chunks.append(text)
+            # Cancellation and token publication share the service lifecycle
+            # lock. Once cancel() has recorded its request under this lock, no
+            # later token event can be appended to the caller-visible stream.
+            with self._condition:
+                if cancelled():
+                    return
+                output_chars += len(text)
+                if output_chars > self._session_capacity_chars:
+                    raise ServiceRequestError(request.request_id, "resource_limit", "output exceeds character capacity")
+                chunks.append(text)
+                self._emit(request, "token", text=text)
             self._increment("tokens")
-            self._emit(request, "token", text=text)
 
         def on_token(token: str) -> None:
             nonlocal stopped_by_prefix, pending_prefix

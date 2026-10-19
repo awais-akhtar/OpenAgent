@@ -14,6 +14,7 @@ ROUTE_GROUP = "vault"
 ROUTES = (
     ("GET", "/api/vault/status"),
     ("GET", "/api/vault/entries"),
+    ("GET", "/api/vault/access-log"),
     ("POST", "/api/vault/entries"),
     ("POST", "/api/vault/store"),
     ("POST", "/api/vault/retrieve"),
@@ -35,12 +36,17 @@ class VaultRouteDependencies:
 
 
 def handle_get(path: str, query: str, deps: VaultRouteDependencies) -> JsonRouteResult | None:
-    if path not in {"/api/vault/status", "/api/vault/entries"}:
+    if path not in {"/api/vault/status", "/api/vault/entries", "/api/vault/access-log"}:
         return None
     params = parse_qs(query)
     project = deps.first(params, "project") or "default"
     if path == "/api/vault/status":
         return JsonRouteResult(deps.vault.status(project=project))
+    if path == "/api/vault/access-log":
+        return JsonRouteResult({"access_log": deps.vault.list_access_log(
+            project=project,
+            limit=deps.parse_int(deps.first(params, "limit"), default=100),
+        )})
     return JsonRouteResult({"entries": deps.vault.list_entries(
         project=project,
         category=deps.first(params, "category") or "",

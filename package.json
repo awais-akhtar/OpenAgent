@@ -4,11 +4,15 @@
   "type": "module",
   "version": "0.13.0",
   "scripts": {
-    "dev:web": "vite --config frontend/vite.config.ts",
-    "build:web": "npm run check:web && vite build --config frontend/vite.config.ts",
-    "check:web": "tsc -p ./frontend/tsconfig.json --noEmit",
-    "test:web": "vitest run --config frontend/vitest.config.ts",
-    "test:e2e": "npm run build:web && playwright test",
+    "dev": "npm run dev:web",
+    "start": "npm run dev:web",
+    "dev:web": "npm --prefix frontend-second run dev",
+    "dev:web:legacy": "vite --config frontend/vite.config.ts",
+    "build:web": "npm --prefix frontend-second run build",
+    "check:web": "npm --prefix frontend-second run check",
+    "test:web": "npm --prefix frontend-second test",
+    "test:web:legacy": "vitest run --config frontend/vitest.config.ts",
+    "test:e2e": "npm --prefix frontend-second run test:e2e",
     "capture:web:evidence": "node scripts/capture-ui-evidence.mjs"
   },
   "devDependencies": {
@@ -28,6 +32,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
     "lucide-react": "^1.56.0",
+    "motion": "^14.2.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   }

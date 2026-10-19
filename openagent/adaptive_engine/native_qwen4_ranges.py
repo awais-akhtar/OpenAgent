@@ -58,8 +58,11 @@ class NativeQwen4Range(NativeQwen4TextDecoder):
             for name,shape in shapes.items():
                 if ple_provider is not None and name.endswith('ple.ple_embedding.ngram_embedding.weight'):
                     continue
-                if tuple(inventory[name]['shape'])!=tuple(shape):
-                    raise ValueError('Qwen4 source shape mismatch: '+name)
+                record=inventory[name]
+                allowed=('I64',) if name in metadata else ('F32','F16','BF16')
+                if (tuple(record['shape'])!=tuple(shape) or
+                        record.get('dtype') not in allowed):
+                    raise ValueError('Qwen4 source shape or dtype mismatch: '+name)
             prefixes = tuple(f'model.layers.{index}.' for index in range(begin,end))
             names = tuple(sorted(name for name in shapes if name.startswith(prefixes)))
             if ple_provider is not None:
@@ -73,7 +76,8 @@ class NativeQwen4Range(NativeQwen4TextDecoder):
                 raise MemoryError('Qwen4 range checkpoint conversion exceeds admission')
             return names
         config,weights = read_native_text_checkpoint(directory,model_type='qwen4_exp_text',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='public-range')
         model = cls(config,weights,begin=begin,end=end,library=library,max_bytes=max_bytes,
                     max_snapshots=max_snapshots,expert_provider=expert_provider,ple_provider=ple_provider,
                     native_composition=native_composition,native_expert_bank=native_expert_bank,native_ple_bank=native_ple_bank)

@@ -26,7 +26,9 @@ def _packed_dot(raw, offset, vector, width):
 
 def _kernel(raw, inputs, hidden, intermediate, coefficient, activation, output):
     for address in range(0, raw.size, 24):
-        if not math.isfinite(_read_half(raw, address)) or not math.isfinite(_read_half(raw, address + 2)):
+        delta = _read_half(raw, address)
+        minimum = _read_half(raw, address + 2)
+        if not math.isfinite(delta) or not math.isfinite(minimum):
             return 1
     area = hidden * intermediate // 32 * 24
     row_bytes = hidden // 32 * 24

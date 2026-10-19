@@ -160,6 +160,7 @@ def transport_speculative_cache(decoder, stream, *, max_bytes, restoring=False):
                     old_target = target.snapshot()
                     old_draft = proposer.snapshot()
                     old_rng = copy.deepcopy(decoder.rng.bit_generator.state)
+                    old_proposal_rng = copy.deepcopy(proposer.rng.bit_generator.state)
                     try:
                         stream.check()
                         target_file.seek(0)
@@ -176,7 +177,8 @@ def transport_speculative_cache(decoder, stream, *, max_bytes, restoring=False):
                         decoder._stopped = header['stopped']
                         decoder._stop_prefixes = tuple(tuple(prefix) for prefix in header['stop_prefixes'])
                     except BaseException as failure:
-                        decoder._rollback(old_target, old_draft, old_rng, failure)
+                        decoder._rollback(old_target, old_draft, old_rng, failure,
+                                          old_proposal_rng)
                         raise
                 finally:
                     decoder._release_states(old_target, old_draft, primary=sys.exc_info()[1])

@@ -331,33 +331,43 @@ class DevicePublisherV41Arithmetic(NativePublisherV41Arithmetic):
             return self._packed_matvec_open(packed,scales,x,rows=rows,cols=cols,encoding=encoding)
 
     def _packed_matvec_open(self,packed,scales,x,*,rows,cols,encoding):
+        packed,scales,x=np.asarray(packed),np.asarray(scales),np.asarray(x)
         if (type(rows) is not int or type(cols) is not int or rows<=0 or cols<=0 or cols%32
-                or np.asarray(packed).dtype!=np.uint8 or np.asarray(scales).dtype!=np.uint8
-                or np.asarray(x).shape!=(cols,)):
+                or packed.dtype!=np.uint8 or scales.dtype!=np.uint8
+                or packed.ndim!=1 or scales.ndim!=1 or not packed.flags.c_contiguous
+                or not scales.flags.c_contiguous or x.shape!=(cols,)
+                or x.dtype!=np.float32 or not x.flags.c_contiguous or not np.isfinite(x).all()):
             raise ValueError('exact original packed device projection geometry and byte sources required')
+        # Reject malformed format payloads before copying any bytes to the
+        # selected device. These checks mirror the consumer's true tile layout,
+        # not merely the nominal source tensor dimensions.
+        if encoding=='v41-fp4-g32':
+            if packed.size!=rows*cols//2 or scales.size!=rows*cols//32:
+                raise ValueError('exact original group32 FP4 weight extent required')
+            if bool((scales==255).any()):
+                raise ValueError('nonfinite original FP4 scale')
+        elif encoding=='fp8-e4m3-g32x32':
+            if packed.size!=rows*cols or scales.size!=math.ceil(rows/32)*math.ceil(cols/32):
+                raise ValueError('exact original tiled32 FP8 weight extent required')
+            if bool(((packed&127)==127).any()) or bool((scales==255).any()):
+                raise ValueError('nonfinite original FP8 weight or scale')
+        else:
+            raise ValueError('explicit original publisher packed encoding required')
         self._admit(packed,scales,x,extra=rows*cols*24)
         t = self.torch
         with t.inference_mode():
             codes = t.tensor(np.array(packed,copy=True),device=self.device,dtype=t.int32)
             scale = t.tensor(np.array(scales,copy=True),device=self.device,dtype=t.int32)
             if encoding=='v41-fp4-g32':
-                if codes.numel()!=rows*cols//2 or scale.numel()!=rows*cols//32:
-                    raise ValueError('exact original group32 FP4 weight extent required')
-                if bool((scale==255).any()):raise ValueError('nonfinite original FP4 scale')
                 codes = t.stack((codes&15,codes>>4),dim=-1).reshape(rows,cols)
                 matrix = t.tensor(_FP4,device=self.device)[codes&7]
                 matrix = t.where((codes&8)!=0,-matrix,matrix)
                 matrix = matrix*t.pow(t.tensor(2.,device=self.device),(scale.reshape(rows,-1)-127).float()).repeat_interleave(32,dim=1)
             elif encoding=='fp8-e4m3-g32x32':
-                if codes.numel()!=rows*cols or scale.numel()!=math.ceil(rows/32)*math.ceil(cols/32):
-                    raise ValueError('exact original tiled32 FP8 weight extent required')
                 codes = codes.reshape(rows,cols)
-                if bool(((codes&127)==127).any()) or bool((scale==255).any()):
-                    raise ValueError('nonfinite original FP8 weight or scale')
                 matrix = t.tensor(_FP8,device=self.device)[codes&127]
                 matrix = t.where((codes&128)!=0,-matrix,matrix)
                 matrix = matrix*t.pow(t.tensor(2.,device=self.device),(scale.reshape(math.ceil(rows/32),-1)-127).float()).repeat_interleave(32,0).repeat_interleave(32,1)[:rows,:cols]
-            else: raise ValueError('explicit original publisher packed encoding required')
             return self._host(matrix@self._tensor(x))
 
     def bf16_matvec(self,weight,value):

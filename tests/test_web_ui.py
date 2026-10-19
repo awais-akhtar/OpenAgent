@@ -28,7 +28,8 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("createRoot", main)
         self.assertIn("ConfigProvider", main)
         self.assertIn('aria-label="Search OpenAgent"', app)
-        self.assertIn("aria-label={`Use ${themeMode", app)
+        self.assertIn('aria-label="Appearance"', app)
+        self.assertIn("changeTheme", app)
         self.assertIn("specialPageIds", app)
         self.assertRegex(service_worker, r"CACHE_VERSION\s*=\s*['\"]openagent-vite-[a-f0-9]{16,}")
 

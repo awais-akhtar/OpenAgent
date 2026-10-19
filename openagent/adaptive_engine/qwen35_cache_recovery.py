@@ -126,38 +126,51 @@ def restore_qwen35_cache(model,source,*,max_bytes):
             raise MemoryError('Qwen3.5 continuation restore staging exceeds admission')
         digest = hashlib.sha256(prefix+encoded)
         banks = [None]*c.num_hidden_layers
-        for index in range(model.layer_begin,model.layer_end):
-            if not batch:
-                break
-            shapes = [shape for name,_,shape in schema if name.startswith(f'cache/{index}/')]
-            if c.layer_types[index]=='full_attention':
-                shapes=[[batch,c.num_key_value_heads,model.capacity,c.head_dim]]*2
-            banks[index] = tuple(np.zeros(shape,np.float32) for shape in shapes)
-        mask = np.empty((batch,position),np.uint8) if batch else None
-        for name,dtype,shape in schema:
-            if name=='mask':
-                array = mask
-            else:
-                _,index,slot = name.split('/')
-                array = banks[int(index)][int(slot)]
-                if c.layer_types[int(index)]=='full_attention':
-                    array = array[:,:,:position]
-            # Strided active KV prefixes are filled through a bounded iterator.
-            iterator = np.nditer(array,flags=['external_loop','buffered','zerosize_ok'],
-                op_flags=['writeonly'],order='C',buffersize=_CHUNK//np.dtype(dtype).itemsize)
-            for values in iterator:
-                data = _read(source,values.size*np.dtype(dtype).itemsize)
-                digest.update(data)
-                incoming = np.frombuffer(data,dtype=dtype)
-                if (dtype=='<f4' and not np.isfinite(incoming).all()) or (name=='mask' and np.any(incoming>1)):
-                    raise ValueError('invalid Qwen3.5 continuation values')
-                values[:] = incoming
-            iterator.close()
-        if (not hmac.compare_digest(digest.digest(), _read(source, 32)) or
-                _read(source, 1) != b''):
-            raise ValueError('Qwen3.5 continuation checksum/EOF mismatch')
-        model.cache,model.mask,model.position = banks,mask,position
-        return position
+        mask=array=iterator=values=data=incoming=None
+        committed=False
+        try:
+            for index in range(model.layer_begin,model.layer_end):
+                if not batch:
+                    break
+                shapes = [shape for name,_,shape in schema if name.startswith(f'cache/{index}/')]
+                if c.layer_types[index]=='full_attention':
+                    shapes=[[batch,c.num_key_value_heads,model.capacity,c.head_dim]]*2
+                banks[index] = tuple(np.zeros(shape,np.float32) for shape in shapes)
+            mask = np.empty((batch,position),np.uint8) if batch else None
+            for name,dtype,shape in schema:
+                if name=='mask':
+                    array = mask
+                else:
+                    _,index,slot = name.split('/')
+                    array = banks[int(index)][int(slot)]
+                    if c.layer_types[int(index)]=='full_attention':
+                        array = array[:,:,:position]
+                # Strided active KV prefixes are filled through a bounded iterator.
+                iterator = np.nditer(array,flags=['external_loop','buffered','zerosize_ok'],
+                    op_flags=['writeonly'],order='C',buffersize=_CHUNK//np.dtype(dtype).itemsize)
+                try:
+                    for values in iterator:
+                        data = _read(source,values.size*np.dtype(dtype).itemsize)
+                        digest.update(data)
+                        incoming = np.frombuffer(data,dtype=dtype)
+                        if (dtype=='<f4' and not np.isfinite(incoming).all()) or (name=='mask' and np.any(incoming>1)):
+                            raise ValueError('invalid Qwen3.5 continuation values')
+                        values[:] = incoming
+                finally:
+                    iterator.close()
+                    iterator=None
+                    values=incoming=data=None
+            if (not hmac.compare_digest(digest.digest(), _read(source, 32)) or
+                    _read(source, 1) != b''):
+                raise ValueError('Qwen3.5 continuation checksum/EOF mismatch')
+            model.cache,model.mask,model.position = banks,mask,position
+            committed=True
+            return position
+        finally:
+            if not committed:
+                # Tuple banks own the large NumPy state arrays.
+                banks.clear();mask=None
+            array=iterator=values=data=incoming=None
 
 
 __all__ = ['write_qwen35_cache','restore_qwen35_cache']

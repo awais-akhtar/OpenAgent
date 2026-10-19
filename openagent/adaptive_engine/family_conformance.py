@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import json
 from copy import deepcopy
+from functools import lru_cache
 
 from .hf_moe import SUPPORTED_MODEL_TYPES
 from .text_decoder_registry import _DECODERS
 from .mixtral_inventory import MIXTRAL_PUBLISHER_VARIANTS
 from .source_scope import (source_scope_matrix, validate_phase1_source,
-                           source_contract_summary, source_callable_chain)
+                           source_contract_summary, source_callable_chain,
+                           source_route_work_items)
 
 
 # Identity and wrapper metadata only; similar attention names are not equations.
@@ -41,6 +43,41 @@ REGISTRY_IDENTITIES = (
     ('deepseek_v41', ('deepseek_v41', 'deepseek_v41_text'), 'text_config',
      'Pinned publisher mappings, packed attention/Engram state, vision, DSpark, streaming projections and distributed banks exist; exact numerical admission remains evidence-gated'),
 )
+
+# Exact identities exported by the local Colibri-family reference registry.
+# The engine also has OpenAgent-only identities (currently Mixtral and the
+# legacy flat Inkling text checkpoint). Keep those in the engine matrix, but
+# label them as extensions instead of silently presenting them as Colibri
+# registry parity.
+COLIBRI_REGISTRY_IDENTITIES = (
+    ('glm53', ('glm5_next', 'glm5_next_text'), 'text_config'),
+    ('glm', ('glm_moe_dsa', 'glm5_moe', 'glm'), 'root'),
+    ('inkling', ('inkling_mm_model', 'inkling'), 'text_config'),
+    ('kimi', ('kimi_k3', 'kimi_linear'), 'text_config'),
+    ('olmoe', ('olmoe',), 'root'),
+    ('qwen36', ('qwen3_5_moe', 'qwen3_5_moe_text'), 'text_config'),
+    ('qwen38', ('qwen4_exp', 'qwen4_exp_text'), 'text_config'),
+    ('deepseek_v4', ('deepseek_v4',), 'root'),
+    ('deepseek_v41', ('deepseek_v41', 'deepseek_v41_text'), 'text_config'),
+)
+_COLIBRI_REGISTRY_MODELS = frozenset(
+    (family, model_type)
+    for family, model_types, _ in COLIBRI_REGISTRY_IDENTITIES
+    for model_type in model_types)
+
+
+@lru_cache(maxsize=1)
+def _validated_source_scope_snapshot():
+    """Validate the immutable checkout catalog once per interpreter.
+
+    The conformance report is requested repeatedly by CLI/API consumers. Keep
+    the expensive filesystem/syntax audit in a private cache and return only
+    detached copies from public report construction. Restart the process after
+    editing source owners so the audit observes the new checkout state.
+    """
+    scope = source_scope_matrix()
+    validate_phase1_source(scope=scope)
+    return scope
 
 # Public text entry points do not imply full registry-family or wrapper support.
 RESIDENT_TEXT_CONTRACTS = {
@@ -80,8 +117,7 @@ def conformance_matrix(*, probe_transformers=False):
             metadata = {name: (CONFIG_MAPPING_NAMES.get(name),
                                MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(name))
                         for _, names, _, _ in REGISTRY_IDENTITIES for name in names}
-    scope = source_scope_matrix()
-    validate_phase1_source(scope=scope)
+    scope = deepcopy(_validated_source_scope_snapshot())
     scope_families = scope['families']
     rows = []
     for family, names, section, reason in REGISTRY_IDENTITIES:
@@ -104,7 +140,8 @@ def conformance_matrix(*, probe_transformers=False):
                 config_section='root' if name in _DECODERS or name=='deepseek_v41_text' else section,
                 library_allowlisted=name in SUPPORTED_MODEL_TYPES,
                 independent_python_family=name in {'mixtral','olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa', 'qwen4_exp_text'},
-                independent_contract=('linear-QSA-PLE-default-text-RoPE-FP32-resident' if name == 'qwen4_exp_text' else None),
+                independent_contract=(RESIDENT_TEXT_CONTRACTS['qwen4_exp_text'][0]
+                                      if name == 'qwen4_exp_text' else None),
                 native_resident_contract=RESIDENT_TEXT_CONTRACTS.get(name, (None, False))[0],
                 native_resident_range_supported=name in {'mixtral','olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa', 'qwen4_exp_text', 'glm5_next_text','inkling_text'},
                 native_streamed_range_supported=name in {'mixtral','olmoe','glm_moe_dsa','qwen3_5_moe_text','qwen4_exp_text','glm5_next_text','inkling_text'},
@@ -145,14 +182,24 @@ def conformance_matrix(*, probe_transformers=False):
                 source_chain_dimensions=scope_row.get('chain_dimensions', ()) if phase1_catalogued else (),
                 rejection_reason=reason, transformers_config_class=config,
                 transformers_causal_class=causal,
-                identity_collision=(name == 'glm' and causal == 'GlmForCausalLM')))
+                identity_collision=(name == 'glm' and causal == 'GlmForCausalLM'),
+                colibri_registry_member=(family, name) in _COLIBRI_REGISTRY_MODELS))
     return dict(schema='openagent.family-conformance.v1',
         source_scope=scope,
+        # Keep unresolved route work canonical and deduplicated.  Consumers
+        # should schedule this list instead of iterating expanded publisher
+        # variants and implementing the same six-field gap repeatedly.
+        source_route_work_items=[deepcopy(item) for item in source_route_work_items()],
         evidence_scope='identity metadata and installed library mappings; not numerical conformance',
         native_decoder_supported_scope='full-registry-family',
         transformers_probed=probe_transformers, transformers_installed=installed,
         transformers_version=version, registry_models=rows,
         library_allowlist=sorted(SUPPORTED_MODEL_TYPES),
+        colibri_registry_identities=[dict(id=family, model_types=list(names),
+                                          config_section=section)
+                                     for family, names, section in COLIBRI_REGISTRY_IDENTITIES],
+        openagent_extension_model_types=sorted(
+            row['model_type'] for row in rows if not row['colibri_registry_member']),
         mixtral_publisher_variants={repository:dict(variant) for repository,variant in MIXTRAL_PUBLISHER_VARIANTS.items()},
         independent_python_families=['mixtral', 'olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa', 'qwen4_exp_text'],
         native_resident_range_families=['mixtral','olmoe', 'qwen3_5_moe_text', 'glm_moe_dsa', 'qwen4_exp_text', 'glm5_next_text', 'inkling_text'],

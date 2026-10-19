@@ -107,7 +107,7 @@ class IndependentMixtralDecoder:
         from .native_checkpoint import read_native_text_checkpoint, _cancelled
         config, weights = read_native_text_checkpoint(
             directory, model_type='mixtral', max_weight_bytes=max_weight_bytes,
-            read_limits=read_limits, cancel=cancel)
+            read_limits=read_limits, cancel=cancel,source_backend='native')
         _cancelled(cancel)
         decoder = cls(config, weights)
         _cancelled(cancel)

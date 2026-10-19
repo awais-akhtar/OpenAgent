@@ -6,12 +6,17 @@ from functools import wraps
 import numpy as np
 
 from .native_family_public_adapters import NativeFamilyPublicAdapters
-from .segment_edge_runtime import SegmentEdgeExecution,SegmentRange
+from .segment_edge_runtime import SegmentEdgeExecution,SegmentRange,_cancel_requested
 
 
 class _Cancellation:
     def __init__(self,callback):self.callback=callback
-    def is_set(self):return bool(self.callback is not None and self.callback())
+    def is_set(self):
+        if self.callback is None:return False
+        # This wrapper consumes a Python cancellation predicate, not an ABI
+        # callback. Normalize its ordinary truthy/falsey result to the exact
+        # integer wire values before sharing the ABI validator.
+        return _cancel_requested(lambda _user:int(bool(self.callback())),None)
 
 
 def _exclusive(operation):

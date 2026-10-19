@@ -1,0 +1,269 @@
+{
+  "schema_version": 4,
+  "backend": "cuda",
+  "status": "unavailable",
+  "scope": "probe",
+  "engine_certified": false,
+  "decoder": null,
+  "full_model_certified": false,
+  "routed_expert_certified": false,
+  "decoder_backend_matrix": [
+    {
+      "decoder": "qwen35",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.torch_qwen35_decoder.TorchQwen35Decoder",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Complete device decoder execution requires pinned real-backend comparison evidence.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "qwen4",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.torch_qwen4_decoder.TorchQwen4Decoder",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Hybrid device state and lexical continuation require whole-model comparison evidence.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "glm-dsa",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.torch_glm_dsa_decoder.TorchGlmDsaDecoder",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Resident accelerator DSA execution requires pinned publisher and real-backend comparison evidence.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "glm5-next",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.torch_glm5_decoder.TorchGlm5NextDecoder",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Bounded native family contract requires exact publisher and backend admission.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "inkling",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.torch_inkling_decoder.TorchInklingDecoder",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Native CPU continuation does not establish publisher or accelerator certification.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "mixtral",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.torch_mixtral_decoder.TorchMixtralDecoder",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Complete pinned publisher checkpoint admission is not certified here.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "kimi-k3",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.k3_execution.K3Execution",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Publisher-shaped K3 loading and execution have not been compared on this backend.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    },
+    {
+      "decoder": "deepseek-v41",
+      "backend": "cuda",
+      "candidate": "openagent.adaptive_engine.v41_execution.DevicePublisherV41Execution",
+      "status": "unavailable",
+      "executed": false,
+      "certified": false,
+      "loading_prerequisites": [
+        "Pinned local source, config, tokenizer, every weight shard and dependency identity",
+        "Exact complete tensor inventory, shapes, dtypes and quantization scale/layout contracts",
+        "Executable decoder admission with no missing tensors, subset loading or implicit fallback",
+        "Observed requested runtime/device identity and placement for every decoder operation",
+        "Memory/capacity admission and deterministic cleanup on loading or execution failure"
+      ],
+      "comparison_prerequisites": [
+        "Independent unchanged authoritative oracle and candidate for identical checkpoint pins",
+        "Finite full-prefix logits from the complete token-to-logit path with explicit numerical tolerances",
+        "Tokenwise and chunked incremental logits compared with fresh full-prefix execution",
+        "Complete canonical cache leaves, positions and layer identities, not replay alone",
+        "Greedy generation parity with fixed tokens, seed and positive generation steps",
+        "Synchronized backend execution and placement evidence; CPU fallback is rejected",
+        "No skipped, expected-failure, empty or missing mandatory comparisons"
+      ],
+      "gaps": [
+        "Publisher V4.1 device arithmetic requires pinned whole-model and placement evidence.",
+        "An explicit pinned candidate/oracle command manifest and validated placement evidence are required.",
+        "No real-machine full-model evidence has been collected by this runner."
+      ]
+    }
+  ],
+  "full_model_evidence": {
+    "executed": false,
+    "certified": false
+  },
+  "device_probe_evidence": {},
+  "engine_backend_evidence": {
+    "executed": false
+  },
+  "host": "Windows-11-10.0.26200-SP0",
+  "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "timestamp": "2026-10-17T23:59:24.027683+00:00",
+  "revision": null,
+  "commands": [],
+  "requirements": {
+    "device": 0,
+    "device_name": null,
+    "min_memory_bytes": 0
+  },
+  "stage": "preflight",
+  "failure": {
+    "stage": "preflight",
+    "kind": "Unavailable",
+    "reason": "cuda requires Linux, got Windows"
+  },
+  "error": "Unavailable: cuda requires Linux, got Windows"
+}

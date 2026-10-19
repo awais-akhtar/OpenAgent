@@ -52,7 +52,7 @@ def handle_get(path: str, query: str, deps: TerminalRouteDependencies) -> JsonRo
             )
         if path.startswith("/api/terminal/runs/"):
             run_id = unquote(path.removeprefix("/api/terminal/runs/")).strip("/")
-            return JsonRouteResult({"run": deps.terminal.get_run(run_id)})
+            return JsonRouteResult({"run": deps.terminal.get_run(run_id, owner=deps.query_owner(params))})
     except KeyError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
     return None

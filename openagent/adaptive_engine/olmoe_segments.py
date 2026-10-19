@@ -1,7 +1,8 @@
 """Range-resident NumPy OLMoE execution, with explicitly non-native math.
 
-Calls and session mutations are serialized by the caller. Cancellation is a
-callable returning a boolean, checked at the two transactional range boundaries.
+Calls and session mutations are serialized by each session's reentrant owner
+lock. Cancellation is a callable returning a boolean, checked at the two
+transactional range boundaries.
 """
 
 from dataclasses import replace
@@ -9,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import threading
 
 import numpy as np
 
@@ -52,6 +54,7 @@ class OlmoeSegmentSession:
         self._v = [np.zeros_like(key) for key in self._k]
         self.position = 0
         self._closed = False
+        self._lock = threading.RLock()
 
     def _check(self):
         self._engine._check()
@@ -59,30 +62,39 @@ class OlmoeSegmentSession:
             raise RuntimeError("session is closed")
 
     def forward(self, hidden, *, cancelled=None):
-        return self._engine.forward(self, hidden, cancelled=cancelled)
+        with self._lock:
+            self._check()
+            return self._engine.forward(self, hidden, cancelled=cancelled)
 
     def reset(self):
-        self._check()
-        for array in self._k + self._v:
-            array.fill(0)
-        self.position = 0
+        with self._lock:
+            self._check()
+            for array in self._k + self._v:
+                array.fill(0)
+            self.position = 0
 
     def snapshot_metadata(self):
         """Return snapshot identity without reading or copying KV arrays."""
-        self._check()
-        engine = self._engine
-        return dict(format="openagent.olmoe-segment.v2",
-                    fingerprint=engine.manifest.fingerprint,
-                    execution_identity=engine.execution_identity,
-                    range=(engine.begin, engine.end), numeric_class=NUMERIC_CLASS,
-                    context_tokens=self.context_tokens)
+        with self._lock:
+            self._check()
+            engine = self._engine
+            return dict(format="openagent.olmoe-segment.v2",
+                        fingerprint=engine.manifest.fingerprint,
+                        execution_identity=engine.execution_identity,
+                        range=(engine.begin, engine.end), numeric_class=NUMERIC_CLASS,
+                        context_tokens=self.context_tokens)
 
     def snapshot_state(self):
-        return dict(self.snapshot_metadata(), position=self.position,
-                    keys=[a[:, :self.position].copy() for a in self._k],
-                    values=[a[:, :self.position].copy() for a in self._v])
+        with self._lock:
+            return dict(self.snapshot_metadata(), position=self.position,
+                        keys=[a[:, :self.position].copy() for a in self._k],
+                        values=[a[:, :self.position].copy() for a in self._v])
 
     def restore_state(self, state):
+        with self._lock:
+            return self._restore_state_locked(state)
+
+    def _restore_state_locked(self, state):
         self._check()
         expected = self.snapshot_metadata()
         if not isinstance(state, dict) or set(state) != set(expected) | {'position', 'keys', 'values'}:
@@ -111,11 +123,12 @@ class OlmoeSegmentSession:
         self.position = position
 
     def close(self):
-        if not self._closed:
-            self._closed = True
-            self._engine._sessions.discard(self)
-            self._k.clear()
-            self._v.clear()
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._engine._sessions.discard(self)
+                self._k.clear()
+                self._v.clear()
 
     def __enter__(self):
         self._check()
@@ -200,6 +213,10 @@ class OlmoeSegmentEngine:
         self._check()
         if not isinstance(session, OlmoeSegmentSession) or session._engine is not self:
             raise ValueError("session belongs to another engine")
+        with session._lock:
+            return self._forward_locked(session, hidden, cancelled=cancelled)
+
+    def _forward_locked(self, session, hidden, *, cancelled=None):
         session._check()
         x = _hidden(hidden, self.config.hidden_size)
         stop = session.position + len(x)

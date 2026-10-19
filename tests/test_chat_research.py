@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -181,6 +183,28 @@ class ChatResearchTests(unittest.TestCase):
             self.assertEqual(gateway.vision_call["media_type"], "image/png")
             self.assertEqual(result["model"], "qwen2.5vl:3b")
             self.assertEqual(result["messages"][-1]["content"], "The image contains a blue square.")
+
+    def test_stored_image_hash_allows_windows_path_ctime_jitter(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = ChatService(OpenAgentStore(tmp), VisionRecordingGateway())
+            payload = bytes((137, 80, 78, 71, 13, 10, 26, 10)) + b"image-payload"
+            asset = service.media.ingest_bytes(payload, filename="diagram.png", project="core")
+            original_stat = Path.stat
+
+            def path_stat(path, *args, **kwargs):
+                result = original_stat(path, *args, **kwargs)
+                if str(path) == asset['stored_path']:
+                    return SimpleNamespace(
+                        st_dev=result.st_dev, st_ino=result.st_ino,
+                        st_size=result.st_size, st_mtime_ns=result.st_mtime_ns,
+                        st_ctime_ns=result.st_ctime_ns + 1, st_mode=result.st_mode)
+                return result
+
+            with patch('openagent.chat.Path.stat', path_stat):
+                observed = service._vision_attachment([{
+                    'id': asset['id'], 'media_type': 'image'}])
+
+            self.assertEqual(observed, (payload, asset['mime_type']))
 
     def test_chat_corrects_a_false_attachment_access_denial(self) -> None:
         with TemporaryDirectory() as tmp:

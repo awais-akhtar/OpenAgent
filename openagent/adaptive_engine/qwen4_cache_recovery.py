@@ -105,15 +105,23 @@ def write_qwen4_cache(model, output, *, max_bytes):
         return extent
 
 
-def restore_qwen4_cache(model, source, *, max_bytes):
+def restore_qwen4_cache(model, source, *, max_bytes, cancelled=None):
+    if cancelled is not None and not callable(cancelled):
+        raise TypeError('Qwen4 restore cancellation callback required')
+    def check_cancelled():
+        if cancelled is not None and cancelled():
+            raise InterruptedError('Qwen4 continuation restore cancelled')
     with _access(model,max_bytes):
+        check_cancelled()
         prefix=_read(source,12)
+        check_cancelled()
         if prefix[:8]!=_MAGIC:
             raise ValueError('invalid Qwen4 continuation magic')
         length=struct.unpack('<I',prefix[8:])[0]
         if not 0<length<=min(_HEADER,max_bytes-44):
             raise ValueError('Qwen4 continuation header exceeds admission')
         encoded=_read(source,length)
+        check_cancelled()
         header=json.loads(encoded,object_pairs_hook=_pairs,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
         if type(header) is not dict or set(header)!={'version','identity','batch','position','context','schema'}:
@@ -134,27 +142,44 @@ def restore_qwen4_cache(model, source, *, max_bytes):
             raise MemoryError('Qwen4 restore exceeds admission')
         digest=hashlib.sha256(prefix+encoded)
         arrays={}
-        for name,dtype,shape in schema:
-            array=np.empty(shape,dtype=dtype);flat=array.reshape(-1);width=array.dtype.itemsize
-            for start in range(0,flat.size,_CHUNK//width):
-                size=min(_CHUNK//width,flat.size-start);data=_read(source,size*width)
-                digest.update(data)
-                if name=='mask' and any(value>1 for value in data):
-                    raise ValueError('invalid Qwen4 continuation mask bytes')
-                values=np.frombuffer(data,dtype=dtype);_validate(model,name,values)
-                flat[start:start+size]=values
-            arrays[name]=array
-        if (not hmac.compare_digest(bytes(_read(source, 32)), digest.digest()) or
-                _read(source, 1) != b''):
-            raise ValueError('Qwen4 continuation checksum or EOF differs')
-        cache=[None]*model.config.num_hidden_layers;ple=[None]*len(cache)
-        if batch:
-            for layer,kind in enumerate(model.config.layer_types):
-                if not model.layer_begin<=layer<model.layer_end:
-                    continue
-                cache[layer]=tuple(arrays[f'cache/{layer}/{i}'] for i in range(2 if kind=='linear_attention' else 3))
-                if layer+1 in model.config.ple_layer_ids:
-                    ple[layer]=tuple(arrays[f'ple/{layer}/{i}'] for i in range(2))
-        model.cache,model.ple_cache,model.mask,model.positions,model.position=(
-            cache,ple,arrays.get('mask'),arrays.get('positions'),position)
-        return position
+        cache=ple=mask=positions=array=flat=values=data=None
+        committed=False
+        try:
+            for name,dtype,shape in schema:
+                check_cancelled()
+                array=np.empty(shape,dtype=dtype);flat=array.reshape(-1);width=array.dtype.itemsize
+                for start in range(0,flat.size,_CHUNK//width):
+                    check_cancelled()
+                    size=min(_CHUNK//width,flat.size-start);data=_read(source,size*width)
+                    check_cancelled()
+                    digest.update(data)
+                    if name=='mask' and any(value>1 for value in data):
+                        raise ValueError('invalid Qwen4 continuation mask bytes')
+                    values=np.frombuffer(data,dtype=dtype);_validate(model,name,values)
+                    flat[start:start+size]=values
+                arrays[name]=array
+                array=flat=values=data=None
+            if (not hmac.compare_digest(bytes(_read(source, 32)), digest.digest()) or
+                    _read(source, 1) != b''):
+                raise ValueError('Qwen4 continuation checksum or EOF differs')
+            check_cancelled()
+            cache=[None]*model.config.num_hidden_layers;ple=[None]*len(cache)
+            if batch:
+                for layer,kind in enumerate(model.config.layer_types):
+                    if not model.layer_begin<=layer<model.layer_end:
+                        continue
+                    cache[layer]=tuple(arrays[f'cache/{layer}/{i}'] for i in range(2 if kind=='linear_attention' else 3))
+                    if layer+1 in model.config.ple_layer_ids:
+                        ple[layer]=tuple(arrays[f'ple/{layer}/{i}'] for i in range(2))
+            # All physical state remains staged until this cancellation boundary.
+            # A cancelled restore therefore preserves the old cache/position.
+            check_cancelled()
+            mask=arrays.get('mask');positions=arrays.get('positions')
+            model.cache,model.ple_cache,model.mask,model.positions,model.position=(
+                cache,ple,mask,positions,position)
+            committed=True
+            return position
+        finally:
+            if not committed:
+                arrays.clear();cache=ple=mask=positions=None
+            array=flat=values=data=None

@@ -110,6 +110,14 @@ class IndependentGlmDsaDecoder:
         raw = deepcopy(dict(config))
         if raw.get('model_type') != 'glm_moe_dsa':
             raise ValueError('expected exact glm_moe_dsa identity')
+        # This implementation admits the GLM-DSA tensor contract by model_type,
+        # but has no pinned architecture-class identity for this route.  Do not
+        # silently select it when a checkpoint explicitly names another (or an
+        # as-yet-unreviewed) architecture.  Architecture-less configs remain
+        # admitted only under the exact model_type and tensor/schedule checks
+        # below; a future reviewed architecture must be added deliberately.
+        if raw.get('architectures') is not None:
+            raise ValueError('GLM DSA architecture declarations are not admitted by this implementation')
         for key in ('hidden_size', 'vocab_size', 'intermediate_size', 'moe_intermediate_size',
                     'num_hidden_layers', 'num_attention_heads', 'num_key_value_heads',
                     'n_shared_experts', 'n_routed_experts', 'num_experts_per_tok', 'q_lora_rank',

@@ -25,7 +25,7 @@ from openagent.adaptive_engine.expert_kernels import ExpertKernelRegistry
 def checkpoint(root):
     """Write real F32 SafeTensors with multiple blocks per projection row."""
     hidden, intermediate = 64, 96
-    config = dict(model_type="olmoe", hidden_size=hidden,
+    config = dict(model_type="olmoe", architectures=["OlmoeForCausalLM"], hidden_size=hidden,
                   intermediate_size=intermediate, num_hidden_layers=2,
                   num_attention_heads=4, num_key_value_heads=2, num_experts=3,
                   num_experts_per_tok=2, vocab_size=23, max_position_embeddings=16,
@@ -263,7 +263,9 @@ class Q8OlmoeTests(unittest.TestCase):
                     if existing:
                         output.write_bytes(b'preserve primary')
                         stripe.write_bytes(b'preserve stripe')
-                    with self.assertRaisesRegex(ValueError, 'finite'):
+                    expected_error = ('multi-container publication requires unused immutable destination names'
+                                      if existing else 'finite')
+                    with self.assertRaisesRegex(ValueError, expected_error):
                         pack_olmoe_experts(self.root, output, dtype=dtype,
                                           storage_destinations={'stripe': stripe})
                     for path, sentinel in ((output, b'preserve primary'),

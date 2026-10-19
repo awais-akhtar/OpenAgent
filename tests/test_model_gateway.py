@@ -195,6 +195,67 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertEqual(chunks[0].provider, "ollama")
         self.assertEqual(chunks[0].metadata["routing_policy"], "local-first")
 
+    def test_closing_text_stream_releases_provider_iterator(self) -> None:
+        class ProviderStream:
+            def __init__(self):
+                self.closed = 0
+                self.sent = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.sent:
+                    raise StopIteration
+                self.sent = True
+                return StreamChunk('ollama', 'fixture', 'partial', False, {})
+
+            def close(self):
+                self.closed += 1
+
+        source = ProviderStream()
+        with patch("openagent.model_gateway.OllamaProvider.available", return_value=True), patch(
+            "openagent.model_gateway.OllamaProvider.stream_complete", return_value=source
+        ):
+            gateway = ModelGateway()
+            stream = gateway.stream_complete(
+                [{"role": "user", "content": "disconnect"}], provider_id="ollama")
+            self.assertEqual(next(stream).content, 'partial')
+            stream.close()
+
+        self.assertEqual(source.closed, 1)
+
+    def test_openai_compatible_stream_close_releases_sse_response_iterator(self) -> None:
+        from openagent.model_gateway import OpenAICompatibleProvider
+
+        class Response:
+            def __init__(self):
+                self.closed = 0
+                self.sent = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.sent:
+                    raise StopIteration
+                self.sent = True
+                return {"choices": [{"delta": {"content": "partial"}}]}
+
+            def close(self):
+                self.closed += 1
+
+        provider = OpenAICompatibleProvider()
+        provider.base_url = "https://provider.example"
+        provider.api_key = "token"
+        source = Response()
+        with patch("openagent.model_gateway.stream_sse_json", return_value=source):
+            stream = provider.stream_complete([{"role": "user", "content": "hello"}])
+            self.assertEqual(next(stream).content, "partial")
+            stream.close()
+
+        self.assertEqual(source.closed, 1)
+
     def test_auto_route_uses_any_installed_ollama_model_before_fallback(self) -> None:
         captured: dict[str, object] = {}
 

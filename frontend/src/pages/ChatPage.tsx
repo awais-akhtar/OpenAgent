@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type KeyboardEvent, type SetStateAction } from 'react';
-import { Ellipsis, GitBranch, Download, Upload, FileDown, WifiOff, Archive } from 'lucide-react';
+import { Ellipsis, GitBranch, Download, Upload, FileDown, WifiOff, Archive, PanelRight, FileText, Eye, Info, Paperclip } from 'lucide-react';
 import { api, record, records } from '../lib/react/api';
 import { postEvents } from '../lib/react/stream';
 import { ChatComposer } from '../components/chat/ChatComposer';
 import { ConversationTimeline } from '../components/chat/ConversationTimeline';
+import { MessageContent } from '../components/chat/MessageContent';
 import './chat-page.css';
 
 type ChatItem = Record<string, unknown>;
@@ -15,6 +16,11 @@ type ChatPageProps = {
   setAttachments?: Dispatch<SetStateAction<ChatItem[]>>;
 };
 const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
+const formatMessageTime = (value: unknown): string => {
+  if (typeof value !== 'string' || !value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
 
 export function ChatPage(props: ChatPageProps) {
   const { project } = props;
@@ -23,6 +29,10 @@ export function ChatPage(props: ChatPageProps) {
   const [localAttachments, setLocalAttachments] = useState<ChatItem[]>([]);
   const [providers, setProviders] = useState<ChatItem[]>([]);
   const [agents, setAgents] = useState<ChatItem[]>([]);
+  const [providersError, setProvidersError] = useState('');
+  const [agentsError, setAgentsError] = useState('');
+  const [providersLoading, setProvidersLoading] = useState(true);
+  const [agentsLoading, setAgentsLoading] = useState(true);
   const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedId, setSelectedId] = useState(() => new URL(location.href).searchParams.get('conversation_id') || '');
   const [selectedProvider, setSelectedProvider] = useState('auto');
@@ -35,6 +45,8 @@ export function ChatPage(props: ChatPageProps) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
+  const [inspectorTab, setInspectorTab] = useState<'files' | 'preview' | 'context'>('preview');
+  const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === 'undefined' || window.innerWidth > 680);
   const [uploadError, setUploadError] = useState('');
   const controller = useRef<AbortController | null>(null);
   const openRequest = useRef(0);
@@ -44,6 +56,7 @@ export function ChatPage(props: ChatPageProps) {
   const setDraft = props.setDraft ?? setLocalDraft;
   const attachments = props.attachments ?? localAttachments;
   const setAttachments = props.setAttachments ?? setLocalAttachments;
+  const timelineMessages = useMemo(() => messages.map(message => typeof message.created_at === 'string' ? { ...message, created_at: formatMessageTime(message.created_at) } : message), [messages]);
 
   const loadConversations = useCallback(async () => {
     const data = await api.get<unknown>(`/api/conversations/organized?project=${encodeURIComponent(project)}&limit=100&sort=pinned&include_archived=false&archived_only=false`);
@@ -52,12 +65,16 @@ export function ChatPage(props: ChatPageProps) {
     window.dispatchEvent(new Event('openagent:conversations-updated'));
   }, [project]);
   const loadProviders = useCallback(async () => {
-    try { const data = await api.get<unknown>('/api/models'); setProviders(records(data, 'providers')); }
-    catch { setProviders([]); }
+    setProvidersLoading(true);
+    try { const data = await api.get<unknown>('/api/models'); setProviders(records(data, 'providers')); setProvidersError(''); }
+    catch (cause) { setProvidersError(cause instanceof Error ? cause.message : 'Model options could not be loaded.'); }
+    finally { setProvidersLoading(false); }
   }, []);
   const loadAgents = useCallback(async () => {
-    try { const data = await api.get<unknown>('/api/agents'); setAgents(records(data, 'agents')); }
-    catch { setAgents([]); }
+    setAgentsLoading(true);
+    try { const data = await api.get<unknown>('/api/agents'); setAgents(records(data, 'agents')); setAgentsError(''); }
+    catch (cause) { setAgentsError(cause instanceof Error ? cause.message : 'Assistant options could not be loaded.'); }
+    finally { setAgentsLoading(false); }
   }, []);
   const loadPrivacy = useCallback(() => {
     try { const saved = record(JSON.parse(localStorage.getItem('oa-privacy-settings') || '{}')); setLocalOnly(saved.localOnly !== false); }
@@ -66,6 +83,9 @@ export function ChatPage(props: ChatPageProps) {
 
   useEffect(() => {
     alive.current = true;
+    // Home hands off its unsent prompt once, without putting private text in the URL.
+    const handoffKey = `oa-chat-handoff:${project}`;
+    try { const handoff = sessionStorage.getItem(handoffKey); if (handoff) { setLocalDraft(current => current || handoff); sessionStorage.removeItem(handoffKey); } } catch { /* Storage can be disabled; the composer remains available. */ }
     void Promise.allSettled([loadConversations().catch(cause => { setError(cause instanceof Error ? cause.message : 'Could not load conversation history.'); }), loadProviders(), loadAgents(), Promise.resolve(loadPrivacy())]).finally(() => {
       if (!alive.current) return;
       const initialConversation = new URL(location.href).searchParams.get('conversation_id');
@@ -94,6 +114,19 @@ export function ChatPage(props: ChatPageProps) {
   useEffect(() => { routeConversation.current = selectedId; }, [selectedId]);
 
   const activeProvider = providers.find(item => item.id === selectedProvider) ?? {};
+  const selectedConversation = conversations.find(item => text(item.id) === selectedId);
+  const activeFiles = useMemo(() => {
+    const fromDraft = attachments;
+    const fromMessages = messages.flatMap(message => Array.isArray(message.attachments) ? message.attachments.map(record) : []);
+    const unique = new Map<string, ChatItem>();
+    [...fromDraft, ...fromMessages].forEach((file, index) => unique.set(text(file.id, `${text(file.name, 'File')}-${index}`), file));
+    return [...unique.values()];
+  }, [attachments, messages]);
+  const latestAnswer = [...messages].reverse().find(item => (item.role === 'assistant' || item.role === 'streaming') && text(item.content).trim());
+  const latestAnswerText = latestAnswer ? text(latestAnswer.content) : '';
+  const latestAnswerWords = latestAnswerText.trim() ? latestAnswerText.trim().split(/\s+/).length : 0;
+  const latestAnswerTime = typeof latestAnswer?.created_at === 'string' ? formatMessageTime(latestAnswer.created_at) : '';
+  const focusLatestAnswer = () => { const answers = document.querySelectorAll<HTMLElement>('.oa-chat-message.assistant'); answers.item(answers.length - 1)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
   const availableModels = [...new Set([text(activeProvider.default_model), ...(Array.isArray(activeProvider.installed_models) ? activeProvider.installed_models.filter((item): item is string => typeof item === 'string') : [])].filter(Boolean))];
 
   const openConversation = async (item: ChatItem) => {
@@ -174,7 +207,7 @@ export function ChatPage(props: ChatPageProps) {
     try {
       const result = record(await api.post<unknown>('/api/chat/artifact', { title: text(conversations.find(item => item.id === selectedId)?.title, 'OpenAgent document'), content: text(lastAssistant.content), format: artifactFormat, project }));
       const artifact = record(result.artifact); const encoded = text(artifact.base64);
-      if (!encoded) throw new Error('The document service returned no artifact content.');
+      if (!encoded) throw new Error('The document could not be created. No file content was returned.');
       const binary = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([binary], { type: text(artifact.content_type, 'application/octet-stream') }));
       const link = document.createElement('a'); link.href = url; link.download = text(artifact.filename, `openagent-document.${artifactFormat}`); link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
@@ -197,7 +230,7 @@ export function ChatPage(props: ChatPageProps) {
         const run = record(result.run);
         const response = text(run.response, text(run.result, text(result.message, 'The agent completed without a text response.')));
         setMessages(current => [...current.filter(item => item.id !== optimisticMessageId), { role: 'assistant', content: response }]);
-        setStatus(result.approval ? 'The agent request is waiting for approval in Assistants.' : 'Agent run completed.');
+        setStatus(result.approval ? 'The agent request is waiting for approval in Agents.' : 'Agent run completed.');
         setAttachments([]); setSelectedAgent('');
       } catch (cause) {
         if (controller.current !== aborter) return;
@@ -246,41 +279,49 @@ export function ChatPage(props: ChatPageProps) {
       if (controller.current === aborter) { setSending(false); controller.current = null; }
     }
   };
-  const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget; setUploadError('');
-    for (const file of Array.from(input.files ?? [])) {
+  const uploadFiles = async (files: File[]) => {
+    setUploadError('');
+    for (const file of files) {
       const form = new FormData(); form.append('file', file, file.name); form.append('project', project);
       try { const result = record(await api.post<unknown>('/api/knowledge/upload', form)); const item = record(result.attachment); if (!item.name) item.name = file.name; setAttachments(current => [...current, item]); }
       catch (cause) { setUploadError(`${file.name}: ${cause instanceof Error ? cause.message : 'Upload failed.'}`); }
     }
+  };
+  const addFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    await uploadFiles(Array.from(input.files ?? []));
     input.value = '';
   };
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } };
   return <main className="oa-chat-page" aria-label="Chat">
-    <section className={`oa-chat-surface ${messages.length ? 'conversation-active' : 'conversation-home'}`} aria-label="Chat conversation">
-      <div className="oa-chat-topline">
+    <section className={`oa-chat-surface ${messages.length ? 'conversation-active' : 'conversation-home'} ${inspectorOpen ? 'has-inspector' : 'inspector-closed'}`} aria-label="Chat conversation">
+      <div className="oa-chat-workarea">
+      <div className="oa-chat-primary">
+      <header className="oa-chat-contextbar"><div><span>Workspace</span><span aria-hidden="true">/</span><strong>{selectedConversation ? text(selectedConversation.title, 'Conversation') : project === 'default' ? 'OpenAgent' : project}</strong></div><div className="oa-chat-contextbar-actions"><button type="button" aria-label={inspectorOpen ? 'Hide context panel' : 'Show context panel'} aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(value => !value)}><PanelRight size={15}/><span>{inspectorOpen ? 'Hide context' : 'Show context'}</span></button>
         {selectedId && <details className="oa-chat-menu"><summary aria-label="Conversation actions" title="Conversation actions"><Ellipsis size={19}/></summary><div className="oa-chat-menu-popover">
           <button onClick={() => void branchConversation()}><GitBranch size={15}/> Branch at last message</button><button onClick={() => void inspectReplay()}>View saved replay</button><button onClick={() => void exportConversation()}><Download size={15}/> Export conversation</button>
           <button onClick={() => void archiveCurrentConversation()}><Archive size={15}/> Archive conversation</button>
           <label><Upload size={15}/> Import conversation<input type="file" accept="application/json,.json" onChange={importConversation} aria-label="Import conversation JSON"/></label>
           <div className="oa-chat-artifact-row"><label htmlFor="artifact-format">Create document</label><select id="artifact-format" aria-label="Artifact format" value={artifactFormat} onChange={event => setArtifactFormat(event.currentTarget.value)}>{['pdf','docx','pptx','xlsx','md','html','txt'].map(format => <option key={format}>{format}</option>)}</select><button onClick={() => void createArtifact()} aria-label="Create document"><FileDown size={15}/></button></div>
         </div></details>}
-      </div>
-      {!messages.length && <div className="oa-chat-home-models" aria-label="Choose a chat provider">
-        <span>Provider</span>
-        <button type="button" aria-pressed={selectedProvider === 'auto'} onClick={() => { setSelectedProvider('auto'); setSelectedModel(''); }}>Auto</button>
-        {providers.filter(provider => provider.id !== 'auto').map(provider => <button type="button" key={String(provider.id)} aria-pressed={selectedProvider === provider.id} disabled={provider.available === false} onClick={() => { setSelectedProvider(String(provider.id)); setSelectedModel(''); }}>{text(provider.label, text(provider.name, String(provider.id)))}</button>)}
-      </div>}
-      {!messages.length && agents.length > 0 && <div className="oa-chat-home-agents" aria-label="Assistant shortcuts">
-        <div className="oa-chat-home-agents-heading"><span>Start with an assistant</span>{selectedAgent && <button type="button" onClick={() => setSelectedAgent('')}>Use standard chat</button>}</div>
-        {selectedAgent && <p className="oa-chat-agent-mode" role="status">{text(agents.find(agent => agent.id === selectedAgent)?.name, selectedAgent)} uses the checked local agent runtime; provider selection applies to standard chat.</p>}
-        <div className="oa-chat-home-agent-grid">{agents.slice(0, 9).map(agent => <button type="button" key={String(agent.id)} aria-pressed={selectedAgent === agent.id} className={selectedAgent === agent.id ? 'selected' : ''} onClick={() => setSelectedAgent(current => current === agent.id ? '' : String(agent.id))}><strong>{text(agent.name, String(agent.id))}</strong><span>{text(agent.description, 'Run this registered assistant with the checked agent service.')}</span></button>)}</div>
-      </div>}
+      </div></header>
       {error && <div className="oa-chat-error" role="alert"><WifiOff size={15}/><span>{error}</span><button onClick={() => void reload()}>Reload saved conversation</button></div>}
-      {status && <div className="oa-chat-status" role="status"><span className={sending ? 'active' : ''}/>{status}</div>}
-      <ConversationTimeline messages={messages} sending={sending} replay={replay} onCloseReplay={() => setReplay(null)}/>
+      {status && <div className="oa-chat-status" role="status"><span className={sending ? 'active' : ''}/>{sending && !messages.some(item => item.role === 'streaming') && <span className="oa-chat-wait-dots" aria-hidden="true"><i/><i/><i/></span>}{status}</div>}
+      <ConversationTimeline messages={timelineMessages} sending={sending} replay={replay} onCloseReplay={() => setReplay(null)}/>
       {uploadError && <p className="oa-chat-upload-error" role="alert">{uploadError}</p>}
-      <ChatComposer draft={draft} project={project} setDraft={setDraft} onSubmit={() => void send()} onKeyDown={onComposerKey} onFiles={addFiles} attachments={attachments} removeAttachment={index => setAttachments(current => current.filter((_, itemIndex) => itemIndex !== index))} providers={providers} provider={selectedProvider} setProvider={setSelectedProvider} model={selectedModel} setModel={setSelectedModel} models={availableModels} localOnly={localOnly} external={allowExternal} setExternal={setAllowExternal} sending={sending} onStop={() => controller.current?.abort()}/>
+      <ChatComposer draft={draft} project={project} setDraft={setDraft} onSubmit={() => void send()} onKeyDown={onComposerKey} onFiles={addFiles} onDropFiles={files => void uploadFiles(files)} attachments={attachments} removeAttachment={index => setAttachments(current => current.filter((_, itemIndex) => itemIndex !== index))} providers={providers} provider={selectedProvider} setProvider={setSelectedProvider} model={selectedModel} setModel={setSelectedModel} models={availableModels} providersError={providersError} providersLoading={providersLoading} onRetryProviders={() => void loadProviders()} agents={agents} agent={selectedAgent} setAgent={setSelectedAgent} agentsError={agentsError} agentsLoading={agentsLoading} onRetryAgents={() => void loadAgents()} localOnly={localOnly} external={allowExternal} setExternal={setAllowExternal} sending={sending} onStop={() => controller.current?.abort()}/>
+      </div>
+      {inspectorOpen && <aside className="oa-chat-inspector" aria-label="Conversation context">
+        <div className="oa-chat-inspector-tabs" role="tablist" aria-label="Conversation panel">
+          <button type="button" role="tab" aria-selected={inspectorTab === 'files'} onClick={() => setInspectorTab('files')}><FileText size={14}/>Files{activeFiles.length > 0 && <span>{activeFiles.length}</span>}</button>
+          <button type="button" role="tab" aria-selected={inspectorTab === 'preview'} onClick={() => setInspectorTab('preview')}><Eye size={14}/>Preview</button>
+          <button type="button" role="tab" aria-selected={inspectorTab === 'context'} onClick={() => setInspectorTab('context')}><Info size={14}/>Context</button>
+        </div>
+        <div className="oa-chat-inspector-body" role="tabpanel">
+          {inspectorTab === 'files' ? <section><h2>Conversation files</h2>{activeFiles.length ? <ul className="oa-chat-file-list">{activeFiles.map((file, index) => <li key={text(file.id, `${text(file.name, 'file')}-${index}`)}><Paperclip size={15}/><span><strong>{text(file.name, 'Attachment')}</strong><small>{text(file.content_type, text(file.type, 'Attached to this conversation'))}</small></span></li>)}</ul> : <div className="oa-chat-inspector-empty"><FileText size={21}/><strong>No files attached</strong><p>Files you add to this conversation will appear here.</p><button type="button" onClick={() => document.querySelector<HTMLButtonElement>('.oa-chat-composer [aria-label="Attach files"]')?.click()}>Add files</button></div>}</section> : inspectorTab === 'preview' ? <section><h2>Latest response</h2>{latestAnswer ? <div className="oa-chat-answer-preview"><p className={`oa-chat-preview-state ${latestAnswer.role === 'streaming' ? 'is-streaming' : ''}`}><span aria-hidden="true"/>{latestAnswer.role === 'streaming' ? 'Generating in conversation' : 'Available in conversation'}</p><dl className="oa-chat-preview-metadata"><div><dt>Length</dt><dd>{latestAnswerText.length.toLocaleString()} characters</dd></div><div><dt>Words</dt><dd>{latestAnswerWords.toLocaleString()}</dd></div>{latestAnswerTime && <div><dt>Received</dt><dd>{latestAnswerTime}</dd></div>}</dl><button type="button" className="oa-chat-preview-jump" onClick={focusLatestAnswer}>View response in conversation</button></div> : <div className="oa-chat-inspector-empty"><Eye size={21}/><strong>No response to preview</strong><p>An assistant response will appear here after one is available.</p></div>}</section> : <section><h2>Context</h2><dl className="oa-chat-context-facts"><div><dt>Workspace</dt><dd>{project === 'default' ? 'Personal workspace' : project}</dd></div><div><dt>Conversation</dt><dd>{selectedConversation ? text(selectedConversation.title, 'Untitled conversation') : selectedId ? 'Saved conversation' : 'New conversation'}</dd></div><div><dt>Messages</dt><dd>{messages.length}</dd></div><div><dt>Assistant</dt><dd>{selectedAgent ? text(agents.find(item => text(item.id) === selectedAgent)?.name, selectedAgent) : 'Chat'}</dd></div><div><dt>Provider</dt><dd>{selectedAgent ? 'Checked agent run' : text(activeProvider.label, selectedProvider === 'auto' ? 'Automatic' : selectedProvider)}</dd></div><div><dt>External access</dt><dd>{localOnly ? 'Blocked by local-only policy' : allowExternal ? 'Allowed for this message' : 'Off for this message'}</dd></div></dl><p className="oa-chat-context-note">Context reflects this conversation and its current privacy settings.</p></section>}
+        </div>
+      </aside>}
+      </div>
     </section>
   </main>;
 }

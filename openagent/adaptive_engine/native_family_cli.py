@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import threading
 import os
+from functools import wraps
 
 from .execution_service import ExecutionCancelled,_admit_checkpoint_publication
 from .session_recovery import _path
@@ -14,6 +15,21 @@ from .closed_set_scoring import ClosedSetScoringMixin
 
 _REGISTRY = {}
 _LOCK = threading.RLock()
+
+
+def _reject_session_reentry(method):
+    """Serialize public lifecycle calls and reject same-thread callback reentry."""
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._lock:
+            if self._request_active:
+                raise RuntimeError('native family session lifecycle reentry is not admitted')
+            self._request_active = True
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                self._request_active = False
+    return guarded
 
 
 def _pairs(pairs):
@@ -31,6 +47,8 @@ def parser():
     result.add_argument('--checkpoint',required=True,type=Path)
     result.add_argument('--runtime-library',type=Path)
     result.add_argument('--kernel-library',type=Path)
+    result.add_argument('--public-runtime-library',type=Path,
+                        help='public Segment/Edge runtime for the GLM5/Inkling text ABI')
     result.add_argument('--expert-library',type=Path)
     result.add_argument('--publisher-expert-mib',type=int)
     result.add_argument('--conversion-mib',type=int)
@@ -75,6 +93,15 @@ def parser():
     return result
 
 
+def _source_backend(args):
+    """Use the selected caller's exact source route for checkpoint preflight."""
+    if getattr(args,'public_runtime_library',None) is not None:
+        return 'public-range'
+    if getattr(args,'device',None) is not None:
+        return 'device'
+    return 'native'
+
+
 class _Cancellation:
     def __init__(self,callback):
         self.callback = callback
@@ -92,6 +119,24 @@ class _DeviceOwner:
         self.attention_bytes,self.head_bytes = args.attention_mib*1024**2,args.head_mib*1024**2
         self.total_bytes = (getattr(args,'aggregate_runtime_mib',None) or args.runtime_mib)*1024**2
         self.store,self.provider = None,None
+        if manifest is not None:
+            if manifest.architecture != self.family:
+                raise ValueError('device expert manifest family differs from exact backend route')
+            if self.family not in ('glm_moe_dsa','mixtral','qwen3_5_moe_text','qwen4_exp_text'):
+                raise ValueError('packed device experts are not admitted for this exact family/backend tuple')
+            # The shared selected-device provider implements more byte
+            # formats than every family admits. Resolve each persisted layer
+            # before opening the expert store so provider capability cannot
+            # silently widen the family/backend policy.
+            from .source_scope import require_format_execution_consumer
+            source_family = {
+                'mixtral':'mixtral', 'qwen3_5_moe_text':'qwen35',
+                'qwen4_exp_text':'qwen4', 'glm_moe_dsa':'glm-dsa',
+            }[self.family]
+            for layer in manifest.layers:
+                require_format_execution_consumer(
+                    family=source_family, backend='device',
+                    persisted_format=layer.dtype)
         if self.family=='glm_moe_dsa' and args.publisher_expert_mib is not None:
             import importlib
             from .publisher_checkpoint.storage import snapshot
@@ -166,8 +211,11 @@ class _FlatOwner:
     """Borrow admitted immutable artifacts; services own native model state."""
     def __init__(self,root,args,manifest=None,config=None):
         self.root,self.family,self.library = root,args.family,args.kernel_library
+        self.public_runtime_library=getattr(args,'public_runtime_library',None)
         self.runtime_bytes,self.weight_bytes = args.runtime_mib*1024**2,args.staging_mib*1024**2
         self.total_bytes = (getattr(args,'aggregate_runtime_mib',None) or 2*args.runtime_mib)*1024**2
+        self.work_bytes=args.attention_mib*1024**2
+        self.snapshot_bytes=args.snapshot_mib*1024**2
         self.expert_library=getattr(args,'expert_library',None)
         self.expert_bytes=(getattr(args,'publisher_expert_mib',None) or 0)*1024**2
         self.conversion_bytes=(getattr(args,'conversion_mib',None) or 0)*1024**2
@@ -192,6 +240,23 @@ class _FlatOwner:
                 raise
 
     def create_execution_service(self,config,**options):
+        if self.public_runtime_library is not None:
+            from .execution_factories import open_native_family_public_directory_service
+            return open_native_family_public_directory_service(
+                self.root, runtime_library=self.public_runtime_library,
+                kernel_library=self.library, family=self.family,
+                max_weight_bytes=self.weight_bytes,
+                runtime_max_bytes=self.runtime_bytes,
+                max_total_model_bytes=self.total_bytes,
+                context_tokens=options['context_tokens'],
+                max_work_bytes=self.work_bytes,
+                max_new_tokens=options['max_new_tokens'],
+                max_sessions=options['max_sessions'],
+                prefill_chunk_tokens=options['prefill_chunk_tokens'],
+                max_snapshots_per_session=options.get('max_snapshots_per_session',4),
+                max_batch_rows=min(options['prefill_chunk_tokens'],4096),
+                max_transfer_bytes=options['max_transfer_bytes'],
+                max_snapshot_bytes=self.snapshot_bytes)
         if self.family=='glm_moe_dsa':
             from .execution_factories import open_native_glm_dsa_directory_service
             return open_native_glm_dsa_directory_service(self.root,library=self.library,
@@ -224,17 +289,37 @@ class PublisherSession(ClosedSetScoringMixin):
     def __init__(self,args,*,cancelled=None):
         self.service,self.session_id,self.tokenizer = None,None,None
         self._lock = threading.RLock()
+        self._request_active = False
         self._closed = False
         self.family=args.family
         self._key = tuple((name,str(getattr(args,name))) for name in
             ('family','checkpoint','tokenizer','runtime_library','kernel_library','context','runtime_mib',
              'staging_mib','snapshot_mib','transfer_mib','layers_per_range','prefill_chunk'))
+        self._key += (('public_runtime_library',
+                       str(getattr(args,'public_runtime_library',None))),)
         self._key += tuple((name,str(getattr(args,name,None))) for name in
             ('expert_manifest','expert_kernel','expert_cache_mib','expert_work_mib','device','attention_mib','head_mib','aggregate_runtime_mib','ple_manifest','ple_cache_mib','stream_ple','expert_library','publisher_expert_mib','conversion_mib'))
         if args.device is not None and args.family not in ('mixtral','qwen3_5_moe_text','qwen4_exp_text','inkling_text','glm5_next_text','glm_moe_dsa'):
             raise ValueError('unsupported explicit device text family')
+        if getattr(args,'public_runtime_library',None) is not None:
+            if args.device is not None or args.family not in ('glm5_next_text','inkling_text'):
+                raise ValueError('public Segment/Edge text runtime is admitted only for CPU GLM5/Inkling text')
+            if args.runtime_library is not None:
+                raise ValueError('choose the public runtime library or the ordinary family runtime, not both')
+            if args.prefill_chunk>4096:
+                raise ValueError('public family Segment/Edge batch rows are capped at 4096')
+            if type(args.attention_mib) is not int or args.attention_mib<=0:
+                raise ValueError('positive public family callback scratch admission required')
         flat_family = args.family in ('glm5_next_text','inkling_text','glm5_next') or (
             args.family=='glm_moe_dsa' and args.runtime_library is None)
+        if flat_family and args.runtime_library is not None:
+            # These routes construct their decoder from the explicitly
+            # selected kernel library (or the GLM expert library); they do
+            # not load the generic runtime-library argument. Accepting it
+            # made the CLI appear to admit a different backend than the
+            # factory actually used, and needlessly pinned an unrelated
+            # artifact into the checkpoint identity.
+            raise ValueError('flat native family route does not consume --runtime-library')
         if args.family=='glm5_next':
             if args.expert_library is None or any(type(v) is not int or v<=0 for v in
                     (args.publisher_expert_mib,args.conversion_mib)):
@@ -271,6 +356,13 @@ class PublisherSession(ClosedSetScoringMixin):
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
         if type(config) is not dict or config.get('model_type')!=args.family:
             raise ValueError('configured native family differs from checkpoint identity')
+        from .source_scope import (require_checkpoint_inventory_admission,
+                                   source_family_for_identity)
+        source_family=source_family_for_identity(args.family)
+        source_backend=_source_backend(args)
+        require_checkpoint_inventory_admission(root,family=source_family,
+            model_type=args.family,backend=source_backend,
+            max_metadata_bytes=args.staging_mib*1024**2)
         if args.family=='glm5_next':
             from .publisher_family_contracts import component_contract
             config=component_contract(config,arithmetic='fp32').text_config
@@ -288,7 +380,10 @@ class PublisherSession(ClosedSetScoringMixin):
         files = {root/'config.json',tokenizer_path}
         parsed_digests={root/'config.json':config_digest,tokenizer_path:tokenizer_digest}
         parsed_stamps={}
-        files.update(_path(path).resolve(strict=True) for path in (args.runtime_library,args.kernel_library,args.expert_library) if path is not None)
+        files.update(_path(path).resolve(strict=True) for path in
+            (args.runtime_library,args.kernel_library,
+             getattr(args,'public_runtime_library',None),args.expert_library)
+            if path is not None)
         manifest = None
         ple_bindings = None
         ple_inventory = None
@@ -350,6 +445,17 @@ class PublisherSession(ClosedSetScoringMixin):
             parsed_stamps[manifest_path]=manifest_stamp
             if manifest.architecture!=args.family:
                 raise ValueError('packed manifest family differs from configured decoder')
+            # The v1 packed-expert manifest records the destination payload
+            # format, but not the source tensor dtype/arithmetic or the exact
+            # family wrapper/backend tuple that produced it.  Those fields
+            # are required to bind a concrete P02 matrix row; inferring them
+            # from the architecture label would turn candidate rows into an
+            # accidental allowlist.  Refuse this CLI route before resolving
+            # expert payload paths or constructing a storage/provider owner.
+            raise ValueError(
+                'packed expert manifest lacks source-dtype and exact P02 tuple '
+                'provenance; native-family packed experts are restricted until '
+                'the complete source chain is recorded')
             files.add(manifest_path)
             for layer in manifest.layers:
                 for region in layer.regions.values():
@@ -529,6 +635,7 @@ class PublisherSession(ClosedSetScoringMixin):
             if _stamp(_path(path).stat())!=stamp:
                 raise ValueError('native artifact changed after admission: '+str(path))
 
+    @_reject_session_reentry
     def run(self,args,*,emit=None,cancelled=None,checkpoint_sink=None,max_checkpoint_bytes=0):
         with self._lock:
             _admit_checkpoint_publication(checkpoint_sink,max_checkpoint_bytes)
@@ -576,7 +683,10 @@ class PublisherSession(ClosedSetScoringMixin):
                 self.service.reset(self.session_id)
             def event(value):
                 if emit is not None and value.get('event')=='generation.token':
-                    emit(dict(event='tokens',token_ids=[value['token_id']]))
+                    # A later callback/checkpoint failure can still roll back
+                    # this request's executor transaction; expose the streamed
+                    # token as provisional instead of implying durability.
+                    emit(dict(event='tokens',token_ids=[value['token_id']],committed=False))
             result = self.service.generate(self.session_id,tokens,max_new_tokens=args.max_tokens,
                 stop_ids=stops,stop_prefixes=prefixes,cancel=_Cancellation(cancelled),on_event=event,sampling=sampling,
                 checkpoint_sink=checkpoint_sink,max_checkpoint_bytes=max_checkpoint_bytes,
@@ -591,6 +701,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 sampling=dict(vars(sampling)),cache=cache_receipt,
                 numerical_parity_verified=False,platform_certified=False)
 
+    @_reject_session_reentry
     def resume_generation(self,source,*,max_bytes,max_new_tokens=None,emit=None,cancelled=None,
                           checkpoint_sink=None,max_checkpoint_bytes=0):
         with self._lock:
@@ -608,7 +719,8 @@ class PublisherSession(ClosedSetScoringMixin):
                 if emit is not None and value.get('event')=='generation.token':
                     emitted.append(value['token_id'])
                     emit(dict(event='tokens',token_ids=[value['token_id']],
-                        text=self.tokenizer.decode(emitted,skip_special_tokens=True)))
+                        text=self.tokenizer.decode(emitted,skip_special_tokens=True),
+                        committed=False))
             result=self.service.resume_generation(self.session_id,boundary,max_new_tokens=max_new_tokens,
                 cancel=cancel,on_event=event,checkpoint_sink=checkpoint_sink,max_checkpoint_bytes=max_checkpoint_bytes,
                 application_identity=self.checkpoint_identity)
@@ -617,6 +729,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 family=self.family,checkpoint_identity=self.checkpoint_identity,finish_reason=result.finish_reason,
                 context_tokens=result.context_tokens,numerical_parity_verified=False,platform_certified=False)
 
+    @_reject_session_reentry
     def continuation_store(self,directory,*,max_entries,max_total_bytes,max_cache_bytes,expiry_seconds=None,indexed=True):
         from .continuation_store import DurableContinuationStore
         from .indexed_continuation_store import IndexedContinuationStore
@@ -630,6 +743,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 max_entries=max_entries,max_total_bytes=max_total_bytes,max_cache_bytes=max_cache_bytes,
                 expiry_seconds=expiry_seconds)
 
+    @_reject_session_reentry
     def save_continuation(self,store,key):
         with self._lock:
             if self._closed or store.identity!=self.checkpoint_identity:
@@ -637,6 +751,7 @@ class PublisherSession(ClosedSetScoringMixin):
             self._artifacts_unchanged()
             return store.save(self.service,self.session_id,key)
 
+    @_reject_session_reentry
     def recover_continuation(self,store,key):
         with self._lock:
             if self._closed or store.identity!=self.checkpoint_identity:
@@ -644,13 +759,16 @@ class PublisherSession(ClosedSetScoringMixin):
             self._artifacts_unchanged()
             return store.recover_into(self.service,self.session_id,key)
 
+    @_reject_session_reentry
     def close(self):
         with self._lock:
+            # Do not admit inference against an owner whose shutdown has
+            # started. If service cleanup fails, retain it for a close retry.
+            self._closed = True
             if self.service is not None:
                 self.service.close()
                 self.service = None
             self.session_id,self.tokenizer = None,None
-            self._closed = True
 
 
 def main(argv=None):

@@ -307,6 +307,7 @@ class ResilientSyncHttpRouteTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
     def test_communication_routes_hide_cross_user_messages_when_auth_is_enforced(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -363,9 +364,11 @@ class ResilientSyncHttpRouteTests(unittest.TestCase):
                     with self.assertRaises(HTTPError) as ctx:
                         urlopen(bob_reply, timeout=15)
                     self.assertEqual(ctx.exception.code, 400)
+                    ctx.exception.close()
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
 
 if __name__ == "__main__":

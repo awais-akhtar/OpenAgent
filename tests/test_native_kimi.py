@@ -406,17 +406,24 @@ class NativeKimiTests(unittest.TestCase):
                     raw = json.dumps(header).encode()
                     (root/filename).write_bytes(len(raw).to_bytes(8,'little')+raw+payload)
                 (root/'model.safetensors.index.json').write_text(json.dumps(dict(weight_map=weight_map)),encoding='utf-8')
-                loaded = NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32)
+                # This test covers the parser/converter behind the P02 gate;
+                # the source-scope suite separately proves the unverified
+                # public route is rejected before this checkpoint code runs.
+                from unittest.mock import patch
+                with patch('openagent.adaptive_engine.source_scope.require_checkpoint_inventory_admission'):
+                    loaded = NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32)
                 self.instances.append(loaded)
                 direct = NativeKimiLinearDecoder(config,converted,library=self.path,capacity=32)
                 self.instances.append(direct)
                 np.testing.assert_array_equal(loaded.forward([1,3,4]),direct.forward([1,3,4]))
                 with self.assertRaisesRegex(ValueError,'memory budget'):
-                    NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32,max_bytes=1)
+                    with patch('openagent.adaptive_engine.source_scope.require_checkpoint_inventory_admission'):
+                        NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32,max_bytes=1)
                 weight_map[list(tensors)[0]] = '../escape.safetensors'
                 (root/'model.safetensors.index.json').write_text(json.dumps(dict(weight_map=weight_map)),encoding='utf-8')
                 with self.assertRaisesRegex(ValueError,'local basename'):
-                    NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32)
+                    with patch('openagent.adaptive_engine.source_scope.require_checkpoint_inventory_admission'):
+                        NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32)
 
     def test_native_arithmetic_overflow_does_not_commit(self):
         _,config,tensors = self.decoder_fixture()

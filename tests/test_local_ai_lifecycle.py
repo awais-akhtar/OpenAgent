@@ -115,9 +115,11 @@ class ModelLifecycleHttpRouteTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as ctx:
                     urlopen(bad_request, timeout=15)
                 self.assertEqual(ctx.exception.code, 400)
+                ctx.exception.close()
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
 
 if __name__ == "__main__":

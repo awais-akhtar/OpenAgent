@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createWorkspaceDocumentPayload, updateWorkspaceDocumentPayload, updateWorkspaceItemPayload, workspaceLibraryPaths, workspacePreviewBlocks } from './workspace-utils';
+import { createWorkspaceDocumentPayload, updateWorkspaceDocumentPayload, updateWorkspaceItemPayload, WORKSPACE_IMPORT_MAX_BYTES, workspaceImportPayload, workspaceImportRoute, workspaceLibraryPaths, workspacePreviewBlocks } from './workspace-utils';
 
 describe('project workspace contracts', () => {
   it('keeps both file libraries scoped to the active project and search query', () => {
@@ -13,6 +13,15 @@ describe('project workspace contracts', () => {
     expect(createWorkspaceDocumentPayload('Plan', '# Plan', 'markdown', 'alpha')).toEqual({ title: 'Plan', content: '# Plan', format: 'markdown', project: 'alpha' });
     expect(updateWorkspaceDocumentPayload('Plan', '# Revised', 4)).toEqual({ title: 'Plan', content: '# Revised', if_version: 4 });
     expect(updateWorkspaceItemPayload('item-9', 'Plan', 'Text')).toEqual({ item_id: 'item-9', title: 'Plan', content: 'Text' });
+  });
+
+  it('uses the existing document import contracts and sends file content as base64 in project scope', async () => {
+    const file = new File(['OpenAgent notes'], 'notes.txt', { type: 'text/plain' });
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => new TextEncoder().encode('OpenAgent notes').buffer });
+    await expect(workspaceImportPayload(file, 'alpha')).resolves.toEqual({ filename: 'notes.txt', title: 'notes', project: 'alpha', content_base64: 'T3BlbkFnZW50IG5vdGVz' });
+    expect(workspaceImportRoute('source.PDF')).toBe('/api/documents/import-pdf');
+    expect(workspaceImportRoute('notes.txt')).toBe('/api/documents/import');
+    expect(WORKSPACE_IMPORT_MAX_BYTES).toBe(700 * 1024);
   });
 
   it('builds a safe semantic Markdown preview from headings, lists, and fenced code', () => {

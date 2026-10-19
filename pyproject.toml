@@ -115,7 +115,7 @@ openagent-hf-moe = "openagent.adaptive_engine.hf_moe_cli:main"
 openagent-checkpoint-recovery = "openagent.adaptive_engine.checkpoint_recovery:main"
 
 [tool.setuptools.package-data]
-"openagent.adaptive_engine" = ["native/*.c", "native/*.h", "native/CMakeLists.txt", "*.c", "*.h"]
+"openagent.adaptive_engine" = ["native/*.c", "native/*.h", "native/CMakeLists.txt", "*.c", "*.h", "**/*.c", "**/*.h"]
 "*" = ["*.c", "*.h", "*.cu", "*.swift", "*.metal", "*.hip", "*.cpp"]
 
 [tool.setuptools.packages.find]
@@ -130,6 +130,7 @@ include = ["openagent*"]
   "web/sw.js",
   "web/icons.svg",
   "web/assets/*",
+  "web/demo/*",
 ]
 
 [build-system]

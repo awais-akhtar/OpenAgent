@@ -25,6 +25,26 @@ class ProviderConfigurationTests(unittest.TestCase):
             with self.assertRaises(ProviderConfigurationError):
                 provider.complete([], model="unrelated")
 
+    def test_provider_hides_unadmitted_hf_execution_before_tensor_scan(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "config.json").write_text(json.dumps({
+                "model_type": "mixtral", "hidden_size": 8,
+                "intermediate_size": 12, "num_hidden_layers": 1,
+                "num_attention_heads": 2, "num_key_value_heads": 1,
+                "vocab_size": 16, "num_local_experts": 2,
+                "num_experts_per_tok": 1,
+            }))
+            with patch.dict(os.environ, {"OPENAGENT_HF_MOE_MODEL_DIR": str(root)}), \
+                 patch("openagent.adaptive_engine.hf_moe_provider.importlib.util.find_spec",
+                       return_value=object()), \
+                 patch("openagent.adaptive_engine.hf_moe_provider._scan_directory",
+                       side_effect=AssertionError("unadmitted checkpoint scan")) as scan:
+                self.assertFalse(HFMoeProvider().available())
+            scan.assert_not_called()
+
 
 AVAILABLE = all(importlib.util.find_spec(name) for name in ("torch", "transformers", "accelerate", "tokenizers"))
 

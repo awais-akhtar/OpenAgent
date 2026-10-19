@@ -7,13 +7,15 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 from openagent.adaptive_engine.native_checkpoint import (
     read_native_text_checkpoint, load_native_text_decoder,
 )
+from openagent.adaptive_engine.source_scope import require_source_matrix_admission as _require_source_matrix_admission
 
 
 class NativeCheckpointTests(unittest.TestCase):
@@ -22,6 +24,81 @@ class NativeCheckpointTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config('qwen4_exp_text')
+        # These tests cover checkpoint parsing/conversion and decoder plumbing
+        # independently of the production P02 route allowlist. Keep a separate
+        # assertion below for fail-closed candidate rejection.
+        admission = patch(
+            'openagent.adaptive_engine.source_scope.require_source_matrix_admission',
+            lambda **identity: {'test_only_parser_contract': identity})
+        admission.start()
+        self.addCleanup(admission.stop)
+
+    def test_candidate_tuple_is_rejected_by_production_admission(self):
+        from openagent.adaptive_engine.source_scope import source_matrix_row
+        row = source_matrix_row(family='olmoe', model_type='olmoe',
+            backend='public-range', arithmetic='fp32', source_format='F32',
+            persisted_format='float32')
+        self.assertEqual(row['admission'], 'candidate-unverified')
+        with self.assertRaisesRegex(ValueError, 'not admitted'):
+            _require_source_matrix_admission(family='olmoe',
+                model_type='olmoe', backend='public-range', arithmetic='fp32',
+                source_format='F32', persisted_format='float32')
+
+    def test_public_family_text_loader_seals_loaded_decoder_to_exact_checkpoint(self):
+        self.config('glm5_next_text')
+        self.shard('model.safetensors','model.embed_tokens.weight','F32')
+        library=self.root/'family-kernel.dll'
+        library.write_bytes(b'fixture')
+        decoder=SimpleNamespace(close=Mock())
+        factory=Mock(return_value=decoder)
+        from openagent.adaptive_engine.native_checkpoint import _DECODERS
+        decoder_map=dict(_DECODERS)
+        decoder_map['glm5_next_text']=('fixture','Decoder')
+        with patch('openagent.adaptive_engine.native_checkpoint._DECODERS',
+                   decoder_map), \
+                patch('openagent.adaptive_engine.native_checkpoint.import_module',
+                      return_value=SimpleNamespace(Decoder=factory)), \
+                patch('openagent.adaptive_engine.native_checkpoint.read_native_text_checkpoint',
+                      return_value=({'model_type':'glm5_next_text'},{})) as read:
+            loaded=load_native_text_decoder(self.root,model_type='glm5_next_text',
+                library=library,max_weight_bytes=4096,context_tokens=8,
+                source_backend='public-range')
+        self.assertIs(loaded,decoder)
+        read.assert_called_once_with(self.root,model_type='glm5_next_text',
+            max_weight_bytes=4096,read_limits=None,cancel=None,context_tokens=8,
+            source_backend='public-range')
+        from openagent.adaptive_engine.publisher_checkpoint.storage import snapshot
+        from openagent.adaptive_engine.family_source_binding import require_decoder_snapshot
+        inventory=snapshot(self.root,max_metadata_bytes=256*1024**2,
+            max_tensors=200000,max_shards=256)
+        self.assertTrue(require_decoder_snapshot(loaded,inventory,
+            family='glm5-next',model_type='glm5_next_text'))
+
+    def test_native_family_loader_seals_every_family_to_exact_checkpoint(self):
+        """The provenance contract applies beyond the first two public adapters."""
+        self.config('qwen4_exp_text')
+        self.shard('model.safetensors','model.embed_tokens.weight','F32')
+        library=self.root/'family-kernel.dll'
+        library.write_bytes(b'fixture')
+        decoder=SimpleNamespace(close=Mock())
+        factory=Mock(return_value=decoder)
+        from openagent.adaptive_engine.native_checkpoint import _DECODERS
+        decoder_map=dict(_DECODERS)
+        decoder_map['qwen4_exp_text']=('fixture','Decoder')
+        with patch('openagent.adaptive_engine.native_checkpoint._DECODERS',
+                   decoder_map), \
+                patch('openagent.adaptive_engine.native_checkpoint.import_module',
+                      return_value=SimpleNamespace(Decoder=factory)), \
+                patch('openagent.adaptive_engine.native_checkpoint.read_native_text_checkpoint',
+                      return_value=({'model_type':'qwen4_exp_text'},{})):
+            loaded=load_native_text_decoder(self.root,model_type='qwen4_exp_text',
+                library=library,max_weight_bytes=4096,source_backend='native')
+        from openagent.adaptive_engine.publisher_checkpoint.storage import snapshot
+        from openagent.adaptive_engine.family_source_binding import require_decoder_snapshot
+        inventory=snapshot(self.root,max_metadata_bytes=256*1024**2,
+            max_tensors=200000,max_shards=256)
+        self.assertTrue(require_decoder_snapshot(loaded,inventory,
+            family='qwen4',model_type='qwen4_exp_text'))
 
     def config(self, identity):
         (self.root / 'config.json').write_text(json.dumps({'model_type': identity}), encoding='utf-8')
@@ -33,7 +110,25 @@ class NativeCheckpointTests(unittest.TestCase):
         (self.root / filename).write_bytes(struct.pack('<Q', len(header)) + header + raw)
 
     def read(self, budget=1024):
-        return read_native_text_checkpoint(self.root, model_type='qwen4_exp_text', max_weight_bytes=budget)
+        # This class exercises the generic SafeTensors parser contract, not the
+        # Qwen4 family geometry planner or production route admission. Its
+        # explicit callback keeps that parser-only fixture use distinct from
+        # production readers, which provide a family/fixture-specific gate.
+        from openagent.adaptive_engine.native_checkpoint import _read_native_checkpoint
+        return _read_native_checkpoint(self.root, model_type='qwen4_exp_text',
+                                       max_weight_bytes=budget,
+                                       metadata_admission=lambda *_: None)
+
+    def test_low_level_reader_requires_metadata_admission_before_payload(self):
+        from openagent.adaptive_engine.native_checkpoint import _read_native_checkpoint
+        self.shard('a.safetensors', 'a')
+        with patch('openagent.adaptive_engine.native_checkpoint._open_local',
+                   side_effect=AssertionError('checkpoint opened before route admission')), \
+             patch('openagent.adaptive_engine.native_checkpoint._read_tensor',
+                   side_effect=AssertionError('payload read before route admission')):
+            with self.assertRaisesRegex(ValueError, 'metadata admission callback required'):
+                _read_native_checkpoint(self.root, model_type='qwen4_exp_text',
+                                         max_weight_bytes=1024)
 
     def test_shards_convert_fp16_bf16_and_validate_index(self):
         self.shard('a.safetensors', 'a', 'F16', np.array([1, 2], dtype='<f2').tobytes())
@@ -57,7 +152,9 @@ class NativeCheckpointTests(unittest.TestCase):
         self.shard('a.safetensors', 'a')
         library = self.root / 'explicit.dll'
         library.write_bytes(b'placeholder for mocked constructor')
-        with patch('openagent.adaptive_engine.native_qwen4.NativeQwen4TextDecoder') as factory:
+        with patch('openagent.adaptive_engine.native_checkpoint.read_native_text_checkpoint',
+                   return_value=({'model_type': 'qwen4_exp_text'}, {'a': np.ones(2, np.float32)})), \
+             patch('openagent.adaptive_engine.native_qwen4.NativeQwen4TextDecoder') as factory:
             self.assertIs(load_native_text_decoder(self.root, model_type='qwen4_exp_text',
                 library=library, max_weight_bytes=1024, max_bytes=800), factory.return_value)
             self.assertEqual(factory.call_args.kwargs, {'library': library.resolve(), 'max_bytes': 800})
@@ -78,21 +175,26 @@ class NativeCheckpointTests(unittest.TestCase):
         library = self.root / 'explicit.dll'
         library.write_bytes(b'placeholder for mocked constructor')
         for identity, keyword in (('glm5_next_text', 'max_tokens'),
-                                  ('mixtral', 'max_context'),
-                                  ('deepseek_v4', 'max_context'), ('kimi_linear', 'capacity')):
+                                  ('mixtral', 'max_context')):
             self.config(identity)
             module, name = _DECODERS[identity]
-            with patch(f'openagent.adaptive_engine.{module}.{name}') as factory:
+            with patch('openagent.adaptive_engine.native_checkpoint.read_native_text_checkpoint',
+                       return_value=({'model_type': identity}, {'a': np.ones(2, np.float32)})), \
+                 patch(f'openagent.adaptive_engine.{module}.{name}') as factory:
                 load_native_text_decoder(self.root, model_type=identity, library=library,
                     max_weight_bytes=1024, context_tokens=7)
                 self.assertEqual(factory.call_args.kwargs[keyword], 7)
+        for identity in ('deepseek_v4', 'kimi_linear'):
+            with self.assertRaisesRegex(ValueError, 'restricted without a complete'):
+                load_native_text_decoder(self.root, model_type=identity, library=library,
+                    max_weight_bytes=1024, context_tokens=7)
         with patch('openagent.adaptive_engine.native_checkpoint.read_native_text_checkpoint', side_effect=AssertionError):
-            with self.assertRaisesRegex(ValueError, 'requires explicit'):
+            with self.assertRaisesRegex(ValueError, 'restricted without a complete'):
                 load_native_text_decoder(self.root, model_type='kimi_linear', library=library,
                     max_weight_bytes=1024)
             for context in (True, 0, -1):
                 with self.assertRaisesRegex(ValueError, 'positive integer'):
-                    load_native_text_decoder(self.root, model_type='deepseek_v4', library=library,
+                    load_native_text_decoder(self.root, model_type='glm5_next_text', library=library,
                         max_weight_bytes=1024, context_tokens=context)
 
     def test_exact_identity_duplicate_config_and_quantization_rejected(self):
@@ -152,10 +254,11 @@ class NativeCheckpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as outside:
             replacement = Path(outside) / 'replacement.safetensors'
             replacement.write_bytes(b'outside checkpoint')
-            original = Path.open
-            def substitute(path, *args, **kwargs):
-                return original(replacement if path.name == 'a.safetensors' else path, *args, **kwargs)
-            with patch.object(Path, 'open', substitute):
+            original = os.open
+            def substitute(path, flags, *args, **kwargs):
+                return original(replacement if Path(path).name == 'a.safetensors' else path,
+                                flags, *args, **kwargs)
+            with patch('openagent.adaptive_engine.native_checkpoint.os.open', substitute):
                 with self.assertRaisesRegex(ValueError, 'changed during opening'):
                     self.read()
 
@@ -176,22 +279,26 @@ class NativeCheckpointTests(unittest.TestCase):
         self.config('deepseek_v4')
         name = 'model.layers.0.mlp.gate.tid2eid'
         self.shard('a.safetensors', name, 'I64', np.array([1, 2], dtype='<i8').tobytes())
-        with patch.dict(native_checkpoint._DECODERS, {'deepseek_v4': ('unused', 'unused')}):
-            _, weights = read_native_text_checkpoint(self.root, model_type='deepseek_v4', max_weight_bytes=1024)
-            self.assertEqual(weights[name].dtype, np.int64)
-            np.testing.assert_array_equal(weights[name], [1, 2])
-            self.shard('a.safetensors', 'model.layers.0.mlp.gate.weight', 'I64', bytes(16))
-            with self.assertRaisesRegex(ValueError, 'unsupported weight'):
-                read_native_text_checkpoint(self.root, model_type='deepseek_v4', max_weight_bytes=1024)
+        _, weights = native_checkpoint._read_native_checkpoint(
+            self.root, model_type='deepseek_v4', max_weight_bytes=1024,
+            metadata_admission=lambda *_: None)
+        self.assertEqual(weights[name].dtype, np.int64)
+        np.testing.assert_array_equal(weights[name], [1, 2])
+        self.shard('a.safetensors', 'model.layers.0.mlp.gate.weight', 'I64', bytes(16))
+        with self.assertRaisesRegex(ValueError, 'unsupported weight'):
+            native_checkpoint._read_native_checkpoint(
+                self.root, model_type='deepseek_v4', max_weight_bytes=1024,
+                metadata_admission=lambda *_: None)
 
     def test_in_place_mutation_rejects_whole_read(self):
         from openagent.adaptive_engine import native_checkpoint
         self.shard('a.safetensors', 'a')
         original = native_checkpoint._read_tensor
-        def mutate(source, tensor, base):
-            result = original(source, tensor, base)
-            stamp = os.stat(source.name)
-            os.utime(source.name, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1000000000))
+        def mutate(source, tensor, base, **kwargs):
+            result = original(source, tensor, base, **kwargs)
+            stamp = os.stat(self.root / 'a.safetensors')
+            os.utime(self.root / 'a.safetensors',
+                     ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1000000000))
             return result
         with patch.object(native_checkpoint, '_read_tensor', mutate):
             with self.assertRaisesRegex(ValueError, 'changed during loading'):
@@ -261,6 +368,12 @@ class NativeCheckpointExecutionTests(unittest.TestCase):
                     library=case.library, context_tokens=5,
                     max_weight_bytes=16 * 1024**2, max_bytes=64 * 1024**2)
                 case.decoders.append(decoder)
+                from openagent.adaptive_engine.publisher_checkpoint.storage import snapshot
+                from openagent.adaptive_engine.family_source_binding import require_decoder_snapshot
+                inventory=snapshot(root,max_metadata_bytes=256*1024**2,
+                    max_tensors=200000,max_shards=256)
+                self.assertTrue(require_decoder_snapshot(decoder,inventory,
+                    family='glm5-next',model_type='glm5_next_text'))
                 ids = [2, 3, 4, 5, 6]
                 with case.torch.no_grad():
                     hidden = oracle(case.torch.tensor([ids]), use_cache=False).last_hidden_state
@@ -304,6 +417,12 @@ class NativeCheckpointExecutionTests(unittest.TestCase):
                 self.write_checkpoint(root, oracle.config.to_dict(), baseline.weights)
                 decoder = load_native_text_decoder(root, model_type='inkling_text',
                     library=case.path, max_weight_bytes=16 * 1024**2, max_bytes=64 * 1024**2)
+                from openagent.adaptive_engine.publisher_checkpoint.storage import snapshot
+                from openagent.adaptive_engine.family_source_binding import require_decoder_snapshot
+                inventory=snapshot(root,max_metadata_bytes=256*1024**2,
+                    max_tensors=200000,max_shards=256)
+                self.assertTrue(require_decoder_snapshot(decoder,inventory,
+                    family='inkling',model_type='inkling_text'))
                 ids = [2, 3, 4, 5, 6]
                 with case.torch.no_grad():
                     reference = oracle(case.torch.tensor([ids]), use_cache=True)

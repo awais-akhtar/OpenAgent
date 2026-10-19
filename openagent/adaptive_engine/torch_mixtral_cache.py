@@ -84,28 +84,36 @@ def restore_device_cache(model,source,*,max_bytes):
                 raise MemoryError('device cache recovery staging exceeds admission')
             digest = hashlib.sha256(prefix+encoded)
             banks = []
-            for _ in range(header['layers']):
-                bank = []
-                for _ in range(2):
-                    host = np.empty(shape,dtype='<f4')
-                    flat = host.reshape(-1)
-                    for start in range(0,elements,262144):
-                        count = min(262144,elements-start)
-                        data = _read(source,count*4);digest.update(data)
-                        value = np.frombuffer(data,dtype='<f4')
-                        if not np.isfinite(value).all():
-                            raise ValueError('nonfinite device continuation cache')
-                        flat[start:start+count] = value
-                    bank.append(model.torch.tensor(host,device=model.device,dtype=model.torch.float32))
-                banks.append(tuple(bank))
-            mask_data = _read(source,batch*position);digest.update(mask_data)
-            if any(value>1 for value in mask_data):
-                raise ValueError('invalid device continuation occupancy mask')
-            mask = np.frombuffer(mask_data,dtype=np.uint8).reshape(batch,position).copy() if batch else None
-            if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
-                raise ValueError('device cache checksum/EOF mismatch')
-            model._cache,model._mask,model.position = tuple(banks),mask,position
-            return position
+            bank=[];host=flat=value=data=mask_data=mask=None;committed=False
+            try:
+                for _ in range(header['layers']):
+                    bank = []
+                    for _ in range(2):
+                        host = np.empty(shape,dtype='<f4')
+                        flat = host.reshape(-1)
+                        for start in range(0,elements,262144):
+                            count = min(262144,elements-start)
+                            data = _read(source,count*4);digest.update(data)
+                            value = np.frombuffer(data,dtype='<f4')
+                            if not np.isfinite(value).all():
+                                raise ValueError('nonfinite device continuation cache')
+                            flat[start:start+count] = value
+                        bank.append(model.torch.tensor(host,device=model.device,dtype=model.torch.float32))
+                        host=flat=value=data=None
+                    banks.append(tuple(bank));bank=[]
+                mask_data = _read(source,batch*position);digest.update(mask_data)
+                if any(value>1 for value in mask_data):
+                    raise ValueError('invalid device continuation occupancy mask')
+                mask = np.frombuffer(mask_data,dtype=np.uint8).reshape(batch,position).copy() if batch else None
+                if not hmac.compare_digest(digest.digest(),_read(source,32)) or source.read(1)!=b'':
+                    raise ValueError('device cache checksum/EOF mismatch')
+                model._cache,model._mask,model.position = tuple(banks),mask,position
+                committed=True
+                return position
+            finally:
+                if not committed:
+                    bank.clear();banks.clear();mask=None
+                host=flat=value=data=mask_data=None
         finally:
             model._busy = False
 

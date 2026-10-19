@@ -7,11 +7,14 @@ Collective failure poisons the coordinator: all ranks must then be restarted.
 import threading
 import json
 import shutil
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from functools import wraps
 import hashlib
 import struct
 from pathlib import Path
 from uuid import uuid4
+
+from .failure_reporting import add_failure_note, failure_summary
 
 
 def _history_digest(tokens):
@@ -22,26 +25,191 @@ def _history_digest(tokens):
     return digest.hexdigest()
 
 
+def _required_service_snapshot(service, session):
+    """Require a concrete local rollback receipt before a rank mutates state."""
+    from .execution_service import ExecutionSessionSnapshot
+    receipt = service.snapshot(session)
+    if (type(receipt) is not ExecutionSessionSnapshot or
+            receipt.session_id != session or type(receipt.snapshot_id) is not str or
+            not receipt.snapshot_id):
+        raise RuntimeError('distributed rank snapshot did not provide a valid session-bound rollback receipt')
+    return receipt
+
+
+def _failure_summary(failure, *, limit=4096):
+    """Return bounded rank-error text without calling arbitrary __str__ code."""
+    try:
+        name=type(failure).__name__
+    except BaseException:
+        name='BaseException'
+    if type(name) is not str or not name or len(name)>128:
+        name='BaseException'
+    # Agreement relies on every surviving rank reaching the next collective.
+    # Exception stringification is arbitrary application code and can itself
+    # raise, so keep the exchanged diagnostic stable and side-effect-free.
+    return (name+': failure details omitted')[:limit]
+
+
+def _valid_result_summary(action, value):
+    """Validate the bounded primitive summary exchanged after each request.
+
+    These records are received from every process-group peer. Exact builtin
+    fields avoid invoking arbitrary ``__eq__`` implementations while ranks
+    compare summaries; malformed nested values become an agreed operation
+    failure instead of a rank-local exception between collectives.
+    """
+    def integer(item, minimum=0):
+        return type(item) is int and minimum <= item <= 2**63-1
+
+    def digest(item):
+        return (type(item) is str and len(item) == 64 and
+                all(character in '0123456789abcdef' for character in item))
+
+    if type(value) is not tuple or not value or type(value[0]) is not str:
+        return False
+    tag = value[0]
+    if action == 'open':
+        return (len(value) == 4 and tag == 'open' and integer(value[1], 1) and
+                type(value[2]) is str and 0 < len(value[2]) <= 4096 and
+                '\x00' not in value[2] and type(value[3]) is tuple and
+                len(value[3]) == 2 and all(type(item) is str and item for item in value[3]))
+    if action == 'close':
+        return len(value) == 1 and value[0] == 'close'
+    if action in ('generate', 'resume_generation') and tag == 'cancelled':
+        return (len(value) == 4 and integer(value[1], 1) and integer(value[2]) and
+                digest(value[3]))
+    if action in ('generate', 'resume_generation'):
+        return (len(value) == 4 and tag == 'generate' and type(value[1]) is tuple and
+                all(integer(item) for item in value[1]) and integer(value[2]) and
+                type(value[3]) is str and 0 < len(value[3]) <= 64)
+    if action in ('reset',):
+        return (len(value) == 4 and tag == 'reset' and integer(value[1], 1) and
+                integer(value[2]) and digest(value[3]))
+    if action == 'save_cache':
+        return (len(value) == 4 and tag == 'save_cache' and integer(value[1], 1) and
+                integer(value[2]) and digest(value[3]))
+    if action == 'load_cache':
+        return (len(value) == 4 and tag == 'load_cache' and integer(value[1], 1) and
+                integer(value[2]) and digest(value[3]))
+    if action == 'snapshot':
+        return (len(value) == 4 and tag == 'snapshot' and integer(value[1], 1) and
+                integer(value[2]) and digest(value[3]))
+    if action == 'restore':
+        return (len(value) == 4 and tag == 'restore' and integer(value[1], 1) and
+                digest(value[2]) and integer(value[3]))
+    if action in ('restore_generation',):
+        return (len(value) == 3 and tag == 'restore_generation' and
+                integer(value[1]) and digest(value[2]))
+    if action == 'cancelled':
+        return (len(value) == 4 and tag == 'cancelled' and integer(value[1], 1) and
+                integer(value[2]) and digest(value[3]))
+    if action == 'release_snapshot':
+        return len(value) == 2 and tag == 'release_snapshot' and integer(value[1], 1)
+    if action == 'close_session':
+        return len(value) == 2 and tag == 'close_session' and integer(value[1], 1)
+    return False
+
+
+@dataclass(frozen=True)
+class _RequestRejected:
+    action: str
+    message: str
+
+
+def _synchronize_root_preflight(method):
+    """Make root-only validation failures visible to every waiting rank.
+
+    A public request method can fail while parsing a manifest or validating
+    local arguments before its normal command broadcast. Without a rejection
+    envelope, peers remain blocked in ``serve()`` waiting for that command.
+    Once a collective has advanced or the coordinator is poisoned, do not send
+    a second command.
+    """
+    @wraps(method)
+    def synchronized(self, *args, **kwargs):
+        sequence = self._sequence
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as failure:
+            if (self.rank == 0 and not self._closed and not self._failed and
+                    self._sequence == sequence):
+                try:
+                    try:
+                        message = _failure_summary(failure)
+                    except BaseException:
+                        message = type(failure).__name__
+                    self._reject_preflight(method.__name__, message)
+                except BaseException as rejection:
+                    # The rejection acknowledgement is expected for ordinary
+                    # validation errors. Preserve process-level interrupts
+                    # after peers have received the synchronized rejection;
+                    # otherwise Ctrl+C/SystemExit before broadcast can leave
+                    # every peer blocked in serve().
+                    if not isinstance(failure, Exception):
+                        try:
+                            add_failure_note(failure, 'distributed preflight was synchronized: '+failure_summary(rejection))
+                        except BaseException:
+                            pass
+                        raise failure from rejection
+                    try:
+                        add_failure_note(failure, 'distributed preflight synchronization result: '+failure_summary(rejection))
+                    except BaseException:
+                        pass
+                    raise rejection from failure
+            raise
+    return synchronized
+
+
 class DistributedExecutionService:
     def __init__(self, service, *, control_group, max_control_bytes=1024*1024,
                  max_recovery_boundary_bytes=64*1024**2):
         import torch.distributed as distributed
         from .execution_service import NativeExecutionService
-        if type(service) is not NativeExecutionService:
-            raise ValueError('rank-local NativeExecutionService required')
         if not distributed.is_initialized():
             raise ValueError('caller-owned initialized control group required')
         if str(distributed.get_backend(control_group)).lower() != 'gloo':
             raise ValueError('CPU Gloo control group required')
+        rank = distributed.get_rank(control_group)
+        world_size = distributed.get_world_size(control_group)
+        root = distributed.get_global_rank(control_group, 0)
+
+        # Do not let a rank-local admission error escape before peers enter the
+        # constructor's agreement collective.  Otherwise a bad service type,
+        # malformed budget, or unreadable limits value on one rank can strand
+        # every other rank in all_gather_object before a coordinator exists.
+        local_errors = []
+        if type(service) is not NativeExecutionService:
+            local_errors.append('rank-local NativeExecutionService required')
         if type(max_control_bytes) is not int or max_control_bytes < 4096:
-            raise ValueError('control message budget must be at least 4096 bytes')
+            local_errors.append('control message budget must be at least 4096 bytes')
+        if (type(max_recovery_boundary_bytes) is not int or
+                max_recovery_boundary_bytes <= 0):
+            local_errors.append('positive retained generation boundary admission required')
+        limits_identity = None
+        if type(service) is NativeExecutionService:
+            try:
+                limits_identity = repr(service.limits)
+                if not limits_identity or len(limits_identity) > 8192:
+                    raise ValueError('rank-local execution limits identity exceeds admission')
+            except BaseException as failure:
+                local_errors.append('execution limits unavailable: '+_failure_summary(failure,limit=1024))
+        policy = (max_control_bytes if type(max_control_bytes) is int else None,
+                  max_recovery_boundary_bytes if type(max_recovery_boundary_bytes) is int else None,
+                  limits_identity)
+        admissions = [None]*world_size
+        distributed.all_gather_object(admissions,
+            (tuple(local_errors), policy), group=control_group)
+        rank_errors = [f'rank {peer}: {message}'
+            for peer, (errors, _) in enumerate(admissions) for message in errors]
+        if rank_errors:
+            raise ValueError('distributed coordinator admission failed: '+'; '.join(rank_errors))
+        policies = [record[1] for record in admissions]
+        if any(value != policies[0] for value in policies):
+            raise ValueError('rank-local execution limits or coordinator budgets differ')
+
         self.service, self.distributed, self.group = service, distributed, control_group
-        self.rank = distributed.get_rank(control_group)
-        self.world_size = distributed.get_world_size(control_group)
-        self.root = distributed.get_global_rank(control_group, 0)
+        self.rank, self.world_size, self.root = rank, world_size, root
         self.max_control_bytes = max_control_bytes
-        if type(max_recovery_boundary_bytes) is not int or max_recovery_boundary_bytes<=0:
-            raise ValueError('positive retained generation boundary admission required')
         self.max_recovery_boundary_bytes=max_recovery_boundary_bytes
         self._lock = threading.Lock()
         self._id_lock = threading.Lock()
@@ -53,14 +221,40 @@ class DistributedExecutionService:
         self._closed = self._failed = False
         self._active_cancel = None
         self._active_event = None
-        policies = [None]*self.world_size
-        distributed.all_gather_object(policies, repr((service.limits,max_recovery_boundary_bytes)), group=control_group)
-        if any(policy != policies[0] for policy in policies):
-            raise ValueError('rank-local execution limits differ')
+
+    def _poison_local_state(self, failure):
+        """Retire rank-local owners after a control collective is broken.
+
+        A failed Gloo/NCCL control collective cannot be safely retried: peers
+        may have observed different command boundaries.  Previously the peer
+        loop only flipped ``_failed`` and left local sessions, snapshots, and
+        generation boundaries reachable until process teardown.  Close the
+        service once, retain any cleanup failure on the original exception,
+        and make the restart requirement explicit.
+        """
+        self._failed = True
+        self._active_cancel = None
+        self._active_event = None
+        self._generation_boundaries.clear()
+        self._snapshots.clear()
+        self._sessions.clear()
+        try:
+            self.service.close()
+        except BaseException as cleanup:
+            add_failure_note(failure, 'distributed transport-loss cleanup retained: '+
+                             failure_summary(cleanup))
+            try:
+                setattr(failure, 'cleanup', self.service.close)
+            except BaseException:
+                pass
 
     def _broadcast(self, command):
         values = [command]
-        self.distributed.broadcast_object_list(values, src=self.root, group=self.group)
+        try:
+            self.distributed.broadcast_object_list(values, src=self.root, group=self.group)
+        except BaseException as failure:
+            self._poison_local_state(failure)
+            raise
         return values[0]
 
     def _execute(self, command):
@@ -72,15 +266,35 @@ class DistributedExecutionService:
             if (type(command) is not dict or command.get('sequence') != self._sequence or
                     command.get('action') not in ('open', 'generate', 'reset', 'close_session', 'close',
                                                  'snapshot', 'restore', 'release_snapshot', 'save_cache', 'load_cache',
-                                                 'resume_generation','restore_generation')):
+                                                 'resume_generation','restore_generation','reject')):
                 raise ValueError('distributed command sequence or action mismatch')
             action = command['action']
-            if action == 'open':
+            if action == 'reject':
+                rejected_action, rejection = command.get('rejected_action'), command.get('rejection')
+                if (type(rejected_action) is not str or not rejected_action or
+                        len(rejected_action) > 64 or type(rejection) is not str or
+                        not rejection or len(rejection) > 1024):
+                    raise ValueError('bounded distributed preflight rejection required')
+                summary = ('request_rejected', rejected_action, rejection)
+            elif action == 'open':
                 handle = command['session']
                 if type(handle) is not int or handle <= 0 or handle in self._sessions:
                     raise ValueError('unique positive distributed session required')
-                self._sessions[handle] = self.service.open_session()
-                result, summary = handle, ('open', handle)
+                local_session = self.service.open_session()
+                self._sessions[handle] = local_session
+                # A matching control-group size and request schedule do not
+                # prove that ranks opened the same model/bank layout. Compare
+                # the executor identity and implementation before publishing
+                # the distributed handle. A mismatch is handled by the open
+                # transaction rollback below, before any generation collective
+                # can consume incompatible rank-local state.
+                local_model = self.service._session(local_session).model
+                identity = getattr(local_model, 'identity', None)
+                if (type(identity) is not str or not 0 < len(identity) <= 4096 or
+                        '\x00' in identity):
+                    raise ValueError('distributed executor requires a bounded stable model identity')
+                implementation = (type(local_model).__module__, type(local_model).__qualname__)
+                result, summary = handle, ('open', handle, identity, implementation)
             elif action == 'close':
                 self.service.close()
                 self._sessions.clear()
@@ -106,7 +320,7 @@ class DistributedExecutionService:
                             try:
                                 self._active_event(dict(event))
                             except BaseException as failure:
-                                callback_error = (str(failure) or type(failure).__name__)[:1024]
+                                callback_error = _failure_summary(failure,limit=1024)
                         callback_errors = [None]*self.world_size
                         self.distributed.all_gather_object(callback_errors,callback_error,group=self.group)
                         if any(value is not None for value in callback_errors):
@@ -117,7 +331,7 @@ class DistributedExecutionService:
                             requested = bool(self.rank == 0 and self._active_cancel is not None and
                                              self._active_cancel.is_set())
                         except BaseException as failure:
-                            cancellation_error = (str(failure) or type(failure).__name__)[:1024]
+                            cancellation_error = _failure_summary(failure,limit=1024)
                         cancellation_errors = [None]*self.world_size
                         self.distributed.all_gather_object(cancellation_errors,cancellation_error,group=self.group)
                         if any(value is not None for value in cancellation_errors):
@@ -133,9 +347,10 @@ class DistributedExecutionService:
                         from .distributed_generation_checkpoint import restore_rank
                         recovery_error=None
                         try:
-                            if action=='restore_generation':
+                            if (action=='restore_generation' or
+                                    (action=='resume_generation' and command.get('manifest') is not None)):
                                 prior_generation_boundary=self._generation_boundaries.get(command['session'])
-                                restore_rollback=self.service.snapshot(session)
+                                restore_rollback=_required_service_snapshot(self.service,session)
                             recovered=(restore_rank(self,session,command) if command.get('manifest') is not None
                                 else self._generation_boundaries[command['session']])
                             if action=='restore_generation':
@@ -145,7 +360,7 @@ class DistributedExecutionService:
                                 if occupied>self.max_recovery_boundary_bytes:
                                     raise MemoryError('retained distributed generation boundaries exceed admission')
                         except BaseException as failure:
-                            recovery_error=(str(failure) or type(failure).__name__)[:4096]
+                            recovery_error=_failure_summary(failure)
                         errors=[None]*self.world_size
                         self.distributed.all_gather_object(errors,recovery_error,group=self.group)
                         if any(value is not None for value in errors):
@@ -169,6 +384,27 @@ class DistributedExecutionService:
                             checkpoint_sink=sink,max_checkpoint_bytes=command.get('checkpoint_max_bytes',0),
                             application_identity=command.get('application_identity',''),
                             stop_prefixes=command.get('stop_prefixes',()))
+                        # A rank can report a local failure after another rank
+                        # has already committed generated tokens. Retain the
+                        # pre-generation physical state so result disagreement
+                        # below can roll back every surviving rank before the
+                        # coordinator is poisoned. Resume consumes a retained
+                        # generation boundary, so preserve that metadata too.
+                        if restore_rollback is None:
+                            prior_generation_boundary=self._generation_boundaries.get(command['session'])
+                            snapshot_error = None
+                            try:
+                                restore_rollback=_required_service_snapshot(self.service,session)
+                            except BaseException as failure:
+                                snapshot_error=_failure_summary(failure,limit=2048)
+                            snapshot_errors=[None]*self.world_size
+                            self.distributed.all_gather_object(snapshot_errors,snapshot_error,
+                                                              group=self.group)
+                            if any(value is not None for value in snapshot_errors):
+                                raise RuntimeError('distributed generation rollback snapshot admission failed: '+
+                                    '; '.join(f'rank {rank}: {failure}'
+                                        for rank,failure in enumerate(snapshot_errors)
+                                        if failure is not None))
                         if recovered is None:
                             result = self.service.generate(session, command['tokens'],
                                 stop_ids=command['stops'],sampling=sampling,**options)
@@ -178,9 +414,20 @@ class DistributedExecutionService:
                         summary = ('generate', tuple(result.token_ids), result.context_tokens,
                                    result.finish_reason)
                 elif action == 'reset':
+                    # Reset is destructive on each local executor. Retain a
+                    # rank-local physical snapshot until the result agreement
+                    # below, so a peer-local reset failure cannot leave the
+                    # surviving ranks at different generation boundaries.
+                    prior_generation_boundary=self._generation_boundaries.get(command['session'])
+                    restore_rollback=_required_service_snapshot(self.service,session)
                     self.service.reset(session)
                     self._generation_boundaries.pop(command['session'],None)
-                    summary = ('reset', command['session'])
+                    status=self.service.status(session)
+                    history=self.service._session(session).tokens
+                    if status.context_tokens!=0 or history:
+                        raise RuntimeError('rank reset did not reach the empty history boundary')
+                    summary = ('reset', command['session'], status.context_tokens,
+                               _history_digest(history))
                 elif action == 'save_cache':
                     from .cache_file_recovery import verify_service_cache_file
                     directory = Path(command['directory'])
@@ -194,6 +441,20 @@ class DistributedExecutionService:
                     summary = ('save_cache',command['session'],len(history),_history_digest(history))
                 elif action == 'load_cache':
                     from .cache_file_recovery import verify_service_cache_file
+                    from .distributed_generation_checkpoint import read_manifest
+                    from .segment_snapshot import _pairs
+                    def admit_current_manifest():
+                        _, current_bytes = read_manifest(Path(command['directory'])/'manifest.json')
+                        current = json.loads(current_bytes, object_pairs_hook=_pairs,
+                            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                        if current != command['manifest']:
+                            raise ValueError('distributed cache manifest changed during restore')
+                    # The coordinator's initial parse is not a pin: shared
+                    # storage can change between root admission and rank use.
+                    # Re-admit before consuming a rank receipt and after the
+                    # physical install; the latter is covered by the existing
+                    # collective rollback snapshot.
+                    admit_current_manifest()
                     receipt = command['manifest']['ranks'][self.rank]
                     source = Path(command['directory'])/receipt['filename']
                     verify_service_cache_file(source,receipt=receipt,max_bytes=command['max_bytes'])
@@ -201,19 +462,24 @@ class DistributedExecutionService:
                     if (getattr(model,'identity',None) != receipt['identity'] or
                             getattr(model,'identity',None) != command['manifest']['model_identity']):
                         raise ValueError('distributed rank cache identity differs from executor')
-                    restore_rollback = self.service.snapshot(session)
-                    self.service.load_session_cache(session,source,max_bytes=command['max_bytes'])
+                    restore_rollback = _required_service_snapshot(self.service,session)
+                    # Pin the exact receipt during the same stable read that
+                    # installs physical executor state. The earlier readback
+                    # check alone leaves a path-swap window before this open.
+                    self.service.load_session_cache(session,source,
+                        max_bytes=command['max_bytes'],expected_file_receipt=receipt)
                     history = self.service._session(session).tokens
                     if (len(history) != command['manifest']['context_tokens'] or
                             _history_digest(history) != command['manifest']['history_sha256']):
                         raise ValueError('restored rank history differs from distributed manifest')
+                    admit_current_manifest()
                     result = len(history)
                     summary = ('load_cache',command['session'],len(history),_history_digest(history))
                 elif action == 'snapshot':
                     handle = command['snapshot']
                     if type(handle) is not int or handle <= 0 or handle in self._snapshots:
                         raise ValueError('unique positive distributed snapshot required')
-                    snapshot = self.service.snapshot(session)
+                    snapshot = _required_service_snapshot(self.service,session)
                     self._snapshots[handle] = (command['session'], snapshot)
                     result = handle
                     summary = ('snapshot', handle, len(snapshot.token_ids), _history_digest(snapshot.token_ids))
@@ -223,7 +489,7 @@ class DistributedExecutionService:
                         raise ValueError('distributed snapshot belongs to a different session')
                     if action == 'restore':
                         prior_generation_boundary=self._generation_boundaries.get(command['session'])
-                        restore_rollback=self.service.snapshot(session)
+                        restore_rollback=_required_service_snapshot(self.service,session)
                         self.service.restore(session, snapshot)
                         self._generation_boundaries.pop(command['session'],None)
                         summary = ('restore', command['snapshot'], _history_digest(snapshot.token_ids),
@@ -245,20 +511,51 @@ class DistributedExecutionService:
                 if status.closed or status.pending_cleanup_count:
                     error = 'cancelled executor is quarantined or has pending cleanup'
                 else:
-                    summary = ('cancelled',command['session'],status.context_tokens)
+                    # Equal lengths are not enough to establish that every
+                    # rank rolled cancellation back to the same logical
+                    # boundary. Compare the restored token history as well;
+                    # the normal result-agreement path will poison the group
+                    # if any rank retained a different prefix.
+                    history = self.service._session(
+                        self._sessions[command['session']]).tokens
+                    summary = ('cancelled', command['session'],
+                               status.context_tokens, _history_digest(history))
             except BaseException as failure:
-                error = (str(failure) or type(failure).__name__)[:4096]
+                error = _failure_summary(failure)
         except BaseException as failure:
-            error = (str(failure) or type(failure).__name__)[:4096]
+            error = _failure_summary(failure)
         records = [None]*self.world_size
         self.distributed.all_gather_object(records,
             (summary, error, result if command.get('action')=='save_cache' else None),group=self.group)
-        malformed = [rank for rank,record in enumerate(records)
-                     if (type(record) is not tuple or len(record) != 3 or
-                         (record[0] is not None and type(record[0]) is not tuple) or
-                         (record[1] is not None and type(record[1]) is not str) or
-                         (command.get('action') == 'save_cache' and
-                          (record[2] is not None and type(record[2]) is not dict)))]
+        action = command.get('action')
+        def valid_cache_receipt(rank, receipt):
+            return (type(receipt) is dict and
+                    set(receipt) == {'rank', 'filename', 'bytes', 'sha256', 'identity'} and
+                    type(receipt['rank']) is int and receipt['rank'] == rank and
+                    receipt['filename'] == f'rank-{rank}.cache' and
+                    type(receipt['bytes']) is int and 88 <= receipt['bytes'] <= command['max_bytes'] and
+                    type(receipt['sha256']) is str and len(receipt['sha256']) == 64 and
+                    all(character in '0123456789abcdef' for character in receipt['sha256']) and
+                    type(receipt['identity']) is str and 0 < len(receipt['identity']) <= 4096 and
+                    '\x00' not in receipt['identity'])
+        malformed = []
+        for rank, record in enumerate(records):
+            invalid = (type(record) is not tuple or len(record) != 3)
+            if not invalid:
+                summary_value, failure_value, receipt_value = record
+                invalid = (failure_value is not None and
+                           (type(failure_value) is not str or len(failure_value) > 4096))
+                if not invalid and summary_value is not None:
+                    invalid = not _valid_result_summary(action, summary_value)
+                if not invalid and summary_value is None and failure_value is None:
+                    invalid = True
+                if not invalid and action == 'save_cache':
+                    invalid = (receipt_value is None if failure_value is not None else
+                               not valid_cache_receipt(rank, receipt_value))
+                elif not invalid:
+                    invalid = receipt_value is not None
+            if invalid:
+                malformed.append(rank)
         if malformed:
             for rank in malformed:
                 records[rank] = (None, 'malformed collective result record', None)
@@ -278,31 +575,188 @@ class DistributedExecutionService:
                     self.service.close_session(self._sessions[handle])
                     del self._sessions[handle]
             except BaseException as failure:
-                cleanup_error = (str(failure) or type(failure).__name__)[:4096]
+                cleanup_error = _failure_summary(failure)
             cleanups = [None]*self.world_size
             self.distributed.all_gather_object(cleanups,cleanup_error,group=self.group)
             failures.extend(f'rank {rank} open rollback: {failure}'
                             for rank,failure in enumerate(cleanups) if failure is not None)
-        if command.get('action') in ('load_cache','restore_generation','restore'):
+        # A failed close is not physically rollbackable: some ranks may have
+        # already released their model while others still own a live or
+        # quarantined executor.  Retry cleanup on every rank that still has
+        # the handle before poisoning the group, rather than leaving surviving
+        # rank-local sessions reachable until process teardown.
+        if command.get('action') == 'close_session' and (failures or mismatch):
             cleanup_error = None
+            handle = command.get('session')
+            try:
+                if type(handle) is int and handle in self._sessions:
+                    self.service.close_session(self._sessions[handle])
+                    del self._sessions[handle]
+                    self._generation_boundaries.pop(handle, None)
+                    self._snapshots = {key: value for key, value in self._snapshots.items()
+                                       if value[0] != handle}
+            except BaseException as failure:
+                cleanup_error = _failure_summary(failure)
+            cleanups = [None]*self.world_size
+            self.distributed.all_gather_object(cleanups, cleanup_error, group=self.group)
+            failures.extend(f'rank {rank} close rollback: {failure}'
+                            for rank, failure in enumerate(cleanups) if failure is not None)
+        # Whole-service close has no physical rollback: a rank may have
+        # already released some owners while another still retains failed
+        # cleanup. Retry local cleanup on every rank whose first attempt did
+        # not complete, then agree before peers leave their control loops.
+        # The original collective still fails and requires a fresh group.
+        if command.get('action') == 'close' and (failures or mismatch):
+            cleanup_error = None
+            try:
+                if not self._closed:
+                    self.service.close()
+                    self._sessions.clear()
+                    self._generation_boundaries.clear()
+                    self._snapshots.clear()
+                    self._closed = True
+            except BaseException as failure:
+                cleanup_error = _failure_summary(failure)
+            cleanups = [None]*self.world_size
+            self.distributed.all_gather_object(cleanups, cleanup_error, group=self.group)
+            failures.extend(f'rank {rank} service-close retry: {failure}'
+                            for rank, failure in enumerate(cleanups) if failure is not None)
+        # Releasing a rank-local snapshot is not rollbackable: one rank may
+        # have released its physical receipt while another retained it (or
+        # quarantined its executor during release). Since the collective will
+        # poison the coordinator below, close the affected local session on
+        # every surviving rank so its remaining snapshot/cache owners are not
+        # stranded behind an unusable distributed handle.
+        if command.get('action') == 'release_snapshot' and (failures or mismatch):
+            cleanup_error = None
+            handle = command.get('session')
+            try:
+                if type(handle) is int and handle in self._sessions:
+                    self.service.close_session(self._sessions[handle])
+                    del self._sessions[handle]
+                    self._generation_boundaries.pop(handle, None)
+                    self._snapshots = {key: value for key, value in self._snapshots.items()
+                                       if value[0] != handle}
+            except BaseException as failure:
+                cleanup_error = _failure_summary(failure)
+            cleanups = [None]*self.world_size
+            self.distributed.all_gather_object(cleanups, cleanup_error, group=self.group)
+            failures.extend(f'rank {rank} snapshot-release cleanup: {failure}'
+                            for rank, failure in enumerate(cleanups) if failure is not None)
+        # Snapshot creation can succeed on only a subset of ranks (or produce
+        # different logical boundaries). The group is unusable after that
+        # disagreement, so retire every newly-created physical receipt before
+        # returning the collective error. If receipt retirement itself fails,
+        # tear down that rank's session as the only safe owner-level cleanup.
+        if command.get('action') == 'snapshot' and (failures or mismatch):
+            cleanup_error = None
+            handle = command.get('session')
+            snapshot_handle = command.get('snapshot')
+            try:
+                saved = self._snapshots.get(snapshot_handle)
+                if saved is not None and saved[0] == handle and handle in self._sessions:
+                    try:
+                        self.service.release_snapshot(self._sessions[handle], saved[1])
+                        del self._snapshots[snapshot_handle]
+                    except BaseException as release_failure:
+                        # A failed release may have partially retired the
+                        # executor receipt. Do not retry that ambiguous handle;
+                        # close the owning session and remove all coordinator
+                        # references only if teardown completes.
+                        try:
+                            self.service.close_session(self._sessions[handle])
+                            del self._sessions[handle]
+                            self._generation_boundaries.pop(handle, None)
+                            self._snapshots = {key: value for key, value in self._snapshots.items()
+                                               if value[0] != handle}
+                        except BaseException as close_failure:
+                            add_failure_note(close_failure, 'snapshot receipt retirement also failed: '+failure_summary(release_failure))
+                            raise close_failure
+            except BaseException as failure:
+                cleanup_error = _failure_summary(failure)
+            cleanups = [None]*self.world_size
+            self.distributed.all_gather_object(cleanups, cleanup_error, group=self.group)
+            failures.extend(f'rank {rank} snapshot-create cleanup: {failure}'
+                            for rank, failure in enumerate(cleanups) if failure is not None)
+        if (command.get('action') in ('load_cache','restore_generation','restore','reset',
+                                      'generate','resume_generation','close_session') or
+                (command.get('action')=='resume_generation' and command.get('manifest') is not None)):
+            cleanup_errors = []
             try:
                 if restore_rollback is not None:
                     if failures or mismatch:
-                        self.service.restore(self._sessions[command['session']],restore_rollback)
-                        self._generation_boundaries.pop(command['session'],None)
-                        if prior_generation_boundary is not None:
-                            self._generation_boundaries[command['session']]=prior_generation_boundary
-                    self.service.release_snapshot(self._sessions[command['session']],restore_rollback)
+                        try:
+                            self.service.restore(self._sessions[command['session']],restore_rollback)
+                            self._generation_boundaries.pop(command['session'],None)
+                            if prior_generation_boundary is not None:
+                                self._generation_boundaries[command['session']]=prior_generation_boundary
+                        except BaseException as failure:
+                            cleanup_errors.append('physical rollback: '+
+                                _failure_summary(failure,limit=2048))
+                    # Rollback and snapshot retirement are independent cleanup
+                    # operations.  In particular, a failed restore must not
+                    # skip release of the temporary pre-operation snapshot.
+                    try:
+                        self.service.release_snapshot(self._sessions[command['session']],restore_rollback)
+                    except BaseException as failure:
+                        cleanup_errors.append('rollback snapshot release: '+
+                            _failure_summary(failure,limit=2048))
+                if cleanup_errors or failures or mismatch:
+                    # Even a successful rollback does not make this
+                    # rank-local session reachable again: the collective
+                    # below poisons the coordinator, so no later
+                    # close_session request can retire its physical state
+                    # or caller-owned snapshots. Tear down the owner on
+                    # every rank after disagreement/failure, including a
+                    # failure before a rollback snapshot could be acquired.
+                    # Keep rollback diagnostics if teardown also fails.
+                    try:
+                        handle = command['session']
+                        if handle in self._sessions:
+                            self.service.close_session(self._sessions[handle])
+                            del self._sessions[handle]
+                            self._generation_boundaries.pop(handle,None)
+                            self._snapshots = {key:value for key,value in self._snapshots.items()
+                                               if value[0] != handle}
+                    except BaseException as failure:
+                        cleanup_errors.append('unknown-boundary session teardown: '+
+                            _failure_summary(failure,limit=2048))
             except BaseException as failure:
-                cleanup_error = (str(failure) or type(failure).__name__)[:4096]
+                cleanup_errors.append('rollback setup: '+
+                    _failure_summary(failure,limit=2048))
+            cleanup_error = '; '.join(cleanup_errors)[:4096] or None
             cleanups = [None]*self.world_size
             self.distributed.all_gather_object(cleanups,cleanup_error,group=self.group)
-            failures.extend(f'rank {rank} restore cleanup: {failure}' for rank,failure in enumerate(cleanups)
-                            if failure is not None)
+            cleanup_failures = [f'rank {rank} restore cleanup: {failure}'
+                                for rank,failure in enumerate(cleanups) if failure is not None]
+            failures.extend(cleanup_failures)
+            if cleanup_failures:
+                # A temporary snapshot may have been retired on some ranks
+                # but not others. Once that cleanup disagreement is known,
+                # retire the owning session on every surviving rank instead
+                # of leaving a partially usable distributed handle behind.
+                teardown_error = None
+                try:
+                    handle = command['session']
+                    if handle in self._sessions:
+                        self.service.close_session(self._sessions[handle])
+                        del self._sessions[handle]
+                        self._generation_boundaries.pop(handle, None)
+                        self._snapshots = {key: value for key, value in self._snapshots.items()
+                                           if value[0] != handle}
+                except BaseException as failure:
+                    teardown_error = _failure_summary(failure,limit=2048)
+                teardowns = [None]*self.world_size
+                self.distributed.all_gather_object(teardowns, teardown_error, group=self.group)
+                failures.extend(f'rank {rank} cleanup-disagreement teardown: {failure}'
+                                for rank, failure in enumerate(teardowns) if failure is not None)
         if failures or mismatch:
             self._failed = True
             raise RuntimeError('distributed execution failed: '+
                                ('; '.join(failures) if failures else 'committed rank results differ'))
+        if summary is not None and summary[0] == 'request_rejected':
+            self._sequence += 1
+            return _RequestRejected(summary[1], summary[2])
         if command.get('action')=='load_cache':
             self._generation_boundaries.pop(command['session'],None)
         self._sequence += 1
@@ -333,23 +787,36 @@ class DistributedExecutionService:
                 self._active_cancel = local_cancel
                 self._active_event = local_on_event
                 self._broadcast(command)
-                return self._execute(command)
+                result = self._execute(command)
             except ExecutionCancelled:
                 raise
             except BaseException:
                 self._failed = True
                 raise
+            if type(result) is _RequestRejected:
+                raise ValueError(f'distributed {result.action} request rejected before execution: {result.message}')
+            return result
         finally:
             self._active_cancel = None
             self._active_event = None
             self._lock.release()
 
+    def _reject_preflight(self, action, message):
+        # JSON's default ensure_ascii escaping can multiply non-ASCII text.
+        # Bound the encoded reason so the rejection command always fits even
+        # the minimum admitted control envelope.
+        message = ((message or 'invalid request').encode('ascii', 'backslashreplace')
+                   .decode('ascii')[:1024])
+        return self._request('reject', rejected_action=action[:64], rejection=message)
+
+    @_synchronize_root_preflight
     def open_session(self):
         with self._id_lock:
             handle = self._next_id
             self._next_id += 1
         return self._request('open', session=handle)
 
+    @_synchronize_root_preflight
     def generate(self, session, tokens, *, max_new_tokens, stop_ids=(), stop_prefixes=(), sampling=None,
                  cancel=None, on_event=None, checkpoint_directory=None,checkpoint_max_bytes=0,
                  application_identity=''):
@@ -418,6 +885,7 @@ class DistributedExecutionService:
         destination.mkdir()
         return str(destination)
 
+    @_synchronize_root_preflight
     def restore_generation_checkpoint(self,session,manifest_path,*,max_rank_bytes,application_identity=''):
         from .distributed_generation_checkpoint import admit_manifest
         if self.rank!=0:raise RuntimeError('only root may restore distributed generation')
@@ -434,6 +902,7 @@ class DistributedExecutionService:
         return self._request('restore_generation',session=session,directory=str(path.parent),manifest=manifest,
             recovery_max_bytes=max_rank_bytes,application_identity=application_identity)
 
+    @_synchronize_root_preflight
     def resume_generation(self,session,manifest_path=None,*,max_rank_bytes=0,max_new_tokens,
             cancel=None,on_event=None,checkpoint_directory=None,checkpoint_max_bytes=0,
             application_identity=''):
@@ -479,11 +948,16 @@ class DistributedExecutionService:
                 shutil.rmtree(destination, ignore_errors=True)
             raise
 
+    @_synchronize_root_preflight
     def reset_session(self, session):
-        if session not in self._sessions:
+        # `bool` is an `int` subclass and aliases handles 0/1 in dictionaries.
+        # Keep reset's ownership check consistent with every other public
+        # operation so `reset_session(True)` cannot reset session 1.
+        if type(session) is not int or session not in self._sessions:
             raise ValueError('unknown distributed session')
         self._request('reset', session=session)
 
+    @_synchronize_root_preflight
     def snapshot(self, session):
         if type(session) is not int or session not in self._sessions:
             raise ValueError('known distributed session required')
@@ -495,6 +969,7 @@ class DistributedExecutionService:
             self._next_snapshot += 1
         return self._request('snapshot', session=session, snapshot=handle)
 
+    @_synchronize_root_preflight
     def save_session_cache(self, session, directory, *, max_rank_bytes):
         """Publish a complete rank set on an explicitly shared filesystem.
 
@@ -524,11 +999,12 @@ class DistributedExecutionService:
             # generations under the caller-owned root.
             shutil.rmtree(generation, ignore_errors=True)
             raise
-        encoded = json.dumps(manifest,sort_keys=True,separators=(',', ':'),allow_nan=False).encode('utf-8')
-        if len(encoded)>65536:
-            raise MemoryError('distributed cache manifest exceeds admission')
         temporary = None
+        published = False
         try:
+            encoded = json.dumps(manifest,sort_keys=True,separators=(',', ':'),allow_nan=False).encode('utf-8')
+            if len(encoded)>65536:
+                raise MemoryError('distributed cache manifest exceeds admission')
             with tempfile.NamedTemporaryFile(dir=generation,delete=False) as stream:
                 temporary = Path(stream.name)
                 stream.write(encoded)
@@ -538,6 +1014,7 @@ class DistributedExecutionService:
             destination = generation/'manifest.json'
             os.replace(temporary,destination)
             temporary = None
+            published = True
             if os.name!='nt':
                 descriptor=os.open(generation,os.O_RDONLY)
                 try:
@@ -545,14 +1022,29 @@ class DistributedExecutionService:
                 finally:
                     os.close(descriptor)
             return str(destination)
-        finally:
+        except BaseException as primary:
+            # Before the manifest rename, this fresh generation is only an
+            # uncommitted set of rank files and must not be mistaken for a
+            # usable recovery point. Once renamed, retain it if a later fsync
+            # reports uncertainty: publication may already be durable.
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except BaseException as cleanup:
+                    add_failure_note(primary, 'distributed cache manifest staging cleanup failed: '+failure_summary(cleanup))
+            if not published:
+                try:
+                    shutil.rmtree(generation)
+                except BaseException as cleanup:
+                    add_failure_note(primary, 'uncommitted distributed cache generation cleanup failed: '+failure_summary(cleanup))
+            raise
 
+    @_synchronize_root_preflight
     def restore(self, session, snapshot):
         self._check_snapshot(session,snapshot)
         self._request('restore',session=session,snapshot=snapshot)
 
+    @_synchronize_root_preflight
     def load_session_cache(self, session, manifest_path, *, max_rank_bytes):
         """Restore a committed shared-filesystem rank set with rollback consensus."""
         from .distributed_generation_checkpoint import read_manifest
@@ -574,6 +1066,7 @@ class DistributedExecutionService:
                 not 0<=manifest['context_tokens']<=self.service.limits.context or
                 type(manifest['model_identity']) is not str or
                 not 0<len(manifest['model_identity'])<=4096 or
+                '\x00' in manifest['model_identity'] or
                 type(manifest['ranks']) is not list or len(manifest['ranks'])!=self.world_size):
             raise ValueError('distributed cache geometry differs')
         def digest(value):
@@ -586,7 +1079,7 @@ class DistributedExecutionService:
                     receipt['filename']!=f'rank-{rank}.cache' or
                     type(receipt['bytes']) is not int or not 88<=receipt['bytes']<=max_rank_bytes or
                     not digest(receipt['sha256']) or type(receipt['identity']) is not str or
-                    not 0<len(receipt['identity'])<=4096):
+                    not 0<len(receipt['identity'])<=4096 or '\x00' in receipt['identity']):
                 raise ValueError('invalid distributed rank cache receipt')
         current_identity = self.service.status(session).identity
         if manifest['model_identity'] != current_identity:
@@ -594,6 +1087,7 @@ class DistributedExecutionService:
         return self._request('load_cache',session=session,directory=str(path.parent),
                              manifest=manifest,max_bytes=max_rank_bytes)
 
+    @_synchronize_root_preflight
     def release_snapshot(self, session, snapshot):
         self._check_snapshot(session,snapshot)
         self._request('release_snapshot',session=session,snapshot=snapshot)
@@ -604,11 +1098,13 @@ class DistributedExecutionService:
                 self._snapshots[snapshot][0] != session):
             raise ValueError('owned distributed session snapshot required')
 
+    @_synchronize_root_preflight
     def close_session(self, session):
         if type(session) is not int or session not in self._sessions:
             raise ValueError('unknown distributed session')
         self._request('close_session', session=session)
 
+    @_synchronize_root_preflight
     def close(self):
         if self._closed:
             return
@@ -623,8 +1119,9 @@ class DistributedExecutionService:
             while not self._closed and not self._failed:
                 try:
                     self._execute(self._broadcast(None))
-                except BaseException:
-                    self._failed = True
+                except BaseException as failure:
+                    if not self._failed:
+                        self._poison_local_state(failure)
                     raise
         finally:
             self._lock.release()

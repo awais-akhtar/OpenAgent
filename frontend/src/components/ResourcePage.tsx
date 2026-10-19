@@ -5,9 +5,10 @@ import type { ResourceAction, ResourceRead } from '../lib/react/contracts';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog';
 import { SpecialistInspector } from '../features/specialists/SpecialistInspector';
 import '../features/specialists/specialist-workspace.css';
+import './resource-workspace.css';
 
 type Snapshot = { data?: unknown; error?: string; loading: boolean };
-type Props = { title: string; eyebrow: string; description: string; reads: ResourceRead[]; actions?: ResourceAction[] };
+type Props = { title: string; eyebrow: string; description: string; reads: ResourceRead[]; actions?: ResourceAction[]; primaryRead?: string; primaryAction?: string };
 
 function activeProject() {
   const queryProject = new URL(location.href).searchParams.get('project');
@@ -23,14 +24,14 @@ function actionRequest(action: ResourceAction, path: string, values: Record<stri
   return api.post<unknown>(path, action.payload(values));
 }
 
-export function ResourcePage({ title, eyebrow, reads, actions = [] }: Props) {
+export function ResourcePage({ title, eyebrow, reads, actions = [], primaryRead, primaryAction }: Props) {
   const project = activeProject();
   const scopedReads = useMemo(() => reads.map(read => ({
     ...read,
     path: read.path.replaceAll('{project}', encodeURIComponent(project)),
   })), [reads, project]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>(() => reads.map(() => ({ loading: true })));
-  const [selectedRead, setSelectedRead] = useState(0);
+  const [selectedRead, setSelectedRead] = useState(() => Math.max(0, reads.findIndex(item => item.label === primaryRead)));
   const [selectedRecord, setSelectedRecord] = useState(0);
   const [dialogAction, setDialogAction] = useState<ResourceAction | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -103,11 +104,13 @@ export function ResourcePage({ title, eyebrow, reads, actions = [] }: Props) {
     } finally { setBusy(false); }
   }
 
-  return <section className="specialist-page" aria-label={title} aria-busy={snapshot.loading}>
+  const featuredAction = actions.find(action => action.label === primaryAction);
+  return <section className="specialist-page resource-page" aria-label={title} aria-busy={snapshot.loading}>
     <header className="specialist-header">
       <div><span className="specialist-eyebrow">{eyebrow}</span><h1>{title}</h1></div>
       <div className="specialist-header-actions">
         <span className="specialist-project" title="Active project">{project}</span>
+        {featuredAction && <button type="button" className="specialist-primary resource-primary-action" onClick={() => openAction(featuredAction)}><Plus size={14}/>{featuredAction.label}</button>}
         <button type="button" className="specialist-icon-button" aria-label="Refresh data" onClick={() => void load()} disabled={snapshots.some(item => item.loading)}><RefreshCw size={15}/></button>
       </div>
     </header>
@@ -123,7 +126,13 @@ export function ResourcePage({ title, eyebrow, reads, actions = [] }: Props) {
             const current = snapshots[index] ?? { loading: true };
             const itemRows = current.data === undefined ? [] : records(current.data, item.key);
             const collection = Array.isArray(current.data) || (item.key ? Array.isArray(record(current.data)[item.key]) : false);
-            return <button type="button" role="tab" aria-selected={selectedRead === index} className={`specialist-source ${selectedRead === index ? 'active' : ''}`} key={`${item.label}:${item.path}`} onClick={() => { setSelectedRead(index); setSelectedRecord(0); }}>
+            return <button type="button" role="tab" tabIndex={selectedRead === index ? 0 : -1} aria-selected={selectedRead === index} className={`specialist-source ${selectedRead === index ? 'active' : ''}`} key={`${item.label}:${item.path}`} onClick={() => { setSelectedRead(index); setSelectedRecord(0); }} onKeyDown={event => {
+              if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key) || scopedReads.length < 2) return;
+              event.preventDefault();
+              const next = event.key === 'Home' ? 0 : event.key === 'End' ? scopedReads.length - 1 : (index + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1) + scopedReads.length) % scopedReads.length;
+              setSelectedRead(next); setSelectedRecord(0);
+              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+            }}>
               <span className="specialist-source-name">{item.label}</span>
               <span className={`specialist-source-state ${current.error ? 'error' : ''}`}>{current.loading ? '…' : current.error ? '!' : collection ? itemRows.length : '•'}</span>
             </button>;
@@ -142,7 +151,7 @@ export function ResourcePage({ title, eyebrow, reads, actions = [] }: Props) {
         </div>
         {snapshot.loading ? <div className="specialist-loading" role="status" aria-label={`Loading ${read?.label ?? title}`}><i/><i/><i/></div>
           : snapshot.error ? <div className="specialist-state-panel error"><CircleAlert size={20}/><strong>Couldn’t load this view</strong><p>{snapshot.error}</p><button type="button" onClick={() => void load()}>Try again</button></div>
-          : isCollection && !rows.length ? <div className="specialist-state-panel"><strong>No {read?.label.toLowerCase() ?? 'items'} yet</strong><p>The service returned an empty collection for this project.</p></div>
+          : isCollection && !rows.length ? <div className="specialist-state-panel"><strong>No {read?.label.toLowerCase() ?? 'items'} yet</strong></div>
           : isCollection ? <div className="specialist-record-layout">
             <div className="specialist-record-list" aria-label={read?.label}>
               {rows.map((row, index) => {
@@ -155,8 +164,8 @@ export function ResourcePage({ title, eyebrow, reads, actions = [] }: Props) {
             </div>
             <SpecialistInspector value={detail} emptyLabel="No additional details are available." />
           </div>
-          : snapshot.data === null || snapshot.data === undefined ? <div className="specialist-state-panel"><strong>No data returned</strong><p>This endpoint returned no content.</p></div>
-          : <SpecialistInspector value={displayData} emptyLabel="The service responded without displayable summary fields." />}
+          : snapshot.data === null || snapshot.data === undefined ? <div className="specialist-state-panel"><strong>No details available</strong></div>
+          : <SpecialistInspector value={displayData} emptyLabel="No details available." />}
       </main>
     </div>
 

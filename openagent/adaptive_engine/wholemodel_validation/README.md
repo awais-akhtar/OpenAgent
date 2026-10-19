@@ -83,13 +83,31 @@ state, rotary components, lengths and positions. Never fill absent state with
 zeros, recompute it, drop it, or silently expand an incompatible representation.
 
 NativeExecutorAdapter(executor_factory, metadata, cache_reader=...) invokes real
-executor.forward(np.int64 tokens) and executor.snapshot() by default. Optional
+executor.forward(np.int64 tokens) and uses a matched `snapshot`/`restore` or
+`snapshot_state`/`restore_state` pair for rollback and default cache observation. Optional
 forward_call(executor, tokens), cache_getter(executor), close_call(executor) map
-existing APIs. A custom cache_getter is mandatory when snapshot is unavailable.
+existing APIs. A custom cache_getter is mandatory when neither snapshot pair is available.
 No reset of a shared executor is used as a substitute for independent sessions.
 Python/NumPy RNGs are isolated; seed external native RNGs in the factory using
 the supplied seed. close_call must release externally owned handles if executor
 close is unavailable; adapters never guess DLL ownership/unload semantics.
+
+### Native OLMoE candidate
+
+For the native leased OLMoE route, use
+`wholemodel_validation.olmoe_native:create_olmoe_native_adapter`. Its metadata
+must use `cache_schema(num_layers)`, which declares position and both observed
+KV tensors for every layer. Candidate options name relative, runner-pinned
+`manifest` and prebuilt `library` artifacts and provide explicit context,
+resident-weight, expert-cache, transfer, staging, and snapshot byte budgets.
+The adapter verifies those two artifact hashes before constructing an owner;
+it does not build or substitute a native library. The cache reader exports the
+actual occupied key/value tensors from the decoder's owned snapshot and rejects
+missing layers, invalid geometry, or nonfinite values. Session close attempts
+decoder, edge, and engine cleanup independently. This provides a source adapter
+for an OLMoE comparison, not an observation or a certification result; the
+runner still needs complete model/source/dependency pins, a separate
+authoritative oracle, and a successfully produced report/receipt.
 
 CLI factory:
 

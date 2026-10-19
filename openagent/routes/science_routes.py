@@ -25,6 +25,7 @@ ROUTES = (
     ("GET", "/api/science/status"),
     ("GET", "/api/science/tools"),
     ("GET", "/api/science/memory"),
+    ("GET", "/api/science/experiments"),
     ("GET", "/api/science/materials/datasets"),
     ("GET", "/api/science/materials/catalog"),
     ("POST", "/api/science/run"),
@@ -69,6 +70,10 @@ def handle_get(path: str, query: str, deps: ScienceRouteDependencies) -> JsonRou
         if deps.service is None:
             return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
         return JsonRouteResult({"memory": deps.service.list_memory(project=project)})
+    if path == "/api/science/experiments":
+        if deps.service is None:
+            return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+        return JsonRouteResult({"experiments": deps.service.list_experiment_proposals(project=project)})
     if path == "/api/science/materials/datasets":
         if deps.service is None:
             return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -115,7 +120,17 @@ def handle_post(path: str, deps: ScienceRouteDependencies) -> JsonRouteResult | 
             if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
                 raise ValueError("candidates must be a list of objects")
             proposals = ExperimentPlanner().propose(str(payload.get("goal", "")), candidates)
-            return JsonRouteResult({"experiments": [item.to_dict() for item in proposals]}, HTTPStatus.CREATED)
+            serialized = [item.to_dict() for item in proposals]
+            history = deps.service.save_experiment_proposal(
+                project=project,
+                goal=str(payload.get("goal", "")),
+                candidates=candidates,
+                proposals=serialized,
+            ) if deps.service is not None else None
+            response = {"experiments": serialized}
+            if history is not None:
+                response["history"] = history
+            return JsonRouteResult(response, HTTPStatus.CREATED)
         if path == "/api/science/execute":
             if payload.get("approved") is not True:
                 return JsonRouteResult({"error": "Scientific code execution requires explicit approval."}, HTTPStatus.FORBIDDEN)

@@ -1,22 +1,63 @@
 """Qwen4 lexical feature metadata and resident PLE equations."""
-import math
-
 import numpy as np
 
 from .independent_qwen35 import sigmoid, silu
 from .native_mixtral import rmsnorm
 
 
+_INT64_MAX = (1 << 63) - 1
+
+
+def _is_prime_int64(value):
+    """Deterministic primality test for the signed-int64 PLE metadata domain."""
+    if value < 2:
+        return False
+    small = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
+    for prime in small:
+        if value % prime == 0:
+            return value == prime
+    odd, shifts = value - 1, 0
+    while odd % 2 == 0:
+        odd //= 2
+        shifts += 1
+    # This base set is deterministic for every integer below 2**64.  PLE
+    # metadata is stored as signed int64, so this covers its complete domain.
+    for base in (2, 325, 9375, 28178, 450775, 9780504, 1795265022):
+        base %= value
+        if base == 0:
+            continue
+        witness = pow(base, odd, value)
+        if witness in (1, value - 1):
+            continue
+        for _ in range(shifts - 1):
+            witness = witness * witness % value
+            if witness == value - 1:
+                break
+        else:
+            return False
+    return True
+
+
 def metadata(config, ordinal):
     """Prime-sized hash lanes and deterministic unsigned SplitMix64 seeds."""
     c = config
+    if type(ordinal) is not int or ordinal < 0:
+        raise ValueError('nonnegative Qwen4 PLE layer ordinal required')
     lanes = (c.ngram_size-1)*c.heads_per_ngram
+    if type(lanes) is not int or lanes <= 0:
+        raise ValueError('positive Qwen4 PLE hash-lane count required')
     primes, candidate = [], c.ngram_vocab_size_base
+    if type(candidate) is not int or not 2 <= candidate <= _INT64_MAX:
+        raise ValueError('Qwen4 PLE prime base is outside signed-int64 metadata range')
     while len(primes) < (ordinal+1)*lanes:
-        if candidate >= 2 and all(candidate % divisor for divisor in range(2, math.isqrt(candidate)+1)):
+        if candidate > _INT64_MAX:
+            raise ValueError('Qwen4 PLE prime metadata exceeds signed-int64 range')
+        if _is_prime_int64(candidate):
             primes.append(candidate)
         candidate += 1
     sizes = np.array(primes[ordinal*lanes:], dtype=np.int64)
+    if sum(int(value) for value in sizes) > _INT64_MAX:
+        raise ValueError('Qwen4 PLE hash offsets exceed signed-int64 range')
     offsets = np.concatenate((np.zeros(1, np.int64), np.cumsum(sizes[:-1])))
     modulus = (1 << 64)-1
     bound = max(1, (((1 << 63)-1)//c.vocab_size)//2)

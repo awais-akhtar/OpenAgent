@@ -6,7 +6,7 @@ const views = [
 
 // The Python server serves the SPA at `/`; the React shell reads query-based
 // view links and normalizes them back to `/`. `/tools/*` is not a server route.
-const routeFor = view => view === 'dashboard' ? '/?view=dashboard&activity=1' : `/?view=${view}`;
+const routeFor = view => `/?view=${view}`;
 
 async function mockBackend(page, calls = []) {
   let archived = false;
@@ -50,6 +50,14 @@ async function mockBackend(page, calls = []) {
     if (path === '/api/chat/stream' && request.method() === 'POST') {
       await route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'data: {"type":"conversation","conversation":{"id":"conversation-created"}}\n\ndata: {"type":"chunk","content":"Fixture answer"}\n\n' }); return;
     }
+    if (path === '/api/knowledge/upload' && request.method() === 'POST') {
+      const upload = calls.at(-1);
+      if (upload) {
+        upload.contentType = request.headers()['content-type'];
+        upload.body = request.postDataBuffer()?.toString('latin1') ?? '';
+      }
+      await route.fulfill({ status: 201, json: { attachment: { id: 'attachment-fixture', name: 'notes.txt' } } }); return;
+    }
     if (path === '/api/codebase/projects' && request.method() === 'GET') {
       await route.fulfill({ json: { projects: [{ id: 'repo-fixture', name: 'Fixture repository', status: 'ready' }] } }); return;
     }
@@ -72,32 +80,35 @@ async function mockBackend(page, calls = []) {
   });
 }
 
-test('all 22 active views open from deep links and remain discoverable in the Tools launcher', async ({ page }) => {
+test('all 22 active views open from deep links and remain discoverable in the More tools launcher', async ({ page }) => {
   await mockBackend(page);
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto('/?view=dashboard');
-  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-  await expect(page).toHaveURL(/view=chat/); // Legacy dashboard links intentionally resolve to the new conversation home.
+  // Home leads with the workspace and primary actions; Activity remains a
+  // discoverable destination in the launcher.
+  await expect(page.getByRole('heading', { name: 'Welcome to OpenAgent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start chat' })).toBeVisible();
+  await expect(page.locator('.home-prompt-tools')).toContainText('CodeQ');
 
   for (const view of views) {
     await page.goto(routeFor(view));
     await expect(page.locator('#oa-main-content')).toBeVisible();
-    const screenTitle = view === 'chat' ? page.locator('.oa-page-title') : page.locator('#oa-main-content h1, #oa-main-content h2').first();
-    await expect(screenTitle).toBeVisible();
+    const screenTitle = page.locator('.oa-page-title');
+    await expect(screenTitle, `${view} should expose a visible screen title`).toBeVisible();
     if (view === 'chat') await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
   }
 
-  await page.getByRole('button', { name: 'Tools' }).click();
+  await page.getByRole('button', { name: 'More tools' }).click();
   const palette = page.getByRole('dialog', { name: 'Search OpenAgent' });
   await expect(palette).toBeVisible();
   await palette.getByRole('button', { name: 'Activity' }).click();
   await expect(page).toHaveURL(/view=dashboard.*activity=1|activity=1.*view=dashboard/);
-  await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Welcome to OpenAgent' })).toBeVisible();
   await page.goto('/?view=phd');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
   await expect(page).toHaveURL(/view=chat/);
-  await page.getByRole('button', { name: 'Tools' }).click();
+  await page.getByRole('button', { name: 'More tools' }).click();
   const retiredPalette = page.getByRole('dialog', { name: 'Search OpenAgent' });
   await expect(retiredPalette).toBeVisible();
   await retiredPalette.getByRole('textbox', { name: 'Search conversations and tools' }).fill('Application Studio');
@@ -136,24 +147,78 @@ test('new conversation sends a project-scoped, local-first chat request', async 
   await expect(page.getByText('Fixture answer')).toBeVisible();
 });
 
-test('chat home provider and assistant shortcuts apply live selections and actions', async ({ page }) => {
+test('chat fills the page stage and keeps the welcome and composer visible at desktop and mobile sizes', async ({ page }) => {
+  await mockBackend(page);
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto('/?view=chat&project=fixture-project');
+    const stage = await page.locator('.oa-page-stage').boundingBox();
+    const chat = await page.locator('.oa-chat-page').boundingBox();
+    const surface = await page.locator('.oa-chat-surface').boundingBox();
+    const timeline = await page.locator('.oa-chat-timeline').boundingBox();
+    const welcome = await page.locator('.oa-chat-welcome').boundingBox();
+    const composer = await page.locator('.oa-chat-composer').boundingBox();
+    expect(stage).toBeTruthy();
+    expect(chat?.height ?? 0, `chat height at ${viewport.width}px`).toBeGreaterThanOrEqual((stage?.height ?? 0) - 1);
+    expect(surface?.height ?? 0, `surface height at ${viewport.width}px`).toBeGreaterThanOrEqual((stage?.height ?? 0) - 1);
+    expect(timeline?.height ?? 0, `timeline height at ${viewport.width}px`).toBeGreaterThan((stage?.height ?? 0) * 0.85);
+    for (const [name, box] of [['welcome', welcome], ['composer', composer]]) {
+      expect(box, `${name} rendered at ${viewport.width}px`).toBeTruthy();
+      expect(box?.y ?? -1, `${name} top at ${viewport.width}px`).toBeGreaterThanOrEqual(stage?.y ?? 0);
+      expect((box?.y ?? Infinity) + (box?.height ?? 0), `${name} bottom at ${viewport.width}px`).toBeLessThanOrEqual((stage?.y ?? 0) + (stage?.height ?? 0) + 1);
+    }
+  }
+});
+
+test('chat provider and assistant selectors apply live selections and actions', async ({ page }) => {
   const calls = [];
   await mockBackend(page, calls);
   await page.goto('/?view=chat&project=fixture-project');
-  await page.getByRole('button', { name: 'Local provider' }).click();
-  await expect(page.getByRole('button', { name: 'Local provider' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByLabel('Chat provider').selectOption('local-provider');
+  await expect(page.getByLabel('Chat provider')).toHaveValue('local-provider');
   await page.getByRole('textbox', { name: 'Message' }).fill('Use selected provider');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect.poll(() => calls.find(call => call.method === 'POST' && call.path === '/api/chat/stream')?.payload?.provider).toBe('local-provider');
 
   await page.goto('/?view=chat&project=fixture-project');
-  await page.getByRole('button', { name: /Executive Agent/ }).click();
-  await expect(page.getByRole('button', { name: /Executive Agent/ })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByLabel('Assistant').selectOption('executive');
+  await expect(page.getByText('Checked run')).toBeVisible();
   await page.getByRole('textbox', { name: 'Message' }).fill('Plan this local project');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.getByText('Checked agent plan.')).toBeVisible();
   const agentCall = calls.find(call => call.method === 'POST' && call.path === '/api/agents/run-checked');
   expect(agentCall?.payload).toMatchObject({ agent: 'executive', goal: 'Plan this local project', project: 'fixture-project', verify: true });
+});
+
+test('chat accepts dropped files only after the upload endpoint receives the file', async ({ page }) => {
+  const calls = [];
+  await mockBackend(page, calls);
+  await page.goto('/?view=chat&project=fixture-project');
+
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(['fixture attachment contents'], 'notes.txt', { type: 'text/plain' }));
+    return data;
+  });
+  const composer = page.locator('.oa-chat-composer');
+  await composer.evaluate((element, data) => {
+    element.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: data }));
+  }, transfer);
+  await expect(page.getByText('Drop files to attach')).toBeVisible();
+  await composer.evaluate((element, data) => {
+    element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+  }, transfer);
+
+  await expect.poll(() => calls.find(call => call.method === 'POST' && call.path === '/api/knowledge/upload')).toBeTruthy();
+  const upload = calls.find(call => call.method === 'POST' && call.path === '/api/knowledge/upload');
+  expect(upload?.contentType).toMatch(/^multipart\/form-data; boundary=/);
+  expect(upload?.body).toContain('filename="notes.txt"');
+  expect(upload?.body).toContain('name="project"\r\n\r\nfixture-project');
+  await expect(page.locator('.oa-chat-attachment')).toContainText('notes.txt');
+
+  await page.getByRole('textbox', { name: 'Message' }).fill('Use the uploaded notes');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => calls.find(call => call.method === 'POST' && call.path === '/api/chat/stream')?.payload?.attachments).toEqual([{ id: 'attachment-fixture', name: 'notes.txt' }]);
 });
 
 test('conversation search opens a saved result and archive can be restored from history', async ({ page }) => {
@@ -198,11 +263,11 @@ test('dark and light themes update the document and persist', async ({ page }) =
   await page.goto(routeFor('settings'));
   await page.evaluate(() => localStorage.setItem('openagent.ui.v2.theme', 'dark'));
   await page.reload();
-  await page.getByRole('button', { name: 'Use light theme' }).click();
+  await page.getByLabel('Appearance').selectOption('light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await page.getByRole('button', { name: 'Use dark theme' }).click();
+  await page.getByLabel('Appearance').selectOption('dark');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 });
 
@@ -219,11 +284,34 @@ test('responsive shell and all representative workspaces avoid horizontal docume
   }
 });
 
+test('chat send and stop controls stay inside the composer on narrow screens', async ({ page }) => {
+  await mockBackend(page);
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(routeFor('chat'));
+    const composer = page.locator('.oa-chat-composer');
+    const send = page.locator('.oa-chat-send');
+    await expect(composer).toBeVisible();
+    await expect(send).toBeVisible();
+    const composerBox = await composer.boundingBox();
+    const sendBox = await send.boundingBox();
+    const pageWidth = await page.evaluate(() => document.documentElement.clientWidth);
+    expect(composerBox).toBeTruthy();
+    expect(sendBox).toBeTruthy();
+    expect(sendBox.x, `send control left edge at ${width}px`).toBeGreaterThanOrEqual(composerBox.x - 1);
+    expect(sendBox.x + sendBox.width, `send control right edge within composer at ${width}px`).toBeLessThanOrEqual(composerBox.x + composerBox.width + 1);
+    expect(sendBox.x + sendBox.width, `send control right edge within viewport at ${width}px`).toBeLessThanOrEqual(pageWidth + 1);
+  }
+});
+
 test('workspace document title gets a readable mobile toolbar row', async ({ page }) => {
   await mockBackend(page);
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto(routeFor('workspace'));
+    // The redesigned empty state keeps the editor closed until the user asks
+    // to create a document.
+    await page.getByRole('button', { name: 'Create document' }).click();
     const toolbar = page.locator('.oa-file-toolbar');
     const title = page.getByLabel('Document title');
     const actions = page.locator('.oa-file-actions');
@@ -252,7 +340,7 @@ test('mobile navigation opens, navigates to a tool and closes after selection', 
   await firstFocusable.focus();
   await page.keyboard.press('Shift+Tab');
   await expect(lastFocusable).toBeFocused();
-  await page.getByRole('button', { name: 'Tools' }).click();
+  await page.getByRole('button', { name: 'More tools' }).click();
   await page.getByRole('dialog', { name: 'Search OpenAgent' }).locator('.oa-command-row').filter({ hasText: 'Knowledge' }).click();
   await expect(page).toHaveURL(/view=knowledge/);
   await expect(page.locator('.oa-sidebar')).not.toHaveClass(/mobile-open/);
@@ -263,12 +351,12 @@ test('collapsed navigation preserves names and keyboard focusability', async ({ 
   await page.goto('/');
   await page.getByRole('button', { name: 'Close sidebar' }).click();
   await expect(page.locator('.oa-app-shell')).toHaveClass(/sidebar-collapsed/);
-  const tools = page.getByRole('button', { name: 'Tools' });
+  const tools = page.getByRole('button', { name: 'More tools' });
   await expect(tools).toBeVisible();
   await tools.focus();
   await expect(tools).toBeFocused();
-  await expect(tools).toHaveAttribute('title', 'Tools');
-  for (const label of ['New chat', 'Search', 'Assistants', 'Scheduled', 'Tools', 'Settings']) {
+  await expect(tools).toHaveAttribute('title', 'More tools');
+  for (const label of ['New chat', 'Search', 'Agents', 'Automations', 'More tools', 'Settings']) {
     const button = page.getByRole('button', { name: label, exact: true });
     await expect(button).toHaveAttribute('aria-label', label);
     await expect(button).toHaveAttribute('title', label);
@@ -281,11 +369,11 @@ test('representative screen actions preserve API contracts and safety gates', as
 
   await page.goto(`${routeFor('codebase')}&project=fixture-project`);
   await page.getByRole('button', { name: 'Fixture repository' }).click();
-  await page.getByLabel('Task request').fill('Inspect only; do not modify files.');
-  await page.getByRole('button', { name: 'Review task preflight' }).click();
+  await page.getByLabel('Task').fill('Inspect only; do not modify files.');
+  await page.getByRole('button', { name: 'Review task' }).click();
   await expect.poll(() => calls.some(call => call.method === 'POST' && call.path === '/api/codebase/preflight')).toBe(true);
   expect(calls.find(call => call.path === '/api/codebase/preflight')?.payload).toMatchObject({ codebase_project_id: 'repo-fixture', goal: 'Inspect only; do not modify files.', acceptance_criteria: [] });
-  await expect(page.getByRole('button', { name: 'Start run after review' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start reviewed run' })).toBeVisible();
   expect(calls.some(call => call.method === 'POST' && call.path === '/api/codebase/runs')).toBe(false); // A run remains behind the explicit reviewed preflight.
 
   await page.goto(`${routeFor('research')}&project=fixture-project`);
@@ -295,12 +383,13 @@ test('representative screen actions preserve API contracts and safety gates', as
   expect(calls.find(call => call.method === 'POST' && call.path === '/api/research/sessions')?.payload).toMatchObject({ query: 'Local research fixture', project: 'fixture-project', allow_external: false });
 
   await page.goto(`${routeFor('knowledge')}&project=fixture-project`);
-  await page.getByLabel('Question or search phrase').fill('Search within project');
-  await page.getByRole('button', { name: 'Search sources' }).click();
+  await page.getByLabel('Search project knowledge').fill('Search within project');
+  await page.locator('.knowledge-query').getByRole('button', { name: 'Search', exact: true }).click();
   await expect.poll(() => calls.some(call => call.method === 'POST' && call.path === '/api/knowledge/hybrid-search')).toBe(true);
   expect(calls.find(call => call.path === '/api/knowledge/hybrid-search')?.payload).toMatchObject({ query: 'Search within project', project: 'fixture-project' });
 
   await page.goto(`${routeFor('security')}&project=fixture-project`);
+  await page.getByRole('button', { name: 'Access', exact: true }).click();
   await page.getByRole('button', { name: 'Egress requests' }).click();
   await page.getByLabel('Purpose').fill('Request external access for review');
   await page.getByLabel('Destination').fill('https://example.invalid');
@@ -310,10 +399,11 @@ test('representative screen actions preserve API contracts and safety gates', as
   expect(calls.some(call => call.method === 'POST' && call.path === '/api/security/egress/resolve')).toBe(false); // Filing a request cannot approve egress.
 
   await page.goto(`${routeFor('vault')}&project=fixture-project`);
+  await page.getByRole('button', { name: 'Add your first entry' }).click();
   await page.getByLabel('Label', { exact: true }).fill('Fixture credential');
   await page.getByLabel('Secret value').fill('fixture-only-secret');
-  await page.getByLabel('Vault passphrase').fill('fixture-only-passphrase');
-  await page.getByRole('button', { name: 'Encrypt and store' }).click();
+  await page.getByRole('dialog').getByLabel('Vault passphrase').fill('fixture-only-passphrase');
+  await page.getByRole('dialog').getByRole('button', { name: 'Encrypt and store' }).click();
   await expect.poll(() => calls.some(call => call.method === 'POST' && call.path === '/api/vault/store')).toBe(true);
   const vaultCall = calls.find(call => call.path === '/api/vault/store');
   expect(vaultCall?.payload).toMatchObject({ label: 'Fixture credential', secret: 'fixture-only-secret', passphrase: 'fixture-only-passphrase', project: 'fixture-project' });

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .execution_service import ExecutionLimits, NativeExecutionService
+from .failure_reporting import add_failure_note, failure_summary
 
 
 def compose_public_publisher_service(backing_service, *, runtime_library, family, config,
@@ -23,6 +24,16 @@ def compose_public_publisher_service(backing_service, *, runtime_library, family
     if (type(max_sessions) is not int or max_sessions<=0 or
             type(max_snapshots_per_session) is not int or not 1<=max_snapshots_per_session<=62):
         raise ValueError('bounded explicit public publisher session and snapshot counts required')
+    publisher_routes={
+        'kimi-k3':('kimi-k3','kimi_k3','fp32-approximate'),
+        'deepseek-v41':('deepseek-v41','deepseek_v41','publisher-bf16-fp8-fp4'),
+    }
+    route=publisher_routes.get(family)
+    if route is None:
+        raise ValueError('unsupported public publisher family identity')
+    from .source_scope import require_source_family_backend_admission
+    require_source_family_backend_admission(family=route[0],model_type=route[1],
+        backend='public-range',arithmetic=route[2])
     if backing_service._sessions or backing_service._opening or backing_service._closed:
         raise ValueError('fresh empty backing publisher service required for ownership transfer')
     slots=getattr(backing_service.factory,'count_limit',None)
@@ -76,7 +87,7 @@ def compose_public_publisher_service(backing_service, *, runtime_library, family
                         execution.close()
                     except BaseException as failure:
                         pending[id(execution)]=execution
-                        primary.add_note('public publisher executor cleanup retained: '+repr(failure))
+                        add_failure_note(primary, 'public publisher executor cleanup retained: '+failure_summary(failure))
                 raise
         result=NativeExecutionService(construct,limits,factory_cleanup=cleanup)
         result.public_adapters=owner
@@ -87,7 +98,7 @@ def compose_public_publisher_service(backing_service, *, runtime_library, family
             cleanup()
         except BaseException as failure:
             primary.cleanup=cleanup
-            primary.add_note('public publisher ownership transfer cleanup retained: '+repr(failure))
+            add_failure_note(primary, 'public publisher ownership transfer cleanup retained: '+failure_summary(failure))
         raise
 
 
@@ -98,9 +109,14 @@ def create_public_k3_execution_service(payload, libraries, *, runtime_library,
     """Construct original native K3, then serve its complete public range."""
     if any(options.get(name) is not None for name in ('arithmetic','fla_policy')):
         raise ValueError('the public native K3 factory requires its counted CPU arithmetic')
+    from .source_scope import require_source_family_backend_admission
+    require_source_family_backend_admission(
+        family='kimi-k3', model_type='kimi_k3', backend='public-range',
+        arithmetic='fp32-approximate')
     backing=create_k3_execution_service(payload,libraries,runtime_max_bytes=runtime_max_bytes,
         max_sessions=2*max_sessions,**options)
-    return compose_public_publisher_service(backing,runtime_library=runtime_library,family='kimi-k3',
+    backing.publisher_payload=payload
+    return _compose_public_service_or_close(backing,runtime_library=runtime_library,family='kimi-k3',
         config=payload.config,model_directory=model_directory,checkpoint_identity=checkpoint_identity,
         executor_bytes=runtime_max_bytes,max_resource_bytes=max_resource_bytes,
         max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
@@ -112,9 +128,14 @@ def create_public_publisher_v41_execution_service(payload, arithmetic_factory, *
         executor_bytes, max_resource_bytes, max_work_bytes, max_snapshot_bytes,
         max_batch_rows=32, max_sessions=1, max_snapshots_per_session=4, **options):
     """Compose the concrete publisher V4.1 arithmetic factory through public ABI."""
+    from .source_scope import require_source_family_backend_admission
+    require_source_family_backend_admission(
+        family='deepseek-v41', model_type='deepseek_v41', backend='public-range',
+        arithmetic='publisher-bf16-fp8-fp4')
     backing=create_publisher_v41_execution_service(payload,arithmetic_factory,
         library=library,runtime_max_bytes=runtime_max_bytes,max_sessions=2*max_sessions,**options)
-    return compose_public_publisher_service(backing,runtime_library=runtime_library,family='deepseek-v41',
+    backing.publisher_payload=payload
+    return _compose_public_service_or_close(backing,runtime_library=runtime_library,family='deepseek-v41',
         config=payload.profile,model_directory=model_directory,checkpoint_identity=checkpoint_identity,
         executor_bytes=executor_bytes,max_resource_bytes=max_resource_bytes,
         max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
@@ -128,12 +149,32 @@ def open_public_publisher_v41_service(directory, *, runtime_library, executor_by
     if options.get('device') is not None:
         raise ValueError('native public V4.1 composition requires its original CPU arithmetic owner')
     backing=open_publisher_v41_service(directory,**options)
-    payload=backing.publisher_payload
-    return compose_public_publisher_service(backing,runtime_library=runtime_library,family='deepseek-v41',
-        config=payload.profile,model_directory=directory,checkpoint_identity=payload.config_sha256,
-        executor_bytes=executor_bytes,max_resource_bytes=max_resource_bytes,
-        max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
-        max_snapshots_per_session=max_snapshots_per_session)
+    try:
+        payload=backing.publisher_payload
+        return compose_public_publisher_service(backing,runtime_library=runtime_library,family='deepseek-v41',
+            config=payload.profile,model_directory=directory,checkpoint_identity=payload.config_sha256,
+            executor_bytes=executor_bytes,max_resource_bytes=max_resource_bytes,
+            max_work_bytes=max_work_bytes,max_snapshot_bytes=max_snapshot_bytes,max_batch_rows=max_batch_rows,
+            max_snapshots_per_session=max_snapshots_per_session)
+    except BaseException as error:
+        _close_backing_after_failure(backing,error)
+        raise
+
+
+def _close_backing_after_failure(backing,error):
+    try:
+        backing.close()
+    except BaseException as cleanup:
+        error.cleanup=backing.close
+        add_failure_note(error, 'public ABI composition backing cleanup retained: '+failure_summary(cleanup))
+
+
+def _compose_public_service_or_close(backing,**options):
+    try:
+        return compose_public_publisher_service(backing,**options)
+    except BaseException as error:
+        _close_backing_after_failure(backing,error)
+        raise
 
 
 @dataclass(frozen=True)
@@ -189,13 +230,14 @@ def create_k3_batch_execution(payload, libraries, *, runtime_max_bytes,
             service.close()
         except BaseException as cleanup:
             primary.cleanup = service.close
-            primary.add_note('K3 batch service cleanup retained: '+repr(cleanup))
+            add_failure_note(primary, 'K3 batch service cleanup retained: '+failure_summary(cleanup))
         raise
 
 
 def create_segment_edge_execution_service(
     library, *, edge_adapter, model_directory, checkpoint_identity, ranges,
     vocabulary, context_tokens, native_memory_bytes,
+    source_family, model_type, arithmetic,
     max_transfer_bytes=256*1024**2, max_snapshot_bytes=1024**3,
     max_new_tokens=256, max_sessions=1, prefill_chunk_tokens=32,
     max_snapshots_per_session=4, backend_mask=1 << 8,
@@ -207,14 +249,44 @@ def create_segment_edge_execution_service(
     implementation or certification of any checkpoint/backend combination.
     Native memory is a per-adapter budget, not an aggregate process-RSS bound.
     """
+    # The checkpoint preflight below reads its bounded persisted header map and
+    # admits every exact source-format tuple found there. A second family-wide
+    # gate would reject valid mixed-format checkpoints even though their exact
+    # formats were individually admitted (or reject them all because unrelated
+    # candidate formats exist for the same family).
+    from .source_scope import (require_checkpoint_inventory_admission,
+                               source_family_for_identity)
+    if source_family_for_identity(model_type)!=source_family:
+        raise ValueError('native Segment/Edge family does not own the selected checkpoint identity')
+    inventory=require_checkpoint_inventory_admission(model_directory,family=source_family,
+        model_type=model_type,backend='public-range',arithmetic=arithmetic,
+        max_metadata_bytes=256*1024**2)
     from itertools import islice
+    import os
     from .segment_edge_runtime import (
         SegmentEdgeExecution, SegmentRange, cleanup_failed_segment_edge_executors,
+        _BACKENDS, _integer,
     )
 
     selected = tuple(islice(iter(ranges), 4097))
     if not selected or len(selected) > 4096 or any(type(item) is not SegmentRange for item in selected):
         raise ValueError('explicit bounded native layer range inventory required')
+    # Reject malformed route geometry and checkpoint mixing before the
+    # executor loads the native runtime or opens the Edge/Segment artifacts.
+    _integer(backend_mask, 'backend_mask', minimum=1, maximum=_BACKENDS)
+    if backend_mask & ~_BACKENDS:
+        raise ValueError('unknown native backend mask bits')
+    model_root = os.path.normcase(os.path.abspath(os.fspath(model_directory)))
+    boundary = 0
+    for item in selected:
+        if (type(item.begin) is not int or type(item.end) is not int or
+                item.begin != boundary or item.end <= item.begin):
+            raise ValueError('native layer ranges must form a contiguous ordered partition')
+        if os.path.normcase(os.path.abspath(os.fspath(item.model_directory))) != model_root:
+            raise ValueError('every native layer range must use the admitted checkpoint root')
+        boundary = item.end
+    if type(inventory.config) is not dict or inventory.config.get('model_type')!=model_type:
+        raise ValueError('native Segment/Edge checkpoint identity differs from its admitted P02 route')
     if type(max_snapshots_per_session) is not int or not 1 <= max_snapshots_per_session <= 62:
         raise ValueError('public snapshot limit must be between one and 62')
     limits = ExecutionLimits(vocabulary, context_tokens, max_new_tokens, max_sessions,
@@ -256,7 +328,7 @@ def create_segment_edge_execution_service(
                 executor.close()
             except BaseException as failure:
                 pending[id(executor)] = executor
-                error.add_note('native executor cleanup pending: '+str(failure))
+                add_failure_note(error, 'native executor cleanup pending: '+failure_summary(failure))
             raise
         return executor
 
@@ -268,6 +340,23 @@ def create_native_family_public_execution_service(runtime_library,decoder,*,mode
         prefill_chunk_tokens=32,max_snapshots_per_session=4,max_transfer_bytes=256*1024**2,
         max_snapshot_bytes=1024**3,own_decoder=False):
     """Use native C model registration and the public Segment/Edge dispatcher."""
+    # This public-ABI entrypoint accepts an already materialized decoder, so
+    # its tensor objects alone cannot prove which persisted source tuple was
+    # loaded. Re-admit the named checkpoint's complete SafeTensors headers
+    # before registering the decoder or loading the public runtime.
+    from .native_glm5_next import NativeGlm5NextTextDecoder
+    from .native_inkling import NativeInklingDecoder
+    admitted_families = {
+        NativeGlm5NextTextDecoder: ('glm5-next', 'glm5_next_text'),
+        NativeInklingDecoder: ('inkling', 'inkling_text'),
+    }
+    identity = admitted_families.get(type(decoder))
+    if identity is None:
+        raise TypeError('exact native GLM5 or Inkling decoder required for public admission')
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(
+        model_directory, family=identity[0], model_type=identity[1],
+        backend='public-range', max_metadata_bytes=max_resource_bytes)
     from .native_family_public_adapters import NativeFamilyPublicAdapters
     from .segment_edge_runtime import SegmentRange
     owner=NativeFamilyPublicAdapters(runtime_library,decoder,model_directory=model_directory,
@@ -277,6 +366,7 @@ def create_native_family_public_execution_service(runtime_library,decoder,*,mode
         service=create_segment_edge_execution_service(runtime_library,edge_adapter=owner.edge_id,
             model_directory=str(owner.root),checkpoint_identity=owner.identity,
             ranges=(SegmentRange(owner.segment_id,str(owner.root),0,owner.layers),),
+            source_family=identity[0],model_type=identity[1],arithmetic='fp32',
             vocabulary=owner.vocabulary,context_tokens=owner.context,native_memory_bytes=max_resource_bytes,
             max_transfer_bytes=max_transfer_bytes,max_snapshot_bytes=max_snapshot_bytes,
             max_new_tokens=max_new_tokens,max_sessions=max_sessions,prefill_chunk_tokens=prefill_chunk_tokens,
@@ -291,7 +381,60 @@ def create_native_family_public_execution_service(runtime_library,decoder,*,mode
     except BaseException as error:
         try:owner.close()
         except BaseException as failure:
-            error.cleanup=owner.close;error.add_note('native public family ownership cleanup retained: '+str(failure))
+            error.cleanup=owner.close;add_failure_note(error, 'native public family ownership cleanup retained: '+failure_summary(failure))
+        raise
+
+
+def open_native_family_public_directory_service(directory, *, runtime_library,
+        kernel_library, family, max_weight_bytes, runtime_max_bytes,
+        max_total_model_bytes, context_tokens, max_work_bytes,
+        max_new_tokens=256, max_sessions=1, prefill_chunk_tokens=32,
+        max_snapshots_per_session=4, max_batch_rows=32,
+        max_transfer_bytes=256*1024**2, max_snapshot_bytes=1024**3):
+    """Load and serve an exact GLM5/Inkling text decoder through public ABI.
+
+    The selected text loader admits the same source headers against the
+    public-range tuple and seals its decoder to that checkpoint snapshot before
+    the adapter can register its native callback owner.
+    """
+    identities = {
+        'glm5_next_text': ('glm5-next', True),
+        'inkling_text': ('inkling', False),
+    }
+    identity = identities.get(family)
+    if identity is None:
+        raise ValueError('public family directory service is text-only for GLM5 or Inkling')
+    source_family, uses_context = identity
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(
+        directory, family=source_family, model_type=family,
+        backend='public-range', arithmetic='fp32',
+        max_metadata_bytes=max_weight_bytes)
+    from .native_checkpoint import load_native_text_decoder
+    decoder = load_native_text_decoder(
+        directory, model_type=family, library=kernel_library,
+        max_weight_bytes=max_weight_bytes, max_bytes=runtime_max_bytes,
+        context_tokens=context_tokens if uses_context else None,
+        source_backend='public-range')
+    try:
+        if not uses_context and decoder.config['max_position_embeddings'] != context_tokens:
+            raise ValueError('Inkling public service context must match checkpoint capacity')
+        return create_native_family_public_execution_service(
+            runtime_library, decoder, model_directory=directory,
+            max_resource_bytes=max_total_model_bytes,
+            max_work_bytes=max_work_bytes, max_batch_rows=max_batch_rows,
+            max_new_tokens=max_new_tokens, max_sessions=max_sessions,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+            max_snapshots_per_session=max_snapshots_per_session,
+            max_transfer_bytes=max_transfer_bytes,
+            max_snapshot_bytes=max_snapshot_bytes, own_decoder=True)
+    except BaseException as error:
+        try:
+            decoder.close()
+        except BaseException as cleanup:
+            error.cleanup = decoder.close
+            add_failure_note(error, 'public family directory decoder cleanup retained: '
+                             + failure_summary(cleanup))
         raise
 
 
@@ -311,9 +454,18 @@ def create_k3_execution_service(payload, libraries, *, runtime_max_bytes,
     """
     from .k3_execution import K3Config, K3Execution
     from .publisher_checkpoint import K3ExecutionPayload
+    from .publisher_checkpoint.k3_adapter import require_k3_payload_admission
 
     if type(payload) is not K3ExecutionPayload or type(payload.config) is not K3Config:
         raise ValueError('prepared K3 execution payload required')
+    require_k3_payload_admission(payload)
+    from .source_scope import require_source_family_backend_admission
+    route_backend = ('fla' if fla_policy is not None else
+                    'device' if arithmetic is not None else 'native')
+    route_arithmetic = 'bf16' if arithmetic is not None else 'fp32-approximate'
+    require_source_family_backend_admission(
+        family='kimi-k3', model_type='kimi_k3', backend=route_backend,
+        arithmetic=route_arithmetic)
     if type(libraries) is not K3Libraries:
         raise ValueError('explicit K3 library inventory required')
     if type(runtime_max_bytes) is not int or runtime_max_bytes <= 0:
@@ -376,6 +528,11 @@ def create_v41_execution_service(config, tensors, *, libraries, engram, compress
     This is not a publisher checkpoint adapter. Table and packed expert
     providers remain caller-owned. Each executor validates its own weights.
     """
+    # This legacy in-memory route has no publisher source-format, persisted
+    # encoding, or checkpoint-content provenance. V4.1's Phase 1 route is the
+    # publisher adapter/factory below; do not let this generic equation API
+    # impersonate an admitted family tuple.
+    _reject_unproven_inmemory_route('deepseek-v41', 'native')
     from itertools import islice
     from types import MappingProxyType
     from .v41_execution import V41Config, V41Execution
@@ -505,6 +662,20 @@ def open_native_conditional_directory_service(directory,*,family,library,text_li
         segment_layer_span=0,native_composition=False,native_store_runtime_library=None,
         native_expert_max_bytes=0,native_ple_max_bytes=0,max_checkpoint_buffer_bytes=16*1024**2):
     """Serve preprocessed media and generated tokens with physical recovery."""
+    from .source_scope import (require_checkpoint_inventory_admission,
+                               source_family_for_identity)
+    source_family=source_family_for_identity(family)
+    if (type(mtp_max_bytes) is not int or type(mtp_work_bytes) is not int or
+            mtp_max_bytes < 0 or mtp_work_bytes < 0):
+        raise ValueError('nonnegative conditional MTP budget integers required')
+    if mtp_max_bytes or mtp_work_bytes:
+        raise ValueError(
+            'conditional service MTP is not admitted until generated drafts are target-verified')
+    backend=('public-range' if segment_runtime_library is not None else
+             'device' if text_device is not None else 'native')
+    require_checkpoint_inventory_admission(directory,family=source_family,
+        model_type=family,backend=backend,arithmetic=arithmetic,
+        max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import _pairs
     from .publisher_family_contracts import component_contract
@@ -554,7 +725,7 @@ def open_native_conditional_directory_service(directory,*,family,library,text_li
             except BaseException as failure:
                 pending[id(decoder)]=decoder
                 error.cleanup=decoder.close
-                error.add_note('conditional native owner cleanup retained: '+str(failure))
+                add_failure_note(error, 'conditional native owner cleanup retained: '+failure_summary(failure))
             raise
     factory=BudgetedExecutorFactory(construct,executor_bytes=runtime_max_bytes,
         max_total_bytes=max_total_model_bytes,max_executors=max_sessions)
@@ -576,6 +747,11 @@ def open_flat_native_directory_service(directory, *, family, library,
     Each session independently owns all weights and continuation banks. The
     aggregate factory reserves the full declared model budget before loading.
     """
+    from .source_scope import (require_checkpoint_inventory_admission,
+                               source_family_for_identity)
+    source_family=source_family_for_identity(family)
+    require_checkpoint_inventory_admission(directory,family=source_family,
+        model_type=family,backend='native',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import load_native_text_decoder, _pairs
     from .flat_native_session import FlatNativeSession
@@ -632,7 +808,7 @@ def open_flat_native_directory_service(directory, *, family, library,
                 decoder.close()
             except BaseException as cleanup_error:
                 pending[id(decoder)] = decoder
-                failure.add_note('native construction resource retained: '+str(cleanup_error))
+                add_failure_note(failure, 'native construction resource retained: '+failure_summary(cleanup_error))
             raise
     budget = BudgetedExecutorFactory(construct,executor_bytes=runtime_max_bytes,
         max_total_bytes=max_total_model_bytes,max_executors=max_sessions)
@@ -644,6 +820,9 @@ def open_publisher_glm5_text_service(directory,*,library,expert_library,
         max_conversion_bytes,max_total_model_bytes,max_new_tokens=256,
         max_sessions=1,prefill_chunk_tokens=32,max_snapshots_per_session=4):
     """Serve original GLM text tensors with borrowed selected expert callbacks."""
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='glm5-next',
+        model_type='glm5_next',backend='native',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import _pairs
     from .publisher_family_contracts import component_contract
@@ -674,7 +853,7 @@ def open_publisher_glm5_text_service(directory,*,library,expert_library,
             try: owner.close()
             except BaseException as failure:
                 pending[id(owner)]=owner;error.cleanup=owner.close
-                error.add_note('publisher GLM owner retained: '+str(failure))
+                add_failure_note(error, 'publisher GLM owner retained: '+failure_summary(failure))
             raise
     budget=BudgetedExecutorFactory(construct,executor_bytes=runtime_max_bytes,
         max_total_bytes=max_total_model_bytes,max_executors=max_sessions)
@@ -712,6 +891,7 @@ def create_device_glm_dsa_execution_service(config,tensors,*,device,runtime_max_
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,
         max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None):
     """Own resident GLM DSA accelerator sessions and complete physical recovery."""
+    _reject_unproven_glm_inmemory_route('glm-dsa', 'device')
     import copy
     from .torch_glm_dsa_decoder import TorchGlmDsaDecoder
     settings=copy.deepcopy(dict(config));weights=dict(tensors)
@@ -730,6 +910,13 @@ def open_device_glm_dsa_directory_service(directory,*,device,max_weight_bytes,ru
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,
         max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,read_limits=None,cancel=None,expert_provider=None):
     """Admit a complete local GLM DSA checkpoint before device session creation."""
+    if expert_provider is not None:
+        raise ValueError(
+            'GLM-DSA packed experts lack checkpoint source-content identity; '
+            'device directory execution is restricted')
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='glm-dsa',
+        model_type='glm_moe_dsa',backend='device',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import _pairs
     from .torch_glm_dsa_decoder import TorchGlmDsaDecoder
@@ -759,6 +946,7 @@ def create_device_inkling_execution_service(config,tensors,*,device,runtime_max_
     Input tensors and providers remain borrowed during construction. Each
     decoder admits and copies its resident tensors before it can be published.
     """
+    _reject_unproven_inmemory_route('inkling','device')
     from .independent_inkling import configuration
     from .torch_inkling_decoder import TorchInklingDecoder
     from .executor_budget import BudgetedExecutorFactory
@@ -788,6 +976,7 @@ def create_device_glm5_execution_service(config,tensors,*,device,runtime_max_byt
         max_logit_buffer_bytes=256*1024**2,max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,
         expert_provider=None,projection_provider=None):
     """Serve exact GLM KDA/DSA device state through transactional generation."""
+    _reject_unproven_glm_inmemory_route('glm5-next', 'device')
     from .independent_glm5_next import Glm5NextTextContract
     from .torch_glm5_decoder import TorchGlm5NextDecoder
     from .executor_budget import BudgetedExecutorFactory
@@ -824,6 +1013,13 @@ def open_device_glm5_directory_service(directory,*,device,max_weight_bytes,runti
     wrapper conversion remains the responsibility of its explicit loader.
     Providers are borrowed and must outlive every service executor.
     """
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='glm5-next',
+        model_type='glm5_next_text',backend='device',max_metadata_bytes=max_weight_bytes)
+    if expert_provider is not None or projection_provider is not None:
+        raise ValueError(
+            'GLM5 external device expert/projection providers are disabled '
+            'until source checkpoint content identity is shared')
     import json
     from .native_checkpoint import _pairs
     from .independent_glm5_next import Glm5NextTextContract
@@ -866,6 +1062,13 @@ def open_device_inkling_directory_service(directory,*,device,max_weight_bytes,ru
         max_work_bytes=64*1024**2,max_head_bytes=64*1024**2,read_limits=None,cancel=None,
         expert_provider=None,projection_provider=None):
     """Admit separately owned Inkling device caches and bounded generation."""
+    if expert_provider is not None or projection_provider is not None:
+        raise ValueError(
+            'Inkling external device expert/projection providers are disabled '
+            'until source checkpoint content identity is shared')
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='inkling',
+        model_type='inkling_text',backend='device',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import _pairs
     from .independent_inkling import configuration
@@ -906,6 +1109,10 @@ def open_device_qwen4_directory_service(directory,*,device,max_weight_bytes,runt
         max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,
         max_projection_bytes=None,max_projection_host_bytes=None,max_projection_cache_bytes=0):
     """Own Qwen4 device generation sessions loaded from exact local tensors."""
+    _reject_unproven_qwen4_manifest_provider(expert_provider)
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='qwen4',
+        model_type='qwen4_exp_text',backend='device',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import _pairs
     from .independent_qwen4 import IndependentQwen4TextDecoder
@@ -919,6 +1126,16 @@ def open_device_qwen4_directory_service(directory,*,device,max_weight_bytes,runt
     if len(encoded)>1024**2:
         raise MemoryError('Qwen4 configuration exceeds admission')
     raw = json.loads(encoded,object_pairs_hook=_pairs)
+    # Keep this public directory entrypoint's route identity explicit, before
+    # tensor inventory or device-provider construction.  The decoder repeats
+    # these checks; doing them here also prevents service admission from being
+    # inferred solely from the requested CLI family.
+    if raw.get('model_type') != 'qwen4_exp_text':
+        raise ValueError('exact qwen4_exp_text directory configuration required')
+    architectures = raw.get('architectures')
+    if architectures not in (None, ['Qwen4ExpForCausalLM'],
+                             ('Qwen4ExpForCausalLM',)):
+        raise ValueError('unsupported Qwen4 text architecture declaration')
     c = IndependentQwen4TextDecoder(raw,{},_inventory_only=True).config
     if type(max_snapshots_per_session) is not int or not 1<=max_snapshots_per_session<=62:
         raise ValueError('bounded Qwen4 snapshot inventory required')
@@ -945,14 +1162,27 @@ def open_device_qwen4_directory_service(directory,*,device,max_weight_bytes,runt
 def create_device_qwen4_execution_service(config,tensors,*,device,runtime_max_bytes,
         max_new_tokens=256,max_sessions=1,prefill_chunk_tokens=512,
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,
-        max_total_model_bytes=None,max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None):
+        max_total_model_bytes=None,max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,
+        projection_provider=None):
     """Construct separately owned Qwen4 hybrid-state device sessions."""
+    _reject_unproven_inmemory_route('qwen4','device')
+    _reject_unproven_qwen4_manifest_provider(expert_provider)
     import json
     from types import MappingProxyType
     from .independent_qwen4 import IndependentQwen4TextDecoder
     from .torch_qwen4_decoder import TorchQwen4Decoder
     from .executor_budget import BudgetedExecutorFactory
     raw = json.loads(json.dumps(dict(config),allow_nan=False))
+    # Keep the in-memory factory's public route identity identical to the
+    # directory-backed factory.  The decoder validates tensor geometry, but
+    # architecture metadata is an admission decision and must not be inferred
+    # from a compatible-looking tensor map.
+    if raw.get('model_type') != 'qwen4_exp_text':
+        raise ValueError('exact qwen4_exp_text execution configuration required')
+    architectures = raw.get('architectures')
+    if architectures not in (None, ['Qwen4ExpForCausalLM'],
+                             ('Qwen4ExpForCausalLM',)):
+        raise ValueError('unsupported Qwen4 text architecture declaration')
     c = IndependentQwen4TextDecoder(raw,{},_inventory_only=True).config
     if type(max_snapshots_per_session) is not int or not 1<=max_snapshots_per_session<=62:
         raise ValueError('bounded Qwen4 snapshot inventory required')
@@ -964,7 +1194,8 @@ def create_device_qwen4_execution_service(config,tensors,*,device,runtime_max_by
     def create_executor():
         return _StructuredNativeSessionExecutor(TorchQwen4Decoder(raw,weights,device=device,max_bytes=runtime_max_bytes,
             max_snapshots=max_snapshots_per_session+2,max_layer_bytes=max_layer_bytes,
-            max_head_bytes=max_head_bytes,expert_provider=expert_provider))
+            max_head_bytes=max_head_bytes,expert_provider=expert_provider,
+            projection_provider=projection_provider))
     factory = BudgetedExecutorFactory(create_executor,executor_bytes=runtime_max_bytes,
         max_total_bytes=runtime_max_bytes*max_sessions if max_total_model_bytes is None else max_total_model_bytes,
         max_executors=max_sessions)
@@ -974,8 +1205,11 @@ def create_device_qwen4_execution_service(config,tensors,*,device,runtime_max_by
 def create_device_qwen35_execution_service(config,tensors,*,device,runtime_max_bytes,
         max_new_tokens=256,max_sessions=1,prefill_chunk_tokens=512,
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,
-        max_total_model_bytes=None,max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None):
+        max_total_model_bytes=None,max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,
+        projection_provider=None):
     """Own independent Qwen3.5 device hybrid-state generation sessions."""
+    _reject_unproven_inmemory_route('qwen35','device')
+    _reject_unproven_qwen35_manifest_provider(expert_provider)
     import json
     from types import MappingProxyType
     from .independent_qwen35 import IndependentQwen35TextDecoder
@@ -993,7 +1227,8 @@ def create_device_qwen35_execution_service(config,tensors,*,device,runtime_max_b
     def create_executor():
         return _StructuredNativeSessionExecutor(TorchQwen35Decoder(raw,weights,device=device,
             max_bytes=runtime_max_bytes,max_snapshots=max_snapshots_per_session+2,
-            max_layer_bytes=max_layer_bytes,max_head_bytes=max_head_bytes,expert_provider=expert_provider))
+            max_layer_bytes=max_layer_bytes,max_head_bytes=max_head_bytes,expert_provider=expert_provider,
+            projection_provider=projection_provider))
     factory = BudgetedExecutorFactory(create_executor,executor_bytes=runtime_max_bytes,
         max_total_bytes=runtime_max_bytes*max_sessions if max_total_model_bytes is None else max_total_model_bytes,
         max_executors=max_sessions)
@@ -1004,8 +1239,13 @@ def open_device_qwen35_directory_service(directory,*,device,max_weight_bytes,run
         max_new_tokens=256,max_sessions=1,prefill_chunk_tokens=512,
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,
         read_limits=None,cancel=None,max_total_model_bytes=None,
-        max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None):
+        max_layer_bytes=64*1024**2,max_head_bytes=64*1024**2,expert_provider=None,
+        projection_provider=None):
     """Open exact local Qwen3.5 checkpoints with aggregate executor admission."""
+    _reject_unproven_qwen35_manifest_provider(expert_provider)
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='qwen35',
+        model_type='qwen3_5_moe_text',backend='device',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_checkpoint import _pairs
     from .independent_qwen35 import IndependentQwen35TextDecoder
@@ -1030,7 +1270,8 @@ def open_device_qwen35_directory_service(directory,*,device,max_weight_bytes,run
         return _StructuredNativeSessionExecutor(TorchQwen35Decoder.from_directory(root,device=device,
             max_weight_bytes=max_weight_bytes,max_bytes=runtime_max_bytes,
             max_snapshots=max_snapshots_per_session+2,read_limits=read_limits,cancel=cancel,
-            max_layer_bytes=max_layer_bytes,max_head_bytes=max_head_bytes,expert_provider=expert_provider))
+            max_layer_bytes=max_layer_bytes,max_head_bytes=max_head_bytes,expert_provider=expert_provider,
+            projection_provider=projection_provider))
     def validate(executor):
         if vars(executor.config)!=vars(c):
             raise ValueError('Qwen3.5 configuration changed after service admission')
@@ -1040,11 +1281,52 @@ def open_device_qwen35_directory_service(directory,*,device,max_weight_bytes,run
     return NativeExecutionService(factory,limits,factory_cleanup=factory.retry_cleanup)
 
 
+def _reject_unproven_qwen35_manifest_provider(expert_provider):
+    """Prevent direct factories bypassing the CLI's packed-source restriction.
+
+    TorchQwen35Experts is backed by the generic packed manifest, which records
+    destination format/geometry but not the original source dtype or complete
+    P02 tuple. The native-family CLI already rejects this artifact class; keep
+    direct in-memory and directory service APIs on the same fail-closed path.
+    The original-publisher provider has its own source fingerprint contract
+    and is not conflated with this manifest route.
+    """
+    if expert_provider is None:
+        return
+    from .torch_qwen35_experts import TorchQwen35Experts
+    if isinstance(expert_provider, TorchQwen35Experts):
+        raise ValueError(
+            'Qwen3.5 packed manifest provider lacks source-dtype and exact '
+            'P02 tuple provenance; this direct factory route is restricted')
+
+
+def _reject_unproven_qwen4_manifest_provider(expert_provider):
+    """Keep direct Qwen4 factories aligned with native-family CLI restrictions."""
+    if expert_provider is None:
+        return
+    from .torch_qwen4_experts import TorchQwen4Experts
+    if isinstance(expert_provider, TorchQwen4Experts):
+        raise ValueError(
+            'Qwen4 packed manifest provider lacks source-dtype and exact '
+            'P02 tuple provenance; this direct factory route is restricted')
+
+
+def _reject_unproven_mixtral_manifest_provider(expert_provider):
+    """Reject Mixtral expert paging before any directory payload is loaded."""
+    if expert_provider is None:
+        return
+    raise ValueError(
+        'Mixtral packed experts lack checkpoint source-content identity; '
+        'this direct factory route is restricted')
+
+
 def create_device_mixtral_execution_service(config,tensors,*,device,runtime_max_bytes,
         max_new_tokens=256,max_sessions=1,prefill_chunk_tokens=512,
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,expert_provider=None,
         max_total_model_bytes=None,max_attention_bytes=64*1024**2,max_head_bytes=64*1024**2):
     """Construct independently owned full device Mixtral session executors."""
+    _reject_unproven_inmemory_route('mixtral','device')
+    _reject_unproven_mixtral_manifest_provider(expert_provider)
     import json
     from types import MappingProxyType
     from .native_mixtral_decoder import configuration
@@ -1077,6 +1359,10 @@ def open_device_mixtral_directory_service(directory,*,device,max_weight_bytes,ru
         max_snapshots_per_session=4,max_logit_buffer_bytes=256*1024**2,read_limits=None,cancel=None,
         expert_provider=None,max_total_model_bytes=None,max_attention_bytes=64*1024**2,max_head_bytes=64*1024**2):
     """Load each admitted device session from an exact local family checkpoint."""
+    _reject_unproven_mixtral_manifest_provider(expert_provider)
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='mixtral',
+        model_type='mixtral',backend='device',max_metadata_bytes=max_weight_bytes)
     import json
     from .native_mixtral_decoder import configuration
     from .torch_mixtral_decoder import TorchMixtralDecoder
@@ -1125,6 +1411,7 @@ def create_mixtral_execution_service(config, tensors, *, library, runtime_max_by
     its own explicit compiled-kernel contract and expert cache admission.
     Tensors remain caller-owned until each decoder has made its private copy.
     """
+    _reject_unproven_inmemory_route('mixtral','native')
     from types import MappingProxyType
     from .native_mixtral_decoder import NativeMixtralDecoder, configuration
 
@@ -1163,89 +1450,25 @@ def create_streamed_mixtral_directory_service(directory, *, library, expert_prov
         max_new_tokens=256, max_sessions=1, prefill_chunk_tokens=512,
         max_snapshots_per_session=4, max_logit_buffer_bytes=256*1024**2,
         read_limits=None,max_total_model_bytes=None):
-    """Admit local source metadata and load only dense/router banks per session.
+    """Reject streamed Mixtral experts until their source bytes are bound.
 
-    The caller keeps the borrowed provider alive through service shutdown.
-    Session caches remain independent; the provider serializes selected expert
-    calls over its shared bounded store. This factory never converts source
-    weights or chooses a quantizer implicitly.
+    Keep this public entrypoint fail-closed and perform the same bounded source
+    metadata preflight as other factories before rejecting the unsupported
+    packed-provider path. Dense resident, device, and public-range routes use
+    their own source-bound factories.
     """
-    from contextlib import ExitStack
-    from .native_checkpoint import _open_local, _json, _stamp
-    from .native_mixtral_decoder import (NativeMixtralDecoder, configuration,
-                                         mixtral_metadata_fingerprint)
-    from .mixtral_streamed_experts import MixtralStreamedExperts
-    if type(expert_provider) is not MixtralStreamedExperts:
+    # This is a public factory independent of the native-family CLI. Bind its
+    # checkpoint headers to the same exact source/backend/format tuple before
+    # inspecting provider state, resolving a library, or opening model files.
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(
+        directory, family='mixtral', model_type='mixtral', backend='native',
+        max_metadata_bytes=max_weight_bytes)
+    if expert_provider is None:
         raise TypeError('explicit MixtralStreamedExperts required')
-    for value in (max_weight_bytes, runtime_max_bytes):
-        if type(value) is not int or value <= 0:
-            raise ValueError('explicit positive checkpoint and decoder byte budgets required')
-    if type(prefill_chunk_tokens) is not int or not 1 <= prefill_chunk_tokens <= 4096:
-        raise ValueError('Mixtral prefill chunks must contain one to 4096 tokens')
-    if type(max_snapshots_per_session) is not int or not 1 <= max_snapshots_per_session <= 62:
-        raise ValueError('Mixtral public snapshot limit must be between one and 62')
-    root = Path(directory).resolve(strict=True)
-    path = Path(library).resolve(strict=True)
-    if not root.is_dir() or not path.is_file():
-        raise ValueError('explicit local checkpoint directory and native library required')
-    with ExitStack() as owned:
-        source, stamp = _open_local(root, root/'config.json', owned)
-        if stamp[2] > 1024*1024:
-            raise MemoryError('Mixtral service configuration exceeds admission')
-        raw = _json(source, stamp)
-        if _stamp(source) != stamp:
-            raise ValueError('Mixtral configuration changed during admission')
-    settings, capacity = configuration(raw, context_tokens)
-    metadata_identity = mixtral_metadata_fingerprint(raw)
-    if expert_provider.runtime.manifest.fingerprint != metadata_identity:
-        raise ValueError('Mixtral provider and source architecture differ')
-    provider_identity = expert_provider.identity
-    pending = {}
-    limits = ExecutionLimits(settings['vocab_size'], capacity, max_new_tokens,
-        max_sessions, prefill_chunk_tokens, max_snapshots_per_session,
-        max_logit_buffer_bytes=max_logit_buffer_bytes)
-
-    def create_executor():
-        if pending:
-            raise RuntimeError('Mixtral factory cleanup is pending; close the service')
-        if expert_provider.identity != provider_identity:
-            raise ValueError('Mixtral provider changed after service admission')
-        decoder = NativeMixtralDecoder.from_streamed_directory(root,
-            library=str(path), expert_provider=expert_provider,
-            max_weight_bytes=max_weight_bytes, max_bytes=runtime_max_bytes,
-            max_context=capacity, max_snapshots=max_snapshots_per_session+2,
-            read_limits=read_limits)
-        try:
-            if mixtral_metadata_fingerprint(decoder.config) != metadata_identity:
-                raise ValueError('Mixtral checkpoint configuration changed after service admission')
-        except BaseException as error:
-            try:
-                decoder.close()
-            except BaseException as failure:
-                pending[id(decoder)] = decoder
-                error.cleanup = decoder.close
-                error.add_note('Mixtral factory cleanup remains pending: '+str(failure))
-            raise
-        return _StructuredNativeSessionExecutor(decoder)
-
-    def cleanup():
-        errors = []
-        for key, decoder in tuple(pending.items()):
-            try:
-                decoder.close()
-            except BaseException as error:
-                errors.append(error)
-            else:
-                del pending[key]
-        if errors:
-            raise RuntimeError('Mixtral factory cleanup remains pending') from errors[0]
-        factory.retry_cleanup()
-
-    from .executor_budget import BudgetedExecutorFactory
-    factory=BudgetedExecutorFactory(create_executor,executor_bytes=runtime_max_bytes,
-        max_total_bytes=runtime_max_bytes*max_sessions if max_total_model_bytes is None else max_total_model_bytes,
-        max_executors=max_sessions)
-    return NativeExecutionService(factory, limits, factory_cleanup=cleanup)
+    raise ValueError(
+        'Mixtral packed experts lack checkpoint source-content identity; '
+        'streamed directory execution is restricted')
 
 
 def create_glm_dsa_execution_service(config, tensors, *, library, runtime_max_bytes,
@@ -1258,6 +1481,7 @@ def create_glm_dsa_execution_service(config, tensors, *, library, runtime_max_by
     This accepts only the decoder's exact unquantized text configuration and
     tensor inventory. It does not certify a checkpoint or enable expert paging.
     """
+    _reject_unproven_glm_inmemory_route('glm-dsa', 'native')
     import json
     from types import MappingProxyType
     from .native_glm_dsa import NativeGlmDsaDecoder
@@ -1290,12 +1514,39 @@ def create_glm_dsa_execution_service(config, tensors, *, library, runtime_max_by
     return NativeExecutionService(factory, limits,factory_cleanup=factory.retry_cleanup)
 
 
+def _reject_unproven_glm_inmemory_route(family, backend):
+    """Fail closed when an in-memory GLM factory cannot bind source provenance.
+
+    These APIs receive already-materialized tensors and have no authenticated
+    source/persisted format identity to resolve one exact P02 tuple.  Family
+    geometry checks alone must not admit such a route while the corresponding
+    source-matrix rows remain candidates.
+    """
+    raise ValueError(
+        f'{family} {backend} in-memory factory is restricted: exact source '
+        'dtype, persisted format, and P02 route admission are not bound')
+
+
+def _reject_unproven_inmemory_route(family, backend):
+    """Fail closed when raw in-memory tensors cannot bind one P02 tuple."""
+    raise ValueError(
+        f'{family} {backend} in-memory factory is restricted: exact source '
+        'dtype, persisted format, and P02 route admission are not bound')
+
+
 def open_native_glm_dsa_directory_service(directory, *, library, max_weight_bytes,
         runtime_max_bytes, max_total_model_bytes, context_tokens,
         max_new_tokens=256, max_sessions=1, prefill_chunk_tokens=32,
         max_snapshots_per_session=4, max_logit_buffer_bytes=256*1024**2,
         read_limits=None, expert_provider=None):
     """Admit exact local original DSA tensors with independently owned sessions."""
+    if expert_provider is not None:
+        raise ValueError(
+            'GLM-DSA packed experts lack checkpoint source-content identity; '
+            'native directory execution is restricted')
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(directory,family='glm-dsa',
+        model_type='glm_moe_dsa',backend='native',max_metadata_bytes=max_weight_bytes)
     import json
     import hashlib
     from .native_checkpoint import load_native_text_decoder, _pairs
@@ -1343,7 +1594,7 @@ def open_native_glm_dsa_directory_service(directory, *, library, max_weight_byte
                 decoder.close()
             except BaseException as failure:
                 error.cleanup = decoder.close
-                error.add_note('DSA constructor cleanup retained: ' + str(failure))
+                add_failure_note(error, 'DSA constructor cleanup retained: ' + failure_summary(failure))
             raise
     factory = BudgetedExecutorFactory(construct, executor_bytes=runtime_max_bytes,
         max_total_bytes=max_total_model_bytes, max_executors=max_sessions)
@@ -1361,6 +1612,7 @@ def create_qwen4_execution_service(config, tensors, *, library, runtime_max_byte
     recurrent/QSA/PLE state. Configuration is copied at service admission;
     source tensor buffers remain caller-owned until a decoder copies them.
     """
+    _reject_unproven_inmemory_route('qwen4','native')
     import json
     from types import MappingProxyType
     from .native_qwen4 import NativeQwen4TextDecoder
@@ -1374,6 +1626,14 @@ def create_qwen4_execution_service(config, tensors, *, library, runtime_max_byte
     raw = json.loads(json.dumps(dict(config), allow_nan=False))
     if raw.get('model_type') != 'qwen4_exp_text':
         raise ValueError('exact qwen4_exp_text configuration required')
+    # The direct factory accepts caller-supplied configuration and tensors, so
+    # it must enforce the same family identity as the independent config path
+    # before the decoder is constructed.  In particular, model_type alone is
+    # not sufficient when an HF architecture declaration is present.
+    architectures = raw.get('architectures')
+    if architectures not in (None, ['Qwen4ExpForCausalLM'],
+                             ('Qwen4ExpForCausalLM',)):
+        raise ValueError('unsupported Qwen4 text architecture declaration')
     limits = ExecutionLimits(raw.get('vocab_size'), raw.get('max_position_embeddings'),
         max_new_tokens, max_sessions, prefill_chunk_tokens, max_snapshots_per_session,
         max_logit_buffer_bytes=max_logit_buffer_bytes)
@@ -1413,6 +1673,12 @@ def create_publisher_v41_execution_service(payload, arithmetic_factory, *,
 
     if type(payload) is not V41ExecutionPayload or not callable(arithmetic_factory):
         raise ValueError('publisher V4.1 payload and fresh arithmetic factory required')
+    from .publisher_checkpoint.v41_adapter import require_v41_source_admission
+    require_v41_source_admission(payload)
+    from .source_scope import require_source_family_backend_admission
+    require_source_family_backend_admission(
+        family='deepseek-v41', model_type='deepseek_v41', backend='native',
+        arithmetic='publisher-bf16-fp8-fp4')
     if type(runtime_max_bytes) is not int or runtime_max_bytes <= 0:
         raise ValueError('positive publisher decoder memory budget required')
     path = Path(library).resolve(strict=True)
@@ -1454,7 +1720,7 @@ def create_publisher_v41_execution_service(payload, arithmetic_factory, *,
                 close()
             except BaseException as cleanup_error:
                 pending_cleanup[id(arithmetic)] = arithmetic
-                error.add_note('publisher arithmetic cleanup is pending: '+str(cleanup_error))
+                add_failure_note(error, 'publisher arithmetic cleanup is pending: '+failure_summary(cleanup_error))
                 error.cleanup = cleanup_failed_arithmetic
             else:
                 live_arithmetic.pop(id(arithmetic), None)
@@ -1494,6 +1760,12 @@ def publisher_v41_dspark_session(payload, arithmetic_factory, *, library,
 
     if type(payload) is not V41ExecutionPayload or not callable(arithmetic_factory):
         raise ValueError('publisher payload and fresh arithmetic factory required')
+    from .publisher_checkpoint.v41_adapter import require_v41_source_admission
+    require_v41_source_admission(payload)
+    from .source_scope import require_source_family_backend_admission
+    require_source_family_backend_admission(
+        family='deepseek-v41', model_type='deepseek_v41', backend='native',
+        arithmetic='publisher-bf16-fp8-fp4')
     for budget in (runtime_max_bytes, draft_max_bytes, evidence_max_bytes, sampling_max_bytes):
         if type(budget) is not int or budget <= 0:
             raise ValueError('explicit positive session memory budgets required')
@@ -1513,9 +1785,16 @@ def publisher_v41_dspark_session(payload, arithmetic_factory, *, library,
                 library=str(path), max_bytes=runtime_max_bytes)
             owned.callback(model.close)
             draft = PublisherV41Auxiliary(arithmetic).mtp(max_bytes=draft_max_bytes)
+            # Own the MTP component before speculative decoder construction:
+            # if construction is interrupted/fails, ExitStack still retires it.
+            owned.callback(draft.close)
             decoder = create_dspark_decoder(model, draft, temperature=temperature,
                 max_bytes=sampling_max_bytes, evidence_max_bytes=evidence_max_bytes,
                 target_rng=target_rng, proposal_rng=proposal_rng)
+            # Decoder close releases its proposer and backbone before model
+            # and arithmetic teardown. Draft close is also independently
+            # registered above as a retry-safe fallback for partial cleanup.
+            owned.callback(decoder.close)
             yield decoder
 
     return session()
@@ -1543,6 +1822,22 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
     source-name shards on every rank. Its owner keeps it and its process group
     alive until this service closes. Every rank must drive matching sessions.
     """
+    # Public callers can enter this factory without passing through the CLI.
+    # The three local arithmetic banks are represented by exact P02 tuple
+    # rows; do not let loader/provider construction imply admission while
+    # those rows are still candidates. Run this before resolving checkpoint
+    # paths, opening artifacts, reserving resources, or creating providers.
+    if distributed is None:
+        from .source_scope import require_source_matrix_admission
+        backend = 'device' if device is not None else 'native'
+        for source_format, persisted_format in (
+                ('BF16', 'bf16'), ('FP8', 'fp8'), ('FP4', 'fp4')):
+            require_source_matrix_admission(
+                family='deepseek-v41', model_type='deepseek_v41',
+                backend=backend,
+                arithmetic='publisher-bf16-fp8-fp4',
+                source_format=source_format,
+                persisted_format=persisted_format)
     from .publisher_checkpoint.service import PublisherCheckpoint
     from .publisher_checkpoint.v41_adapter import load_v41
     from .v41_execution.publisher_arithmetic import NativePublisherV41Arithmetic
@@ -1561,6 +1856,22 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
         from .v41_distributed_session import V41DistributedOptions
         if type(distributed) is not V41DistributedOptions:
             raise TypeError('explicit caller-owned distributed transport required')
+        # This factory can be called directly by gateway/service integrations,
+        # bypassing publisher_v41_cli.PublisherSession. Keep the same exact
+        # source-matrix gate at this public construction boundary so an
+        # unverified distributed bank cannot be admitted through that route.
+        from .source_scope import require_source_matrix_admission
+        for source_format, persisted_format, enabled in (
+                ('BF16', 'bf16', distributed.bf16),
+                ('FP8', 'fp8', distributed.fp8),
+                ('FP4', 'fp4', distributed.fp4)):
+            if enabled:
+                require_source_matrix_admission(
+                    family='deepseek-v41', model_type='deepseek_v41',
+                    backend='distributed',
+                    arithmetic='publisher-bf16-fp8-fp4',
+                    source_format=source_format,
+                    persisted_format=persisted_format)
         if distributed.bf16 and not bf16_projection_max_bytes:
             raise ValueError('distributed BF16 requires an admitted row-streaming budget')
 
@@ -1652,7 +1963,7 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
             # Retain a callable owner on the error so failed release can be
             # retried without losing handles to mapped files or native state.
             error.cleanup = cleanup
-            error.add_note('checkpoint cleanup remains pending: '+str(cleanup_error))
+            add_failure_note(error, 'checkpoint cleanup remains pending: '+failure_summary(cleanup_error))
         raise
 
     def create_executor():
@@ -1696,7 +2007,7 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
                         resources.close()
                 pending=PendingRelease()
                 failed_executors[id(pending)] = pending
-                error.add_note('native arithmetic cleanup remains pending: '+str(cleanup_error))
+                add_failure_note(error, 'native arithmetic cleanup remains pending: '+failure_summary(cleanup_error))
             raise
         return _OwnedPublisherExecutor(model, arithmetic, resources)
 
@@ -1710,5 +2021,5 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
             cleanup()
         except BaseException as cleanup_error:
             error.cleanup = cleanup
-            error.add_note('checkpoint cleanup remains pending: '+str(cleanup_error))
+            add_failure_note(error, 'checkpoint cleanup remains pending: '+failure_summary(cleanup_error))
         raise

@@ -4,6 +4,7 @@ from http import HTTPStatus
 from tempfile import TemporaryDirectory
 import json
 import threading
+import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -31,6 +32,8 @@ class AgentRouteTests(unittest.TestCase):
             deps = AgentRouteDependencies(
                 agents=AgentRegistry(store),
                 multi_agent=MultiAgentRuntime(store),
+                store=store,
+                owner="test-owner",
                 first=lambda params, key: params.get(key, [None])[0],
                 parse_bool=parse_bool,
                 read_json=lambda: payload,
@@ -43,6 +46,13 @@ class AgentRouteTests(unittest.TestCase):
                         else handle_post(route["path"], deps)
                     )
                     self.assertIsNotNone(result)
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                jobs = deps.multi_agent.jobs(project="core", owner="test-owner")
+                if not any(job["status"] in {"queued", "running", "cancelling"} for job in jobs):
+                    break
+                time.sleep(0.02)
 
             self.assertEqual(handle_get("/api/agents", "", deps).status, HTTPStatus.OK)
             self.assertEqual(handle_post("/api/agents/run", deps).status, HTTPStatus.CREATED)

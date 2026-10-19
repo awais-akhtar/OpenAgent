@@ -8,9 +8,56 @@ Neither arithmetic policy is a claim of publisher numerical equivalence.
 from dataclasses import dataclass
 from contextlib import closing, contextmanager
 import hashlib
+import math
 import threading
 
 import numpy as np
+
+
+def _safe_agreement_descriptor(value, *, max_nodes=4096, max_depth=16):
+    """Accept only bounded immutable scalar/tuple descriptors from peers."""
+    remaining=max_nodes
+    stack=[(value,0)]
+    while stack:
+        current,depth=stack.pop()
+        remaining-=1
+        if remaining<0 or depth>max_depth:
+            return False
+        if current is None or type(current) is bool:
+            continue
+        if type(current) is int:
+            # Agreement descriptors are control-plane input from other ranks.
+            # Bound integer comparisons too; a peer must not be able to send an
+            # arbitrarily large scalar that defeats the otherwise bounded
+            # descriptor traversal.
+            if current.bit_length()>256:return False
+            continue
+        if type(current) is float:
+            if not math.isfinite(current):return False
+            continue
+        if type(current) is str:
+            if len(current)>8192:return False
+            continue
+        if type(current) is tuple and len(current)<=256:
+            stack.extend((item,depth+1) for item in current)
+            continue
+        return False
+    return True
+
+
+def _failure_type_name(error):
+    """Describe a rank-local exception without invoking its user code."""
+    if isinstance(error, KeyboardInterrupt):
+        return 'KeyboardInterrupt'
+    if isinstance(error, InterruptedError):
+        return 'InterruptedError'
+    try:
+        name=type(error).__name__
+    except BaseException:
+        return 'BaseException'
+    if type(name) is not str or not name or len(name)>128:
+        return 'BaseException'
+    return name
 
 
 @dataclass(frozen=True)
@@ -249,6 +296,20 @@ class TensorParallelProjections:
             # allow this bank to be reused as though its sequence were intact.
             self._poisoned=True;self._closed=True
             raise
+        malformed = [rank for rank, value in enumerate(records)
+                     if (type(value) is not tuple or len(value) != 2 or
+                         (value[0] is not None and type(value[0]) is not tuple) or
+                         (value[0] is not None and
+                          not _safe_agreement_descriptor(value[0])) or
+                         (value[1] is not None and
+                          (type(value[1]) is not str or len(value[1])>4096)))]
+        if malformed:
+            # Agreement payloads cross a rank boundary. Treat unexpected
+            # shapes/types as an uncertain schedule and quarantine before any
+            # caller can attempt another tensor collective on this bank.
+            self._poisoned=True;self._closed=True
+            raise RuntimeError('malformed distributed projection agreement record from rank(s) '+
+                               ','.join(str(rank) for rank in malformed))
         errors = [f'rank {rank}: {value[1]}' for rank, value in enumerate(records)
                   if value[1] is not None]
         if errors:
@@ -257,11 +318,34 @@ class TensorParallelProjections:
             # admission ValueError makes serving owners misclassify a stopped
             # request and can leave cancellation-specific cleanup unrun.
             failures = [value[1] for value in records if value[1] is not None]
+            # Preserve process-level user interruption after every rank has
+            # reached the same control boundary.  In particular, translating
+            # KeyboardInterrupt into ValueError makes a coordinated Ctrl+C
+            # look like bad admission and can skip caller cancellation cleanup.
+            # Do not propagate arbitrary exception classes across the group:
+            # rank-local data/provider errors still use the stable ValueError
+            # agreement envelope below.
             if failures and all(value.startswith('InterruptedError:') for value in failures):
                 raise InterruptedError('distributed projection stage cancelled: '+'; '.join(errors))
+            if failures and all(value.startswith('KeyboardInterrupt:') for value in failures):
+                raise KeyboardInterrupt('distributed projection stage interrupted: '+'; '.join(errors))
             raise ValueError('distributed admission failed: '+'; '.join(errors))
-        if any(value[0] != descriptor for value in records):
-            raise ValueError('rank projection schedules or policies differ')
+        try:
+            disagreement=any(value[0] != descriptor for value in records)
+        except BaseException as error:
+            # Even a structurally tuple-shaped descriptor may contain an
+            # object whose equality is ambiguous or raises. Agreement itself
+            # is no longer trustworthy after attempting that comparison.
+            self._poisoned=True;self._closed=True
+            raise RuntimeError('malformed distributed projection descriptor comparison; bank quarantined') from error
+        if disagreement:
+            # All surviving ranks have observed the same disagreement, but
+            # their next scheduled tensor collective may differ.  A caller
+            # retrying on this bank could therefore pair (for example) an
+            # all-reduce with an all-gather and strand the group.  Quarantine
+            # the bank before exposing the mismatch to the caller.
+            self._poisoned=True;self._closed=True
+            raise RuntimeError('rank projection schedules or policies differ; bank quarantined')
 
     def _collective(self, operation, *args, **kwargs):
         """Run a transport collective and quarantine this bank on failure."""
@@ -296,9 +380,9 @@ class TensorParallelProjections:
                 # still join the stage agreement. Letting it escape here can
                 # strand peers in the control collective that closes this
                 # local staging boundary.
-                message = str(failure) or type(failure).__name__
-                error = (type(failure).__name__+': '+message
-                         if isinstance(failure, InterruptedError) else message)
+                name = _failure_type_name(failure)
+                error = (name+': cooperative interruption'
+                         if isinstance(failure, (InterruptedError, KeyboardInterrupt)) else name)
             try:self._agree(descriptor,error)
             except BaseException:
                 self._poisoned=True;self._closed=True
@@ -339,17 +423,39 @@ class TensorParallelProjections:
                               self.bank_format, shard.source_dtype, shard.execution_dtype,
                               self.backend, self.torch_version,
                               self.device.type)
-            except Exception as failure:
-                error = str(failure)
+            except BaseException as failure:
+                error = _failure_type_name(failure)
+                if isinstance(failure, (InterruptedError, KeyboardInterrupt)):
+                    error += ': cooperative interruption'
             self._agree(descriptor, error)
-            pins = [None]*self.world_size
+            # Fingerprint serialization allocates a temporary byte view and
+            # the receive list. Agree on those local preparations before any
+            # peer enters the fingerprint collective, so rank-local memory
+            # failure cannot strand ranks at the next stage.
+            with self.local_stage((descriptor,'registration-fingerprint')):
+                fingerprint = hashlib.sha256(weights.tobytes()).hexdigest()
+                pins = [None]*self.world_size
             self._collective('all_gather_object',pins,
-                hashlib.sha256(weights.tobytes()).hexdigest(), group=self.group)
-            self._shards[shard.name] = ProjectionShard(shard.name, shard.shape,
-                shard.axis, shard.start, shard.stop, weights, self.bank_format,
-                shard.source_dtype, shard.execution_dtype)
-            self._pins[shard.name] = (descriptor, tuple(pins))
-            self._resident_bytes += weights.nbytes
+                fingerprint, group=self.group)
+            try:
+                with self.local_stage((descriptor,'registration-publish')):
+                    self._shards[shard.name] = ProjectionShard(shard.name, shard.shape,
+                        shard.axis, shard.start, shard.stop, weights, self.bank_format,
+                        shard.source_dtype, shard.execution_dtype)
+                    self._pins[shard.name] = (descriptor, tuple(pins))
+                    self._resident_bytes += weights.nbytes
+            except BaseException:
+                # Publication is local and may fail (for example during a
+                # dictionary growth) after peers have installed their entry.
+                # The local-stage agreement has informed every surviving rank;
+                # remove any partial entry and retire the bank consistently.
+                registered = self._shards.pop(shard.name, None)
+                self._pins.pop(shard.name, None)
+                if registered is not None:
+                    self._resident_bytes -= registered.weights.nbytes
+                self._poisoned = True
+                self._closed = True
+                raise
 
     def handles(self, name):
         return not self._closed and name in self._shards
@@ -359,10 +465,12 @@ class TensorParallelProjections:
 
     def linear(self, name, value):
         with self._lock:
-            error, observed, shard, vector = None, None, None, None
+            error, observed, shard, vector, descriptor = None, None, None, None, None
             try:
                 if self._closed:
                     raise RuntimeError('distributed projection bank is closed')
+                if type(name) is not str or not name:
+                    raise ValueError('non-empty exact projection name required')
                 shard = self._shards[name]
                 observed = np.asarray(value)
                 rows, cols = shard.shape
@@ -379,14 +487,26 @@ class TensorParallelProjections:
                 if scratch > self.max_bytes-self._resident_bytes:
                     raise MemoryError('distributed projection buffers exceed rank admission')
                 vector = np.array(observed, dtype=np.float32, order='C', copy=True)
-            except Exception as failure:
-                error = str(failure)
-            descriptor = (name, None if observed is None else observed.shape,
-                          self.identity,self._observation_policy())
+                descriptor = (name, observed.shape, self.identity,
+                              self._observation_policy())
+            except BaseException as failure:
+                error = _failure_type_name(failure)
+                if isinstance(failure, (InterruptedError, KeyboardInterrupt)):
+                    error += ': cooperative interruption'
+            # Never serialize an unadmitted caller object in the cross-rank
+            # agreement record. In particular, array-like identifiers can
+            # make tuple equality raise during rank schedule comparison.
+            if descriptor is None:
+                descriptor = (name if type(name) is str and name else None,
+                              None if observed is None else observed.shape,
+                              None,None)
             self._agree(descriptor, error)
             # Replicated input identity matters: unlike a shape check, this
             # catches different session histories before combining outputs.
-            self._agree((descriptor, hashlib.sha256(vector.tobytes()).hexdigest()))
+            input_digest=None
+            with self.local_stage((descriptor,'linear-input-fingerprint')):
+                input_digest=hashlib.sha256(vector.tobytes()).hexdigest()
+            self._agree((descriptor,input_digest))
             torch = self.torch
             with torch.inference_mode():
                 with self.local_stage((descriptor,'local-product')):
@@ -415,8 +535,9 @@ class TensorParallelProjections:
                     finite = torch.isfinite(output).all().to(torch.int32)
                 self._collective('all_reduce',finite, op=self.distributed.ReduceOp.MIN,
                                  group=self.group)
-                if not bool(finite.item()):
-                    raise ValueError('nonfinite distributed projection result')
+                with self.local_stage((descriptor,'finite-result-check')):
+                    if not bool(finite.item()):
+                        raise ValueError('nonfinite distributed projection result')
                 with self.local_stage((descriptor,'host-export')):
                     result = output.cpu().numpy().copy()
                 return result
@@ -428,10 +549,12 @@ class TensorParallelProjections:
         Row shards gather channels; column shards sum partial group products.
         """
         with self._lock:
-            error, observed, shard, vector = None, None, None, None
+            error, observed, shard, vector, descriptor = None, None, None, None, None
             try:
                 if self._closed:
                     raise RuntimeError('distributed projection bank is closed')
+                if type(name) is not str or not name:
+                    raise ValueError('non-empty exact projection name required')
                 shard = self._shards[name]
                 rows, cols = shard.shape
                 if type(groups) is not int or groups <= 0 or rows % groups:
@@ -451,12 +574,22 @@ class TensorParallelProjections:
                 if scratch > self.max_bytes-self._resident_bytes:
                     raise MemoryError('grouped projection buffers exceed rank admission')
                 vector = np.array(observed, dtype=np.float32, order='C', copy=True)
-            except Exception as failure:
-                error = str(failure)
-            descriptor = (name, groups, None if observed is None else observed.shape,
-                          self.identity, 'grouped-linear-v1',self._observation_policy())
+                descriptor = (name, groups, observed.shape, self.identity,
+                              'grouped-linear-v1',self._observation_policy())
+            except BaseException as failure:
+                error = _failure_type_name(failure)
+                if isinstance(failure, (InterruptedError, KeyboardInterrupt)):
+                    error += ': cooperative interruption'
+            if descriptor is None:
+                descriptor = (name if type(name) is str and name else None,
+                              groups if type(groups) is int and groups > 0 else None,
+                              None if observed is None else observed.shape,
+                              None, 'grouped-linear-v1',None)
             self._agree(descriptor, error)
-            self._agree((descriptor, hashlib.sha256(vector.tobytes()).hexdigest()))
+            input_digest=None
+            with self.local_stage((descriptor,'grouped-input-fingerprint')):
+                input_digest=hashlib.sha256(vector.tobytes()).hexdigest()
+            self._agree((descriptor,input_digest))
             torch = self.torch
             with torch.inference_mode():
                 with self.local_stage((descriptor,'grouped-local-product')):
@@ -489,11 +622,12 @@ class TensorParallelProjections:
                     finite = torch.isfinite(output).all().to(torch.int32)
                 self._collective('all_reduce',finite, op=self.distributed.ReduceOp.MIN,
                                  group=self.group)
-                if not bool(finite.item()):
-                    raise ValueError('nonfinite distributed grouped projection result')
-                shape = ((groups, rows//groups) if vector.ndim == 2 else
-                         (*vector.shape[:-2], groups, rows//groups))
+                shape = None
                 with self.local_stage((descriptor,'grouped-host-export')):
+                    if not bool(finite.item()):
+                        raise ValueError('nonfinite distributed grouped projection result')
+                    shape = ((groups, rows//groups) if vector.ndim == 2 else
+                             (*vector.shape[:-2], groups, rows//groups))
                     result = output.reshape(shape).cpu().numpy().copy()
                 return result
 

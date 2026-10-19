@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
+from queue import Empty
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -68,6 +72,55 @@ class DirectHardwareClientTests(unittest.TestCase):
                 events = list(client.stream_generate("model", prompt="test"))
         self.assertEqual([item["type"] for item in events], ["token", "token", "done"])
         self.assertEqual(events[-1]["text"], "one two")
+
+    def test_worker_stdout_reader_backpressures_when_bounded_response_queue_is_full(self) -> None:
+        class Lines:
+            def __init__(self, count):
+                self.count = count
+                self.read = 0
+                self.lock = threading.Lock()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                with self.lock:
+                    if self.read >= self.count:
+                        raise StopIteration
+                    self.read += 1
+                    index = self.read
+                return json.dumps({"status": "event", "request_id": str(index)}) + "\n"
+
+        with tempfile.TemporaryDirectory() as temp:
+            client = DirectHardwareClient(HardwareProfiler(temp))
+            source = Lines(80)
+            reader = threading.Thread(
+                target=client._read_stdout, args=(type("Process", (), {"stdout": source})(),),
+                daemon=True)
+            reader.start()
+
+            deadline = time.monotonic() + 2
+            while not client._responses.full() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            self.assertTrue(client._responses.full())
+            time.sleep(0.05)
+            with source.lock:
+                read_while_full = source.read
+
+            received = 0
+            while reader.is_alive():
+                try:
+                    client._responses.get(timeout=0.05)
+                    received += 1
+                except Empty:
+                    pass
+            reader.join(timeout=1)
+            while not client._responses.empty():
+                client._responses.get_nowait()
+                received += 1
+
+        self.assertLessEqual(read_while_full, client._responses.maxsize + 1)
+        self.assertEqual(received, 80)
 
     def test_expert_payload_decoder_reconstructs_row_quantized_matrices(self) -> None:
         import numpy as np

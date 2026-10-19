@@ -7,6 +7,7 @@ import struct
 from .cache_file_recovery import save_service_cache,load_service_cache,verify_service_cache_file
 from .session_recovery import _path
 from .segment_snapshot import _pairs
+from .owned_file_descriptor import close_after_failure,fdopen_owned
 
 
 class _Adapter:
@@ -38,10 +39,10 @@ def recover_batch_cache(batch,source,*,max_bytes):
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or not 88<=info.st_size<=max_bytes:
             raise ValueError('bounded regular native batch cache required')
-        stream = os.fdopen(descriptor,'rb')
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        close_after_failure(descriptor,primary,owner='batch recovery input')
         raise
+    stream=fdopen_owned(descriptor,'rb',owner='batch recovery input')
     with stream:
         prefix = stream.read(12)
         if len(prefix)!=12 or prefix[:8]!=b'OABATCH1':

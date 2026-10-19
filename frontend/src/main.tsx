@@ -5,6 +5,7 @@ import '@arco-design/web-react/dist/css/arco.css';
 import 'virtual:uno.css';
 import App from './App';
 import './app.css';
+import './react-shell.css';
 
 const target = document.getElementById('app');
 if (!target) throw new Error('OpenAgent app mount point is missing.');

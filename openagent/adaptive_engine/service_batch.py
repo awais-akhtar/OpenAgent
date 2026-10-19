@@ -10,6 +10,7 @@ import struct
 
 import numpy as np
 
+from .failure_reporting import add_failure_note, failure_summary
 
 @dataclass(frozen=True)
 class ServiceBatchResult:
@@ -118,7 +119,7 @@ class NativeServiceBatch:
                     if failures:
                         self._quarantined = True
                         for key,failure in failures:
-                            error.add_note('batch rollback failed for '+key+': '+str(failure))
+                            add_failure_note(error, 'batch rollback failed for '+key+': '+failure_summary(failure))
                     raise
                 return ServiceBatchResult(ids,tuple(results),occupied)
 
@@ -223,7 +224,7 @@ class NativeServiceBatch:
                 if failures:
                     self._quarantined = True
                     for key,failure in failures:
-                        error.add_note('batch cache rollback failed for '+key+': '+str(failure))
+                        add_failure_note(error, 'batch cache rollback failed for '+key+': '+failure_summary(failure))
                 raise
             return tuple(self.service.history(key) for key in ids)
 

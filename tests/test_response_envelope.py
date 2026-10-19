@@ -31,6 +31,7 @@ class ResponseEnvelopeTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
     def test_legacy_response_via_header_returns_raw_shape(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -45,6 +46,7 @@ class ResponseEnvelopeTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
     def test_envelope_wraps_success_and_error(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -68,7 +70,10 @@ class ResponseEnvelopeTests(unittest.TestCase):
                     urlopen(error_request, timeout=15)
                     self.fail("expected HTTPError")
                 except HTTPError as exc:
-                    error_body = json.loads(exc.read().decode("utf-8"))
+                    try:
+                        error_body = json.loads(exc.read().decode("utf-8"))
+                    finally:
+                        exc.close()
                 self.assertFalse(error_body["success"])
                 self.assertIsNone(error_body["data"])
                 self.assertEqual(error_body["error"]["code"], "not_found")
@@ -76,6 +81,7 @@ class ResponseEnvelopeTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
     def test_legacy_via_query_param(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -89,6 +95,7 @@ class ResponseEnvelopeTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(timeout=2)
+                server.server_close()
 
 
 if __name__ == "__main__":

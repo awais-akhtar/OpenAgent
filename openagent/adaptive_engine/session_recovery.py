@@ -81,11 +81,8 @@ def save_replay_checkpoint(checkpoint, destination, *, max_tokens):
     prefix = _PREFIX.pack(_MAGIC, len(header))
     descriptor, temporary = tempfile.mkstemp(prefix='.replay-', dir=path.parent)
     try:
-        try:
-            stream = os.fdopen(descriptor, 'wb')
-        except BaseException:
-            os.close(descriptor)
-            raise
+        from .owned_file_descriptor import fdopen_owned
+        stream=fdopen_owned(descriptor,'wb',owner='replay checkpoint publication')
         with stream:
             digest = hashlib.sha256(prefix+header)
             stream.write(prefix)
@@ -126,10 +123,12 @@ def load_replay_checkpoint(source, *, max_tokens):
             raise ValueError('regular replay checkpoint source required')
         if info.st_size > _PREFIX.size+_HEADER_LIMIT+max_tokens*4+32:
             raise MemoryError('replay checkpoint exceeds admission')
-        stream = os.fdopen(descriptor, 'rb')
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        from .owned_file_descriptor import close_after_failure
+        close_after_failure(descriptor,primary,owner='replay checkpoint input')
         raise
+    from .owned_file_descriptor import fdopen_owned
+    stream=fdopen_owned(descriptor,'rb',owner='replay checkpoint input')
     with stream:
         def read_exact(size):
             data = stream.read(size)

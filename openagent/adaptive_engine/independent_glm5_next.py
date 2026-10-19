@@ -55,6 +55,13 @@ class Glm5NextTextContract:
         if not isinstance(data, Mapping) or data.get("model_type") != "glm5_next_text":
             raise ValueError("requires explicit glm5_next_text config, not an outer/other-family config")
         data = dict(data)
+        # The current source contract has no pinned Transformers architecture
+        # class for this specialized GLM5 text route.  Do not silently accept
+        # a declared class merely because `architectures` is treated as
+        # metadata below: architecture-bearing checkpoints must use a future
+        # exact-class route once that mapping is reviewed.
+        if "architectures" in data:
+            raise ValueError("GLM5 text route does not admit declared architectures")
         required = set(cls.__dataclass_fields__)
         missing = required - data.keys()
         if missing:

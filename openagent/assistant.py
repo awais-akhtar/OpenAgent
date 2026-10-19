@@ -188,18 +188,34 @@ class AssistantManager:
             ).fetchall()
         return [task_row(row) for row in rows]
 
-    def complete_task(self, task_id: str) -> dict[str, Any]:
-        task = self.get_task(task_id)
-        if task is None:
-            raise ValueError(f"Unknown task '{task_id}'.")
+    def complete_task(self, task_id: str, *, project: str) -> dict[str, Any]:
+        project = project.strip()
+        if not project:
+            raise ValueError("Project is required to complete a task.")
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM assistant_tasks WHERE id = ? AND project = ?",
+                (task_id, project),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown task '{task_id}' in project '{project}'.")
+        task = task_row(row)
         now = utc_now()
         with self.store.session() as connection:
             connection.execute(
-                "UPDATE assistant_tasks SET status = 'completed', updated_at = ? WHERE id = ?",
-                (now, task_id),
+                "UPDATE assistant_tasks SET status = 'completed', updated_at = ? WHERE id = ? AND project = ?",
+                (now, task_id, project),
             )
         self._audit("assistant.task.complete", task_id, project=task["project"])
-        return self.get_task(task_id) or {}
+        return self.get_task_for_project(task_id, project) or {}
+
+    def get_task_for_project(self, task_id: str, project: str) -> dict[str, Any] | None:
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM assistant_tasks WHERE id = ? AND project = ?",
+                (task_id, project),
+            ).fetchone()
+        return task_row(row) if row else None
 
     def create_meeting_brief(
         self,

@@ -17,6 +17,7 @@ ROUTES = (
     ("GET", "/api/twin/profile"),
     ("GET", "/api/twin/patterns"),
     ("GET", "/api/twin/suggestions"),
+    ("GET", "/api/twin/sources"),
     ("GET", "/api/twin/goals"),
     ("POST", "/api/twin/profile"),
     ("POST", "/api/twin/interaction"),
@@ -50,6 +51,13 @@ def handle_get(path: str, query: str, deps: TwinRouteDependencies) -> JsonRouteR
         return JsonRouteResult(deps.twin.analyse_patterns(project=project))
     if path == "/api/twin/suggestions":
         return JsonRouteResult({"suggestions": deps.twin.generate_proactive_suggestions(project=project)})
+    if path == "/api/twin/sources":
+        limit = deps.first(params, "limit") or "100"
+        try:
+            bounded_limit = max(1, min(int(limit), 500))
+        except (TypeError, ValueError):
+            bounded_limit = 100
+        return JsonRouteResult({"sources": deps.twin.list_sources(project=project, limit=bounded_limit)})
     return JsonRouteResult({"goals": deps.twin.list_goals(project=project)})
 
 

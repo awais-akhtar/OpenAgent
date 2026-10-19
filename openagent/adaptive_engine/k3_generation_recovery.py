@@ -11,16 +11,42 @@ import json
 import math
 import os
 import struct
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from .k3_execution.video_input import validate_frame_timestamps
+
 _MAGIC=b'OAK3G001'
 _PREFIX=struct.Struct('<8sIQQ')
 _CHUNK=1024*1024
 _HEADER_LIMIT=1024*1024
+
+
+def _remove_staging_file(path, primary):
+    """Remove private checkpoint staging without hiding an active failure."""
+    try:
+        path.unlink(missing_ok=True)
+    except BaseException as cleanup:
+        if primary is not None:
+            primary.add_note('K3 generation checkpoint staging cleanup failed: '+repr(cleanup))
+        else:
+            raise
+
+
+def _create_staging_path(*, scratch_directory):
+    """Create a private path, removing it if descriptor handoff fails."""
+    descriptor, name = tempfile.mkstemp(prefix='openagent-generation-', dir=scratch_directory)
+    path = Path(name)
+    try:
+        os.close(descriptor)
+    except BaseException as primary:
+        _remove_staging_file(path, primary)
+        raise
+    return path
 
 
 @dataclass(frozen=True)
@@ -71,8 +97,28 @@ class GenerationBoundary:
             raise ValueError('complete finite FP32 next-token logits required')
         if type(self.rng_state) is not dict or self.rng_state.get('bit_generator')!='PCG64':
             raise ValueError('original PCG64 sampler boundary required')
-        if type(self.media_metadata) is not tuple:
-            raise ValueError('detached media provenance tuple required')
+        if (type(self.media_metadata) is not tuple or len(self.media_metadata) > 4096):
+            raise ValueError('bounded detached media provenance tuple required')
+        if ((self.execution_scope in ('text-only','image-text') and self.media_metadata) or
+                (self.execution_scope == 'mixed-media-text' and not self.media_metadata)):
+            raise ValueError('generation execution scope and ordered media provenance disagree')
+        # Recovery does not replay media, but its returned provenance is part
+        # of the caller-visible temporal boundary. Admit only the exact K3
+        # media record produced by the serving adapter, so malformed or
+        # reordered frame-time metadata cannot be persisted and later reported
+        # as if it described the restored physical cache.
+        for record in self.media_metadata:
+            if (type(record) is not dict or set(record) != {'timestamps', 'selection_identity'} or
+                    type(record['timestamps']) is not tuple or
+                    type(record['selection_identity']) is not str or
+                    not record['selection_identity'] or
+                    len(record['selection_identity'].encode('utf-8')) > 4096):
+                raise ValueError('exact ordered K3 media provenance record required')
+            timestamps = record['timestamps']
+            if timestamps:
+                if not 1 <= len(timestamps) <= 4:
+                    raise ValueError('bounded selected K3 video timestamp inventory required')
+                validate_frame_timestamps(timestamps)
         header=self.header()
         encoded=json.dumps(header,allow_nan=False,separators=(',',':')).encode('utf-8')
         if len(encoded)>min(max_bytes,_HEADER_LIMIT) or len(encoded)+self.next_logits.nbytes>max_bytes:
@@ -128,8 +174,7 @@ def write_generation_boundary(model,boundary,output,*,max_bytes,scratch_director
 
 
 def _write_generation_boundary_locked(model,boundary,output,*,max_bytes,scratch_directory,check_cancelled):
-    descriptor,name=tempfile.mkstemp(prefix='openagent-generation-',dir=scratch_directory)
-    os.close(descriptor);path=Path(name)
+    path=_create_staging_path(scratch_directory=scratch_directory)
     try:
         with path.open('wb') as cache:
             check_cancelled()
@@ -150,7 +195,7 @@ def _write_generation_boundary_locked(model,boundary,output,*,max_bytes,scratch_
         check_cancelled()
         _write(output,digest.digest())
         return len(prefix)+len(header)+len(logits)+size+32
-    finally:path.unlink(missing_ok=True)
+    finally:_remove_staging_file(path,sys.exc_info()[1])
 
 
 def restore_generation_boundary(model,source,*,config_sha256,tokenizer_sha256,max_bytes,scratch_directory=None,cancelled=None):
@@ -182,15 +227,25 @@ def restore_generation_boundary(model,source,*,config_sha256,tokenizer_sha256,ma
     if data['tokenizer_sha256']!=tokenizer_sha256:raise ValueError('foreign generation checkpoint tokenizer')
     if any(type(data[key]) is not list for key in ('prompt_ids','generated_ids','stop_token_ids','stop_prefixes','media_metadata')):
         raise ValueError('ordered complete generation inventories required')
+    media_records=[]
+    for record in data['media_metadata']:
+        # JSON has no tuple type. Rebuild the exact in-memory provenance shape
+        # before GenerationBoundary admission instead of rejecting every
+        # serialized media record (or accepting arbitrary coercions).
+        if (type(record) is not dict or set(record)!={'timestamps','selection_identity'} or
+                type(record['timestamps']) is not list or
+                type(record['selection_identity']) is not str):
+            raise ValueError('serialized K3 media provenance schema required')
+        media_records.append(dict(timestamps=tuple(record['timestamps']),
+                                  selection_identity=record['selection_identity']))
     boundary=GenerationBoundary(data['config_sha256'],data['position'],tuple(data['prompt_ids']),
         tuple(data['generated_ids']),data['expanded_prompt_tokens'],
         np.frombuffer(logits,dtype='<f4'),data['rng_state'],data['temperature'],
         tuple(data['stop_token_ids']),data['execution_scope'],
         tuple(tuple(prefix) for prefix in data['stop_prefixes']),
-        tuple(data['media_metadata']),data['tokenizer_sha256'])
+        tuple(media_records),data['tokenizer_sha256'])
     boundary.admit(vocabulary=model.config.vocab,capacity=model.config.capacity,max_bytes=max_bytes)
-    descriptor,name=tempfile.mkstemp(prefix='openagent-generation-',dir=scratch_directory)
-    os.close(descriptor);path=Path(name)
+    path=_create_staging_path(scratch_directory=scratch_directory)
     digest=hashlib.sha256(prefix+header+logits)
     try:
         with path.open('wb') as output:
@@ -215,11 +270,19 @@ def restore_generation_boundary(model,source,*,config_sha256,tokenizer_sha256,ma
                 check_cancelled()
                 if model.position!=boundary.position:raise ValueError('cache and generation boundary positions differ')
             except BaseException as primary:
-                try:model.restore(before)
-                except BaseException as rollback:primary.add_note('generation restore rollback failed: '+repr(rollback))
+                try:
+                    model.restore(before)
+                except BaseException as rollback:
+                    # The caller must not continue generation from a model
+                    # whose physical cache may now disagree with its sampler
+                    # boundary.  Quarantine through the executor's normal
+                    # closed-state gate; close() remains available to release
+                    # the retained native/FLA resources.
+                    model._closed = True
+                    primary.add_note('generation restore rollback failed; K3 executor quarantined until close: '+repr(rollback))
                 raise
         return boundary
-    finally:path.unlink(missing_ok=True)
+    finally:_remove_staging_file(path,sys.exc_info()[1])
 
 
 __all__=['GenerationBoundary','write_generation_boundary','restore_generation_boundary']

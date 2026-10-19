@@ -4,6 +4,8 @@ from tempfile import TemporaryDirectory
 import threading
 import unittest
 import json
+from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from openagent.model_gateway import StreamChunk
@@ -114,6 +116,59 @@ class ResearchLifecycleTests(unittest.TestCase):
                 body = response.read().decode("utf-8")
                 self.assertIn('"type": "checkpoint"', body)
                 self.assertIn('"type": "complete"', body)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_http_missing_progress_stream_returns_not_found_before_sse_headers(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = OpenAgentStore(temp)
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(
+                        f"http://127.0.0.1:{server.server_address[1]}/api/research/sessions/missing/stream",
+                        timeout=5,
+                    )
+                try:
+                    self.assertEqual(raised.exception.code, 404)
+                    payload = json.loads(raised.exception.read())
+                    self.assertEqual(payload["error"]["message"], "Research session not found.")
+                finally:
+                    raised.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_http_deleted_progress_stream_ends_with_sse_error_without_producer_traceback(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = OpenAgentStore(temp)
+            lifecycle = ResearchLifecycle(store)
+            session = lifecycle.create("Deleted while opening stream")
+
+            def disappear_after_preflight(_lifecycle, session_id, **_kwargs):
+                yield {"type": "session", "session": {"id": session_id}}
+                raise KeyError(session_id)
+
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch.object(ResearchLifecycle, "stream_events", disappear_after_preflight):
+                    response = urlopen(
+                        f"http://127.0.0.1:{server.server_address[1]}/api/research/sessions/{session['id']}/stream",
+                        timeout=5,
+                    )
+                    body = response.read().decode("utf-8")
+                self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                self.assertIn('"type": "session"', body)
+                self.assertIn('"type": "error"', body)
+                self.assertIn('"error": "Research session not found."', body)
+                self.assertIn('"done": true', body)
             finally:
                 server.shutdown()
                 server.server_close()

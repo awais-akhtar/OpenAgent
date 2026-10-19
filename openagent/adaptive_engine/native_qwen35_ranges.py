@@ -26,8 +26,10 @@ def _load(directory,*,begin,end,edge,library,max_weight_bytes,max_bytes,read_lim
         if set(shapes)!=set(inventory):
             raise ValueError('exact complete Qwen3.5 source inventory required')
         for name,shape in shapes.items():
-            if tuple(inventory[name]['shape'])!=tuple(shape):
-                raise ValueError('Qwen3.5 source shape mismatch: '+name)
+            record=inventory[name]
+            if (tuple(record['shape'])!=tuple(shape) or
+                    record.get('dtype') not in ('F32','F16','BF16')):
+                raise ValueError('Qwen3.5 source shape or dtype mismatch: '+name)
         if edge:
             names = tuple(sorted(name for name in shapes if not name.startswith('model.layers.')))
         else:
@@ -45,7 +47,8 @@ def _load(directory,*,begin,end,edge,library,max_weight_bytes,max_bytes,read_lim
             raise MemoryError('Qwen3.5 selected checkpoint conversion exceeds admission')
         return names
     config,weights = read_native_text_checkpoint(directory,model_type='qwen3_5_moe_text',
-        max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+        max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+        tensor_selection=select,source_backend='public-range')
     if edge:
         model=NativeQwen35Edge(config,weights,library=library,max_bytes=max_bytes,context_tokens=context_tokens)
     else:

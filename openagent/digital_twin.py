@@ -181,6 +181,23 @@ class DigitalTwin:
         self._update_topic_weights(topics, kind=kind, project=project)
         return {"id": interaction_id, "kind": kind, "topics": topics}
 
+    def list_sources(self, *, project: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+        """List provenance event metadata without exposing captured interaction content."""
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT id, kind, topics_json, created_at FROM twin_interactions "
+                "WHERE project=? ORDER BY created_at DESC LIMIT ?",
+                (project, max(1, min(int(limit), 500))),
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                topics = json.loads(row[2] or "[]")
+            except json.JSONDecodeError:
+                topics = []
+            result.append({"id": row[0], "kind": row[1], "topics": topics, "created_at": row[3]})
+        return result
+
     def _update_topic_weights(
         self, topics: list[str], *, kind: str, project: str
     ) -> None:

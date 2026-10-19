@@ -6,10 +6,16 @@ import stat
 import weakref
 from pathlib import Path
 from .session_recovery import _path
+from .owned_file_descriptor import close_after_failure,fdopen_owned
 
 
 def _stamp(status):
-    return (status.st_dev,status.st_ino,status.st_size,status.st_mtime_ns,status.st_ctime_ns)
+    # On Windows path stat exposes creation time as ctime, while descriptor
+    # fstat exposes the last-write time. Birth time is the consistent identity
+    # component; mtime remains the content-change guard. POSIX keeps ctime so
+    # metadata changes are also detected while hashing.
+    changed=getattr(status,'st_birthtime_ns',status.st_ctime_ns)
+    return (status.st_dev,status.st_ino,status.st_size,status.st_mtime_ns,changed)
 
 
 def release_finalizer(owner,attribute):
@@ -42,10 +48,10 @@ class NativeLibraryIdentity:
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise ValueError('regular opened native library required')
-            stream=os.fdopen(descriptor,'rb')
-        except BaseException:
-            os.close(descriptor)
+        except BaseException as primary:
+            close_after_failure(descriptor,primary,owner='native library identity')
             raise
+        stream=fdopen_owned(descriptor,'rb',owner='native library identity')
         with stream:
             before=os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode) or _stamp(before)!=_stamp(expected):

@@ -38,8 +38,11 @@ class NativeQwen4Edge(NativeQwen4TextDecoder):
                 raise ValueError('exact complete Qwen4 source inventory required')
             for name,shape in shapes.items():
                 if ple_provider is not None and name.endswith('ple.ple_embedding.ngram_embedding.weight'): continue
-                if tuple(inventory[name]['shape'])!=tuple(shape):
-                    raise ValueError('Qwen4 source shape mismatch: '+name)
+                record=inventory[name]
+                allowed=('I64',) if name in metadata else ('F32','F16','BF16')
+                if (tuple(record['shape'])!=tuple(shape) or
+                        record.get('dtype') not in allowed):
+                    raise ValueError('Qwen4 source shape or dtype mismatch: '+name)
             names = tuple(sorted(name for name in shapes if not name.startswith('model.layers.')))
             size = 4*sum(math.prod(shapes[name]) for name in names)
             if config.get('tie_word_embeddings',False) and 'lm_head.weight' not in shapes:
@@ -48,7 +51,8 @@ class NativeQwen4Edge(NativeQwen4TextDecoder):
                 raise MemoryError('Qwen4 edge checkpoint conversion exceeds admission')
             return names
         config,weights = read_native_text_checkpoint(directory,model_type='qwen4_exp_text',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='public-range')
         return _finish_decoder(cls(config,weights,library=library,max_bytes=max_bytes),cancel)
 
     @property

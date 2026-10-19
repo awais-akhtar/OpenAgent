@@ -16,7 +16,7 @@ class TorchMixtralExperts:
     Decoder hidden rows and expert products stay on device. Packed weights and
     row scales decode on the host within an explicit working-set reservation.
     Formats are admitted by the shared packed decoder only when this consumer
-    has the matching activation transform, including the IQ3 rotation contract.
+    has the matching activation transform, including the E8 and IQ3 contracts.
     This implementation is inherited by the Qwen3.5 and Qwen4 device expert
     providers, so format restrictions here apply to all three architectures.
     Provider storage remains caller-owned.
@@ -35,6 +35,22 @@ class TorchMixtralExperts:
         if type(manifest) is not SparseExpertManifest or manifest.architecture!=self.architecture or type(store) is not DiskExpertStore:
             raise ValueError('exact Mixtral manifest and borrowed disk store required')
         manifest.validate()
+        # This shared provider can decode more persisted formats than any one
+        # family has admitted. Enforce the family/device capability row here
+        # as well as in the CLI so direct provider/decoder construction cannot
+        # widen support merely by choosing a format present in FORMATS.
+        from .source_scope import require_format_execution_consumer
+        source_family = {
+            'mixtral':'mixtral', 'qwen3_5_moe_text':'qwen35',
+            'qwen4_exp_text':'qwen4', 'glm_moe_dsa':'glm-dsa',
+        }.get(self.architecture)
+        if source_family is None:
+            raise ValueError('selected-device expert family has no source capability policy')
+        from .e8_lattice_expert import LatticeContract
+        for layer in manifest.layers:
+            require_format_execution_consumer(
+                family=source_family, backend='device',
+                persisted_format=layer.dtype)
         if type(max_work_bytes) is not int or max_work_bytes<=0:
             raise ValueError('explicit device expert working-set budget required')
         self.manifest,self.store,self.work_bytes = manifest,store,max_work_bytes
@@ -51,16 +67,11 @@ class TorchMixtralExperts:
                     (layer.hidden_size,layer.intermediate_size,layer.experts_used)!=(self.hidden_size,self.intermediate_size,self.selected_experts) or
                     set(layer.regions)!={str(index) for index in range(self.expert_count)}):
                 raise ValueError('exact admitted device expert format/geometry required')
-            # E8 payload decoding transforms each codebook row into the
-            # rotated basis, but this provider has no matching device-side
-            # activation transform.  Admitting it here would silently compute
-            # products in incompatible bases.  This is the shared selected
-            # device path for Mixtral, Qwen3.5 and Qwen4. Keep E8 unavailable
-            # for all three until activation rotation, its bounded scratch
-            # contract, and its cancellation path are implemented together.
             if layer.dtype == 'e8-lattice-caller-v1':
-                raise ValueError(self.architecture +
-                    ' E8 lattice device experts are not admitted without activation rotation')
+                if (type(lattice_contract) is not LatticeContract or
+                        layer.contract != lattice_contract.metadata() or
+                        layer.hidden_size % 8 or layer.intermediate_size % 8):
+                    raise ValueError('exact persisted E8 contract and aligned family geometry required')
             if layer.dtype == 'iq3-format6-98-v1':
                 if iq3_grid is None or layer.contract != iq3_grid.metadata():
                     raise ValueError('exact persisted device lattice contract required')
@@ -98,7 +109,7 @@ class TorchMixtralExperts:
         document = dict(manifest=self.manifest.to_dict(),capacity=self.store.capacity_bytes,
             regions=[(key,region.path,region.offset,region.size,region.sha256,region.storage)
                      for key,region in sorted(self.store.regions.items())],work=self.work_bytes,
-            policy=self.architecture+'-selected-device-fp32-e8-rejected-iq3-rotation-256-aligned-v4')
+            policy=self.architecture+'-selected-device-fp32-e8-rotation-v1-iq3-rotation-256-aligned-v5')
         return hashlib.sha256(json.dumps(document,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 
     def execute(self,layer,expert,value,*,torch,device,cancel=None):
@@ -108,11 +119,14 @@ class TorchMixtralExperts:
         slot=self._layer_slot(layer)
         if type(expert) is not int or not 0<=expert<self.expert_count:
             raise ValueError('valid original Mixtral layer/expert required')
-        if value.ndim!=2 or value.shape[-1]!=self.hidden_size or value.dtype!=torch.float32 or str(value.device)!=device:
+        if (value.ndim!=2 or value.shape[-1]!=self.hidden_size or value.dtype!=torch.float32
+                or str(value.device)!=device or not bool(torch.isfinite(value).all().item())):
             raise ValueError('matching FP32 device expert hidden rows required')
         h,m = self.hidden_size,self.intermediate_size
         entry = self.layers[slot]
         row_work=value.shape[0]*(16*h+24*m)
+        if entry.dtype=='e8-lattice-caller-v1':
+            row_work=value.shape[0]*(24*h+32*m)+8192
         if entry.dtype=='iq3-format6-98-v1':
             row_work=value.shape[0]*64*(h+m)+min(max(h,m),32768)*8+4096
         if 36*h*m+row_work>self.work_bytes:
@@ -138,11 +152,25 @@ class TorchMixtralExperts:
                     weights=tuple(staged)
                 except BaseException:
                     staged.clear()
-                    del decoded
+                    # Release decoded host arrays without deleting the local
+                    # binding; this also keeps the post-try cleanup path clear
+                    # to static flow analysis.
+                    decoded = ()
                     raise
                 del staged,decoded
             gate,up,down,gs,us,ds = weights
-            if entry.dtype=='iq3-format6-98-v1':
+            if entry.dtype=='e8-lattice-caller-v1':
+                from .device_e8_rotation import rotate_device_e8
+                rotation_budget=self.work_bytes-36*h*m
+                rotated=rotate_device_e8(torch,value,transform=self.lattice_contract.transform,
+                    max_bytes=rotation_budget,cancel=cancel)
+                activation=torch.nn.functional.silu((rotated@gate.T)*gs)*((rotated@up.T)*us)
+                del rotated
+                activation=rotate_device_e8(torch,activation,transform=self.lattice_contract.transform,
+                    max_bytes=rotation_budget,cancel=cancel)
+                result=(activation@down.T)*ds
+                del activation
+            elif entry.dtype=='iq3-format6-98-v1':
                 from .device_iq3_rotation import rotate_device_iq3
                 rotation_budget=self.work_bytes-36*h*m
                 rotated=rotate_device_iq3(torch,value,max_bytes=rotation_budget,cancel=cancel)

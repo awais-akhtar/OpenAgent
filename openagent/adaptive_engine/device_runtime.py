@@ -12,7 +12,7 @@ from collections import deque
 import json
 import math
 import os
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 import subprocess
 import threading
 import time
@@ -38,7 +38,12 @@ class DirectHardwareClient:
     def __init__(self, profiler: HardwareProfiler) -> None:
         self.profiler = profiler
         self._process: subprocess.Popen[str] | None = None
-        self._responses: Queue[dict[str, Any]] = Queue()
+        # The stdout pump must backpressure the worker when a streaming caller
+        # is slower than generation.  A bounded event queue in stream_generate
+        # alone is insufficient: request() can block publishing to that queue
+        # while this reader otherwise accumulates the rest of the pipe output
+        # without limit.
+        self._responses: Queue[dict[str, Any]] = Queue(maxsize=16)
         self._stderr: deque[str] = deque(maxlen=80)
         self._request_lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
@@ -125,7 +130,24 @@ class DirectHardwareClient:
                 if response.get("status") == "event":
                     event = response.get("event")
                     if on_event is not None and isinstance(event, dict):
-                        on_event(event)
+                        try:
+                            on_event(event)
+                        except BaseException as primary:
+                            # The worker is still inside this generation and
+                            # will continue writing events/responses. Retire
+                            # it before releasing the serialized request slot,
+                            # otherwise a later command can consume stale
+                            # events or be mistaken for a response-order error.
+                            try:
+                                self._terminate()
+                            except BaseException as cleanup:
+                                try:
+                                    primary.add_note(
+                                        "accelerator worker cleanup after stream callback failure: " + repr(cleanup)
+                                    )
+                                except BaseException:
+                                    pass
+                            raise
                     continue
                 if response.get("status") != "ok":
                     error = str(response.get("error", "Native worker rejected the request"))
@@ -248,11 +270,24 @@ class DirectHardwareClient:
         generation: dict[str, Any] | None = None,
         timeout: float = 600.0,
     ) -> Iterator[dict[str, Any]]:
-        events: Queue[tuple[str, Any]] = Queue()
+        # Keep at most a small window of generated events in memory.  The
+        # request thread is also the pipe-response consumer, so its callback
+        # must apply backpressure rather than allowing an abandoned/slow HTTP
+        # consumer to accumulate an unbounded transcript.
+        events: Queue[tuple[str, Any]] = Queue(maxsize=16)
         finished = threading.Event()
+        cancelled = threading.Event()
+
+        def publish(item: tuple[str, Any]) -> None:
+            while not cancelled.is_set():
+                try:
+                    events.put(item, timeout=0.1)
+                    return
+                except Full:
+                    continue
 
         def on_event(event: dict[str, Any]) -> None:
-            events.put(("event", event))
+            publish(("event", event))
 
         def execute() -> None:
             try:
@@ -261,9 +296,9 @@ class DirectHardwareClient:
                     prompt=prompt, generation=generation or {}, timeout=timeout,
                     on_event=on_event,
                 )
-                events.put(("done", result))
+                publish(("done", result))
             except Exception as exc:
-                events.put(("error", exc))
+                publish(("error", exc))
             finally:
                 finished.set()
 
@@ -280,6 +315,7 @@ class DirectHardwareClient:
                 else:
                     raise value
         finally:
+            cancelled.set()
             if not finished.is_set():
                 self._terminate()
 

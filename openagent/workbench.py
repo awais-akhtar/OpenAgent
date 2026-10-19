@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ import sys
 import threading
 import time
 from typing import Any
+from urllib.parse import unquote, urlsplit
+from urllib.request import Request, urlopen
 import webbrowser
 
 from . import __version__
@@ -31,6 +34,103 @@ WORKBENCH_PRIVACY_BOUNDARY = (
 )
 
 DEFAULT_WORKBENCH_PORT = 8765
+
+
+class DesktopAssetError(RuntimeError):
+    """The desktop UI is missing, unbuilt, or not ready to serve."""
+
+
+class _UiReferences(HTMLParser):
+    """Collect local startup resources needed before opening the desktop window."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.paths: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        value = (
+            attributes.get("src")
+            if tag == "script"
+            else attributes.get("href")
+            if tag == "link" and attributes.get("rel") in {"stylesheet", "modulepreload"}
+            else None
+        )
+        if not value:
+            return
+        parsed = urlsplit(value)
+        if parsed.scheme or parsed.netloc or value.startswith("//") or value.startswith("data:"):
+            return
+        self.paths.append(unquote(parsed.path).lstrip("/"))
+
+
+def validate_desktop_ui(ui_root: Path) -> list[str]:
+    """Reject missing/unbuilt assets before a desktop window can show blank content."""
+    root = ui_root.resolve()
+    index = root / "index.html"
+    if not index.is_file():
+        raise DesktopAssetError(
+            f"Desktop UI is missing index.html in {root}. The launcher needs built static assets, "
+            "not React source. Build frontend-second with `npm ci` and `npm run build` first."
+        )
+    try:
+        html = index.read_text(encoding="utf-8")
+    except (UnicodeError, OSError) as exc:
+        raise DesktopAssetError(f"Desktop index.html is unreadable: {index}: {exc}") from exc
+    parser = _UiReferences()
+    parser.feed(html)
+    if any(path.lower().endswith((".tsx", ".jsx", ".ts")) or path.startswith("src/") for path in parser.paths):
+        raise DesktopAssetError(
+            f"{index} points to uncompiled React source files. Run `npm ci` and `npm run build` "
+            "in frontend-second, then launch with frontend-second/dist."
+        )
+    if not parser.paths:
+        raise DesktopAssetError(f"Desktop index.html references no scripts or styles: {index}.")
+    missing: list[str] = []
+    for relative in parser.paths:
+        candidate = (root / relative).resolve()
+        if not relative or not candidate.is_relative_to(root) or not candidate.is_file():
+            missing.append(relative)
+    if missing:
+        raise DesktopAssetError(
+            f"Desktop UI has missing startup resources in {root}: {', '.join(missing)}. "
+            "Restore a complete UI build before launching."
+        )
+    return parser.paths
+
+
+def _wait_for_ui_server(base_url: str, paths: list[str], timeout_seconds: float = 12.0) -> None:
+    """Verify local health, HTML and its referenced assets before browser launch."""
+    deadline = time.monotonic() + timeout_seconds
+    paths_to_check = ["/api/health", "/", *["/" + name for name in paths]]
+    last_error = "server has not accepted requests"
+    while time.monotonic() < deadline:
+        try:
+            for request_path in paths_to_check:
+                request = Request(base_url + request_path, headers={"Connection": "close"})
+                with urlopen(request, timeout=2) as response:
+                    if response.status != 200:
+                        raise RuntimeError(f"{request_path}: HTTP {response.status}")
+                    body = response.read()
+                    if request_path == "/" and not body:
+                        raise RuntimeError("/: empty HTML response")
+            return
+        except Exception as exc:
+            last_error = str(exc)
+            time.sleep(0.2)
+    raise DesktopAssetError(f"Local desktop UI server did not become ready at {base_url}: {last_error}")
+
+
+def show_desktop_launch_error(message: str) -> None:
+    """Show startup errors to installed Windows users whose shortcut uses pythonw."""
+    print(message, file=sys.stderr)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, message[:3500], "OpenAgent desktop could not start", 0x10)
+        except Exception:
+            pass
 
 
 def configured_workbench_port() -> int:
@@ -99,10 +199,10 @@ def configure_managed_accelerator() -> str:
     return selected
 
 
-def ui_build_token() -> str:
+def ui_build_token(root: Path | None = None) -> str:
     """Fingerprint UI assets so an old desktop shell cannot hide an update."""
 
-    root = web_root()
+    root = root or web_root()
     digest = hashlib.sha256()
     found = False
     assets = [root / name for name in ("index.html", "app.js", "styles.css", "sw.js", "manifest.json")]
@@ -305,6 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for local OpenAgent data. Windows desktop launches share %%LOCALAPPDATA%%\\OpenAgent\\data.",
     )
     parser.add_argument("--no-open", action="store_true", help="Start the local workbench server without opening a window.")
+    parser.add_argument(
+        "--ui-root",
+        default=None,
+        help="Override the built UI directory for local acceptance testing.",
+    )
     parser.add_argument("--status-json", action="store_true", help="Print workbench status as JSON without launching.")
     return parser
 
@@ -316,19 +421,34 @@ def launch_workbench(
     host: str = "127.0.0.1",
     port: int = DEFAULT_WORKBENCH_PORT,
     open_window: bool = True,
+    ui_root: Path | str | None = None,
 ) -> int:
     from .server import build_http_server
+
+    if ui_root is not None and host not in {"127.0.0.1", "localhost", "::1"}:
+        raise DesktopAssetError("The explicit --ui-root test build is allowed only on a loopback address.")
 
     data_path = Path(data_dir).expanduser() if data_dir else desktop_home()
     runtime_path = workbench_runtime_dir()
     runtime_path.mkdir(parents=True, exist_ok=True)
     instance_lock = WorkbenchInstanceLock(runtime_path)
     if not instance_lock.acquire():
+        if ui_root is not None:
+            raise DesktopAssetError(
+                "A different OpenAgent workbench is already running for this runtime. "
+                "The explicit --ui-root was not applied; stop the existing local instance and retry."
+            )
         existing_url = _running_instance_url(runtime_path)
         if existing_url and open_window:
             open_app_window(existing_url, data_path, profile_dir=runtime_path / "browser-reconnect")
         print(existing_url or "OpenAgent Workbench is already running for this data directory.")
         return 0
+    selected_ui_root = (Path(ui_root).expanduser() if ui_root else web_root()).resolve()
+    try:
+        referenced_assets = validate_desktop_ui(selected_ui_root)
+    except Exception:
+        instance_lock.release()
+        raise
     store = OpenAgentStore(data_path)
     managed_accelerator = configure_managed_accelerator()
     managed_openvino_model = configure_managed_openvino_model(data_path)
@@ -337,9 +457,9 @@ def launch_workbench(
     server = None
     server_thread: threading.Thread | None = None
     try:
-        server = build_http_server(host, port, store, warm_openvino=bool(managed_openvino_model))
+        server = build_http_server(host, port, store, web_root=selected_ui_root, warm_openvino=bool(managed_openvino_model))
         address = f"http://{host}:{server.server_address[1]}"
-        build_token = ui_build_token()
+        build_token = ui_build_token(selected_ui_root)
         launch_url = f"{address}/?openagent_version={__version__}&ui_build={build_token}&ui=core"
         state_path.write_text(
             json.dumps(
@@ -375,21 +495,23 @@ def launch_workbench(
         print(f"OpenAgent Workbench running at {launch_url}")
         print(f"Data directory: {store.data_dir}")
 
+        # Start serving and confirm the actual HTML/JS/CSS paths before opening
+        # Chromium. This prevents a cold-start race from leaving a white window.
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        _wait_for_ui_server(address, referenced_assets)
+
         process: subprocess.Popen[Any] | None = None
         if open_window:
             warm_event = getattr(server, "openvino_warm_event", None)
             if warm_event is not None and not warm_event.is_set():
-                print("Warming the local GPU model before opening the desktop window...")
-                warm_event.wait(timeout=120)
+                print("The local GPU model is warming in the background; opening the desktop UI now.")
             process = open_app_window(launch_url, data_path, profile_dir=browser_profile)
 
-        if process is not None:
-            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-            server_thread.start()
-            while process.poll() is None:
-                time.sleep(0.4)
-        else:
-            server.serve_forever()
+        # Keep the local server alive independently of the browser child. Some
+        # Chromium launches reuse an existing browser process and exit quickly.
+        while server_thread.is_alive():
+            server_thread.join(timeout=0.5)
     except KeyboardInterrupt:
         print("\nStopping OpenAgent Workbench.")
     finally:
@@ -521,8 +643,13 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         open_window=not args.no_open,
+        ui_root=args.ui_root,
     )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (DesktopAssetError, OSError) as exc:
+        show_desktop_launch_error(f"{type(exc).__name__}: {exc}")
+        raise SystemExit(2) from None

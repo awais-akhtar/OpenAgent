@@ -1,5 +1,5 @@
 """Source-name V4.1 handoff; does not coerce publisher weights into an executor."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import ExitStack
 from types import MappingProxyType
 
@@ -8,6 +8,20 @@ import numpy as np
 from .v41_profile import v41_publisher_profile
 from .v41_provider import V41EngramRowProvider, V41PackedExpertProvider, V41FP8ProjectionProvider, V41TokenEmbeddingProvider
 from .storage import positive
+
+
+# A materialized dataclass is not proof that it came through load_v41(): the
+# type is public and callers can construct it directly.  Downstream execution
+# owners require this identity token so an unbound, caller-assembled tensor
+# mapping cannot bypass checkpoint inventory admission.
+_SOURCE_ADMISSION = object()
+
+
+def require_v41_source_admission(payload):
+    if (type(payload) is not V41ExecutionPayload or
+            payload._source_admission is not _SOURCE_ADMISSION):
+        raise ValueError('V4.1 payload must originate from admitted load_v41 checkpoint inventory')
+    return payload
 
 
 @dataclass(frozen=True)
@@ -25,6 +39,9 @@ class V41ExecutionPayload:
     fp8_provider: object = None
     sharded_projections: tuple = ()
     embedding_provider: object = None
+    _source_admission: object = field(default=None, repr=False, compare=False)
+    _source_root: str | None = field(default=None, repr=False, compare=False)
+    _source_files: tuple = field(default=(), repr=False, compare=False)
 
     @property
     def inference_supported(self):
@@ -139,6 +156,9 @@ def load_v41(checkpoint, *, capacity, max_weight_bytes, max_chunk_bytes=1024**2,
                                      payload.execution_gaps, engram_provider=engram_provider,
                                      expert_provider=expert_provider, fp8_provider=fp8_provider,
                                      sharded_projections=sharded_projections,
-                                     embedding_provider=embedding_provider)
+                                     embedding_provider=embedding_provider,
+                                     _source_admission=_SOURCE_ADMISSION,
+                                     _source_root=str(checkpoint._metadata.root),
+                                     _source_files=tuple(sorted(checkpoint._metadata.files.items())))
         owned.pop_all()
         return result

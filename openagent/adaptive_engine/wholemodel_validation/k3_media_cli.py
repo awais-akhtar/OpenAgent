@@ -29,12 +29,12 @@ def _read_configuration(path,sha256):
 def _publish_report(path,report):
     from .runner import safe_json
     from ..session_recovery import _path
+    from ..owned_file_descriptor import fdopen_owned
     path=_path(path)
     if not path.parent.is_dir():raise ValueError('existing local report directory required')
     descriptor,name=tempfile.mkstemp(prefix='.media-comparison-',dir=path.parent)
     try:
-        try:output=os.fdopen(descriptor,'w',encoding='utf-8')
-        except BaseException:os.close(descriptor);raise
+        output=fdopen_owned(descriptor,'w',encoding='utf-8',owner='media comparison report')
         with output:
             json.dump(safe_json(report),output,allow_nan=False,indent=2)
             output.write('\n');output.flush();os.fsync(output.fileno())

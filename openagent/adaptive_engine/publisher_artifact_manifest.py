@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import uuid
+from .owned_file_descriptor import fdopen_owned
 
 SCHEMA = 'openagent.publisher-artifacts.v1'
 KINDS = {'config', 'index', 'weights', 'tokenizer', 'dependency'}
@@ -104,7 +105,7 @@ def _open(path):
     if not stat.S_ISREG(before.st_mode):
         raise ValueError('artifact must be a regular file')
     descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0))
-    with os.fdopen(descriptor, 'rb') as source:
+    with fdopen_owned(descriptor, 'rb', owner='publisher artifact input') as source:
         stamp = _stamp(os.fstat(source.fileno()))
         if stamp != _stamp(before):
             raise ValueError('artifact changed while opening')

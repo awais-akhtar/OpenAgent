@@ -9,6 +9,7 @@ import numpy as np
 from .publisher import PublisherV41Execution
 from .publisher_mtp import PublisherV41MTP
 from .speculative import DraftProposal, SpeculativeDecoder
+from ..failure_reporting import add_failure_note, failure_summary
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,7 @@ class DSparkBackbone:
                     self.model.restore(old)
                 except BaseException as rollback:
                     self._quarantined = True
-                    failure.add_note('DSpark evidence forward rollback failed: '+str(rollback))
+                    add_failure_note(failure,'DSpark evidence forward rollback failed: '+failure_summary(rollback))
                 raise
             finally:
                 try:
@@ -113,7 +114,7 @@ class DSparkBackbone:
                 except BaseException as cleanup:
                     self._quarantined = True
                     if primary_failure is not None:
-                        primary_failure.add_note('DSpark evidence snapshot cleanup failed: '+str(cleanup))
+                        add_failure_note(primary_failure,'DSpark evidence snapshot cleanup failed: '+failure_summary(cleanup))
                     else:
                         raise RuntimeError('DSpark evidence snapshot cleanup failed') from cleanup
             self.hidden, self.logits = next_hidden, next_logits
@@ -122,9 +123,32 @@ class DSparkBackbone:
     def snapshot(self):
         with self._lock:
             self._check_transport()
-            return DSparkBackboneSnapshot(self.model.snapshot(), self.hidden,
-                b'' if self.logits is None else np.asarray(self.logits, dtype='<f4').tobytes(),
-                self.layers)
+            backbone = self.model.snapshot()
+            try:
+                width = len(self.layers) * self.model.profile.hidden_size
+                if (type(backbone.tokens) is not tuple or len(backbone.tokens) != len(self.hidden) or
+                        any(type(row) is not bytes or len(row) != 4 * width or
+                            not np.isfinite(np.frombuffer(row, dtype='<f4')).all()
+                            for row in self.hidden)):
+                    raise ValueError('DSpark hidden evidence differs from backbone token history')
+                if self.logits is None:
+                    if backbone.tokens:
+                        raise ValueError('DSpark target logits missing for nonempty backbone history')
+                    logits = b''
+                else:
+                    values = np.asarray(self.logits, dtype='<f4')
+                    if (not backbone.tokens or values.shape != (self.model.profile.vocabulary,) or
+                            not np.isfinite(values).all()):
+                        raise ValueError('DSpark target logits differ from backbone history/schema')
+                    logits = values.tobytes()
+                return DSparkBackboneSnapshot(backbone, self.hidden, logits, self.layers)
+            except BaseException as primary:
+                try:
+                    self.model.release_snapshot(backbone)
+                except BaseException as cleanup:
+                    self._quarantined = True
+                    add_failure_note(primary,'DSpark rejected-snapshot cleanup failed: '+failure_summary(cleanup))
+                raise
 
     def release_snapshot(self, snapshot):
         """Release the native target snapshot retained by a backbone snapshot."""
@@ -237,7 +261,7 @@ class DSparkProposer:
                 try:self.rng.bit_generator.state = old_rng
                 except BaseException as rollback:
                     self._quarantined = True
-                    failure.add_note('DSpark proposal RNG rollback failed: '+repr(rollback))
+                    add_failure_note(failure,'DSpark proposal RNG rollback failed: '+failure_summary(rollback))
                 raise
             self._quarantined = False
 
@@ -288,7 +312,7 @@ class DSparkProposer:
                 try:self.restore(saved)
                 except BaseException as rollback:
                     self._quarantined = True
-                    failure.add_note('DSpark proposal rollback failed: '+repr(rollback))
+                    add_failure_note(failure,'DSpark proposal rollback failed: '+failure_summary(rollback))
                 raise
 
 

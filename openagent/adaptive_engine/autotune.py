@@ -61,9 +61,12 @@ class DeviceAutoTuner:
         iterations: int = 12,
     ) -> dict[str, Any]:
         phase = str(phase).strip().lower()
-        if phase not in {"prefill", "decode", "embedding"}:
-            raise ValueError("phase must be prefill, decode, or embedding")
-        dimension = {"decode": 256, "prefill": 512, "embedding": 384}[phase]
+        if phase not in {"prefill", "decode"}:
+            raise ValueError(
+                "phase must be prefill or decode; embedding autotuning is not "
+                "admitted because the backend registry exposes no embedding frontend"
+            )
+        dimension = {"decode": 256, "prefill": 512}[phase]
         configurations = (
             {"performance_hint": "LATENCY", "num_streams": "1"},
             {"performance_hint": "LATENCY", "num_streams": ""},

@@ -691,6 +691,25 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(21, "centralize-voice-schema", _statements(VOICE_SCHEMA)),
     Migration(22, "centralize-agent-bridge-schema", _statements(AGENT_BRIDGE_SCHEMA)),
     Migration(23, "centralize-research-schema", _statements(RESEARCH_SCHEMA)),
+    Migration(
+        24,
+        "bind-agent-runs-to-authenticated-project-owners",
+        _statements(
+            """
+            CREATE TABLE IF NOT EXISTS agent_run_projects (
+                project TEXT PRIMARY KEY,
+                owner TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_run_projects_owner
+                ON agent_run_projects(owner, project);
+            """
+        ),
+        add_columns=(AddColumn("agent_runs", "owner TEXT NOT NULL DEFAULT ''"),),
+    ),
+    Migration(25, "index-agent-runs-by-project-owner", _statements(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runs_project_owner_created ON agent_runs(project, owner, created_at DESC);"
+    )),
 )
 
 

@@ -20,6 +20,22 @@ from .checkpoint_recovery import _destination_lock,_sync_directory
 from .session_recovery import _path
 
 
+def _close_descriptor_after_failure(descriptor, primary):
+    try:
+        os.close(descriptor)
+    except BaseException as cleanup:
+        primary.add_note('generation checkpoint descriptor cleanup failed: '+repr(cleanup))
+
+
+def _fdopen_owned(descriptor, *args, **kwargs):
+    """Transfer a raw descriptor to a stream, closing it if wrapping fails."""
+    try:
+        return os.fdopen(descriptor, *args, **kwargs)
+    except BaseException as primary:
+        _close_descriptor_after_failure(descriptor,primary)
+        raise
+
+
 def _remove_staging(path,primary):
     if path is None:return
     try:Path(path).unlink(missing_ok=True)
@@ -62,8 +78,7 @@ class AtomicGenerationCheckpoint:
                 _path(self.path)
                 if self.path.exists() and not self.path.is_file():raise ValueError('regular checkpoint destination required')
                 descriptor,temporary=tempfile.mkstemp(prefix='.generation-',dir=self.path.parent)
-                try:stream=os.fdopen(descriptor,'wb')
-                except BaseException:os.close(descriptor);raise
+                stream=_fdopen_owned(descriptor,'wb')
                 with stream:
                     digest=_DigestWriter(stream)
                     maximum=self.max_bytes
@@ -122,8 +137,10 @@ class AtomicGenerationCheckpoint:
                     info=os.fstat(descriptor)
                     if not stat.S_ISREG(info.st_mode) or not 128<=info.st_size<=self.max_bytes:
                         raise ValueError('bounded regular generation checkpoint required')
-                    stream=os.fdopen(descriptor,'rb')
-                except BaseException:os.close(descriptor);raise
+                except BaseException as primary:
+                    _close_descriptor_after_failure(descriptor,primary)
+                    raise
+                stream=_fdopen_owned(descriptor,'rb')
                 with stream:
                     reader=_StableReader(stream,path,_stamp(info))
                     if receipt is not None:
@@ -135,8 +152,7 @@ class AtomicGenerationCheckpoint:
                                 or any(value not in '0123456789abcdef' for value in digest)):
                             raise ValueError('exact published generation receipt required')
                     descriptor,temporary=tempfile.mkstemp(prefix='.generation-read-',dir=path.parent)
-                    try:captured=os.fdopen(descriptor,'wb')
-                    except BaseException:os.close(descriptor);raise
+                    captured=_fdopen_owned(descriptor,'wb')
                     digest=hashlib.sha256();total=0
                     with captured:
                         while True:

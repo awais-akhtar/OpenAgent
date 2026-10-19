@@ -93,6 +93,8 @@ int oa_qwen4_public_model_close(oa_q4_public_model *m){
 }
 int oa_qwen4_public_model_create(const oa_q4_public_descriptor *d,oa_q4_public_model **out,char *error,size_t bytes){
     oa_q4_public_model *m;uint64_t i,j,width,rows,columns;size_t length;uint16_t endian=1;
+    /* Clear a provided output even when any descriptor admission check fails. */
+    if(out)*out=NULL;
     if(sizeof(float)!=4||FLT_RADIX!=2||FLT_MANT_DIG!=24||FLT_MAX_EXP!=128||*(unsigned char *)&endian!=1||
         !d||d->size!=sizeof(*d)||d->version!=2||d->reserved||!out||!d->root||!d->identity||
         strlen(d->identity)!=64||!d->rows||d->rows>4096||!d->wire||!d->head||!d->hidden||!d->layers||
@@ -101,7 +103,7 @@ int oa_qwen4_public_model_create(const oa_q4_public_descriptor *d,oa_q4_public_m
         !d->config.text.hidden||d->config.text.hidden>4096||d->config.streams<2||d->config.streams>64||
         !d->config.text.capacity||d->config.text.capacity>65536||!d->config.vocabulary||d->config.vocabulary>1048576)
         return q4_fail(error,bytes,"explicit bounded Qwen4 public model descriptor required");
-    *out=NULL;length=strlen(d->root);if(!length||length>32768)return q4_fail(error,bytes,"Qwen4 model root extent differs");
+    length=strlen(d->root);if(!length||length>32768)return q4_fail(error,bytes,"Qwen4 model root extent differs");
     for(i=0;i<64;i++)if(!((d->identity[i]>='0'&&d->identity[i]<='9')||(d->identity[i]>='a'&&d->identity[i]<='f')))
         return q4_fail(error,bytes,"Qwen4 model identity must be lowercase SHA-256");
     width=d->config.streams*d->config.text.hidden;

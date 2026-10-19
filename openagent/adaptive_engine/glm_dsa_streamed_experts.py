@@ -56,7 +56,7 @@ def pack_glm_dsa_experts(directory, destination, *, model_id, dtype,
         admit_inventory(config,records)
         return ('model.norm.weight',)
     read_native_text_checkpoint(root,model_type='glm_moe_dsa',
-        max_weight_bytes=max_conversion_bytes,tensor_selection=select)
+        max_weight_bytes=max_conversion_bytes,tensor_selection=select,source_backend='native')
     c = IndependentGlmDsaDecoder(raw,{},_inventory_only=True).config
     e,h,m = c.n_routed_experts,c.hidden_size,c.moe_intermediate_size
     layers = []

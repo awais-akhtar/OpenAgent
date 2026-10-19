@@ -98,9 +98,11 @@ class PublisherV41Execution:
         retain packed weights/scale bindings independently: the payload's
         float32 logical tensors do not preserve publisher activation arithmetic.
         """
-        from ..publisher_checkpoint.v41_adapter import V41ExecutionPayload
+        from ..publisher_checkpoint.v41_adapter import (
+            V41ExecutionPayload, require_v41_source_admission)
         if not isinstance(payload, V41ExecutionPayload) or payload.unsupported:
             raise ValueError('supported source-name V41ExecutionPayload required')
+        require_v41_source_admission(payload)
         if not isinstance(getattr(arithmetic, 'identity', None), str) or not arithmetic.identity:
             raise ValueError('identified source-name publisher arithmetic required')
         for name in ('linear', 'cast', 'roundtrip'):
@@ -246,9 +248,18 @@ class PublisherV41Execution:
             return len(self._tokens)
 
     def _row(self, value, size):
-        row = np.array(value, dtype=np.float32, order='C', copy=True).reshape(-1)
-        if row.size != size or not np.isfinite(row).all():
+        source = np.asarray(value)
+        if source.size != size or source.dtype.kind != 'f':
             raise ValueError('publisher provider returned invalid extent or nonfinite arithmetic')
+        try:
+            finite = np.isfinite(source).all()
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            raise ValueError('publisher provider returned invalid extent or nonfinite arithmetic')
+        row = np.array(source, dtype=np.float32, order='C', copy=True).reshape(-1)
+        if not np.isfinite(row).all():
+            raise ValueError('publisher provider result is not representable as FP32')
         row.flags.writeable = False
         return row
 

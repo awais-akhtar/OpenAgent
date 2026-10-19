@@ -10,11 +10,73 @@ from urllib.request import Request, urlopen
 
 from openagent.auth import AuthManager, required_scope_for_path
 from openagent.egress import EgressError, EgressPolicy
+from openagent.models import AuditEvent
 from openagent.server import build_http_server
 from openagent.storage import OpenAgentStore
 
 
 class ProtectedApiAcceptanceTests(unittest.TestCase):
+    def _assert_rejected(self, request, expected_status: int) -> None:
+        try:
+            with urlopen(request, timeout=10) as response:
+                self.fail(f"expected HTTP {expected_status}, received {response.status}")
+        except HTTPError as error:
+            try:
+                self.assertEqual(error.code, expected_status)
+            finally:
+                error.close()
+        except ConnectionAbortedError as error:
+            # A Windows loopback abort can happen before this pre-dispatch
+            # authorization rejection reaches the client under suite socket
+            # churn. Retry only that specific transient; all three requests
+            # are rejected before a protected handler can mutate state.
+            if getattr(error, "winerror", None) != 10053:
+                raise
+            with self.assertRaises(HTTPError) as retry:
+                urlopen(request, timeout=10)
+            try:
+                self.assertEqual(retry.exception.code, expected_status)
+            finally:
+                retry.exception.close()
+
+    def test_cross_project_audit_feed_requires_security_admin_scope(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "1"}):
+            store = OpenAgentStore(tmp)
+            auth = AuthManager(store)
+            user = auth.register("auditor", "auditor@example.test", "a sufficiently long password")
+            read_token = auth.create_api_token(user["user_id"], "security-reader", scopes=["security:read"])["token"]
+            admin_token = auth.create_api_token(user["user_id"], "security-admin", scopes=["security:admin"])["token"]
+            store.add_audit_event(AuditEvent(actor="alpha-user", action="read", resource="alpha-secret", project="alpha"))
+            store.add_audit_event(AuditEvent(actor="beta-user", action="read", resource="beta-secret", project="beta"))
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+
+            def get(path: str, token: str | None = None):
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                try:
+                    with urlopen(Request(f"{base}{path}", headers=headers), timeout=10) as response:
+                        return response.status, json.loads(response.read().decode())
+                except HTTPError as error:
+                    try:
+                        return error.code, json.loads(error.read().decode())
+                    finally:
+                        error.close()
+
+            try:
+                self.assertEqual(get("/api/audit")[0], 401)
+                self.assertEqual(get("/api/audit", read_token)[0], 403)
+                status, payload = get("/api/audit", admin_token)
+                self.assertEqual(status, 200)
+                self.assertTrue({"alpha", "beta"}.issubset(
+                    {event["project"] for event in payload["events"]}
+                ))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_protected_api_rejects_missing_invalid_and_under_scoped_tokens(self) -> None:
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "1"}):
             store = OpenAgentStore(tmp)
@@ -39,10 +101,7 @@ class ProtectedApiAcceptanceTests(unittest.TestCase):
                         method="POST",
                     )
                     with self.subTest(status=expected_status):
-                        with self.assertRaises(HTTPError) as ctx:
-                            urlopen(request, timeout=10)
-                        self.assertEqual(ctx.exception.code, expected_status)
-                        ctx.exception.close()
+                        self._assert_rejected(request, expected_status)
             finally:
                 server.shutdown()
                 server.server_close()

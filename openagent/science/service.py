@@ -52,6 +52,53 @@ class ScientificService:
     def list_memory(self, *, project: str, limit: int = 200) -> list[dict[str, Any]]:
         return [event for event in self.store.list_events(limit=min(500, max(1, limit)), project=project) if event.get("type") == "scientific_memory"]
 
+    def save_experiment_proposal(
+        self, *, project: str, goal: str, candidates: Sequence[Mapping[str, Any]], proposals: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        record = {
+            "goal": goal.strip(),
+            "status": "proposed",
+            "execution_status": "not_started",
+            "candidates": [dict(item) for item in candidates],
+            "proposals": [dict(item) for item in proposals],
+        }
+        event = self.store.add_event(ContextEvent(
+            title=f"Experiment proposal: {record['goal'] or 'Scientific objective'}",
+            content=json.dumps(record, sort_keys=True, default=str),
+            type="scientific_experiment_proposal",
+            source="scientific-ai",
+            project=project,
+            metadata={"status": record["status"], "proposal_count": len(record["proposals"])},
+        ))
+        self._audit(project, "science.experiment.propose", event["id"], {"proposal_count": len(record["proposals"])})
+        return {**event, **record}
+
+    def list_experiment_proposals(self, *, project: str, limit: int = 100) -> list[dict[str, Any]]:
+        events = self.store.list_events(limit=min(500, max(1, limit * 5)), project=project)
+        proposals = []
+        for event in events:
+            if event.get("type") != "scientific_experiment_proposal":
+                continue
+            try:
+                record = json.loads(str(event.get("content", "{}")))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            proposals.append({
+                "id": event.get("id"),
+                "title": event.get("title"),
+                "created_at": event.get("created_at"),
+                "status": record.get("status", "proposed"),
+                "execution_status": record.get("execution_status", "not_started"),
+                "goal": record.get("goal", ""),
+                "candidates": record.get("candidates", []),
+                "proposals": record.get("proposals", []),
+            })
+            if len(proposals) >= max(1, min(int(limit), 500)):
+                break
+        return proposals
+
     def save_material_dataset(self, *, project: str, name: str, target: str, records: Sequence[dict[str, Any]], source: str = "upload") -> dict[str, Any]:
         validated = validate_records(records, target=target)
         numeric_columns = sorted({key for row in validated for key, value in row.items() if isinstance(value, (int, float)) and not isinstance(value, bool)})

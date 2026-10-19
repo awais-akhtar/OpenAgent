@@ -1,9 +1,11 @@
 # Deployment and release checks
 
-OpenAgent ships a local Docker Compose profile and Kubernetes manifests for a
-single OpenAgent runtime. Both start in `team` mode with authentication enabled.
-The examples are a secure baseline, not a substitute for the identity, storage,
-ingress, backup, and monitoring choices required by a specific installation.
+OpenAgent's supported product modes are local desktop (`single_user`) and
+opt-in, one-owner personal remote (`personal_remote`). Existing Docker Compose
+and Kubernetes examples still use legacy `team` mode; they are not certified
+for the single-owner personal-remote contract and must not be treated as a
+supported team/remote product. The remote profile requires a private HTTPS
+proxy or VPN and never binds the Python listener to a public interface.
 
 ## Container build
 
@@ -36,12 +38,49 @@ $env:OPENAGENT_BOOTSTRAP_TOKEN = "replace-with-a-long-random-value"
 docker compose up --build
 ```
 
-Compose publishes only `127.0.0.1:8765`. Exposing the service through a reverse
-proxy is a separate operator decision and must retain team mode, authentication,
-TLS, and an explicit trusted-origin list.
+Compose publishes only `127.0.0.1:8765`. It remains a legacy team-mode example;
+its public exposure is not approved by this documentation.
 The local Compose service does not restart automatically after a reboot; start
 it explicitly when needed. The image gives the non-root runtime ownership of
 `/data` before a named volume is mounted there.
+
+## Local desktop and personal remote
+
+Local desktop is the default. Keep the Python server on loopback and do not
+forward its port from a router, firewall, tunnel, or public proxy. A local
+`single_user` session does not require sign-in.
+
+Personal remote is a separate opt-in profile for the same owner's devices. It
+requires authentication and a private HTTPS reverse proxy or private VPN. The
+Python server still binds only to loopback; do not bind it to `0.0.0.0` or
+publish port `8765` directly. Configure the deployment explicitly:
+
+```powershell
+$env:OPENAGENT_DEPLOYMENT_MODE = "personal_remote"
+$env:OPENAGENT_AUTH_ENFORCED = "1"
+$env:OPENAGENT_PERSONAL_REMOTE_HTTPS_TERMINATED = "1"
+$env:OPENAGENT_PERSONAL_REMOTE_HOSTS = "agent.example.private"
+$env:OPENAGENT_TRUSTED_ORIGINS = "https://agent.example.private"
+$env:OPENAGENT_BOOTSTRAP_TOKEN = "<at-least-32-character-random-one-time-secret>"
+```
+
+The proxy must terminate HTTPS, forward the configured Host, overwrite (not
+trust from callers) `X-Forwarded-Proto: https`, and be reachable only through a
+private network/VPN. Do not expose it on the public Internet. At first startup,
+personal remote refuses an empty owner setup unless the one-time bootstrap
+secret is configured. Create the sole owner from the local machine with the
+bootstrap header; never place the bootstrap secret in a URL or browser page.
+After setup, remove the bootstrap secret from the process environment. The
+browser signs in to the existing owner account under Settings → Advanced;
+sessions are tab-scoped and can be renewed or signed out there. No second user
+or team membership can be registered in this profile.
+
+If an existing database contains multiple accounts or an inactive/ambiguous
+owner state, personal remote refuses to start. Back up and review that data
+manually; the application does not migrate, delete, or silently choose an
+account. Legacy `team`/`enterprise` deployments still need separate object-level
+Research, Knowledge, Media, and other data isolation work. This change does
+not certify or secure those multi-user modes.
 
 ## Kubernetes profiles
 

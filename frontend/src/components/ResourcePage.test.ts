@@ -32,7 +32,9 @@ describe('resource workspace', () => {
 
     const menu = host.querySelector('details.specialist-action-menu') as HTMLDetailsElement;
     expect(menu.open).toBe(false);
-    expect(menu.querySelectorAll('button')).toHaveLength(4);
+    expect(menu.querySelectorAll('button')).toHaveLength(3);
+    expect(menu.textContent).not.toContain('Steps as JSON');
+    expect(menu.textContent).toContain('Run workflow in dry-run mode');
     await act(async () => menu.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(menu.open).toBe(true);
     const dryRun = [...menu.querySelectorAll('button')].find(button => button.textContent?.includes('Run workflow in dry-run mode'));
@@ -41,5 +43,32 @@ describe('resource workspace', () => {
     expect(select).toBeTruthy();
     expect([...select.options].map(option => option.textContent)).toContain('Weekly summary · enabled');
     expect([...select.options].map(option => option.value)).toContain('wf-weekly');
+  });
+
+  it('supports arrow navigation and roving focus across the shared resource tabs', async () => {
+    const { ResourcePage } = await import('./ResourcePage');
+    const { resourcePageConfigs } = await import('../pages/ResourcePages');
+    await act(async () => { root.render(createElement(ResourcePage, resourcePageConfigs.automation)); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.length).toBeGreaterThan(1);
+    expect(tabs[0].tabIndex).toBe(0);
+    expect(tabs[1].tabIndex).toBe(-1);
+    await act(async () => { tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(tabs[1].getAttribute('aria-selected')).toBe('true');
+    expect(tabs[1].tabIndex).toBe(0);
+    expect(document.activeElement).toBe(tabs[1]);
+  });
+
+  it('starts on the configured work surface and exposes its contextual primary action', async () => {
+    const { ResourcePage } = await import('./ResourcePage');
+    const { resourcePageConfigs } = await import('../pages/ResourcePages');
+    await act(async () => { root.render(createElement(ResourcePage, { ...resourcePageConfigs.automation, primaryRead: 'Workflow library', primaryAction: 'Run workflow in dry-run mode' })); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(tabs[0].textContent).toContain('Workflow library');
+    const primary = host.querySelector<HTMLButtonElement>('.resource-primary-action');
+    expect(primary?.textContent).toContain('Run workflow in dry-run mode');
+    await act(async () => primary?.click());
+    expect(document.body.querySelector('[role="dialog"] select[name="workflow_id"]')).toBeTruthy();
   });
 });

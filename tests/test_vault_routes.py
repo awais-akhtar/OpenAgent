@@ -35,6 +35,11 @@ class VaultRouteTests(unittest.TestCase):
             self.assertEqual(listing[0]["id"], payload["entry_id"])
             self.assertNotIn("secret", listing[0])
             self.assertNotIn("ciphertext", listing[0])
+            access = handle_get("/api/vault/access-log", "project=core&limit=10", deps).payload["access_log"]
+            self.assertEqual(access[0]["entry_id"], payload["entry_id"])
+            self.assertEqual(access[0]["action"], "store")
+            self.assertNotIn("secret", access[0])
+            self.assertNotIn("ciphertext", access[0])
             for route in contract()["routes"]:
                 with self.subTest(route=route):
                     result = (

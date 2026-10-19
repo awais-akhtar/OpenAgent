@@ -57,6 +57,11 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
         raise ValueError('conditional MTP execution budgets require the implemented Inkling draft owner')
     if type(native_composition) is not bool or (native_composition and (family!='qwen4_exp' or text_device is not None)):
         raise ValueError('native composition requires the Qwen4 CPU publisher path')
+    if text_device is not None and segment_runtime_library is not None:
+        # A device text decoder cannot be composed with the CPU Segment/Edge
+        # range path. Reject the mixed backend tuple before checkpoint
+        # inventory planning, provider setup, or tensor materialization.
+        raise ValueError('publisher device text and Segment runtime backends are mutually exclusive')
     if (native_store_runtime_library is not None or native_expert_max_bytes or native_ple_max_bytes) and not native_composition:
         raise ValueError('native original store options require explicit composition')
     if type(segment_layer_span) is not int or segment_layer_span<0 or (segment_layer_span and
@@ -70,6 +75,67 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
     config=json.loads(raw,object_pairs_hook=_pairs,
         parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
     if config.get('model_type')!=family: raise ValueError('publisher family differs from selected loader')
+    # The component planner validates shapes and namespaces, not the complete
+    # P02 route. Bind original publisher headers to the concrete execution
+    # backend before any tensor payload is materialized. The persisted format
+    # differs for FP8: those tensors retain the block-scale contract rather
+    # than being silently treated as ordinary float32 conversion.
+    from .source_scope import (require_source_inventory_admission,
+                               source_family_for_identity)
+    source_family=source_family_for_identity(family)
+    backend=('public-range' if segment_runtime_library is not None else
+             'device' if text_device is not None else 'native')
+    ordinary={name:record for name,record in inventory.tensors.items()
+        if record.dtype in ('F32','F16','BF16')}
+    fp8={name:record for name,record in inventory.tensors.items()
+        if record.dtype=='F8_E4M3'}
+    if ordinary:
+        require_source_inventory_admission(family=source_family,model_type=family,
+            backend=backend,arithmetic=arithmetic,persisted_format='float32',inventory=ordinary)
+    if fp8:
+        require_source_inventory_admission(family=source_family,model_type=family,
+            backend=backend,arithmetic=arithmetic,
+            persisted_format='fp8-e4m3-b128-f32',inventory=fp8)
+    # Build the parsed component contract before consulting optional/MTP
+    # ownership below. Keeping this here ensures direct publisher loader calls
+    # cannot reach the auxiliary-bank decision with an uninitialized component
+    # inventory.
+    components=component_contract(config,arithmetic=arithmetic)
+    # Only Inkling has an admitted MTP consumer (InklingMTP, constructed below
+    # when both stage budgets are explicit).  The Qwen3.5, Qwen4 and GLM5
+    # wrappers previously retained MTP tensors as opaque auxiliary payloads,
+    # which made their inventory look supported despite there being no draft
+    # execution path.  Reject those headers before any tensor payload read.
+    mtp_headers=tuple(name for name in inventory.tensors if name.startswith((
+        'mtp.','model.mtp.','model.language_model.mtp.')))
+    # The wrapper mapper can preserve an MTP/next-token-prediction config even
+    # when the checkpoint has no corresponding tensor namespace.  Such a
+    # config is still a claim about an optional execution bank; do not silently
+    # admit it for families whose conditional loader has no draft consumer.
+    if family!='inkling_mm_model' and components.auxiliary_config:
+        raise ValueError(f'{family} publisher loader rejects auxiliary/MTP configuration: no admitted consumer')
+    if mtp_headers and family!='inkling_mm_model':
+        raise ValueError(f'{family} publisher loader rejects MTP tensors: no admitted draft consumer')
+    if family=='qwen3_5_moe':
+        # This wrapper implements image/video placement only. Reject audio at
+        # metadata admission, before constructing a tensor reader or decoding
+        # any checkpoint payload, even when the checkpoint advertises a tower.
+        audio_names=tuple(name for name in inventory.tensors if name.startswith((
+            'model.audio_tower.','audio_tower.','model.language_model.audio_tower.',
+            'model.audio.','audio.')))
+        if config.get('audio_config') is not None or audio_names:
+            raise ValueError('Qwen3.5 publisher loader rejects audio_config/audio tensors: audio execution is not implemented')
+    if family=='qwen4_exp':
+        # The admitted Qwen4 wrapper currently composes the vision tower only.
+        # Reject an advertised or physically present audio component while
+        # checkpoint metadata is still being inspected; constructing the
+        # tensor reader and failing later in Qwen4MultimodalDecoder would read
+        # payloads for a bank with no execution owner.
+        audio_names=tuple(name for name in inventory.tensors if name.startswith((
+            'model.audio_tower.','audio_tower.','model.language_model.audio_tower.',
+            'model.audio.','audio.')))
+        if config.get('audio_config') is not None or audio_names:
+            raise ValueError('Qwen4 publisher loader rejects audio_config/audio tensors: audio execution is not implemented')
     if family=='glm5_next':
         if mtp_max_bytes or mtp_work_bytes: raise ValueError('Inkling MTP budgets cannot be applied to GLM')
         from .glm5_multimodal import Glm5MultimodalDecoder
@@ -80,12 +146,15 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
             segment_work_bytes=segment_work_bytes,segment_layer_span=segment_layer_span),cancel)
     if segment_runtime_library is not None and family not in ('inkling_mm_model','qwen4_exp'):
         raise ValueError('conditional public Segment execution requires an implemented publisher wrapper')
-    components=component_contract(config,arithmetic=arithmetic);c=components.text_config
+    c=components.text_config
     if family=='inkling_mm_model':
         from .inkling_mtp import admit_mtp_inventory
-        admit_mtp_inventory(c,components.auxiliary_config,
-            {name:(record.shape,record.dtype) for name,record in inventory.tensors.items()
-             if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.'))})
+        mtp_headers={name:(record.shape,record.dtype) for name,record in inventory.tensors.items()
+            if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.'))}
+        if mtp_headers and not mtp_max_bytes:
+            raise ValueError('Inkling MTP tensors require explicit admitted draft execution budgets')
+        admit_mtp_inventory(c,components.auxiliary_config,mtp_headers,
+            max_total_bytes=mtp_max_bytes if mtp_max_bytes else None)
     if family=='qwen3_5_moe':
         c=dict(c)
         if type(context_tokens) is not int or not 1<=context_tokens<=c['max_position_embeddings']:
@@ -290,16 +359,36 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
             projection_provider.alias('lm_head.weight','model.embed_tokens.weight',expected_binding=tied_alias,cancel=cancel)
         weights=materialize(reader,bindings,max_bytes=max_weight_bytes,
             cancelled=None if cancel is None else cancel.is_set)
+        # Without an accelerator projection provider, a physical tied output
+        # tensor is materialized as a distinct NumPy allocation. The wrappers'
+        # partitioner intentionally requires one shared owner, not merely
+        # equal values, so compare the source-derived head and publish the
+        # embedding object under the canonical head name before construction.
+        if c.get('tie_word_embeddings',False) and projection_provider is None:
+            embedding=next((weights[name] for name in (
+                'model.embed_tokens.weight','model.language_model.embed_tokens.weight',
+                'language_model.embed_tokens.weight') if name in weights),None)
+            if embedding is None:
+                raise ValueError('tied publisher head has no admitted embedding owner')
+            for name in ('lm_head.weight','model.lm_head.weight','model.language_model.lm_head.weight',
+                         'language_model.lm_head.weight','output.weight','shared_head.weight',
+                         'model.output.weight','model.shared_head.weight',
+                         'model.language_model.output.weight','model.language_model.shared_head.weight'):
+                head=weights.pop(name,None)
+                if head is not None and not np.array_equal(head,embedding):
+                    raise ValueError('physical tied publisher head differs from admitted embedding')
+            weights['lm_head.weight']=embedding
         weights.update(generated);inventory.assert_unchanged();_cancelled(cancel)
         if family=='qwen3_5_moe':
-            from .qwen35_multimodal import Qwen35MultimodalDecoder
+            from .qwen35_multimodal import Qwen35MultimodalDecoder, _PUBLISHER_DEVICE_ADMISSION
             decoder=Qwen35MultimodalDecoder(config,weights,library=library,text_library=text_library,
                 max_bytes=max_bytes,max_snapshots=max_snapshots,context_tokens=context_tokens,text_device=text_device,
                 expert_provider=expert_provider,own_expert_provider=True,
-                projection_provider=projection_provider,own_projection_provider=True)
+                projection_provider=projection_provider,own_projection_provider=True,
+                _publisher_device_admission=_PUBLISHER_DEVICE_ADMISSION)
             expert_provider=projection_provider=None
         elif family=='qwen4_exp':
-            from .qwen4_multimodal import Qwen4MultimodalDecoder
+            from .qwen4_multimodal import Qwen4MultimodalDecoder, _PUBLISHER_DEVICE_ADMISSION
             decoder=Qwen4MultimodalDecoder(config,weights,library=library,text_library=text_library,
                 max_bytes=max_bytes,max_snapshots=max_snapshots,ple_provider=ple,own_ple_provider=True,
                 expert_provider=expert_provider,own_expert_provider=True,text_device=text_device,
@@ -311,17 +400,21 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
                 segment_work_bytes=segment_work_bytes if segment_runtime_library is not None else None,
                 segment_layer_ranges=None if not segment_layer_span else tuple(
                     (begin,min(begin+segment_layer_span,c['num_hidden_layers']))
-                    for begin in range(0,c['num_hidden_layers'],segment_layer_span)))
+                    for begin in range(0,c['num_hidden_layers'],segment_layer_span)),
+                _checkpoint_inventory=inventory,
+                _publisher_device_admission=_PUBLISHER_DEVICE_ADMISSION)
             ple=expert_provider=projection_provider=None
         else:
-            from .inkling_multimodal import InklingMultimodalDecoder
+            from .inkling_multimodal import InklingMultimodalDecoder, _PUBLISHER_DEVICE_ADMISSION
             decoder=InklingMultimodalDecoder(config,weights,library=library,text_library=text_library,
                 max_bytes=max_bytes,max_snapshots=max_snapshots,context_tokens=context_tokens,
                 mtp_max_bytes=mtp_max_bytes,mtp_work_bytes=mtp_work_bytes,
                 expert_provider=expert_provider,own_expert_provider=True,text_device=text_device,
                 projection_provider=projection_provider,own_projection_provider=True,
                 segment_runtime_library=segment_runtime_library,segment_work_bytes=segment_work_bytes,
-                model_directory=root,segment_layer_span=segment_layer_span)
+                model_directory=root,segment_layer_span=segment_layer_span,
+                _checkpoint_inventory=inventory,
+                _publisher_device_admission=_PUBLISHER_DEVICE_ADMISSION)
             expert_provider=projection_provider=None
         return _finish_decoder(decoder,cancel)
     except BaseException as primary:

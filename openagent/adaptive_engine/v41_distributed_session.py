@@ -90,6 +90,7 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
     from .projection_dispatch import ProjectionDispatch
     from .publisher_checkpoint.v41_adapter import _shard_rule
     from .v41_execution.fp8_projection import NativeFP8Projection
+    from .tensor_parallel import _failure_type_name, _safe_agreement_descriptor
     if type(options) is not V41DistributedOptions:
         raise TypeError('explicit distributed publisher options required')
     if not distributed.is_available() or not distributed.is_initialized():
@@ -136,20 +137,52 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
             None if fp8_provider is None else tuple(sorted(fp8_provider.tensor_shapes.items())),
             tuple(mtp_inventory),
         )
-    except Exception as failure:
-        policy_error=(str(failure) or type(failure).__name__)[:2048]
+    except BaseException as failure:
+        # A rank-local interrupt during policy construction must reach the
+        # same first agreement as ordinary validation failures. Letting
+        # KeyboardInterrupt/InterruptedError escape here while peers enter
+        # all_gather_object would strand those peers before bank setup.
+        policy_error=(_failure_type_name(failure),'failure details omitted')
     policies=[None]*world_size
     # Agree on every branch selector and source inventory before constructing
     # format-specific banks. Without this common first collective, divergent
     # per-rank flags or provider inventories can send ranks into different
     # collective sequences (or let one rank reject while peers block).
     distributed.all_gather_object(policies,(local_policy,policy_error),group=options.group)
-    policy_errors=[f'rank {rank}: {record[1]}' for rank,record in enumerate(policies)
-                   if type(record) is tuple and len(record)==2 and record[1] is not None]
+    policy_errors=[]
+    malformed_policies=[]
+    for rank, record in enumerate(policies):
+        if (type(record) is not tuple or len(record)!=2 or
+                (record[0] is None and record[1] is None) or
+                (record[0] is not None and
+                 (type(record[0]) is not tuple or not _safe_agreement_descriptor(
+                     record[0],max_nodes=1_000_000,max_depth=20))) or
+                (record[1] is not None and
+                 (type(record[1]) is not tuple or len(record[1])!=2 or
+                  type(record[1][0]) is not str or not 0<len(record[1][0])<=128 or
+                  type(record[1][1]) is not str or len(record[1][1])>4096))):
+            malformed_policies.append(rank)
+            policy_errors.append(f'rank {rank}: malformed bank policy record')
+            continue
+        error = record[1]
+        if error is None:
+            continue
+        policy_errors.append(f'rank {rank}: {error[0]}: {error[1]}')
     if policy_errors:
+        interrupt_seen = any(
+            type(record) is tuple and len(record)==2 and
+            type(record[1]) is tuple and len(record[1])==2 and
+            record[1][0] in ('InterruptedError', 'KeyboardInterrupt')
+            for record in policies)
+        if not malformed_policies and interrupt_seen and all(
+                type(record) is tuple and len(record)==2 and
+                (record[1] is None or
+                 (type(record[1]) is tuple and len(record[1])==2 and
+                  type(record[1][0]) is str and type(record[1][1]) is str))
+                for record in policies):
+            raise InterruptedError('V4.1 distributed bank preflight cancelled: '+
+                                   '; '.join(policy_errors))
         raise ValueError('V4.1 distributed bank preflight failed: '+'; '.join(policy_errors))
-    if any(type(record) is not tuple or len(record)!=2 for record in policies):
-        raise ValueError('malformed V4.1 distributed bank preflight record')
     if any(record[0]!=policies[0][0] for record in policies):
         raise ValueError('V4.1 distributed bank policy or source inventory differs across ranks')
     def agreed_stage(name, construct):
@@ -168,7 +201,8 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
         records=[None]*world_size
         try:
             distributed.all_gather_object(records,
-                None if failure is None else (type(failure).__name__,str(failure)[:2048]),
+                None if failure is None else
+                    (_failure_type_name(failure),'failure details omitted'),
                 group=options.group)
         except BaseException:
             values=value if type(value) is tuple else (value,)
@@ -178,8 +212,19 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
                     try:close()
                     except BaseException:pass
             raise
-        failed=[f'rank {rank}: {record[0]}: {record[1]}'
-                for rank,record in enumerate(records) if record is not None]
+        # The collective is a trust boundary: a malformed peer response must
+        # be treated as an agreed setup failure, not indexed while formatting
+        # diagnostics (which used to bypass cleanup of locally-created banks).
+        malformed=[rank for rank,record in enumerate(records)
+                   if record is not None and
+                   (type(record) is not tuple or len(record)!=2 or
+                    type(record[0]) is not str or not 0<len(record[0])<=128 or
+                    type(record[1]) is not str or len(record[1])>4096)]
+        failed=[f'rank {rank}: malformed setup agreement record'
+                for rank in malformed]
+        failed.extend(f'rank {rank}: {record[0]}: {record[1]}'
+                      for rank,record in enumerate(records)
+                      if record is not None and rank not in malformed)
         if failed:
             cleanup_errors=[]
             values=value if type(value) is tuple else (value,)
@@ -187,10 +232,20 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
                 close=getattr(resource,'close',None)
                 if callable(close):
                     try:close()
-                    except BaseException as cleanup:cleanup_errors.append(str(cleanup))
+                    except BaseException as cleanup:cleanup_errors.append(_failure_type_name(cleanup))
             if failure is not None and cleanup_errors:
                 failure.add_note('local distributed setup cleanup failed: '+'; '.join(cleanup_errors))
             detail=f'V4.1 distributed {name} setup failed: '+'; '.join(failed)
+            # Setup cancellation is unanimous once every rank has reached
+            # this agreement boundary. Preserve its cancellation type so the
+            # caller runs interruption-specific cleanup instead of treating
+            # an orderly stop as a generic construction failure.
+            if (not malformed and all(record is not None and
+                                      record[0]=='InterruptedError'
+                                      for record in records)):
+                if isinstance(failure,InterruptedError):
+                    raise InterruptedError(detail) from failure
+                raise InterruptedError(detail)
             if failure is not None:
                 raise RuntimeError(detail) from failure
             raise RuntimeError(detail)
@@ -198,6 +253,42 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
     common=dict(group=options.group,device=options.device,torch_version=options.torch_version,
         checkpoint_identity=options.checkpoint_identity,max_bytes=options.max_collective_bytes)
     assignments={}
+    def publish_assignment(source, bank):
+        """Agree the local dispatch publication before the next bank collective.
+
+        Registration itself is collective, but the following Python mapping
+        insertion is not. A rank-local allocation failure there must not let
+        peers enter the next source-registration collective while this rank
+        unwinds.
+        """
+        failure=None
+        try:
+            assignments[source]=bank
+        except BaseException as error:
+            failure=(_failure_type_name(error),'failure details omitted')
+        records=[None]*world_size
+        distributed.all_gather_object(records,failure,group=options.group)
+        malformed=[rank for rank,record in enumerate(records)
+                   if record is not None and
+                   (type(record) is not tuple or len(record)!=2 or
+                    type(record[0]) is not str or not 0<len(record[0])<=128 or
+                    type(record[1]) is not str or len(record[1])>4096)]
+        errors=[f'rank {rank}: malformed dispatch publication record'
+                for rank in malformed]
+        errors.extend(f'rank {rank}: {record[0]}: {record[1]}'
+                      for rank,record in enumerate(records)
+                      if record is not None and rank not in malformed)
+        if errors:
+            assignments.pop(source,None)
+            interrupted=any(record is not None and type(record) is tuple and
+                            len(record)==2 and record[0] in
+                            ('InterruptedError','KeyboardInterrupt')
+                            for record in records)
+            if interrupted:
+                raise InterruptedError('V4.1 distributed projection dispatch publication cancelled: '+
+                                       '; '.join(errors))
+            raise RuntimeError('V4.1 distributed projection dispatch publication failed: '+
+                               '; '.join(errors))
     if options.bf16:
         if bf16_provider is None:raise ValueError('distributed BF16 requires a streamed row budget')
         bank=agreed_stage('BF16 bank',lambda:BF16TensorParallelProjections(provider=bf16_provider,**common))
@@ -206,9 +297,10 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
             options.checkpoint_identity,options.max_collective_bytes,
             tuple(sorted(bf16_provider.sources.items()))))
         for source in sorted(bf16_provider.sources):
-            bank.register_source(source);assignments[source]=bank
+            bank.register_source(source);publish_assignment(source,bank)
     elif bf16_provider is not None:
-        assignments.update({source:bf16_provider for source in bf16_provider.sources})
+        for source in sorted(bf16_provider.sources):
+            publish_assignment(source,bf16_provider)
     if options.fp8:
         provider=payload.fp8_provider
         if provider is None:raise ValueError('distributed FP8 requires the original packed provider')
@@ -236,7 +328,7 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
             options.checkpoint_identity,options.max_collective_bytes,
             tuple(sorted((rule.sources[0],rule.shape) for rule in rules))))
         for rule in sorted(rules,key=lambda item:item.sources[0]):
-            source=rule.sources[0];bank.register_source(source);assignments[source]=bank
+            source=rule.sources[0];bank.register_source(source);publish_assignment(source,bank)
     if options.fp4:
         from .native_mxfp4 import NativeMXFP4
         from .publisher_checkpoint.v41_provider import V41FP4ProjectionProvider
@@ -269,7 +361,7 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
             options.checkpoint_identity,options.max_collective_bytes,
             tuple(sorted((rule.sources[0],rule.shape) for rule in rules))))
         for rule in sorted(rules,key=lambda item:item.sources[0]):
-            source=rule.sources[0];bank.register_source(source);assignments[source]=bank
+            source=rule.sources[0];bank.register_source(source);publish_assignment(source,bank)
     dispatch=agreed_stage('projection dispatch',lambda:ProjectionDispatch(assignments))
     owned.callback(dispatch.close)
     if arithmetic_device is not None:

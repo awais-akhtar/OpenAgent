@@ -14,7 +14,17 @@ htmlcov/
 .tox/
 .nox/
 .hypothesis/
-
+*.tsbuildinfo
+.vite/
+frontend/.vite/
+*.map
+.idea/
+*.swp
+*.swo
+.nyc_output/
+coverage/
+screenshots/
+artifacts/ui-captures/
 .venv/
 .accelerator-venv/
 venv/
@@ -99,6 +109,7 @@ check BLUEPRINT .md
 
 # Private Codex transformation instructions, upstream reference pack, and
 # local AI/audit working notes. Keep these on the developer machine only.
+/OpenAgent_CodeQ_Production_Blueprint/
 /CODEX_AIONUI_TRANSFORMATION/
 /COPY_TO_EXISTING_PROJECT_README.txt
 /docs/AIONUI_TRANSFORMATION_PROGRESS.md
@@ -106,3 +117,25 @@ check BLUEPRINT .md
 /docs/FRONTEND_NPM_LICENSE_INVENTORY.md
 /docs/FRONTEND_QA_RESULTS.md
 /docs/ui-redesign/IMPLEMENTATION_LOG.md
+/docs/design/production-redesign/
+
+# Local review bundles and generated audit evidence. The source HTML and
+# application assets remain trackable; only disposable review material is ignored.
+/frontend-second/audit/
+/frontend-second/.qa/
+/frontend-second/visual-evidence/
+/frontend-second/visual-comparisons/
+/docs/FRONTEND_DESIGN_AUDIT.md
+**/audit/
+**/audits/
+**/screenshots/
+**/screenshot-evidence/
+**/visual-comparisons/
+*.instructions*
+*.instruction*
+*.codex-prompt*
+
+# Generated frontend bundles and demo-only fixtures must not be posted as source.
+/web/assets/
+/web/demo/
+/web/styles2.css

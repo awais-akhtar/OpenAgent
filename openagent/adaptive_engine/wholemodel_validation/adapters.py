@@ -340,27 +340,25 @@ class NativeSession:
             raise RuntimeError('unavailable native observation session')
         if len(self._snapshots)>=2:
             raise MemoryError('comparison snapshot inventory exhausted')
-        capture=getattr(self.executor,'snapshot',None)
-        if not callable(capture) or not callable(getattr(self.executor,'restore',None)):
-            raise ValueError('complete candidate snapshot/restore protocol required')
+        capture, _, restore_name = _native_state_protocol(self.executor)
         rng=copy.deepcopy(self.rng.states)
         receipt=capture()
         handle=object()
-        self._snapshots[handle]=(receipt,self.position,rng)
+        self._snapshots[handle]=(receipt,self.position,rng,restore_name)
         return handle
 
     def restore(self, handle):
         if self.closed or handle not in self._snapshots:
             raise ValueError('owned comparison snapshot required')
-        receipt,position,rng=self._snapshots[handle]
+        receipt,position,rng,restore_name=self._snapshots[handle]
         restored_rng=copy.deepcopy(rng)
-        self.executor.restore(receipt)
+        getattr(self.executor,restore_name)(receipt)
         self.position,self.rng.states,self.failed=position,restored_rng,False
 
     def release_snapshot(self, handle):
         if self.closed or handle not in self._snapshots:
             raise ValueError('owned comparison snapshot required')
-        receipt,_,_=self._snapshots[handle]
+        receipt,_,_,_=self._snapshots[handle]
         release=getattr(self.executor,'release_snapshot',None)
         if callable(release):release(receipt)
         del self._snapshots[handle]
@@ -379,7 +377,8 @@ class NativeSession:
                 logits = detached(output)
                 if logits.shape != (len(tokens), a._metadata['vocabulary_size']):
                     raise ValueError('native executor must return logits for every appended token')
-                snapshot = a.cache_getter(executor) if a.cache_getter else executor.snapshot()
+                snapshot = (a.cache_getter(executor) if a.cache_getter else
+                            _native_state_protocol(executor)[0]())
                 end = self.position + len(tokens)
                 context = CacheContext(snapshot, executor, output, end, len(tokens))
                 leaves = export_cache(a.reader, context,
@@ -413,6 +412,17 @@ class NativeSession:
             else:
                 self.closed = True
                 self.executor = None
+
+
+def _native_state_protocol(executor):
+    """Resolve one matched native snapshot/restore API without guessing state."""
+    for capture_name, restore_name in (('snapshot', 'restore'),
+                                       ('snapshot_state', 'restore_state')):
+        capture = getattr(executor, capture_name, None)
+        restore = getattr(executor, restore_name, None)
+        if callable(capture) and callable(restore):
+            return capture, restore, restore_name
+    raise ValueError('complete candidate snapshot/restore protocol required')
 
 
 def create_torch_adapter(*, offline_root, options):

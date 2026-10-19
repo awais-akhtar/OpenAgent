@@ -63,7 +63,17 @@ def convert_experts(experts, output, *, hidden_size, intermediate_size, block_co
             os.fsync(stream.fileno())
         result = Q4_0ConversionResult(target, hidden_size, intermediate_size, regions)
         os.link(temporary, target)
-        return result
-    finally:
+    except BaseException as primary:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as cleanup:
+                primary.add_note("Q4_0 conversion temporary cleanup pending: " + repr(cleanup))
+        raise
+    else:
+        # Do not let a cleanup exception in a finally block replace the
+        # conversion/publication exception above. On the success path there is
+        # no primary failure to preserve, so surface an unlink failure.
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+        return result

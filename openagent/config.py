@@ -49,6 +49,8 @@ class StartupSettings:
     json_body_limit_bytes: int
     upload_limit_bytes: int
     trusted_origins: tuple[str, ...]
+    trusted_hosts: tuple[str, ...]
+    https_terminated: bool
 
     @property
     def loopback_only(self) -> bool:
@@ -63,6 +65,26 @@ class StartupSettings:
             raise StartupConfigurationError(
                 "OPENAGENT_UPLOAD_LIMIT_BYTES cannot be smaller than OPENAGENT_JSON_BODY_LIMIT_BYTES"
             )
+        if self.deployment_mode == "personal_remote":
+            if not self.auth_enforced:
+                raise StartupConfigurationError(
+                    "personal_remote requires OPENAGENT_AUTH_ENFORCED=1; refusing an unauthenticated fallback."
+                )
+            if self.unsafe_network_override:
+                raise StartupConfigurationError(
+                    "OPENAGENT_UNSAFE_ALLOW_UNAUTHENTICATED_NETWORK is not supported in personal_remote."
+                )
+            if not self.loopback_only:
+                raise StartupConfigurationError(
+                    "personal_remote binds only to loopback. Put a private HTTPS reverse proxy or VPN in front; "
+                    "do not expose the Python listener directly."
+                )
+            if not self.https_terminated or not self.trusted_hosts:
+                raise StartupConfigurationError(
+                    "personal_remote requires OPENAGENT_PERSONAL_REMOTE_HTTPS_TERMINATED=1 and a non-empty "
+                    "OPENAGENT_PERSONAL_REMOTE_HOSTS allowlist for the private HTTPS proxy."
+                )
+            return
         if self.loopback_only:
             return
         if self.deployment_mode in {"team", "enterprise"} and self.auth_enforced:
@@ -93,6 +115,12 @@ def startup_settings(host: str, port: int) -> StartupSettings:
             for origin in os.environ.get("OPENAGENT_TRUSTED_ORIGINS", "").split(",")
             if origin.strip()
         ),
+        trusted_hosts=tuple(
+            host.strip().lower().rstrip(".")
+            for host in os.environ.get("OPENAGENT_PERSONAL_REMOTE_HOSTS", "").split(",")
+            if host.strip()
+        ),
+        https_terminated=_env_bool("OPENAGENT_PERSONAL_REMOTE_HTTPS_TERMINATED"),
     )
     settings.validate()
     return settings
@@ -124,6 +152,9 @@ def project_root() -> Path:
 
 def web_root() -> Path:
     candidates = [
+        # frontend-second is the approved production desktop frontend.  Prefer
+        # its isolated Vite build when running from the source repository.
+        project_root() / "frontend-second" / "dist",
         project_root() / "web",
         Path(__file__).resolve().parent / "web",
         Path(sys.prefix) / "web",
@@ -144,6 +175,12 @@ def auth_enforcement_enabled() -> bool:
     that applies once this is turned on.
     """
     explicit = os.environ.get("OPENAGENT_AUTH_ENFORCED", "").strip()
+    if deployment_mode() == "personal_remote":
+        if explicit and not _env_bool("OPENAGENT_AUTH_ENFORCED"):
+            raise StartupConfigurationError(
+                "OPENAGENT_AUTH_ENFORCED=0 is incompatible with personal_remote."
+            )
+        return True
     if explicit:
         return _env_bool("OPENAGENT_AUTH_ENFORCED")
     return deployment_mode() in {"team", "enterprise"}
@@ -152,12 +189,15 @@ def auth_enforcement_enabled() -> bool:
 def deployment_mode() -> str:
     """Return the local deployment mode.
 
-    single_user keeps the first-run local app frictionless. team and
-    enterprise make protected-route auth default-on unless explicitly disabled
-    with OPENAGENT_AUTH_ENFORCED=0 for a controlled local maintenance window.
+    single_user keeps the loopback desktop app frictionless. personal_remote
+    is a one-owner profile that always enforces auth and requires an explicitly
+    configured private HTTPS proxy. team/enterprise remain legacy profiles;
+    they are not the supported personal remote deployment path.
     """
 
     mode = os.environ.get("OPENAGENT_DEPLOYMENT_MODE", "single_user").strip().lower().replace("-", "_")
-    if mode in {"team", "enterprise"}:
+    if mode in {"single_user", "personal_remote", "team", "enterprise"}:
         return mode
-    return "single_user"
+    raise StartupConfigurationError(
+        "OPENAGENT_DEPLOYMENT_MODE must be single_user, personal_remote, team, or enterprise."
+    )

@@ -14,6 +14,8 @@ import numpy as np
 from .native_mixtral_decoder import configuration,GLOBAL_NAMES,LAYER_NAMES
 from .device_execution_policy import admit_no_fallback,admit_fp32
 
+_SOURCE_ADMISSION = object()
+
 
 @dataclass(frozen=True)
 class TorchMixtralSnapshot:
@@ -38,9 +40,23 @@ class TorchMixtralDecoder:
                        max_attention_bytes=64*1024**2,max_head_bytes=64*1024**2):
         from .native_checkpoint import read_native_text_checkpoint,_finish_decoder
         from .mixtral_inventory import admit_mixtral_inventory
+        if expert_provider is not None:
+            raise ValueError('Mixtral external experts are disabled until packed/source tensor content identity is bound')
         layouts = []
         def select(config,inventory):
             c,_,layout,_ = admit_mixtral_inventory(config,inventory)
+            if expert_provider is not None:
+                from .torch_mixtral_experts import TorchMixtralExperts
+                from .native_mixtral_decoder import mixtral_metadata_fingerprint
+                if (type(expert_provider) is not TorchMixtralExperts
+                        or expert_provider.manifest.architecture!='mixtral'
+                        or expert_provider.manifest.fingerprint!=mixtral_metadata_fingerprint(config)
+                        or len(expert_provider.layers)!=c['num_hidden_layers']
+                        or (expert_provider.hidden_size,expert_provider.intermediate_size,
+                            expert_provider.expert_count,expert_provider.selected_experts)!=
+                           (c['hidden_size'],c['intermediate_size'],c['num_local_experts'],
+                            c['num_experts_per_tok'])):
+                    raise ValueError('Mixtral expert manifest/config identity must be admitted before checkpoint payload reads')
             layouts.append(layout)
             names = tuple(sorted(inventory))
             if expert_provider is not None:
@@ -53,7 +69,8 @@ class TorchMixtralDecoder:
                 raise MemoryError('Mixtral device checkpoint conversion exceeds admission')
             return names
         config,weights = read_native_text_checkpoint(directory,model_type='mixtral',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='device')
         if layouts==['split']:
             c,_ = configuration(config,None)
             converted = {name:weights[name] for name in GLOBAL_NAMES if name in weights}
@@ -76,10 +93,14 @@ class TorchMixtralDecoder:
             weights = converted
         return _finish_decoder(cls(config,weights,device=device,max_bytes=max_bytes,
                                     max_snapshots=max_snapshots,expert_provider=expert_provider,
-                                    max_attention_bytes=max_attention_bytes,max_head_bytes=max_head_bytes),cancel)
+                                    max_attention_bytes=max_attention_bytes,max_head_bytes=max_head_bytes,
+                                    _source_admission=_SOURCE_ADMISSION),cancel)
 
     def __init__(self,config,tensors,*,device,max_bytes,max_snapshots=4,expert_provider=None,
-                 max_attention_bytes=64*1024**2,max_head_bytes=64*1024**2):
+                 max_attention_bytes=64*1024**2,max_head_bytes=64*1024**2,
+                 _source_admission=None):
+        if _source_admission is not _SOURCE_ADMISSION:
+            raise ValueError('Mixtral device decoding requires metadata-admitted from_directory input')
         admit_no_fallback(device)
         self.config,self.capacity = configuration(config,None)
         if type(max_bytes) is not int or max_bytes<=0 or type(max_snapshots) is not int or not 1<=max_snapshots<=64:
@@ -99,6 +120,8 @@ class TorchMixtralDecoder:
         self._owner,self._snapshots,self._snapshot_bytes = uuid4().hex,{},0
         self.expert_provider = expert_provider
         self._expert_bytes,self._expert_identity = 0,None
+        if expert_provider is not None:
+            raise ValueError('Mixtral external experts require a verified source-content identity')
         c = self.config
         h,m,e,d = (c[key] for key in ('hidden_size','intermediate_size','num_local_experts','head_dim'))
         q,k = c['num_attention_heads']*d,c['num_key_value_heads']*d

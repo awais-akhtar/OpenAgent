@@ -27,6 +27,16 @@ class IndependentQwen35TextDecoder:
         raw = dict(config)
         if raw.get('model_type') != 'qwen3_5_moe_text':
             raise ValueError('expected exact qwen3_5_moe_text; multimodal wrappers unsupported')
+        if raw.get('architectures') not in (None, ['Qwen3_5MoeForCausalLM'],
+                                             ('Qwen3_5MoeForCausalLM',)):
+            raise ValueError('unsupported Qwen3.5 text architecture declaration')
+        # This switch changes the admitted tensor inventory: a tied checkpoint
+        # may omit lm_head.weight and the decoder then aliases the embedding.
+        # Do not let truthy strings/integers silently select that alternate
+        # inventory in either header planning or execution.
+        if type(raw.get('tie_word_embeddings', False)) is not bool:
+            raise ValueError('Qwen3.5 tie_word_embeddings must be an explicit boolean')
+        raw.setdefault('tie_word_embeddings', False)
         for key in ('hidden_size', 'vocab_size', 'num_hidden_layers', 'num_attention_heads',
                     'num_key_value_heads', 'head_dim', 'linear_conv_kernel_dim',
                     'linear_key_head_dim', 'linear_value_head_dim', 'linear_num_key_heads',

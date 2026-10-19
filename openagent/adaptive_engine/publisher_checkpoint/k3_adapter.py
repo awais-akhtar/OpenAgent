@@ -1,5 +1,5 @@
 """Explicit handoff to K3Execution's existing publisher-name text schema."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import ExitStack, closing
 import math
 from types import MappingProxyType
@@ -8,6 +8,9 @@ import numpy as np
 
 from .contracts import K3_REVISION, UnsupportedContract, UnsupportedPublisherContract
 from .storage import positive
+
+
+_K3_PAYLOAD_ADMISSION = object()
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,9 @@ class K3ExecutionPayload:
     execution_gaps: tuple
     expert_provider: object = None
     sharded_projections: tuple = ()
+    _source_admission: object = field(default=None, repr=False, compare=False)
+    _source_root: str | None = field(default=None, repr=False, compare=False)
+    _source_files: tuple = field(default=(), repr=False, compare=False)
 
     @property
     def family(self):
@@ -276,6 +282,18 @@ def load_k3(checkpoint, *, capacity, max_weight_bytes, expert_format="fp32",
             gaps += (UnsupportedContract("execution_scope", "vision_config", "vision mapping exists but this preparation explicitly selects text-only execution"),)
         payload = K3ExecutionPayload(config, MappingProxyType(arrays), checkpoint.config,
                                      checkpoint.report.config_sha256, all_rules,
-                                     checkpoint.report.unsupported, gaps, provider, sharded_projections)
+                                     checkpoint.report.unsupported, gaps, provider,
+                                     sharded_projections, _K3_PAYLOAD_ADMISSION,
+                                     str(checkpoint._metadata.root),
+                                     tuple(sorted(checkpoint._metadata.files.items())))
         owned.pop_all()
         return payload
+
+
+def require_k3_payload_admission(payload):
+    """Reject caller-assembled K3 payloads lacking the checkpoint adapter seal."""
+    if (type(payload) is not K3ExecutionPayload
+            or payload._source_admission is not _K3_PAYLOAD_ADMISSION):
+        raise ValueError(
+            'K3 execution requires a payload created by the admitted publisher checkpoint adapter')
+    return payload

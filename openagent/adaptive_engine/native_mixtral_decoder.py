@@ -178,7 +178,17 @@ class NativeMixtralDecoder:
         materialized by this load path.
         """
         from .native_checkpoint import read_native_text_checkpoint, _finish_decoder
+        if expert_provider is not None:
+            raise ValueError('Mixtral packed experts are disabled until source-content identity is bound')
         def selection(config, inventory):
+            # Keep the streamed resident route behind the same family planner
+            # used by conversion and other Mixtral inventory consumers. The
+            # local selection below determines which already-admitted tensors
+            # are materialized; it must not become a second, weaker admission
+            # contract as optional metadata rules evolve.
+            from .mixtral_inventory import admit_mixtral_inventory
+            _, _, admitted_layout, _ = admit_mixtral_inventory(
+                config, inventory, context_tokens=max_context)
             settings, _ = configuration(config, max_context)
             h, m, e, d = (settings[key] for key in
                          ('hidden_size', 'intermediate_size', 'num_local_experts', 'head_dim'))
@@ -206,23 +216,29 @@ class NativeMixtralDecoder:
                         split[prefix+f'block_sparse_moe.experts.{expert}.{name}.weight'] = shape
             if set(inventory) == set(fused):
                 expected, selected = fused, keep_fused
+                layout = 'fused'
             elif set(inventory) == set(split):
                 expected, selected = split, keep_split
+                layout = 'split'
             else:
                 raise ValueError('streamed loading requires one complete exact Mixtral inventory')
+            if layout != admitted_layout:
+                raise ValueError('Mixtral streamed selection disagrees with family inventory planner')
             for name, shape in expected.items():
                 if tuple(inventory[name]['shape']) != shape or inventory[name].get('dtype') not in ('F32','F16','BF16'):
                     raise ValueError('Mixtral checkpoint tensor shape or dtype mismatch: '+name)
             return tuple(sorted(selected))
         config, weights = read_native_text_checkpoint(directory, model_type='mixtral',
             max_weight_bytes=max_weight_bytes, read_limits=read_limits, cancel=cancel,
-            tensor_selection=selection)
+            tensor_selection=selection,source_backend='native')
         model = cls(config, weights, library=library, expert_provider=expert_provider,
                     max_bytes=max_bytes, max_context=max_context, max_snapshots=max_snapshots)
         return _finish_decoder(model, cancel)
 
     def __init__(self, config, tensors, *, library, max_bytes=512*1024*1024, max_context=None,
                  max_snapshots=4, expert_provider=None):
+        if expert_provider is not None:
+            raise ValueError('Mixtral packed experts require verified checkpoint source-content identity')
         if type(max_bytes) is not int or max_bytes <= 0:
             raise ValueError('max_bytes must be a positive integer')
         self.config, self.max_context = configuration(config, max_context)

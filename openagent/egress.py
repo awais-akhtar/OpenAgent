@@ -324,27 +324,74 @@ class EgressClient:
                 decoder = codecs.getincrementaldecoder("utf-8")("replace")
                 pending = ""
                 total = 0
-                while True:
-                    if cancelled is not None and cancelled():
-                        raise InterruptedError("outbound streaming request cancelled")
-                    chunk = raw.readline(64 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise EgressError("Outbound response exceeded the configured byte limit.")
-                    chunks.append(chunk)
-                    pending += decoder.decode(chunk)
-                    while "\n" in pending:
-                        if cancelled is not None and cancelled():
+                watcher_stop = threading.Event()
+                watcher_cancelled = threading.Event()
+
+                def close_response_on_cancel() -> None:
+                    # The reader may be blocked in readline() while the caller
+                    # closes its stream. Poll the caller-owned cancellation
+                    # predicate off-thread so cancellation also interrupts that
+                    # socket read instead of waiting for the network timeout.
+                    while not watcher_stop.wait(0.05):
+                        try:
+                            should_cancel = bool(cancelled and cancelled())
+                        except BaseException:
+                            # A broken cancellation owner cannot safely keep an
+                            # outbound request alive; fail closed.
+                            should_cancel = True
+                        if should_cancel:
+                            watcher_cancelled.set()
+                            try:
+                                connection.close()
+                            except BaseException:
+                                pass
+                            return
+
+                watcher: threading.Thread | None = None
+                if cancelled is not None:
+                    watcher = threading.Thread(
+                        target=close_response_on_cancel,
+                        name="openagent-egress-cancel",
+                        daemon=True,
+                    )
+                    watcher.start()
+                try:
+                    while True:
+                        if watcher_cancelled.is_set() or (cancelled is not None and cancelled()):
                             raise InterruptedError("outbound streaming request cancelled")
-                        line, pending = pending.split("\n", 1)
-                        on_line(line.rstrip("\r"))
-                pending += decoder.decode(b"", final=True)
-                if pending:
-                    on_line(pending.rstrip("\r"))
-                payload = b"".join(chunks)
+                        chunk = raw.readline(64 * 1024)
+                        if not chunk:
+                            if watcher_cancelled.is_set() or (cancelled is not None and cancelled()):
+                                raise InterruptedError("outbound streaming request cancelled")
+                            break
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise EgressError("Outbound response exceeded the configured byte limit.")
+                        chunks.append(chunk)
+                        pending += decoder.decode(chunk)
+                        while "\n" in pending:
+                            if watcher_cancelled.is_set() or (cancelled is not None and cancelled()):
+                                raise InterruptedError("outbound streaming request cancelled")
+                            line, pending = pending.split("\n", 1)
+                            on_line(line.rstrip("\r"))
+                    if watcher_cancelled.is_set() or (cancelled is not None and cancelled()):
+                        raise InterruptedError("outbound streaming request cancelled")
+                    pending += decoder.decode(b"", final=True)
+                    if pending:
+                        on_line(pending.rstrip("\r"))
+                    payload = b"".join(chunks)
+                except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+                    if watcher_cancelled.is_set() or (cancelled is not None and cancelled()):
+                        raise InterruptedError("outbound streaming request cancelled") from exc
+                    raise
+                finally:
+                    watcher_stop.set()
             return EgressResponse(decision.url, int(raw.status), header_map, payload)
+        except InterruptedError:
+            # Cancellation is part of the caller-visible stream contract, not
+            # a transport failure.  Preserve it before the broader OSError
+            # handler (InterruptedError subclasses OSError).
+            raise
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
             raise EgressError("Outbound request failed at the approved network boundary.") from exc
         finally:

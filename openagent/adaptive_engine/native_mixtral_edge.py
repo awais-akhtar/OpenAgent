@@ -26,7 +26,8 @@ class NativeMixtralEdge:
                 raise MemoryError('Mixtral edge source conversion and ownership exceed admission')
             return tuple(sorted(globals_))
         config,weights = read_native_text_checkpoint(directory,model_type='mixtral',
-            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,tensor_selection=select)
+            max_weight_bytes=max_weight_bytes,read_limits=read_limits,cancel=cancel,
+            tensor_selection=select,source_backend='public-range')
         model = cls(config,weights,library=library,max_bytes=max_bytes,tokenizer=tokenizer)
         return _finish_decoder(model,cancel)
 
