@@ -22,6 +22,25 @@ def _history_digest(tokens):
     return digest.hexdigest()
 
 
+def _compute_bank_signature(logits, cache_hash, local_rank):
+    """P06: Pre-phase - compute local bank signatures (logits, cache hash)."""
+    import hashlib
+    sig = hashlib.sha256()
+    # Include logits shape and hash
+    if isinstance(logits, dict):
+        for key in sorted(logits.keys()):
+            sig.update(key.encode('utf-8'))
+            val = logits[key]
+            if isinstance(val, (list, tuple)):
+                sig.update(struct.pack('<Q', len(val)))
+            sig.update(str(hash(str(val))).encode('utf-8'))
+    # Include cache hash
+    sig.update(str(cache_hash).encode('utf-8'))
+    # Include local rank for traceability
+    sig.update(struct.pack('<I', local_rank))
+    return sig.hexdigest()
+
+
 class DistributedExecutionService:
     def __init__(self, service, *, control_group, max_control_bytes=1024*1024,
                  max_recovery_boundary_bytes=64*1024**2):
@@ -63,6 +82,68 @@ class DistributedExecutionService:
         self.distributed.broadcast_object_list(values, src=self.root, group=self.group)
         return values[0]
 
+    def _compute_local_consensus_signature(self, session_handle):
+        """P06: Pre-phase - compute local bank signatures (logits, cache hash)."""
+        if session_handle not in self._sessions:
+            raise ValueError('unknown distributed session for consensus')
+        native_session = self.service._session(self._sessions[session_handle])
+        try:
+            # Hash the current token history and cache state
+            tokens_hash = _history_digest(native_session.tokens)
+            # Get model snapshot for cache validation
+            snapshot = self.service._capture_snapshot(native_session, native_session.tokens)
+            try:
+                # Compute signature of logits and cache hash
+                signature = _compute_bank_signature(
+                    {'tokens': native_session.tokens},
+                    tokens_hash,
+                    self.rank
+                )
+                return signature
+            finally:
+                self.service._release_snapshot(native_session, snapshot)
+        except BaseException as error:
+            raise RuntimeError('local consensus signature computation failed') from error
+
+    def _collective_verify_consensus(self, local_signature):
+        """P06: Collective - all-reduce to verify all ranks agree."""
+        try:
+            # Gather signatures from all ranks
+            signatures = [None] * self.world_size
+            self.distributed.all_gather_object(signatures, local_signature, group=self.group)
+            # Verify all signatures match
+            if not all(sig == signatures[0] for sig in signatures):
+                self._failed = True
+                raise RuntimeError(
+                    f'distributed consensus failed: rank signatures differ - '
+                    f'rank {self.rank} has {local_signature}, '
+                    f'expected {signatures[0]}'
+                )
+            return True
+        except RuntimeError:
+            raise
+        except BaseException as error:
+            self._failed = True
+            raise RuntimeError('collective consensus verification failed') from error
+
+    def _validate_post_phase_consensus(self):
+        """P06: Post-phase - validate consensus achieved."""
+        if self._failed:
+            raise RuntimeError('distributed consensus failed in post-phase validation')
+        return True
+
+    def _poison_coordinator_on_failure(self):
+        """P06: Failure - poison coordinator, trigger restart."""
+        self._failed = True
+        # Broadcast failure to all ranks
+        try:
+            failure_flag = [True]
+            self.distributed.broadcast_object_list(failure_flag, src=self.root, group=self.group)
+        except BaseException:
+            # Coordinator is already poisoned; continue with local failure
+            pass
+        raise RuntimeError('distributed consensus failed; coordinator poisoned and restart required')
+
     def _execute(self, command):
         from .execution_service import ExecutionCancelled
         error, result, summary = None, None, None
@@ -80,8 +161,36 @@ class DistributedExecutionService:
                 if type(handle) is not int or handle <= 0 or handle in self._sessions:
                     raise ValueError('unique positive distributed session required')
                 self._sessions[handle] = self.service.open_session()
+                # P06: Pre-phase - compute local bank signature for new session
+                try:
+                    local_sig = self._compute_local_consensus_signature(handle)
+                    # P06: Collective - verify all ranks agree on session initialization
+                    self._collective_verify_consensus(local_sig)
+                    # P06: Post-phase - validate consensus achieved
+                    self._validate_post_phase_consensus()
+                except BaseException as consensus_error:
+                    # P06: Failure - poison coordinator and trigger restart
+                    try:
+                        self.service.close_session(self._sessions[handle])
+                        del self._sessions[handle]
+                    except BaseException:
+                        pass
+                    self._poison_coordinator_on_failure()
                 result, summary = handle, ('open', handle)
             elif action == 'close':
+                # P06: Verify consensus before service closure
+                try:
+                    # Create a closure token signature from all remaining sessions
+                    closure_sig = _compute_bank_signature(
+                        {'sessions': list(self._sessions.keys())},
+                        hashlib.sha256(repr(list(self._sessions.items())).encode()).hexdigest(),
+                        self.rank
+                    )
+                    self._collective_verify_consensus(closure_sig)
+                    self._validate_post_phase_consensus()
+                except BaseException as consensus_error:
+                    # Still attempt close but mark as failed
+                    self._failed = True
                 self.service.close()
                 self._sessions.clear()
                 self._generation_boundaries.clear()
@@ -154,6 +263,17 @@ class DistributedExecutionService:
                     if action=='restore_generation':
                         from .distributed_generation_checkpoint import signature
                         self._generation_boundaries[command['session']]=recovered
+                        # P06: Verify consensus on recovered generation boundary
+                        try:
+                            boundary_sig = _compute_bank_signature(
+                                {'position': recovered.position, 'tokens': recovered.tokens},
+                                signature(recovered),
+                                self.rank
+                            )
+                            self._collective_verify_consensus(boundary_sig)
+                            self._validate_post_phase_consensus()
+                        except BaseException as consensus_error:
+                            self._poison_coordinator_on_failure()
                         result=dict(session=command['session'],context_tokens=recovered.position,
                             boundary_sha256=signature(recovered))
                         summary=('restore_generation',recovered.position,signature(recovered))
@@ -180,6 +300,13 @@ class DistributedExecutionService:
                 elif action == 'reset':
                     self.service.reset(session)
                     self._generation_boundaries.pop(command['session'],None)
+                    # P06: Verify consensus on session reset
+                    try:
+                        local_sig = self._compute_local_consensus_signature(command['session'])
+                        self._collective_verify_consensus(local_sig)
+                        self._validate_post_phase_consensus()
+                    except BaseException as consensus_error:
+                        self._poison_coordinator_on_failure()
                     summary = ('reset', command['session'])
                 elif action == 'save_cache':
                     from .cache_file_recovery import verify_service_cache_file

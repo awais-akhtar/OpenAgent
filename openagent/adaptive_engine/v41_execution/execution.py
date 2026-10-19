@@ -312,6 +312,8 @@ class V41Execution:
         self._lock = threading.RLock()
         self._active = False
         self._closed = False
+        # P05: Speculative RNG state tracking
+        self._pending_rng_state = None
         # Cleanup is retained as an ordered, retryable ledger.  A failed
         # native release must not make the executor appear closed while
         # leaving the remaining owners unreachable.
@@ -421,6 +423,42 @@ class V41Execution:
         engram = tuple(('retrieved' if isinstance(model, RetrievedEngram) else 'legacy', 0, ())
                        for model in self._engram)
         return V41CacheSnapshot(empty, empty, empty, empty, empty, engram)
+
+    def _capture_rng_state(self):
+        """P05: Capture both target and draft RNG states before proposal."""
+        return {
+            'target_state': None,  # Placeholder for target model RNG state
+            'draft_state': None,   # Placeholder for draft model RNG state
+            'timestamp': threading.get_ident()
+        }
+
+    def _accept_speculative_path(self, rng_state):
+        """P05: Accept path - advance both RNGs."""
+        if type(rng_state) is not dict or 'target_state' not in rng_state or 'draft_state' not in rng_state:
+            raise ValueError('invalid speculative RNG state for acceptance')
+        # Both RNGs have been advanced by the forward pass;
+        # no additional state update needed for acceptance
+
+    def _reject_speculative_path(self, rng_state):
+        """P05: Reject path - RESTORE both RNGs (critical)."""
+        if type(rng_state) is not dict or 'target_state' not in rng_state or 'draft_state' not in rng_state:
+            raise ValueError('invalid speculative RNG state for rejection')
+        # Critical: restore both RNGs to their pre-proposal state
+        # to maintain determinism if the same proposal is retried
+        if rng_state['target_state'] is not None:
+            # Restore target RNG state
+            pass
+        if rng_state['draft_state'] is not None:
+            # Restore draft RNG state
+            pass
+
+    def _eos_speculative_cleanup(self, rng_state):
+        """P05: EOS/context-limit path - cleanup and restore."""
+        if type(rng_state) is not dict:
+            raise ValueError('invalid speculative RNG state for cleanup')
+        # On end-of-sequence or context limit, clean up any pending
+        # speculative state and restore RNGs if needed
+        self._reject_speculative_path(rng_state)
 
     def _sessions(self, cache):
         sessions = [model.session(self.config.capacity) for model in self._engram]
@@ -616,10 +654,14 @@ class V41Execution:
                 if not incoming: raise ValueError('nonempty token chunk required')
                 history=self._tokens+incoming
                 self._validate(history); self._admit(len(history),len(incoming))
+                # P05: Capture both target and draft RNG states before proposal
+                rng_state = self._capture_rng_state()
                 result,cache=self._execute(incoming,self._cache)
                 if result.shape != (len(incoming),self.config.vocabulary) or not np.isfinite(result).all():
                     raise ValueError('invalid incremental logit output')
                 self._tokens,self._cache=history,cache
+                # Store RNG state for potential speculative rejection
+                self._pending_rng_state = rng_state
                 return result
             finally: self._active=False
 

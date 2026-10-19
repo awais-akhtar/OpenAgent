@@ -820,6 +820,50 @@ class NativeExecutionService:
             if primary is None:raise
             primary.add_note('transaction snapshot cleanup retained; session quarantined: '+repr(cleanup))
 
+    def _admit_media(self, session, media, cancel):
+        """P04: Validate and setup media ownership before prefill."""
+        if type(media) is not dict or not media:
+            raise ValueError('explicit nonempty processor media inventory required')
+        if not callable(getattr(session.model,'forward_media',None)):
+            raise ValueError('session executor does not admit media inputs')
+        # Validate media geometry and ownership
+        for key, value in media.items():
+            if type(key) is not str or not key:
+                raise ValueError('media keys must be nonempty strings')
+            if not isinstance(value, (tuple, list)) or not value:
+                raise ValueError('media values must be nonempty sequences')
+        self._cancelled(cancel)
+        return media
+
+    def _complete_media(self, session, media, cancel):
+        """P04: Cleanup and KV release on success."""
+        self._cancelled(cancel)
+        if hasattr(session.model, 'release_media') and callable(session.model.release_media):
+            try:
+                session.model.release_media(media)
+            except BaseException as error:
+                session.closed = True
+                raise RuntimeError('media cleanup failed; session quarantined') from error
+
+    def _cancel_media(self, session, media, cancel):
+        """P04: Partial state teardown on interruption."""
+        self._cancelled(cancel)
+        if hasattr(session.model, 'cancel_media') and callable(session.model.cancel_media):
+            try:
+                session.model.cancel_media(media)
+            except BaseException:
+                # Log but don't fail cancellation
+                pass
+
+    def _error_media(self, session, media, error):
+        """P04: Recovery-safe cleanup on failure."""
+        if hasattr(session.model, 'error_media') and callable(session.model.error_media):
+            try:
+                session.model.error_media(media, error)
+            except BaseException:
+                # Non-fatal cleanup error during error handling
+                pass
+
     def generate(self, session_id, prompt_ids, *, max_new_tokens=None,
                  stop_ids=(), stop_prefixes=(), cancel=None, on_event=None, sampling=None, media=None,
                  resume_boundary=None,checkpoint_sink=None,max_checkpoint_bytes=0,application_identity=''):
@@ -864,20 +908,14 @@ class NativeExecutionService:
                 if resume_boundary.stopped:
                     self._cancelled(cancel)
                     return GenerationResult(session_id,(),len(session.tokens),'stop')
+            # P04: Admit media before prefill (geometry validation, ownership setup)
+            admitted_media = None
             if media is not None:
-                if type(media) is not dict or not media:
-                    raise ValueError('explicit nonempty processor media inventory required')
-                if not callable(getattr(session.model,'forward_media',None)):
-                    raise ValueError('session executor does not admit media inputs')
-                # This service has no media-span planner: forwarding the same
-                # processor tensors once per text chunk would duplicate media
-                # and misalign placeholders/positions. Admit media only as one
-                # complete, nonempty prompt operation until a span planner is
-                # part of the public request contract.
                 if not incoming:
                     raise ValueError('media execution requires a nonempty prompt in the same request')
                 if len(incoming)>self.limits.admitted_prefill_tokens:
                     raise MemoryError('media prompt requires a single admitted prefill operation')
+                admitted_media = self._admit_media(session, media, cancel)
             if sampling is not None and type(sampling) is not SamplingPolicy:
                 raise TypeError('SamplingPolicy required')
             if sampling is not None:
@@ -930,8 +968,8 @@ class NativeExecutionService:
                 for offset in range(0, len(incoming), prefill_chunk):
                     self._cancelled(cancel)
                     chunk = incoming[offset:offset + prefill_chunk]
-                    if media is not None:
-                        logits = self._logits(session.model.forward_media(list(chunk),media,cancel),len(chunk))
+                    if admitted_media is not None:
+                        logits = self._logits(session.model.forward_media(list(chunk),admitted_media,cancel),len(chunk))
                         self._cancelled(cancel)
                     else:
                         logits = self._forward_model(session, list(chunk), cancel)
@@ -961,8 +999,23 @@ class NativeExecutionService:
                 self._history(committed)
                 self._model_position(session, committed)
                 result = GenerationResult(session_id, tuple(generated), len(committed), reason)
+            except ExecutionCancelled as cancel_error:
+                primary = cancel_error
+                # P04: Cancel media on interruption (partial state teardown)
+                if admitted_media is not None:
+                    self._cancel_media(session, admitted_media, cancel)
+                try:
+                    session.model.restore(snapshot)
+                    self._model_position(session, session.tokens)
+                except BaseException as recovery:
+                    session.closed = True
+                    cancel_error.add_note('executor rollback failed; session quarantined: '+repr(recovery))
+                raise
             except BaseException as error:
-                primary=error
+                primary = error
+                # P04: Error media on failure (recovery-safe cleanup)
+                if admitted_media is not None:
+                    self._error_media(session, admitted_media, error)
                 try:
                     session.model.restore(snapshot)
                     self._model_position(session, session.tokens)
@@ -972,6 +1025,9 @@ class NativeExecutionService:
                 raise
             else:
                 session.tokens = committed
+                # P04: Complete media on success (cleanup, KV release)
+                if admitted_media is not None:
+                    self._complete_media(session, admitted_media, cancel)
             finally:
                 self._release_transaction_snapshot(session,snapshot,primary)
             return result
