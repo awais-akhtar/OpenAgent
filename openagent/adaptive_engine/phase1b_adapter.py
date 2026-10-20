@@ -44,11 +44,16 @@ class Phase1BOptimizedSession:
             base_session: Original UniversalSession
             model_family: Model family (qwen3.5, glm5, deepseek, etc.)
         """
+        from pathlib import Path
+
         self.base_session = base_session
         self.model_family = model_family
 
-        # Initialize Phase 1B components
-        self.expert_store = TieredExpertStore()
+        # Initialize Phase 1B components with required model_path (FIX P0 blocker)
+        model_path = Path.home() / ".openagent" / model_family
+        model_path.mkdir(parents=True, exist_ok=True)
+
+        self.expert_store = TieredExpertStore(model_path)
         self.prefetcher = LookaheadPrefetcher()
         self.learning_cache = LearningCache()
         self.batch_union = BatchUnionOptimizer()
@@ -143,6 +148,43 @@ class Phase1BOptimizedSession:
                 'metrics': self.metrics.__dict__,
                 'jit_pinning': self.jit_pinner.get_metrics(),
             }
+
+    def close(self) -> None:
+        """
+        Clean up Phase 1B resources (FIX P1 blocker: resource leaks).
+
+        Stops background threads:
+        - JIT pinning thread
+        - Async I/O workers
+        - Prefetch thread
+        """
+        try:
+            # Stop JIT pinning thread
+            if hasattr(self.jit_pinner, 'pin_thread') and self.jit_pinner.pin_thread:
+                self.jit_pinner.stop_workers = True
+                self.jit_pinner.pin_thread.join(timeout=5)
+
+            # Stop async I/O workers
+            if hasattr(self.async_pool, 'stop_workers'):
+                self.async_pool.stop_workers.set()
+                for thread in getattr(self.async_pool, 'worker_threads', []):
+                    thread.join(timeout=5)
+
+            # Stop advanced async workers
+            if hasattr(self.advanced_async, 'stop_workers'):
+                self.advanced_async.stop_workers.set()
+                for thread in getattr(self.advanced_async, 'worker_threads', []):
+                    thread.join(timeout=5)
+
+            # Stop prefetch thread
+            if hasattr(self.prefetcher, 'stop_prefetch'):
+                self.prefetcher.stop_prefetch = True
+                if hasattr(self.prefetcher, 'prefetch_thread') and self.prefetcher.prefetch_thread:
+                    self.prefetcher.prefetch_thread.join(timeout=5)
+
+        except Exception as e:
+            import logging
+            logging.warning(f"Error closing Phase 1B session: {e}")
 
 
 def wrap_universal_session_with_phase1b(base_session, model_family: str = "qwen3.5") -> Phase1BOptimizedSession:
