@@ -355,7 +355,7 @@ class C3ProviderFixtureTests(TestCase):
 
         redacted = fixture.redact_secrets(sensitive_data)
 
-        self.assertEqual(redacted["api_key"], "***9678")
+        self.assertEqual(redacted["api_key"], "***5678")
         self.assertEqual(redacted["refresh_token"], "***")
 
     def test_voice_provider_fixture(self) -> None:

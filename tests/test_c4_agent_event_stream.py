@@ -250,12 +250,6 @@ class C4AgentEventStreamTests(TestCase):
             owner="test_user"
         )
 
-        # Try to access events as a different owner (should fail or return empty)
-        other_user_events = self.runtime.job_events(
-            job_id,
-            owner="other_user",
-            event_type="progress"
-        )
-
-        # Other owner should not see events (empty list or unauthorized)
-        self.assertEqual(len(other_user_events.get("events", [])), 0)
+        # A foreign owner receives no job existence or event information.
+        with self.assertRaises(KeyError):
+            self.runtime.job_events(job_id, owner="other_user", event_type="progress")
