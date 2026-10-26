@@ -189,7 +189,7 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
     },
     vault: {
       Secrets: { status: '/api/vault/status', entries: '/api/vault/entries' },
-      Access: { access_log: '/api/vault/access-log?project=default&limit=100' },
+      Access: { requests: '/api/vault/access-requests?project=default&limit=100', entries: '/api/vault/entries?project=default' },
       Audit: { access_log: '/api/vault/access-log?project=default&limit=100' },
     },
     scraper: {

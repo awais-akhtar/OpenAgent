@@ -108,6 +108,10 @@ class ModelCookbook:
                 """
             )
 
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(model_serve_sessions)")}
+            if "process_created_at" not in columns:
+                connection.execute("ALTER TABLE model_serve_sessions ADD COLUMN process_created_at REAL NOT NULL DEFAULT 0")
+
     def hosts(self, *, project: str = "default") -> list[dict[str, Any]]:
         with self.store.session() as connection:
             rows = connection.execute(
@@ -168,10 +172,25 @@ class ModelCookbook:
         status = "planned"
         pid = 0
         mode = "plan"
+        process_created_at = 0.0
         if allow_process:
+            try:
+                import psutil
+            except ImportError as exc:
+                raise ValueError("Process identity verification requires psutil; no process started.") from exc
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)  # noqa: S603 - command is allow-listed and shell=False
             pid = int(process.pid)
-            status = "running"
+            try:
+                process_created_at = psutil.Process(pid).create_time()
+            except psutil.NoSuchProcess:
+                process.wait(timeout=5)
+                status = "completed" if process.returncode == 0 else "failed"
+            except Exception:
+                process.terminate()
+                process.wait(timeout=5)
+                raise
+            else:
+                status = "running"
             mode = "local-process"
         with self.store.session() as connection:
             connection.execute(
@@ -182,6 +201,7 @@ class ModelCookbook:
                 """,
                 (session_id, project, host_id, model_ref, runner, json.dumps(command), pid, status, mode, now, now),
             )
+            connection.execute("UPDATE model_serve_sessions SET process_created_at=? WHERE id=?", (process_created_at, session_id))
             self._log(connection, session_id, "info", f"Serve session {status}: {' '.join(command)}")
         self.store.add_audit_event(
             AuditEvent(
@@ -232,27 +252,28 @@ class ModelCookbook:
             pid = int(row["pid"]) if row["pid"] else 0
             mode = str(row["mode"] or "").lower()
 
-            # Only attempt to terminate processes we started
-            if pid > 0 and mode == "local-process":
+            # Persisted PIDs alone are unsafe: the OS may have reused the PID.
+            if pid > 0 and mode == "local-process" and row["status"] not in {"stopped", "completed", "failed"}:
                 try:
                     import psutil
+                except ImportError as exc:
+                    raise ValueError("Cannot verify process identity; session was not marked stopped.") from exc
+                try:
+                    process = psutil.Process(pid)
+                    expected = float(row["process_created_at"] or 0)
+                    if not expected or abs(process.create_time() - expected) > 0.001:
+                        raise ValueError("Process identity cannot be verified; no process terminated.")
+                    process.terminate()
                     try:
-                        process = psutil.Process(pid)
-                        if process.is_running():
-                            process.terminate()
-                            # Give it a moment to shut down gracefully
-                            try:
-                                process.wait(timeout=5)
-                                self._log(connection, session_id, "info", f"Process {pid} terminated gracefully.")
-                            except psutil.TimeoutExpired:
-                                # Force kill if it doesn't respond
-                                process.kill()
-                                self._log(connection, session_id, "warning", f"Process {pid} force-killed after timeout.")
-                    except psutil.NoSuchProcess:
-                        self._log(connection, session_id, "info", f"Process {pid} was already terminated.")
-                except ImportError:
-                    # psutil not available, just log and update status
-                    self._log(connection, session_id, "warning", f"Cannot verify process {pid} termination: psutil unavailable.")
+                        process.wait(timeout=5)
+                    except psutil.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    self._log(connection, session_id, "info", f"Verified process {pid} terminated.")
+                except psutil.NoSuchProcess:
+                    self._log(connection, session_id, "info", f"Process {pid} already exited.")
+                except (psutil.AccessDenied, psutil.TimeoutExpired) as exc:
+                    raise ValueError("Could not confirm process termination; session remains unchanged.") from exc
 
             connection.execute(
                 "UPDATE model_serve_sessions SET status = 'stopped', stopped_at = ?, updated_at = ? WHERE id = ?",

@@ -167,6 +167,24 @@ class PersonalOSTests(unittest.TestCase):
                     post_json(f"{base_url}/api/personal-os/notes", {"project": "core", "title": ""})
                 self.assertEqual(ctx.exception.code, 400)
                 ctx.exception.close()
+
+                # Test PUT (edit) operation for presets
+                preset_id = preset["preset"]["id"]
+                updated_preset = put_json(
+                    f"{base_url}/api/personal-os/presets/{preset_id}",
+                    {"project": "core", "name": "Updated Chat preset", "instructions": "Updated instructions."},
+                )
+                self.assertEqual(updated_preset["preset"]["name"], "Updated Chat preset")
+                self.assertEqual(updated_preset["preset"]["instructions"], "Updated instructions.")
+
+                # Test DELETE operation for presets
+                delete_result = delete_json(f"{base_url}/api/personal-os/presets/{preset_id}?project=core")
+                self.assertEqual(delete_result["deleted"], preset_id)
+
+                # Verify preset is deleted
+                presets = read_json(f"{base_url}/api/personal-os/presets?project=core")
+                preset_ids = [p["id"] for p in presets["presets"]]
+                self.assertNotIn(preset_id, preset_ids)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -233,6 +251,29 @@ def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    response = urlopen(request, timeout=20)
+    try:
+        return json.loads(response.read().decode("utf-8"))
+    finally:
+        response.close()
+
+
+def put_json(url: str, payload: dict[str, object]) -> dict[str, object]:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    response = urlopen(request, timeout=20)
+    try:
+        return json.loads(response.read().decode("utf-8"))
+    finally:
+        response.close()
+
+
+def delete_json(url: str) -> dict[str, object]:
+    request = Request(url, method="DELETE")
     response = urlopen(request, timeout=20)
     try:
         return json.loads(response.read().decode("utf-8"))

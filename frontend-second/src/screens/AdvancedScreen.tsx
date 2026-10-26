@@ -776,6 +776,52 @@ function VaultDemoAccessAudit({ tab, data }: { tab: "Access" | "Audit"; data?: R
   </>;
 }
 
+function VaultLiveAccess({ data }: { data?: Record<string, JsonRecord> }) {
+  const client = useQueryClient();
+  const [filter, setFilter] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [selected, setSelected] = useState<JsonRecord | null>(null);
+  const [reason, setReason] = useState("");
+  const [entryIds, setEntryIds] = useState<string[]>([]);
+  const [duration, setDuration] = useState(60);
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const entries = (Array.isArray(data?.entries?.entries) ? data.entries.entries : []) as JsonRecord[];
+  const requests = (Array.isArray(data?.requests?.access_requests) ? data.requests.access_requests : []) as JsonRecord[];
+  const mutation = useMutation({
+    mutationFn: ({ id, action }: { id?: string; action?: "approve" | "deny" }) => id
+      ? backendPatch(`/api/vault/access-requests/${encodeURIComponent(id)}`, { project: "default", action })
+      : backendPost("/api/vault/access-requests", { project: "default", reason: reason.trim(), requested_entries: entryIds, duration_minutes: duration }),
+    onSuccess: async () => { setCreateOpen(false); setSelected(null); setError(""); setFeedback("Request saved."); setReason(""); setEntryIds([]); await client.invalidateQueries({ queryKey: ["advanced-screen", "vault"] }); },
+    onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const shown = requests.filter(request => `${String(request.reason ?? "")} ${String(request.status ?? "")}`.toLowerCase().includes(filter.toLowerCase()));
+  return <section className="p-card p-tight">
+    <div className="p-card-heading"><h3>Access requests</h3><button className="btn sm primary" type="button" onClick={() => { setError(""); setCreateOpen(true); }}><Plus className="icon sm"/>Add</button></div>
+    <label className="demo-form-field">Search requests<input className="input" value={filter} onChange={event => setFilter(event.target.value)}/></label>
+    {feedback && <p className="caption" role="status">{feedback}</p>}
+    {error && !createOpen && !selected && <p className="caption" role="alert">{error}</p>}
+    {shown.length ? <div className="p-list">{shown.map(request => <article className="p-list-row" key={String(request.id)}><span className="square-icon sm"><LockKeyhole className="icon sm"/></span><div className="flex1"><strong>{String(request.reason)}</strong><small>{String(request.duration_minutes)} minutes · {String(request.created_at)}</small></div><span className="p-item-meta">{String(request.status)}</span><button type="button" className="btn sm" onClick={() => { setError(""); setSelected(request); }}>Details</button></article>)}</div> : <EmptyState icon={LockKeyhole} title={filter ? "No matching requests" : "No access requests"} detail="Requests for this project's entries appear here."/>}
+    <Dialog.Root open={createOpen || selected !== null} onOpenChange={open => { if (!open) { setCreateOpen(false); setSelected(null); setError(""); } }}>
+      <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
+        <Dialog.Title>{createOpen ? "Request access" : "Request details"}</Dialog.Title>
+        <Dialog.Description>Reviews record a decision. Secret access still requires authorization and the vault passphrase.</Dialog.Description>
+        <Dialog.Close className="icon-button dialog-close" aria-label="Close"><X className="icon sm"/></Dialog.Close>
+        {createOpen ? <form onSubmit={event => { event.preventDefault(); if (!entryIds.length) { setError("Select at least one entry."); return; } setError(""); mutation.mutate({}); }}>
+          <label className="demo-form-field">Reason<input className="input" value={reason} onChange={event => setReason(event.target.value)} required maxLength={500}/></label>
+          <fieldset><legend>Entries</legend>{entries.length ? entries.map(entry => <label className="row" key={String(entry.id)}><input type="checkbox" checked={entryIds.includes(String(entry.id))} onChange={event => setEntryIds(current => event.target.checked ? [...current, String(entry.id)] : current.filter(id => id !== String(entry.id)))}/>{String(entry.label)}</label>) : <p className="caption">Store an encrypted entry before requesting access.</p>}</fieldset>
+          <label className="demo-form-field">Requested duration (minutes)<input className="input" type="number" required min={1} max={1440} value={duration} onChange={event => setDuration(Number(event.target.value))}/></label>
+          {error && <p className="caption" role="alert">{error}</p>}
+          <div className="modal-actions"><Dialog.Close className="btn" type="button">Cancel</Dialog.Close><button className="btn primary" disabled={mutation.isPending || !entries.length}>{mutation.isPending ? "Saving…" : "Create request"}</button></div>
+        </form> : selected && <><p>{String(selected.reason)}</p><p className="caption">{String(selected.status)} · {String(selected.duration_minutes)} minutes</p><ul>{(Array.isArray(selected.requested_entries) ? selected.requested_entries : []).map(id => <li key={String(id)}>{String(entries.find(entry => String(entry.id) === String(id))?.label ?? id)}</li>)}</ul>
+          {error && <p className="caption" role="alert">{error}</p>}
+          {selected.status === "pending" && <div className="modal-actions"><button type="button" className="btn primary" disabled={mutation.isPending} onClick={() => mutation.mutate({ id: String(selected.id), action: "approve" })}>Approve</button><button type="button" className="btn danger" disabled={mutation.isPending} onClick={() => mutation.mutate({ id: String(selected.id), action: "deny" })}>Deny</button></div>}
+        </>}
+      </Dialog.Content></Dialog.Portal>
+    </Dialog.Root>
+  </section>;
+}
+
 function VaultWorkspace({ tab, data, demo = false }: { tab: string; data?: Record<string, JsonRecord>; demo?: boolean }) {
   const client = useQueryClient();
   const [filter, setFilter] = useState("");
@@ -838,6 +884,7 @@ function VaultWorkspace({ tab, data, demo = false }: { tab: string; data?: Recor
   const submit = (path: string, body: JsonRecord) => { setError(""); setFeedback(""); mutation.mutate({ path, body }); };
   const matching = entries.filter((entry) => `${String(entry.label ?? "")} ${String(entry.category ?? "")} ${Array.isArray(entry.tags) ? entry.tags.map(String).join(" ") : ""}`.toLowerCase().includes(filter.trim().toLowerCase()));
   if ((tab === "Access" || tab === "Audit") && demo) return <VaultDemoAccessAudit tab={tab} data={data}/>;
+  if (tab === "Access" && !demo) return <VaultLiveAccess data={data}/>;
   if (tab === "Access" || tab === "Audit") {
     return <section className="p-card p-tight">
       <div className="p-card-heading"><h3>{tab === "Access" ? "Credential access" : "Vault activity"}</h3><span className="p-fixture">{access.length} backend records</span></div>

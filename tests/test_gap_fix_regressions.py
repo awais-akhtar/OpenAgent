@@ -89,6 +89,27 @@ class GapFixRegressions(unittest.TestCase):
             with self.assertRaises(KeyError):
                 store.get_workflow_run_events(run["id"],project="other")
 
+    def test_cookbook_never_stops_an_unverified_or_reused_pid(self):
+        import psutil
+        from openagent.model_cookbook import ModelCookbook
+        with TemporaryDirectory() as tmp:
+            cookbook=ModelCookbook(OpenAgentStore(tmp))
+            session=cookbook.serve(model_ref="synthetic",runner="python",args=["--version"])
+            with cookbook.store.session() as connection:
+                connection.execute("UPDATE model_serve_sessions SET mode='local-process',status='running',pid=123,process_created_at=10 WHERE id=?",(session["id"],))
+            process=Mock()
+            process.create_time.return_value=20.0
+            with patch.object(psutil,"Process",return_value=process):
+                with self.assertRaises(ValueError): cookbook.stop(session["id"])
+            process.terminate.assert_not_called()
+            self.assertEqual(cookbook.session(session["id"])["status"],"running")
+            process.create_time.return_value=10.0
+            process.wait.side_effect=[psutil.TimeoutExpired(5),0]
+            with patch.object(psutil,"Process",return_value=process):
+                self.assertEqual(cookbook.stop(session["id"])["status"],"stopped")
+            process.kill.assert_called_once()
+            self.assertEqual(process.wait.call_count,2)
+
     def test_scheduler_delivery_requires_and_forwards_preferences(self):
         with TemporaryDirectory() as tmp:
             scheduler=Scheduler(OpenAgentStore(tmp))

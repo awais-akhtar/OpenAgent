@@ -129,6 +129,7 @@ from .skill_routes import SkillRouteDependencies, handle_get as handle_skill_get
 from .terminal_routes import TerminalRouteDependencies, handle_delete as handle_terminal_delete, handle_get as handle_terminal_get, handle_post as handle_terminal_post
 from .tool_runtime_routes import ToolRuntimeRouteDependencies, handle_get as handle_tool_runtime_get, handle_post as handle_tool_runtime_post
 from .twin_routes import TwinRouteDependencies, handle_get as handle_twin_get, handle_post as handle_twin_post
+from .voice_routes import VoiceRouteDependencies, handle_post as handle_voice_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
 from .vault_routes import VaultRouteDependencies, handle_get as handle_vault_get, handle_post as handle_vault_post, handle_patch as handle_vault_patch
 from .vector_routes import VectorRouteDependencies, handle_get as handle_vector_get, handle_post as handle_vector_post
@@ -3915,6 +3916,21 @@ def build_http_server(
                     return
                 self.send_json(result)
                 return
+            voice_route = handle_voice_post(
+                parsed.path,
+                VoiceRouteDependencies(
+                    voice=voice,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    read_json=self.read_json,
+                ),
+            )
+            if voice_route is not None:
+                self.send_json(voice_route.payload, status=voice_route.status)
+                return
 
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
@@ -4136,6 +4152,7 @@ def build_http_server(
                 return
             personal_os_delete_route = handle_personal_os_delete(
                 parsed.path,
+                parsed.query,
                 PersonalOSRouteDependencies(
                     personal_os=personal_os,
                     read_json=self.read_json,

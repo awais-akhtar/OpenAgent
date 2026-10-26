@@ -147,7 +147,7 @@ describe('backend connected screens', () => {
     renderWithQuery(<AdvancedScreen route="gallery" />);
     fireEvent.click(await screen.findByRole('button', { name: /Source image/ }));
     fireEvent.click(screen.getByRole('tab', { name: 'Operations' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Upscale' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Scale', exact: true }));
 
     await waitFor(() => expect(requests.some(request => request.url === '/api/gallery/upscale' && request.method === 'POST')).toBe(true));
     expect(requests.find(request => request.url === '/api/gallery/upscale')?.body).toMatchObject({ asset_id: 'image-1', project: 'default', scale: 2 });
@@ -206,7 +206,7 @@ describe('backend connected screens', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit', exact: true }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Preset name' }), { target: { value: 'Renamed' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByText('Renamed')).toBeVisible();
+    expect((await screen.findAllByText('Renamed', { selector: '.p-list-row strong' }))[0]).toBeVisible();
     expect(writes[0].body).toMatchObject({ kind: 'research', instructions: 'Keep local.', model: 'local-model', parameters: { temperature: 0.2 } });
     fireEvent.click(screen.getByRole('button', { name: 'Delete', exact: true }));
     expect(await screen.findByText('No presets')).toBeVisible();

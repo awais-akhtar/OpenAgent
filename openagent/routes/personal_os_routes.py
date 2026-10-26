@@ -290,7 +290,7 @@ def handle_put(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult 
         raise
 
 
-def handle_delete(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult | None:
+def handle_delete(path: str, query: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult | None:
     """Handle DELETE requests for removing presets."""
     if not path.startswith("/api/personal-os/presets/"):
         return None
@@ -299,10 +299,10 @@ def handle_delete(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResu
     if not preset_id or "/" in preset_id:
         return JsonRouteResult({"error": "preset_id is required"}, HTTPStatus.BAD_REQUEST)
 
-    payload = deps.read_json()
+    params = parse_qs(query)
     pos = deps.personal_os
-    project = str(payload.get("project", "default")).strip() or "default"
-    owner = deps.payload_owner(payload, "local")
+    project = deps.first(params, "project") or "default"
+    owner = deps.query_owner(params) or "local"
 
     try:
         # Delete preset with ownership validation
