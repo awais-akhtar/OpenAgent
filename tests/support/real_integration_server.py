@@ -165,29 +165,43 @@ def main() -> int:
         def complete(self, messages, *, provider_id="local", model=None, allow_external=False, **kwargs):
             prompt = "\n".join(str(message.get("content", "")) for message in messages if isinstance(message, dict))
             print(f"integration fixture completion request: {prompt[-160:]!r}", file=sys.stderr, flush=True)
-            if "[integration-fail]" in prompt:
+            task_prompt = prompt.rsplit("CURRENT TASK (ANSWER THIS NOW):", 1)[-1]
+            if "[integration-fail]" in task_prompt:
                 raise ProviderConfigurationError("Synthetic local integration provider failure.")
-            if "Run-only scope fixture" in prompt or "History integration fixture from the Agents workspace" in prompt:
+            if "Run-only scope fixture" in task_prompt or "History integration fixture from the Agents workspace" in task_prompt:
                 return ModelResult(provider="local", model="integration-fixture", content="Synthetic local agent response for the Batch 2A authorization test.", metadata={})
-            if "[integration-agent-cancel]" in prompt:
+            if "[integration-agent-cancel]" in task_prompt:
                 # Keep this disposable Agent job active until the real React
                 # cancel control has submitted its authenticated request.
                 print("integration Agent cancellation provider delay entered", file=sys.stderr, flush=True)
-                time.sleep(15)
+                # Synchronize with the actual persisted cancellation, rather
+                # than racing the browser against an arbitrary provider sleep.
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    with store.session() as connection:
+                        job = connection.execute(
+                            "SELECT cancel_requested, attempt FROM agent_execution_jobs WHERE goal LIKE ? ORDER BY created_at DESC LIMIT 1",
+                            ("%[integration-agent-cancel]%",),
+                        ).fetchone()
+                    if job and (job["cancel_requested"] or job["attempt"] > 1):
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise ProviderConfigurationError("Cancellation barrier was not released by the real job lifecycle.")
                 return ModelResult(provider="local", model="integration-fixture", content="Synthetic local cancellation fixture.", metadata={})
-            if "[integration-resume-fail]" in prompt:
+            if "[integration-resume-fail]" in task_prompt:
                 raise ProviderConfigurationError("Controlled local failure for resume integration coverage.")
-            if "[integration-research-cancel]" in prompt:
+            if "[integration-research-cancel]" in task_prompt:
                 # Hold the fake local provider long enough for the browser to
                 # submit cancellation before the worker reaches completion.
                 time.sleep(8)
                 return ModelResult(provider="local", model="integration-fixture", content='{"report":"Synthetic local cancellation fixture."}', metadata={})
-            if "[integration-reconnect]" in prompt:
+            if "[integration-reconnect]" in task_prompt:
                 # Keep a disposable CodeQ run active while Playwright interrupts
                 # and restores the browser network for the real SSE consumer.
                 time.sleep(25)
                 return ModelResult(provider="local", model="integration-fixture", content="{}", metadata={})
-            if "[integration-delay]" in prompt:
+            if "[integration-delay]" in task_prompt:
                 time.sleep(8)
                 return ModelResult(provider="local", model="integration-fixture", content="{}", metadata={})
             return self.delegate.complete(messages, provider_id=provider_id, model=model,

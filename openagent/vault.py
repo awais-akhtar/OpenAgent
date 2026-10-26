@@ -476,6 +476,44 @@ class EncryptedVault:
         self._log_access(request_id, project, "request." + status, success=True)
         return dict(row) | {"requested_entries": json.loads(row["requested_entries"]), "status": status, "updated_at": now}
 
+    def update_access_request(self, request_id: str, *, reason: str, requested_entries: list[str], project: str = "default", duration_minutes: int = 60) -> dict[str, Any]:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason is required")
+        if (not isinstance(requested_entries, list) or not requested_entries or len(requested_entries) > 100
+                or any(not isinstance(entry, str) or not entry.strip() for entry in requested_entries)):
+            raise ValueError("requested_entries must contain 1 to 100 entry IDs")
+        if isinstance(duration_minutes, bool) or not isinstance(duration_minutes, int) or not 1 <= duration_minutes <= 1440:
+            raise ValueError("duration_minutes must be between 1 and 1440")
+        entries = list(dict.fromkeys(entry.strip() for entry in requested_entries))
+        now = utc_now()
+        with self.store.session() as conn:
+            self._ensure_requests(conn)
+            row = conn.execute("SELECT * FROM vault_access_requests WHERE id=? AND project=?", (request_id, project)).fetchone()
+            if row is None:
+                raise KeyError("Access request not found")
+            if row["status"] != "pending":
+                raise ValueError("Only pending requests can be edited")
+            for entry in entries:
+                if conn.execute("SELECT id FROM vault_entries WHERE id=? AND project=?", (entry, project)).fetchone() is None:
+                    raise ValueError("Requested entry not found in this project")
+            if conn.execute("UPDATE vault_access_requests SET reason=?,requested_entries=?,duration_minutes=?,updated_at=? WHERE id=? AND project=? AND status='pending'", (reason.strip(), json.dumps(entries), duration_minutes, now, request_id, project)).rowcount != 1:
+                raise ValueError("Request was already reviewed")
+        self._log_access(request_id, project, "request.edited", success=True)
+        return dict(row) | {"reason": reason.strip(), "requested_entries": entries, "duration_minutes": duration_minutes, "updated_at": now}
+
+    def delete_access_request(self, request_id: str, *, project: str = "default") -> dict[str, Any]:
+        with self.store.session() as conn:
+            self._ensure_requests(conn)
+            row = conn.execute("SELECT status FROM vault_access_requests WHERE id=? AND project=?", (request_id, project)).fetchone()
+            if row is None:
+                raise KeyError("Access request not found")
+            if row["status"] != "pending":
+                raise ValueError("Reviewed requests are retained for audit")
+            if conn.execute("DELETE FROM vault_access_requests WHERE id=? AND project=? AND status='pending'", (request_id, project)).rowcount != 1:
+                raise ValueError("Request was already reviewed")
+        self._log_access(request_id, project, "request.deleted", success=True)
+        return {"id": request_id, "deleted": True}
+
     def approve_access_request(self, request_id: str, *, project: str = "default") -> dict[str, Any]:
         return self._review_access_request(request_id, project=project, status="approved")
 

@@ -74,6 +74,15 @@ class GapFixRegressions(unittest.TestCase):
                 self.assertTrue(frames)
                 self.assertTrue(all(isinstance(frame,dict) for frame in frames))
                 self.assertEqual(frames[0]["event"], "stream_started")
+                ended = next(frame for frame in frames if frame.get("event") == "stream_ended")
+                self.assertFalse(ended["has_more"])
+                workflow=store.create_workflow(name="HTTP snapshot", steps=[], project="default")
+                run=store.save_workflow_run(workflow_id=workflow["id"], project="default", status="completed", result={})
+                with urlopen(base+"/api/workflows/runs/"+run["id"]+"/events/stream?project=default",timeout=5) as response:
+                    workflow_frames=[json.loads(line[6:]) for line in response.read().decode().splitlines() if line.startswith("data: ")]
+                self.assertTrue(all(isinstance(frame,dict) for frame in workflow_frames))
+                self.assertFalse(next(frame for frame in workflow_frames if frame.get("event") == "stream_ended")["has_more"])
+
             finally:
                 server.shutdown(); server.server_close(); thread.join(timeout=5)
 

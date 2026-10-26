@@ -17,6 +17,17 @@ import { ExecutionTrace } from "../components/ExecutionTrace";
 import { demoProvider } from "../demo/provider";
 import { AgentsDemoWorkspace } from "./AgentsDemoWorkspace";
 
+export function mergeAgentEventPage(previous: Record<string, unknown>[], incoming: Record<string, unknown>[], cursor: string) {
+  const records = new Map(previous.map(event => [String(event.id), event]));
+  let nextCursor = cursor;
+  for (const event of incoming) {
+    if (typeof event.id !== "string" || !event.id) continue;
+    records.set(event.id, event);
+    nextCursor = event.id;
+  }
+  return { events: [...records.values()], cursor: nextCursor };
+}
+
 const pageMotion = {
   initial: { opacity: 0, y: 7 },
   animate: { opacity: 1, y: 0 },
@@ -175,10 +186,9 @@ export function AgentsScreen() {
       const url = `/api/agents/jobs/${encodeURIComponent(activeJobId)}/events?limit=50${cursor ? `&after=${encodeURIComponent(cursor)}` : ""}`;
       const page = await apiGet<{ events?: Record<string, unknown>[]; next?: string }>(url, signal);
       const newEvents = Array.isArray(page.events) ? page.events : [];
-      if (newEvents.length) {
-        jobEventsAccum.current = [...jobEventsAccum.current, ...newEvents];
-        if (page.next) jobEventsCursor.current = page.next;
-      }
+      const merged = mergeAgentEventPage(jobEventsAccum.current, newEvents, cursor);
+      jobEventsAccum.current = merged.events;
+      jobEventsCursor.current = merged.cursor;
       return { events: jobEventsAccum.current, hasMore: Boolean(page.next) };
     },
     enabled: dataMode === "live" && !!activeJobId,

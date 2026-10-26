@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from openagent.multi_agent import MultiAgentRuntime
 from openagent.storage import OpenAgentStore
@@ -22,6 +23,11 @@ class C4AgentEventStreamTests(TestCase):
         self.tmp_dir = TemporaryDirectory()
         self.store = OpenAgentStore(self.tmp_dir.name)
         self.runtime = MultiAgentRuntime(self.store)
+        # This module tests persisted event queries. Keep the independent
+        # executor from racing statuses or writing after temporary DB cleanup.
+        worker = patch.object(self.runtime, "_execute_job", return_value=None)
+        worker.start()
+        self.addCleanup(worker.stop)
 
     def tearDown(self) -> None:
         """Cleanup after each test."""

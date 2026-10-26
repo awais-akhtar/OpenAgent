@@ -37,6 +37,20 @@ describe('backend connected screens', () => {
     expect(requests.some(url => url.startsWith('/api/audit'))).toBe(false);
   });
 
+  it('labels a degraded Agent result from backend metadata instead of claiming a genuine model response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/agents/jobs')) return json({ jobs: [] });
+      if (url.includes('/api/agent-runs')) return json({ runs: [{ id: 'degraded-run', agent: 'executive', goal: 'Unavailable provider', response: 'Safe local fallback', metadata: { degraded: true, fallback: 'deterministic-local-agent' } }] });
+      if (url.includes('/api/agents/permissions')) return json({ permissions: [] });
+      if (url.includes('/api/agents/approvals')) return json({ approvals: [] });
+      return json({ agents: [{ id: 'executive', name: 'Executive' }] });
+    }));
+    renderWithQuery(<AgentsScreen />);
+    expect(await screen.findByText('Safe local fallback')).toBeVisible();
+    expect(await screen.findByText(/Response received \(degraded: deterministic-local-agent\)/)).toBeVisible();
+  });
+
   it('uses checked agent execution, scoped access records, approvals and delegation contracts', async () => {
     const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
     let approvals: Array<Record<string, unknown>> = [];
@@ -870,7 +884,7 @@ describe('backend connected screens', () => {
       return json({ error: `Unexpected request ${url}` }, 404);
     }));
     renderWithQuery(<AdvancedScreen route="vault" />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Access' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Audit' }));
     const events = await screen.findAllByText('retrieve');
     expect(events.length).toBeGreaterThan(0);
     await waitFor(() => expect(screen.getByText(/Entry entry-1.*failed/)).toBeVisible());

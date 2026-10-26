@@ -230,6 +230,28 @@ class PersonalOSTests(unittest.TestCase):
                     )
                     notes = json.loads(urlopen(bob_notes, timeout=15).read().decode("utf-8"))
                     self.assertEqual(notes["notes"], [])
+                    # The new editor must not turn an owned record ID into a write bypass.
+                    foreign_edit = Request(
+                        f"{base_url}/api/personal-os/notes",
+                        data=json.dumps({"project":"core", "note_id":note["note"]["id"], "title":"forged", "body":"forged"}).encode(),
+                        headers={"Content-Type":"application/json", "Authorization":f"Bearer {bob_token}"}, method="POST")
+                    with self.assertRaises(HTTPError) as denied:
+                        urlopen(foreign_edit, timeout=10)
+                    self.assertEqual(denied.exception.code, 400)
+                    foreign_delete = Request(f"{base_url}/api/personal-os/notes/{note['note']['id']}?project=core",
+                        headers={"Authorization":f"Bearer {bob_token}"}, method="DELETE")
+                    with self.assertRaises(HTTPError) as denied:
+                        urlopen(foreign_delete, timeout=10)
+                    self.assertEqual(denied.exception.code, 404)
+                    read_token = auth.create_api_token(alice["user_id"], "read-only-negative", scopes=["personal_os:read"])["token"]
+                    restricted_delete = Request(f"{base_url}/api/personal-os/notes/{note['note']['id']}?project=core",
+                        headers={"Authorization":f"Bearer {read_token}"}, method="DELETE")
+                    with self.assertRaises(HTTPError) as denied:
+                        urlopen(restricted_delete, timeout=10)
+                    self.assertEqual(denied.exception.code, 403)
+                    original = Request(f"{base_url}/api/personal-os/notes?project=core", headers={"Authorization":f"Bearer {alice_token}"})
+                    self.assertEqual(json.loads(urlopen(original, timeout=10).read())["notes"][0]["body"], "Only Alice can list this.")
+
             finally:
                 server.shutdown()
                 server.server_close()

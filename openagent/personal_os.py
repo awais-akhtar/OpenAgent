@@ -241,10 +241,27 @@ class PersonalOS:
             rows = connection.execute(sql, params).fetchall()
         return [preset_row(row) for row in rows]
 
+    def delete_record(self, collection: str, record_id: str, *, project: str = "default", owner: str = "") -> bool:
+        tables = {"notes": "personal_notes", "drafts": "personal_drafts", "signatures": "personal_signatures"}
+        table = tables.get(collection)
+        if table is None:
+            raise PersonalOSError("Unsupported collection.")
+        with self.store.session() as connection:
+            owned = connection.execute(f"SELECT id FROM {table} WHERE id=? AND project=? AND owner=?", (record_id, project, owner)).fetchone()
+            if owned is None:
+                return False
+            if collection == "drafts":
+                connection.execute("DELETE FROM personal_draft_versions WHERE draft_id=?", (record_id,))
+            deleted = connection.execute(f"DELETE FROM {table} WHERE id=? AND project=? AND owner=?", (record_id, project, owner)).rowcount > 0
+        if deleted:
+            self._audit("personal." + collection + ".delete", record_id, project=project, owner=owner)
+        return deleted
+
     def upsert_signature(
         self,
         *,
         label: str,
+        signature_id: str = "",
         content: str,
         project: str = "default",
         owner: str = "",
@@ -254,9 +271,13 @@ class PersonalOS:
         content = content.strip()
         if not label or not content:
             raise PersonalOSError("Signature label and content are required.")
-        record_id = stable_id("signature", project, owner, label)
+        record_id = signature_id or stable_id("signature", project, owner, label)
         now = utc_now()
         with self.store.session() as connection:
+            if signature_id:
+                row = connection.execute("SELECT id FROM personal_signatures WHERE id=? AND project=? AND owner=?", (signature_id, project, owner)).fetchone()
+                if row is None:
+                    raise PersonalOSError("Signature not found.")
             if is_default:
                 connection.execute(
                     "UPDATE personal_signatures SET is_default = 0 WHERE project = ? AND owner = ?",
@@ -268,6 +289,7 @@ class PersonalOS:
                     id, project, owner, label, content, is_default, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    label = excluded.label,
                     content = excluded.content,
                     is_default = excluded.is_default,
                     updated_at = excluded.updated_at
@@ -303,9 +325,12 @@ class PersonalOS:
         title = title.strip() or "Untitled draft"
         now = utc_now()
         record_id = draft_id.strip() or stable_id("draft", project, owner, title, now)
-        current = self.get_draft(record_id)
-        version = int(current["version"]) + 1 if current else 1
         with self.store.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute("SELECT owner, project, version FROM personal_drafts WHERE id=?", (record_id,)).fetchone()
+            if current and (current["owner"] != owner or current["project"] != project):
+                raise PersonalOSError("Draft not found.")
+            version = int(current["version"]) + 1 if current else 1
             connection.execute(
                 """
                 INSERT INTO personal_drafts (
@@ -372,6 +397,9 @@ class PersonalOS:
         now = utc_now()
         record_id = note_id.strip() or stable_id("note", project, owner, title, now)
         with self.store.session() as connection:
+            existing = connection.execute("SELECT owner, project FROM personal_notes WHERE id=?", (record_id,)).fetchone()
+            if existing and (existing["owner"] != owner or existing["project"] != project):
+                raise PersonalOSError("Note not found.")
             connection.execute(
                 """
                 INSERT INTO personal_notes (

@@ -636,17 +636,9 @@ class FineTuningManager:
                 pass
 
         def _checkpoint(epoch: int, step: int, adapter_path: str, train_loss: float) -> None:
-            try:
-                self.add_checkpoint(
-                    job_id,
-                    project=project,
-                    step=step,
-                    epoch=float(epoch),
-                    train_loss=train_loss,
-                    adapter_path=adapter_path,
-                )
-            except Exception:
-                pass
+            # A checkpoint is not complete until its manifest is persisted.
+            self.add_checkpoint(job_id, project=project, step=step, epoch=float(epoch),
+                                train_loss=train_loss, adapter_path=adapter_path)
 
         def _run() -> None:
             now = utc_now()
@@ -684,18 +676,15 @@ class FineTuningManager:
                 with self._job_transition_lock:
                     if self._job_cancel_requested(job_id, project):
                         raise TrainingCancelled("Fine-tuning cancellation requested.")
-                    try:
-                        adapter_id = self.register_adapter(
-                            name=f"adapter-{job_id[:8]}",
-                            base_model=job["base_model"],
-                            project=project,
-                            description=f"CPU streaming LoRA from job {job_id}",
-                            rank=int(config.get("rank", 16)),
-                            alpha=float(config.get("alpha", 32.0)),
-                            stored_path=result["adapter_path"],
-                        )["id"]
-                    except Exception:
-                        pass
+                    adapter_id = self.register_adapter(
+                        name=f"adapter-{job_id[:8]}",
+                        base_model=job["base_model"],
+                        project=project,
+                        description=f"CPU streaming LoRA from job {job_id}",
+                        rank=int(config.get("rank", 16)),
+                        alpha=float(config.get("alpha", 32.0)),
+                        stored_path=result["adapter_path"],
+                    )["id"]
                     completed = self.complete_job(job_id, adapter_id=adapter_id)
                     if completed["status"] == "cancelling":
                         if adapter_id:

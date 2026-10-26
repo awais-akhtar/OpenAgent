@@ -98,7 +98,7 @@ def handle_get(path: str, query: str, deps: WorkflowRouteDependencies) -> JsonRo
                             "event": "stream_ended",
                             "run_id": run_id,
                             "next_cursor": next_cursor,
-                            "has_more": bool(next_cursor),
+                            "has_more": bool(events.get("next")),
                             "event_count": len(events.get("events", [])),
                         }
                     except Exception as exc:  # noqa: BLE001

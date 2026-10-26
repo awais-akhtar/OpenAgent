@@ -80,6 +80,8 @@ def handle_get(path: str, query: str, deps: FineTuneRouteDependencies) -> JsonRo
             "status": job.get("status"),
             "progress": job.get("progress", 0.0),
             "current_loss": job.get("current_loss", 0.0),
+            "output_adapter_id": job.get("output_adapter_id", ""),
+            "error_message": job.get("error_message", ""),
             "checkpoints": checkpoints,
         })
     if path == "/api/finetune/status":

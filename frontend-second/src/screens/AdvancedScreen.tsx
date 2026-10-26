@@ -789,33 +789,34 @@ function VaultLiveAccess({ data }: { data?: Record<string, JsonRecord> }) {
   const entries = (Array.isArray(data?.entries?.entries) ? data.entries.entries : []) as JsonRecord[];
   const requests = (Array.isArray(data?.requests?.access_requests) ? data.requests.access_requests : []) as JsonRecord[];
   const mutation = useMutation({
-    mutationFn: ({ id, action }: { id?: string; action?: "approve" | "deny" }) => id
-      ? backendPatch(`/api/vault/access-requests/${encodeURIComponent(id)}`, { project: "default", action })
+    mutationFn: ({ id, action }: { id?: string; action?: "approve" | "deny" | "edit" | "delete" }) => id
+      ? backendPatch(`/api/vault/access-requests/${encodeURIComponent(id)}`, { project: "default", action, ...(action === "edit" ? { reason: reason.trim(), requested_entries: entryIds, duration_minutes: duration } : {}) })
       : backendPost("/api/vault/access-requests", { project: "default", reason: reason.trim(), requested_entries: entryIds, duration_minutes: duration }),
     onSuccess: async () => { setCreateOpen(false); setSelected(null); setError(""); setFeedback("Request saved."); setReason(""); setEntryIds([]); await client.invalidateQueries({ queryKey: ["advanced-screen", "vault"] }); },
     onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
   });
   const shown = requests.filter(request => `${String(request.reason ?? "")} ${String(request.status ?? "")}`.toLowerCase().includes(filter.toLowerCase()));
   return <section className="p-card p-tight">
-    <div className="p-card-heading"><h3>Access requests</h3><button className="btn sm primary" type="button" onClick={() => { setError(""); setCreateOpen(true); }}><Plus className="icon sm"/>Add</button></div>
+    <div className="p-card-heading"><h3>Access requests</h3><button className="btn sm primary" type="button" onClick={() => { setError(""); setSelected(null); setReason(""); setEntryIds([]); setDuration(60); setCreateOpen(true); }}><Plus className="icon sm"/>Add</button></div>
     <label className="demo-form-field">Search requests<input className="input" value={filter} onChange={event => setFilter(event.target.value)}/></label>
     {feedback && <p className="caption" role="status">{feedback}</p>}
     {error && !createOpen && !selected && <p className="caption" role="alert">{error}</p>}
-    {shown.length ? <div className="p-list">{shown.map(request => <article className="p-list-row" key={String(request.id)}><span className="square-icon sm"><LockKeyhole className="icon sm"/></span><div className="flex1"><strong>{String(request.reason)}</strong><small>{String(request.duration_minutes)} minutes � {String(request.created_at)}</small></div><span className="p-item-meta">{String(request.status)}</span><button type="button" className="btn sm" onClick={() => { setError(""); setSelected(request); }}>Details</button></article>)}</div> : <EmptyState icon={LockKeyhole} title={filter ? "No matching requests" : "No access requests"} detail="Requests for this project's entries appear here."/>}
+    {shown.length ? <div className="p-list">{shown.map(request => <article className="p-list-row" key={String(request.id)}><span className="square-icon sm"><LockKeyhole className="icon sm"/></span><div className="flex1"><strong>{String(request.reason)}</strong><small>{String(request.duration_minutes)} minutes · {String(request.created_at)}</small></div><span className="p-item-meta">{String(request.status)}</span><button type="button" className="btn sm" onClick={() => { setError(""); setSelected(request); }}>Details</button></article>)}</div> : <EmptyState icon={LockKeyhole} title={filter ? "No matching requests" : "No access requests"} detail="Requests for this project's entries appear here."/>}
     <Dialog.Root open={createOpen || selected !== null} onOpenChange={open => { if (!open) { setCreateOpen(false); setSelected(null); setError(""); } }}>
       <Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="dialog-content">
-        <Dialog.Title>{createOpen ? "Request access" : "Request details"}</Dialog.Title>
+        <Dialog.Title>{createOpen ? selected ? "Edit request" : "Request access" : "Request details"}</Dialog.Title>
         <Dialog.Description>Reviews record a decision. Secret access still requires authorization and the vault passphrase.</Dialog.Description>
         <Dialog.Close className="icon-button dialog-close" aria-label="Close"><X className="icon sm"/></Dialog.Close>
-        {createOpen ? <form onSubmit={event => { event.preventDefault(); if (!entryIds.length) { setError("Select at least one entry."); return; } setError(""); mutation.mutate({}); }}>
+        {createOpen ? <form onSubmit={event => { event.preventDefault(); if (!entryIds.length) { setError("Select at least one entry."); return; } setError(""); mutation.mutate(selected ? { id: String(selected.id), action: "edit" } : {}); }}>
           <label className="demo-form-field">Reason<input className="input" value={reason} onChange={event => setReason(event.target.value)} required maxLength={500}/></label>
           <fieldset><legend>Entries</legend>{entries.length ? entries.map(entry => <label className="row" key={String(entry.id)}><input type="checkbox" checked={entryIds.includes(String(entry.id))} onChange={event => setEntryIds(current => event.target.checked ? [...current, String(entry.id)] : current.filter(id => id !== String(entry.id)))}/>{String(entry.label)}</label>) : <p className="caption">Store an encrypted entry before requesting access.</p>}</fieldset>
           <label className="demo-form-field">Requested duration (minutes)<input className="input" type="number" required min={1} max={1440} value={duration} onChange={event => setDuration(Number(event.target.value))}/></label>
           {error && <p className="caption" role="alert">{error}</p>}
-          <div className="modal-actions"><Dialog.Close className="btn" type="button">Cancel</Dialog.Close><button className="btn primary" disabled={mutation.isPending || !entries.length}>{mutation.isPending ? "Saving�" : "Create request"}</button></div>
-        </form> : selected && <><p>{String(selected.reason)}</p><p className="caption">{String(selected.status)} � {String(selected.duration_minutes)} minutes</p><ul>{(Array.isArray(selected.requested_entries) ? selected.requested_entries : []).map(id => <li key={String(id)}>{String(entries.find(entry => String(entry.id) === String(id))?.label ?? id)}</li>)}</ul>
+          <div className="modal-actions"><Dialog.Close className="btn" type="button">Cancel</Dialog.Close><button className="btn primary" disabled={mutation.isPending || !entries.length}>{mutation.isPending ? "Saving…" : selected ? "Save changes" : "Create request"}</button></div>
+        </form> : selected && <><p>{String(selected.reason)}</p><p className="caption">{String(selected.status)} · {String(selected.duration_minutes)} minutes</p><ul>{(Array.isArray(selected.requested_entries) ? selected.requested_entries : []).map(id => <li key={String(id)}>{String(entries.find(entry => String(entry.id) === String(id))?.label ?? id)}</li>)}</ul>
           {error && <p className="caption" role="alert">{error}</p>}
-          {selected.status === "pending" && <div className="modal-actions"><button type="button" className="btn primary" disabled={mutation.isPending} onClick={() => mutation.mutate({ id: String(selected.id), action: "approve" })}>Approve</button><button type="button" className="btn danger" disabled={mutation.isPending} onClick={() => mutation.mutate({ id: String(selected.id), action: "deny" })}>Deny</button></div>}
+          <button type="button" className="btn" disabled={mutation.isPending} onClick={() => { setReason(String(selected.reason) + " (copy)"); setEntryIds(Array.isArray(selected.requested_entries) ? selected.requested_entries.map(String) : []); setDuration(Number(selected.duration_minutes)); setSelected(null); setCreateOpen(true); }}>Duplicate</button>
+          {selected.status === "pending" && <div className="modal-actions"><button type="button" className="btn primary" disabled={mutation.isPending} onClick={() => mutation.mutate({ id: String(selected.id), action: "approve" })}>Approve</button><button type="button" className="btn danger" disabled={mutation.isPending} onClick={() => mutation.mutate({ id: String(selected.id), action: "deny" })}>Deny</button><button type="button" className="btn" disabled={mutation.isPending} onClick={() => { setReason(String(selected.reason)); setEntryIds(Array.isArray(selected.requested_entries) ? selected.requested_entries.map(String) : []); setDuration(Number(selected.duration_minutes)); setCreateOpen(true); }}>Edit</button><button type="button" className="btn danger" disabled={mutation.isPending} onClick={() => { if (window.confirm("Delete this pending access request?")) mutation.mutate({ id: String(selected.id), action: "delete" }); }}>Delete</button></div>}
         </>}
       </Dialog.Content></Dialog.Portal>
     </Dialog.Root>
@@ -999,7 +1000,7 @@ function CpuFineTunePanel({ jobs }: { jobs: JsonRecord[] }) {
   const jobStatus = String(status?.status ?? "");
   const isTerminal = ["completed", "failed", "cancelled"].includes(jobStatus);
 
-  const selectableJobs = jobs.filter(j => ["queued", "running", "cancelling"].includes(String(j.status ?? "")));
+  const selectableJobs = jobs;
   const selectedJob = selectableJobs.find(job => String(job.id ?? "") === jobId);
   const selectedJobStatus = String(selectedJob?.status ?? "");
 
@@ -1018,7 +1019,7 @@ function CpuFineTunePanel({ jobs }: { jobs: JsonRecord[] }) {
         <label className="demo-form-field">
           Job
           <select className="select" value={jobId} onChange={(e) => setJobId(e.target.value)} required>
-            <option value="">Select a queued job to start, or a running job to monitor</option>
+            <option value="">Select a job to start or inspect</option>
             {selectableJobs.map((j, i) => (
               <option key={String(j.id ?? i)} value={String(j.id ?? "")}>
                 {String(j.base_model ?? j.id ?? "Job")} ({String(j.status ?? "")})
@@ -1065,7 +1066,8 @@ function CpuFineTunePanel({ jobs }: { jobs: JsonRecord[] }) {
           </p>
           {isTerminal && (
             <p className="caption" role="status">
-              {jobStatus === "completed" ? "Training complete. Adapter registered in Results tab." : `Job ended with status: ${jobStatus}`}
+              {jobStatus === "completed" ? status.output_adapter_id ? "Training complete. Adapter registered in Results tab." : "Training finished; no adapter registration was reported." : `Job ended with status: ${jobStatus}`}
+              {jobStatus === "failed" && status.error_message ? ` ${String(status.error_message)}` : ""}
             </p>
           )}
           {["queued", "running", "cancelling"].includes(jobStatus) && <button className="btn danger sm" type="button" onClick={() => void cancelTraining()} disabled={cancelling || jobStatus === "cancelling"}>{cancelling || jobStatus === "cancelling" ? "Cancellation requested…" : "Cancel training"}</button>}
@@ -3825,10 +3827,48 @@ function UltraModelWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
 
 // ─── Personal OS ──────────────────────────────────────────────────────────────
 
+function PersonalOSRecordList({ collection, records, loading }: { collection: "signatures" | "drafts"; records: JsonRecord[]; loading: boolean }) {
+  const client = useQueryClient();
+  const [filter, setFilter] = useState("");
+  const [editor, setEditor] = useState(false);
+  const [selected, setSelected] = useState<JsonRecord | null>(null);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [versions, setVersions] = useState<JsonRecord[] | null>(null);
+  const singular = collection === "signatures" ? "signature" : "draft";
+  const mutation = useMutation({
+    mutationFn: async ({ remove, record }: { remove?: boolean; record?: JsonRecord }) => {
+      if (remove && record) return backendDelete(`/api/personal-os/${collection}/${encodeURIComponent(String(record.id))}?project=default`);
+      const body = collection === "signatures"
+        ? { label: title.trim(), content, signature_id: selected?.id ?? "", is_default: selected?.is_default ?? false, project: "default" }
+        : { title: title.trim(), content, draft_id: selected?.id ?? "", status: selected?.status ?? "draft", project: "default" };
+      return backendPost(`/api/personal-os/${collection}`, body);
+    },
+    onSuccess: async () => { setEditor(false); setSelected(null); setError(""); setVersions(null); setFeedback("Changes saved."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    onError: cause => setError(apiConnectionMessage(cause)),
+  });
+  const open = (record: JsonRecord | null) => { setSelected(record); setTitle(String(record?.label ?? record?.title ?? "")); setContent(String(record?.content ?? "")); setError(""); setVersions(null); setEditor(true); };
+  const shown = records.filter(record => `${String(record.label ?? record.title ?? "")} ${String(record.content ?? "")}`.toLowerCase().includes(filter.toLowerCase()));
+  return <section className="p-card"><div className="p-card-heading"><h3>{collection === "signatures" ? "Signatures" : "Drafts"}</h3><button className="btn sm primary" type="button" onClick={() => open(null)}><Plus className="icon sm"/>Create {singular}</button></div>
+    <label className="demo-form-field">Search {collection}<input className="input" value={filter} onChange={event => setFilter(event.target.value)}/></label>
+    {feedback && <p role="status" className="caption">{feedback}</p>}{error && !editor && <p role="alert" className="caption">{error}</p>}
+    {loading ? <p className="caption">Loading…</p> : !shown.length ? <EmptyState icon={FileText} title={`No ${collection}`} detail={filter ? "No matching records." : `Create a ${singular} to get started.`}/> : <div className="p-list">{shown.map(record => <article className="p-list-row" key={String(record.id)}><div className="flex1"><strong>{String(record.label ?? record.title)}</strong><p className="small muted">{String(record.content ?? "").slice(0, 100)}</p></div><button className="btn sm" type="button" onClick={() => open(record)}>Edit</button>
+      {collection === "drafts" && <button className="btn sm" type="button" onClick={async () => { try { const result = await backendGet<JsonRecord>(`/api/personal-os/drafts/${encodeURIComponent(String(record.id))}/versions?project=default`); setVersions(Array.isArray(result.versions) ? result.versions as JsonRecord[] : []); setError(""); } catch (cause) { setError(apiConnectionMessage(cause)); } }}>Versions</button>}
+      <button className="btn sm danger" type="button" disabled={mutation.isPending} onClick={() => { if (window.confirm(`Delete this ${singular}?`)) mutation.mutate({ remove: true, record }); }}>Delete</button></article>)}</div>}
+    {versions && <section className="p-record-section"><h4>Draft versions</h4>{versions.map(version => <article key={String(version.id)}><strong>Version {String(version.version)}</strong><p>{String(version.content)}</p></article>)}<button className="btn sm" type="button" onClick={() => setVersions(null)}>Close versions</button></section>}
+    <Dialog.Root open={editor} onOpenChange={setEditor}><Dialog.Portal><Dialog.Overlay/><Dialog.Content><Dialog.Title>{selected ? "Edit" : "Create"} {singular}</Dialog.Title><Dialog.Description>{collection === "drafts" ? "Save locally. This does not send a message." : "Save a reusable personal signature."}</Dialog.Description><Dialog.Close className="icon-button dialog-close" aria-label="Close"><X className="icon sm"/></Dialog.Close>
+      <form onSubmit={event => { event.preventDefault(); mutation.mutate({}); }}><label className="demo-form-field">{collection === "signatures" ? "Label" : "Title"}<input className="input" value={title} onChange={event => setTitle(event.target.value)} required/></label><label className="demo-form-field">Content<textarea className="input" rows={5} value={content} onChange={event => setContent(event.target.value)} required/></label>{error && <p role="alert" className="caption">{error}</p>}<div className="modal-actions"><Dialog.Close className="btn" type="button">Cancel</Dialog.Close><button className="btn primary" disabled={mutation.isPending}>{mutation.isPending ? "Saving…" : "Save"}</button></div></form>
+    </Dialog.Content></Dialog.Portal></Dialog.Root>
+  </section>;
+}
+
 function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
   const client = useQueryClient();
   const [noteText, setNoteText] = useState("");
   const [noteError, setNoteError] = useState("");
+  const [editingNote, setEditingNote] = useState<JsonRecord | null>(null);
   const [presetName, setPresetName] = useState("");
   const [presetError, setPresetError] = useState("");
   const [editingPreset, setEditingPreset] = useState<JsonRecord | null>(null);
@@ -3844,9 +3884,15 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
   const status = data?.status as JsonRecord | undefined;
 
   const addNoteMutation = useMutation({
-    mutationFn: () => apiPost("/api/personal-os/notes", { title: "Personal note", body: noteText.trim(), project: "default" }),
-    onSuccess: async () => { setNoteText(""); setNoteError(""); setFeedback("Note saved by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    mutationFn: () => apiPost("/api/personal-os/notes", { ...editingNote, title: editingNote?.title ?? "Personal note", body: noteText.trim(), note_id: editingNote?.id ?? "", project: "default" }),
+    onSuccess: async () => { setNoteText(""); setEditingNote(null); setNoteError(""); setFeedback("Note saved by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
     onError: (e) => setNoteError(e instanceof Error ? e.message : "Failed to save note"),
+  });
+
+  const deleteNoteMutation = useMutation({
+    mutationFn: (id: string) => backendDelete(`/api/personal-os/notes/${encodeURIComponent(id)}?project=default`),
+    onSuccess: async () => { setEditingNote(null); setNoteText(""); setNoteError(""); setFeedback("Note deleted."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    onError: cause => setNoteError(apiConnectionMessage(cause)),
   });
 
   const addPresetMutation = useMutation({
@@ -3903,9 +3949,10 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
     {noteError && <p className="caption" role="alert">{noteError}</p>}
     {feedback && <p className="caption" role="status">{feedback}</p>}
     <button className="btn sm primary" type="button" disabled={!noteText.trim() || addNoteMutation.isPending} onClick={() => addNoteMutation.mutate()}>{addNoteMutation.isPending ? "Saving…" : "Save note"}</button>
+    {editingNote && <button className="btn sm" type="button" onClick={() => { setEditingNote(null); setNoteText(""); }}>Cancel edit</button>}
     {notes.length > 0 && <div style={{ marginTop: 16 }}>
       <div className="p-list">{notes.map((n, idx) => <div className="p-list-row" key={String(n.id ?? idx)}>
-        <div className="flex1"><p className="small" style={{ margin: 0 }}>{String(n.body ?? n.content ?? n.text ?? "Note")}</p><small className="muted">{String(n.created_at ?? "")}</small></div>
+        <div className="flex1"><p className="small" style={{ margin: 0 }}>{String(n.body ?? n.content ?? n.text ?? "Note")}</p><small className="muted">{String(n.created_at ?? "")}</small></div><button className="btn sm" type="button" onClick={() => { setEditingNote(n); setNoteText(String(n.body ?? "")); }}>Edit</button><button className="btn sm danger" type="button" disabled={deleteNoteMutation.isPending} onClick={() => { if (window.confirm("Delete this note?")) deleteNoteMutation.mutate(String(n.id)); }}>Delete</button>
       </div>)}</div>
     </div>}
   </section>;
@@ -3917,30 +3964,14 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
       : <div className="p-gallery-grid">{gallery.map((img, idx) => {
           const thumb = typeof img.thumbnail_url === "string" ? img.thumbnail_url : null;
           return <div key={String(img.id ?? idx)} className="p-gallery-cell">
-            {thumb ? <img src={thumb} alt={String(img.name ?? "")} className="p-gallery-thumb" /> : <span className="p-gallery-thumb p-gallery-placeholder"><Image className="icon" aria-hidden="true"/></span>}
-            <span className="p-gallery-label">{String(img.name ?? "Image")}</span>
+            {thumb ? <img src={thumb} alt={String(img.name ?? img.title ?? "")} className="p-gallery-thumb" /> : <span className="p-gallery-thumb p-gallery-placeholder"><Image className="icon" aria-hidden="true"/></span>}
+            <span className="p-gallery-label">{String(img.name ?? img.title ?? "Image")}</span>
           </div>;
         })}</div>}
   </section>;
 
-  if (tab === "Signatures") return <section className="p-card">
-    <div className="p-card-heading"><h3>Signatures</h3></div>
-    {lq.isLoading ? <p className="caption">Loading…</p> : signatures.length === 0
-      ? <EmptyState icon={UserRound} title="No signatures" detail="Add a personal signature for use in outgoing messages." />
-      : <div className="p-list">{signatures.map((s, idx) => <div className="p-list-row" key={String(s.id ?? idx)}>
-          <div className="flex1"><strong>{String(s.label ?? s.name ?? "Signature")}</strong><p className="small muted" style={{ margin: 0 }}>{String(s.content ?? "").slice(0, 80)}</p></div>
-        </div>)}</div>}
-  </section>;
-
-  if (tab === "Drafts") return <section className="p-card">
-    <div className="p-card-heading"><h3>Drafts</h3></div>
-    {lq.isLoading ? <p className="caption">Loading…</p> : drafts.length === 0
-      ? <EmptyState icon={FileText} title="No drafts" detail="Personal drafts appear here." />
-      : <div className="p-list">{drafts.map((d, idx) => <div className="p-list-row" key={String(d.id ?? idx)}>
-          <span className="square-icon sm"><FileText className="icon sm" aria-hidden="true"/></span>
-          <div className="flex1"><strong>{String(d.name ?? d.title ?? "Draft")}</strong><small className="muted">{String(d.updated_at ?? d.created_at ?? "")}</small></div>
-        </div>)}</div>}
-  </section>;
+  if (tab === "Signatures") return <PersonalOSRecordList key="signatures" collection="signatures" records={signatures} loading={lq.isLoading}/>;
+  if (tab === "Drafts") return <PersonalOSRecordList key="drafts" collection="drafts" records={drafts} loading={lq.isLoading}/>;
 
   // Status tab (default)
   return <section className="p-card">

@@ -19,11 +19,14 @@ ROUTES = (
     ("DELETE", "/api/personal-os/presets/{id}"),
     ("GET", "/api/personal-os/signatures"),
     ("POST", "/api/personal-os/signatures"),
+    ("DELETE", "/api/personal-os/signatures/{id}"),
     ("GET", "/api/personal-os/drafts"),
     ("POST", "/api/personal-os/drafts"),
+    ("DELETE", "/api/personal-os/drafts/{id}"),
     ("GET", "/api/personal-os/drafts/{id}/versions"),
     ("GET", "/api/personal-os/notes"),
     ("POST", "/api/personal-os/notes"),
+    ("DELETE", "/api/personal-os/notes/{id}"),
     ("GET", "/api/personal-os/gallery"),
     ("POST", "/api/personal-os/gallery"),
     ("POST", "/api/personal-os/gallery/favorite"),
@@ -149,6 +152,7 @@ def handle_post(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult
                 return JsonRouteResult({"error": "label and content are required"}, HTTPStatus.BAD_REQUEST)
             signature = pos.upsert_signature(
                 label=label,
+                signature_id=str(payload.get("signature_id", "")).strip(),
                 content=content,
                 is_default=bool(payload.get("is_default", False)),
                 project=project,
@@ -173,6 +177,7 @@ def handle_post(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult
                 return JsonRouteResult({"error": "title is required"}, HTTPStatus.BAD_REQUEST)
             note = pos.save_note(
                 title=title,
+                note_id=str(payload.get("note_id", "")).strip(),
                 body=str(payload.get("body", payload.get("content", ""))),
                 tags=payload.get("tags") if isinstance(payload.get("tags"), list) else [],
                 due_at=str(payload.get("due_at", "")),
@@ -292,6 +297,16 @@ def handle_put(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult 
 
 def handle_delete(path: str, query: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult | None:
     """Handle DELETE requests for removing presets."""
+    for collection in ("notes", "drafts", "signatures"):
+        prefix = f"/api/personal-os/{collection}/"
+        if path.startswith(prefix):
+            record_id = unquote(path.removeprefix(prefix)).strip()
+            if not record_id or "/" in record_id or "\\" in record_id:
+                return JsonRouteResult({"error": "Invalid record ID"}, HTTPStatus.BAD_REQUEST)
+            params = parse_qs(query)
+            deleted = deps.personal_os.delete_record(collection, record_id,
+                project=deps.first(params, "project") or "default", owner=deps.query_owner(params) or "local")
+            return JsonRouteResult({"deleted": record_id} if deleted else {"error": "Record not found"}, HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
     if not path.startswith("/api/personal-os/presets/"):
         return None
 

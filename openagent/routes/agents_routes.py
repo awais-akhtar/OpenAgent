@@ -156,7 +156,7 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
                             "event": "stream_ended",
                             "job_id": job_id,
                             "next_cursor": next_cursor,
-                            "has_more": bool(next_cursor),
+                            "has_more": bool(events.get("next")),
                             "event_count": len(events.get("events", [])),
                         }
                     except Exception as exc:  # noqa: BLE001

@@ -143,14 +143,20 @@ def handle_patch(path: str, deps: VaultRouteDependencies) -> JsonRouteResult | N
     project = str(payload.get("project", "default")).strip() or "default"
     action = str(payload.get("action", "")).strip().lower()
 
-    if action not in {"approve", "deny"}:
-        return JsonRouteResult({"error": "action must be 'approve' or 'deny'"}, HTTPStatus.BAD_REQUEST)
+    if action not in {"approve", "deny", "edit", "delete"}:
+        return JsonRouteResult({"error": "action must be approve, deny, edit or delete"}, HTTPStatus.BAD_REQUEST)
 
     try:
         if action == "approve":
             result = deps.vault.approve_access_request(request_id, project=project)
-        else:  # deny
+        elif action == "deny":
             result = deps.vault.deny_access_request(request_id, project=project)
+        elif action == "delete":
+            result = deps.vault.delete_access_request(request_id, project=project)
+        else:
+            result = deps.vault.update_access_request(request_id, project=project,
+                reason=payload.get("reason", ""), requested_entries=payload.get("requested_entries", []),
+                duration_minutes=payload.get("duration_minutes", 60))
         return JsonRouteResult({"access_request": result})
     except KeyError as exc:
         return JsonRouteResult({"error": "Access request not found"}, HTTPStatus.NOT_FOUND)

@@ -34,6 +34,15 @@ function syntheticSilenceWav() {
   return wav;
 }
 
+// Attach a rejection handler immediately while preserving rejection at await.
+// This lets an earlier locator error reach run()'s cleanup instead of orphaning
+// the fixture when a response waiter times out first.
+function responseWhen(page, ...args) {
+  const pending = page.waitForResponse(...args);
+  void pending.catch(() => {});
+  return pending;
+}
+
 async function waitFor(predicate, label, timeoutMs = 30_000, intervalMs = 250) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -264,7 +273,7 @@ async function run() {
   await page.getByRole('tab', { name: 'Jobs' }).click();
   const fineTuneJobCard = page.locator('#content article.p-record-section').filter({ hasText: 'local-smoke-model' });
   await expect(fineTuneJobCard).toContainText('queued', { timeout: 15_000 });
-  const cancelFineTuneResponse = page.waitForResponse(response =>
+  const cancelFineTuneResponse = responseWhen(page, response =>
     new URL(response.url()).pathname.endsWith(`/api/finetune/jobs/${fineTuneJob.payload.job.id}/cancel`) &&
     response.request().method() === 'POST', { timeout: 15_000 });
   page.once('dialog', dialog => dialog.accept());
@@ -284,7 +293,7 @@ async function run() {
     name: 'smoke-gallery.png', mimeType: 'image/png',
     buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/G7sAAAAASUVORK5CYII=', 'base64'),
   });
-  const galleryUploadPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/gallery/upload' && response.request().method() === 'POST');
+  const galleryUploadPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/gallery/upload' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Upload', exact: true }).click();
   const galleryUpload = await galleryUploadPromise;
   assert(galleryUpload.status() === 201, `Image Studio upload returned HTTP ${galleryUpload.status()}: ${await galleryUpload.text()}`);
@@ -295,10 +304,10 @@ async function run() {
   await page.getByRole('button', { name: /smoke-gallery\.png/ }).waitFor({ state: 'visible' });
   await page.getByRole('button', { name: /smoke-gallery\.png/ }).click();
   await page.getByRole('tab', { name: 'Operations' }).click();
-  const galleryUpscalePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/gallery/upscale' && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Upscale' }).click();
+  const galleryUpscalePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/gallery/upscale' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Scale', exact: true }).click();
   const galleryUpscale = await galleryUpscalePromise;
-  assert(galleryUpscale.ok, `Image Studio upscale returned HTTP ${galleryUpscale.status()}: ${await galleryUpscale.text()}`);
+  assert(galleryUpscale.ok(), `Image Studio upscale returned HTTP ${galleryUpscale.status()}: ${await galleryUpscale.text()}`);
   const galleryUpscalePayload = await galleryUpscale.json();
   assert(galleryUpscalePayload.asset?.id, 'Image Studio upscale did not return the resulting backend asset');
   results.push({ workflow: 'Image Studio upload and upscale', result: 'PASS', evidence: `React uploaded a synthetic 1×1 PNG as asset ${galleryAssetId}, selected it in Library and called the real global upscale contract with the selected asset ID. Python returned the persisted derivative ${galleryUpscalePayload.asset.id}; no external image service was used.` });
@@ -308,7 +317,7 @@ async function run() {
   await open('personalos', fixture.tokens.personalOS);
   await page.getByRole('tab', { name: 'Notes' }).click();
   await page.getByPlaceholder('Write a note…').fill('Synthetic Personal OS integration note.');
-  const personalNotePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/personal-os/notes' && response.request().method() === 'POST');
+  const personalNotePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/personal-os/notes' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Save note' }).click();
   const personalNoteResponse = await personalNotePromise;
   assert(personalNoteResponse.status() === 201, `Personal OS note save returned HTTP ${personalNoteResponse.status()}`);
@@ -324,14 +333,14 @@ async function run() {
   await open('cookbook', fixture.tokens.models);
   await page.getByPlaceholder('Host name').fill('Disposable cookbook host');
   await page.getByPlaceholder('Host address').fill('127.0.0.1');
-  const hostCreatePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/model-cookbook/hosts' && response.request().method() === 'POST');
+  const hostCreatePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/model-cookbook/hosts' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   const hostCreateResponse = await hostCreatePromise;
   assert(hostCreateResponse.status() === 201, `Model Cookbook host create returned HTTP ${hostCreateResponse.status()}`);
   const hostPayload = await hostCreateResponse.json();
   assert(hostPayload.host?.label === 'Disposable cookbook host', 'Model Cookbook did not store the submitted host label');
   await page.getByRole('textbox', { name: 'Model reference to serve' }).fill('local-smoke-model');
-  const servePlanPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/model-cookbook/serve' && response.request().method() === 'POST');
+  const servePlanPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/model-cookbook/serve' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Create serve plan' }).click();
   const servePlanResponse = await servePlanPromise;
   assert(servePlanResponse.status() === 201, `Model Cookbook serve plan returned HTTP ${servePlanResponse.status()}`);
@@ -342,11 +351,11 @@ async function run() {
   assert(persistedCookbookSessions.response.ok && persistedCookbookSessions.payload.sessions?.some(session => session.id === serveSession.id), 'Model Cookbook session history did not persist');
   await page.getByRole('tab', { name: 'Logs' }).click();
   await expect(page.getByText(/Serve session planned/)).toBeVisible();
-  const closePlanPromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/model-cookbook/stop/${serveSession.id}` && response.request().method() === 'POST');
+  const closePlanPromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/model-cookbook/stop/${serveSession.id}` && response.request().method() === 'POST');
   await page.getByRole('tab', { name: 'Hosts' }).click();
   await page.getByRole('button', { name: 'Close plan' }).click();
   const closePlanResponse = await closePlanPromise;
-  assert(closePlanResponse.ok, `Model Cookbook plan close returned HTTP ${closePlanResponse.status()}`);
+  assert(closePlanResponse.ok(), `Model Cookbook plan close returned HTTP ${closePlanResponse.status()}`);
   const closedSessionRead = await requestJson(fixture.baseUrl, '/api/model-cookbook/sessions?project=default', fixture.tokens.models);
   assert(closedSessionRead.payload.sessions?.some(session => session.id === serveSession.id && session.status === 'stopped'), 'Model Cookbook plan stop state did not persist');
   results.push({ workflow: 'Model Cookbook host, serve plan, logs and stop', result: 'PASS', evidence: `React persisted host ${hostPayload.host.id}, created planned session ${serveSession.id}, displayed its backend log, then closed the plan. The session list confirmed stopped status; allow_process=false and pid=0 prove no process was launched.` });
@@ -357,7 +366,7 @@ async function run() {
   await page.getByRole('tab', { name: 'Reports' }).click();
   await page.getByRole('textbox', { name: 'Python source' }).fill("print('isolated science verification')");
   await page.getByRole('checkbox', { name: /I reviewed this Python source/ }).check();
-  const scienceRunResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/science/execute') && response.request().method() === 'POST', { timeout: 20_000 });
+  const scienceRunResponsePromise = responseWhen(page, response => response.url().endsWith('/api/science/execute') && response.request().method() === 'POST', { timeout: 20_000 });
   await page.getByRole('button', { name: 'Run approved code' }).click();
   const scienceRunResponse = await scienceRunResponsePromise;
   assert(scienceRunResponse.status() === 201, `Scientific code run returned ${scienceRunResponse.status()}: ${await scienceRunResponse.text()}`);
@@ -374,7 +383,7 @@ async function run() {
   const chatInput = page.getByLabel('Message OpenAgent');
   await chatInput.waitFor({ state: 'visible' });
   await chatInput.fill('Reply with a short local integration confirmation.');
-  const chatStreamResponse = page.waitForResponse(response => response.url().includes('/api/chat/stream') && response.request().method() === 'POST', { timeout: 30_000 });
+  const chatStreamResponse = responseWhen(page, response => response.url().includes('/api/chat/stream') && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Send message' }).click();
   const chatStream = await chatStreamResponse;
   console.log('React Chat SSE response headers received:', chatStream.status());
@@ -398,7 +407,7 @@ async function run() {
   // contract, then hands the persisted descriptor to the Chat composer.
   await open('home', fixture.tokens.chatMedia);
   await page.getByRole('textbox', { name: 'Ask OpenAgent' }).waitFor({ state: 'visible' });
-  const homeUploadResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/media/ingest' && response.request().method() === 'POST', { timeout: 20_000 });
+  const homeUploadResponsePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/media/ingest' && response.request().method() === 'POST', { timeout: 20_000 });
   await page.getByLabel('Choose files for chat').setInputFiles({
     name: 'home-chat-context.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic local context for Chat attachment verification.'),
   });
@@ -409,7 +418,7 @@ async function run() {
   await page.getByRole('textbox', { name: 'Ask OpenAgent' }).fill('Summarise this local attachment.');
   await page.getByRole('button', { name: 'Open prompt in chat' }).click();
   await expect(page.getByTestId('chat-attachment')).toContainText(String(homeUploadedAsset.title ?? 'home-chat-context'));
-  const homeChatStreamPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chat/stream' && response.request().method() === 'POST', { timeout: 30_000 });
+  const homeChatStreamPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/chat/stream' && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Send message' }).click();
   const homeChatStream = await homeChatStreamPromise;
   assert(homeChatStream.status() === 200, `Home attachment Chat SSE returned HTTP ${homeChatStream.status()}`);
@@ -419,7 +428,7 @@ async function run() {
   results.push({ workflow: 'Home Chat attachment handoff', result: 'PASS', evidence: `The React Home composer uploaded a synthetic text file through authenticated POST /api/media/ingest, then submitted its returned asset ID in the real authenticated POST /api/chat/stream. Python returned SSE 200; the fixture provider remained local and no external services were called.` });
 
   await chatInput.fill('Trigger the controlled local provider failure [integration-fail].');
-  const chatFailureResponsePromise = page.waitForResponse(response =>
+  const chatFailureResponsePromise = responseWhen(page, response =>
     new URL(response.url()).pathname === '/api/chat/stream' &&
     response.request().method() === 'POST' &&
     String(response.request().postData() ?? '').includes('[integration-fail]'),
@@ -450,7 +459,7 @@ async function run() {
   const conversationTitle = String(disposableConversation.title || conversationId);
   await page.getByRole('button', { name: conversationTitle, exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
   page.once('dialog', dialog => dialog.accept());
-  const deleteConversationPromise = page.waitForResponse(response => response.url().endsWith(`/api/conversations/${encodeURIComponent(conversationId)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const deleteConversationPromise = responseWhen(page, response => response.url().endsWith(`/api/conversations/${encodeURIComponent(conversationId)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: `Delete ${conversationTitle}`, exact: true }).click();
   const deleteConversationResponse = await deleteConversationPromise;
   assert(deleteConversationResponse.ok(), `React conversation delete returned HTTP ${deleteConversationResponse.status()}`);
@@ -466,7 +475,7 @@ async function run() {
   const smokeFilePath = `openagent-smoke-${Date.now()}.txt`;
   const renamedSmokeFilePath = smokeFilePath.replace('.txt', '-renamed.txt');
   page.once('dialog', dialog => dialog.accept(smokeFilePath));
-  const createCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'create_file', { timeout: 15_000 });
+  const createCodeQFilePromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'create_file', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Create file' }).click();
   const createCodeQFileResponse = await createCodeQFilePromise;
   assert(createCodeQFileResponse.ok(), `React CodeQ create-file returned HTTP ${createCodeQFileResponse.status()}`);
@@ -475,7 +484,7 @@ async function run() {
   await page.keyboard.insertText('OpenAgent CodeQ persisted file smoke.');
   await expect(page.locator('.monaco-editor .view-lines')).toContainText('OpenAgent CodeQ persisted file smoke.');
   await expect(page.getByRole('button', { name: 'Save file' })).toBeEnabled();
-  const saveCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/file`) && response.request().method() === 'POST', { timeout: 10_000 }).catch(async cause => {
+  const saveCodeQFilePromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/file`) && response.request().method() === 'POST', { timeout: 10_000 }).catch(async cause => {
     const calls = apiRequests.filter(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/file`)).map(request => `${request.method()} ${request.url()}`);
     throw new Error(`CodeQ Save file produced no matching response; editor=${JSON.stringify((await page.locator('.monaco-editor .view-lines').innerText()).slice(0, 120))}; toolbar=${JSON.stringify(await page.locator('.codeq-tabbar').innerText())}; requests=${JSON.stringify(calls)}; cause=${String(cause)}`);
   });
@@ -490,7 +499,7 @@ async function run() {
     else await dialog.accept(renamedSmokeFilePath);
   };
   page.on('dialog', renameDialogHandler);
-  const renameCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'rename', { timeout: 15_000 });
+  const renameCodeQFilePromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'rename', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Rename selected path' }).click();
   const renameCodeQFileResponse = await renameCodeQFilePromise;
   page.off('dialog', renameDialogHandler);
@@ -498,7 +507,7 @@ async function run() {
   const renamedCodeQFile = await requestJson(fixture.baseUrl, `/api/codebase/projects/${encodeURIComponent(codeProjectId)}/file?path=${encodeURIComponent(renamedSmokeFilePath)}`, fixture.tokens.codeq);
   assert(renamedCodeQFile.response.ok && String(renamedCodeQFile.payload.file?.content ?? '').includes('OpenAgent CodeQ persisted file smoke.'), 'CodeQ rename did not preserve the saved file content');
   page.once('dialog', dialog => dialog.accept());
-  const deleteCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'delete', { timeout: 15_000 });
+  const deleteCodeQFilePromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'delete', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Delete selected path' }).click();
   const deleteCodeQFileResponse = await deleteCodeQFilePromise;
   assert(deleteCodeQFileResponse.ok(), `React CodeQ delete returned HTTP ${deleteCodeQFileResponse.status()}`);
@@ -508,8 +517,8 @@ async function run() {
   await page.getByRole('textbox', { name: 'Preview command' }).fill('node preview-server.mjs');
   await page.getByRole('checkbox', { name: /I reviewed this command/ }).check();
   page.once('dialog', dialog => dialog.accept());
-  const previewProbePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'probe_local_url', { timeout: 15_000 });
-  const previewStartPromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'start_process', { timeout: 15_000 });
+  const previewProbePromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'probe_local_url', { timeout: 15_000 });
+  const previewStartPromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'start_process', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Start preview' }).click();
   const previewStartResponse = await previewStartPromise;
   assert(previewStartResponse.ok(), `CodeQ preview start returned HTTP ${previewStartResponse.status()}`);
@@ -532,14 +541,14 @@ async function run() {
   assert(previewProbePayload.result?.reachable === true && previewProbePayload.result?.http_status === 200, `CodeQ preview readiness probe did not verify HTTP 200: ${JSON.stringify(previewProbePayload)}`);
   await expect(page.getByRole('region', { name: 'Live CodeQ preview session' })).toContainText(`Preview is ready · ${previewUrl}`, { timeout: 15_000 });
   const previewStartCountBeforeReload = apiRequests.filter(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && JSON.parse(request.postData() ?? '{}').tool === 'start_process').length;
-  const restoredPreviewStatus = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'process_status', { timeout: 15_000 });
+  const restoredPreviewStatus = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'process_status', { timeout: 15_000 });
   await page.reload();
   await expect(page.getByRole('link', { name: previewUrl })).toBeVisible({ timeout: 15_000 });
   assert((await restoredPreviewStatus).ok(), 'CodeQ preview process status could not be restored after a page reload');
   assert(apiRequests.filter(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && JSON.parse(request.postData() ?? '{}').tool === 'start_process').length === previewStartCountBeforeReload, 'Reloading CodeQ started a duplicate preview process');
   await page.getByRole('button', { name: 'Refresh preview status' }).click();
   await waitFor(async () => apiRequests.some(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && JSON.parse(request.postData() ?? '{}').tool === 'process_status'), 'CodeQ preview status refresh', 10_000);
-  const previewStopPromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'stop_process', { timeout: 15_000 });
+  const previewStopPromise = responseWhen(page, response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'stop_process', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Stop preview' }).click();
   const previewStopResponse = await previewStopPromise;
   assert(previewStopResponse.ok(), `CodeQ preview stop returned HTTP ${previewStopResponse.status()}`);
@@ -547,7 +556,7 @@ async function run() {
   results.push({ workflow: 'CodeQ preview lifecycle', result: 'PASS', evidence: `React used the authenticated project tools contract to start process ${previewProcessId}; the loopback-only readiness tool verified HTTP 200 at ${previewUrl}. After page reload React restored that same process without starting a duplicate, and status refresh and stop were accepted by the backend.` });
   await page.getByRole('tab', { name: /Terminal/ }).click();
   await page.getByRole('textbox', { name: 'Terminal command' }).fill('python --version');
-  const terminalStartPromise = page.waitForResponse(response => response.url().endsWith('/api/terminal/runs') && response.request().method() === 'POST');
+  const terminalStartPromise = responseWhen(page, response => response.url().endsWith('/api/terminal/runs') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Run command' }).click();
   const terminalStartResponse = await terminalStartPromise;
   assert(terminalStartResponse.status() === 202, `CodeQ terminal start returned HTTP ${terminalStartResponse.status()}`);
@@ -566,7 +575,7 @@ async function run() {
     `terminal scopes were not enforced (read ${terminalReadDenied.response.status}, write ${terminalWriteDenied.response.status})`);
   results.push({ workflow: 'CodeQ terminal least-privilege scopes', result: 'PASS', evidence: 'The existing media/workspace read-only credential was denied terminal history and command execution with HTTP 403; no command was started.' });
   await page.getByLabel('Ask CodeQ').fill('Inspect the fixture and report one safe observation [integration-delay].');
-  const codeRunResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
+  const codeRunResponsePromise = responseWhen(page, response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: /^Run$/ }).first().click();
   const codeRunResponse = await codeRunResponsePromise;
   assert([202, 400, 500].includes(codeRunResponse.status()), `Unexpected CodeQ create-run status ${codeRunResponse.status()}`);
@@ -581,7 +590,7 @@ async function run() {
     await expect(page.locator('.terminal-window').getByText(/run\.created/)).toBeVisible({ timeout: 10_000 });
     // The isolated Python fixture closes this marked SSE connection after its
     // first real event. React must resubscribe to the same route from cursor 0.
-    const reconnectRunResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
+    const reconnectRunResponsePromise = responseWhen(page, response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
     await page.getByLabel('Ask CodeQ').fill('Continue after a browser network interruption [integration-reconnect].');
     await page.getByRole('button', { name: /^Run$/ }).first().click();
     const reconnectRunResponse = await reconnectRunResponsePromise;
@@ -616,7 +625,7 @@ async function run() {
       await cancelButton.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
       if (await cancelButton.isVisible().catch(() => false)) {
         const cancelPath = `/api/codebase/runs/${encodeURIComponent(reconnectRun.id)}/cancel`;
-        const cancelResponse = page.waitForResponse(response => new URL(response.url()).pathname === cancelPath && response.request().method() === 'POST');
+        const cancelResponse = responseWhen(page, response => new URL(response.url()).pathname === cancelPath && response.request().method() === 'POST');
         await cancelButton.click();
         const cancelled = await cancelResponse;
         assert(cancelled.ok(), `CodeQ cancellation failed through React control (${cancelled.status()})`);
@@ -632,7 +641,7 @@ async function run() {
 
     // Exercise Resume after a controlled local provider failure.
     await page.getByLabel('Ask CodeQ').fill('Resume this disposable run after a controlled failure [integration-resume-fail].');
-    const failedRunCreate = page.waitForResponse(response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
+    const failedRunCreate = responseWhen(page, response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
     await page.getByRole('button', { name: /^Run$/ }).first().click();
     const failedRunResponse = await failedRunCreate;
     assert(failedRunResponse.status() === 202, `Controlled failure CodeQ run creation returned ${failedRunResponse.status()}`);
@@ -642,7 +651,7 @@ async function run() {
     const failedState = await requestJson(fixture.baseUrl, `/api/codebase/runs/${encodeURIComponent(failedRun.id)}`, fixture.tokens.codeq);
     assert(String(failedState.payload.run?.status).toLowerCase() === 'failed', 'CodeQ controlled run did not reach a persisted failed state');
     const resumePath = `/api/codebase/runs/${encodeURIComponent(failedRun.id)}/resume`;
-    const resumeResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === resumePath && response.request().method() === 'POST', { timeout: 15_000 });
+    const resumeResponsePromise = responseWhen(page, response => new URL(response.url()).pathname === resumePath && response.request().method() === 'POST', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Resume run' }).click();
     const resumeResponse = await resumeResponsePromise;
     assert(resumeResponse.status() === 202, `React CodeQ resume returned ${resumeResponse.status()}`);
@@ -662,7 +671,7 @@ async function run() {
   await open('research', fixture.tokens.research);
   await page.getByText('New research', { exact: true }).click();
   await page.getByLabel('Research question').fill('Review the Research source-note smoke fixture.');
-  const researchCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/research/sessions') && response.request().method() === 'POST', { timeout: 30_000 });
+  const researchCreatePromise = responseWhen(page, response => response.url().endsWith('/api/research/sessions') && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Run research' }).click();
   const researchResponse = await researchCreatePromise;
   assert(researchResponse.status() === 202, `Research session creation returned ${researchResponse.status()}`);
@@ -686,7 +695,7 @@ async function run() {
     const sourceButton = page.locator('.research-side button.timeline-row').filter({ hasText: sourceTitle }).first();
     await sourceButton.click();
     await page.getByLabel('Local source note').fill('Verified against the temporary local integration source.');
-    const researchNoteSave = page.waitForResponse(response => response.url().includes(`/api/research/sessions/${researchId}/source-notes/`) && response.request().method() === 'POST', { timeout: 15_000 });
+    const researchNoteSave = responseWhen(page, response => response.url().includes(`/api/research/sessions/${researchId}/source-notes/`) && response.request().method() === 'POST', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Save source note' }).click();
     const researchNoteResponse = await researchNoteSave;
     assert(researchNoteResponse.status() === 200, `Research source-note save returned ${researchNoteResponse.status()}`);
@@ -720,7 +729,7 @@ async function run() {
   const researchQuestion = researchControls.getByLabel('Research question');
   if (!(await researchQuestion.isVisible().catch(() => false))) await researchControls.locator('summary').click();
   await researchControls.getByLabel('Research question').fill('Cancel this isolated session [integration-research-cancel].');
-  const cancelResearchCreate = page.waitForResponse(response => response.url().endsWith('/api/research/sessions') && response.request().method() === 'POST', { timeout: 30_000 });
+  const cancelResearchCreate = responseWhen(page, response => response.url().endsWith('/api/research/sessions') && response.request().method() === 'POST', { timeout: 30_000 });
   await researchControls.getByRole('button', { name: 'Run research' }).click();
   const cancelResearchResponse = await cancelResearchCreate;
   assert(cancelResearchResponse.status() === 202, `Research cancellation fixture creation returned ${cancelResearchResponse.status()}`);
@@ -736,7 +745,7 @@ async function run() {
   });
   console.log('Research cancel pointer target:', JSON.stringify(cancelHit));
   assert(cancelHit.hitIsButton, `Research Cancel run is obscured by ${cancelHit.hit}`);
-  const cancelResearchRequest = page.waitForResponse(response => response.url().endsWith(`/api/research/sessions/${cancelResearchId}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const cancelResearchRequest = responseWhen(page, response => response.url().endsWith(`/api/research/sessions/${cancelResearchId}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
   await cancelResearchButton.click();
   const cancelResearchResult = await cancelResearchRequest;
   assert(cancelResearchResult.ok(), `React Research cancellation returned ${cancelResearchResult.status()}`);
@@ -786,7 +795,7 @@ async function run() {
   await page.locator('details.agent-run-panel > summary').click();
   const actualAgentGoal = 'History integration fixture from the Agents workspace';
   await page.getByLabel('Task goal').fill(actualAgentGoal);
-  const actualAgentResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/agents/jobs') && response.request().method() === 'POST', { timeout: 15_000 });
+  const actualAgentResponsePromise = responseWhen(page, response => response.url().endsWith('/api/agents/jobs') && response.request().method() === 'POST', { timeout: 15_000 });
   const runAgentButton = page.getByRole('button', { name: 'Run agent', exact: true });
   assert(await runAgentButton.isEnabled(), `Agents submit control is disabled; form=${JSON.stringify(await page.locator('.agent-run-form').innerText())}`);
   await runAgentButton.click();
@@ -831,12 +840,12 @@ async function run() {
   // accepted, then retry that same cancelled lifecycle record.
   await page.locator('details.agent-run-panel > summary').click();
   await page.getByLabel('Task goal').fill('Cancel and retry integration fixture [integration-agent-cancel]');
-  const cancelJobStart = page.waitForResponse(response => response.url().endsWith('/api/agents/jobs') && response.request().method() === 'POST', { timeout: 15_000 });
+  const cancelJobStart = responseWhen(page, response => response.url().endsWith('/api/agents/jobs') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Run agent', exact: true }).click();
   const cancelJobResponse = await cancelJobStart;
   const cancelJob = (await cancelJobResponse.json()).job;
   assert(cancelJob?.id, 'Cancellation lifecycle start did not return a job ID');
-  const cancelRequest = page.waitForResponse(response => response.url().endsWith(`/api/agents/jobs/${cancelJob.id}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const cancelRequest = responseWhen(page, response => response.url().endsWith(`/api/agents/jobs/${cancelJob.id}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Cancel run', exact: true }).click();
   assert((await cancelRequest).ok(), 'React agent cancellation request failed');
   const cancelledJob = await waitFor(async () => {
@@ -854,7 +863,7 @@ async function run() {
     throw error;
   });
   assert(cancelledJob.cancel_requested === true && Object.keys(cancelledJob.result ?? {}).length === 0, 'Cancelled agent job exposed a late successful result');
-  const retryRequest = page.waitForResponse(response => response.url().endsWith(`/api/agents/jobs/${cancelJob.id}/retry`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const retryRequest = responseWhen(page, response => response.url().endsWith(`/api/agents/jobs/${cancelJob.id}/retry`) && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Retry run', exact: true }).click();
   const retriedJob = (await (await retryRequest).json()).job;
   assert(retriedJob?.retry_of === cancelJob.id && retriedJob?.attempt === 2, 'React retry did not preserve lifecycle lineage');
@@ -862,13 +871,28 @@ async function run() {
     const snapshot = await requestJson(fixture.baseUrl, `/api/agents/jobs/${retriedJob.id}`, fixture.tokens.agentsReadOnly);
     return snapshot.payload.job?.status === 'completed' ? snapshot.payload.job : null;
   }, 'retried agent lifecycle to complete', 15_000);
+  // A real provider exception may return a safe local fallback, which must be
+  // visibly marked degraded rather than presented as genuine model output.
+  await open('agents', fixture.tokens.agents);
+  await page.locator('details.agent-run-panel > summary').click();
+  await page.getByLabel('Task goal').fill('Controlled provider failure [integration-fail]');
+  const degradedStart = responseWhen(page, response => response.url().endsWith('/api/agents/jobs') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run agent', exact: true }).click();
+  const degradedJob = (await (await degradedStart).json()).job;
+  const degradedResult = await waitFor(async () => {
+    const snapshot = await requestJson(fixture.baseUrl, `/api/agents/jobs/${degradedJob.id}`, fixture.tokens.agentsReadOnly);
+    return snapshot.payload.job?.status === 'completed' ? snapshot.payload.job : null;
+  }, 'the controlled provider failure fallback to be recorded', 15_000);
+  assert(degradedResult.result?.run?.metadata?.degraded === true, 'Provider failure did not retain degraded metadata');
+  await expect(page.locator('.steps-line')).toContainText('degraded: deterministic-local-agent', { timeout: 15_000 });
+  results.push({ workflow: 'Agent degraded provider response', result: 'PASS', evidence: 'An actual Python provider exception produced backend degraded metadata; React labelled the recorded local fallback. No live model output was fabricated.' });
   // Approval request and denial use the existing administrative API scope;
   // no agent execution is started by this denied request.
   await open('agents', fixture.tokens.agentsAdmin);
   await page.locator('details.agent-run-panel > summary').click();
   const approvalGoal = 'Review a local approval request only';
   await page.getByLabel('Task goal').fill(approvalGoal);
-  const approvalRequestPromise = page.waitForResponse(response => response.url().endsWith('/api/agents/approvals/request') && response.request().method() === 'POST');
+  const approvalRequestPromise = responseWhen(page, response => response.url().endsWith('/api/agents/approvals/request') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Request approval', exact: true }).click();
   const approvalRequest = await approvalRequestPromise;
   assert(approvalRequest.status() === 201, `Agents approval request returned ${approvalRequest.status()}`);
@@ -876,7 +900,7 @@ async function run() {
   assert(pendingApproval?.id, 'Agents approval response omitted its ID');
   await page.getByRole('button', { name: 'Access & approvals' }).click();
   await expect(page.getByText(approvalGoal, { exact: false })).toBeVisible({ timeout: 10_000 });
-  const rejectApprovalPromise = page.waitForResponse(response => response.url().endsWith('/api/agents/approvals/resolve') && response.request().method() === 'POST');
+  const rejectApprovalPromise = responseWhen(page, response => response.url().endsWith('/api/agents/approvals/resolve') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Reject', exact: true }).click();
   const rejectedApproval = await rejectApprovalPromise;
   assert(rejectedApproval.ok(), `Agents approval rejection returned ${rejectedApproval.status()}`);
@@ -897,7 +921,7 @@ async function run() {
   await page.getByRole('tab', { name: 'Tasks', exact: true }).click();
   const assistantTaskTitle = 'Batch 2B synthetic assistant task';
   await page.getByLabel('Task', { exact: true }).fill(assistantTaskTitle);
-  const assistantTaskCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/assistant/tasks') && response.request().method() === 'POST', { timeout: 15_000 });
+  const assistantTaskCreatePromise = responseWhen(page, response => response.url().endsWith('/api/assistant/tasks') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Add task', exact: true }).click();
   const assistantTaskCreate = await assistantTaskCreatePromise;
   assert(assistantTaskCreate.status() === 201, `Assistant task create returned ${assistantTaskCreate.status()}`);
@@ -906,20 +930,20 @@ async function run() {
   const assistantTaskRow = page.locator('.p-record-section').filter({ hasText: assistantTaskTitle });
   await assistantTaskRow.getByRole('button', { name: 'Edit', exact: true }).click();
   await page.getByLabel('Edit task', { exact: true }).fill(`${assistantTaskTitle} updated`);
-  const assistantTaskPatchPromise = page.waitForResponse(response => response.url().includes(`/api/assistant/tasks/${encodeURIComponent(assistantTask.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  const assistantTaskPatchPromise = responseWhen(page, response => response.url().includes(`/api/assistant/tasks/${encodeURIComponent(assistantTask.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   const assistantTaskPatch = await assistantTaskPatchPromise;
   assert(assistantTaskPatch.status() === 200, `Assistant task update returned ${assistantTaskPatch.status()}`);
   await page.locator('.p-record-section').filter({ hasText: `${assistantTaskTitle} updated` }).getByRole('button', { name: 'Mark complete', exact: true }).click();
   await page.getByText(/Backend task status: completed/).waitFor({ state: 'visible', timeout: 10_000 });
   page.once('dialog', dialog => dialog.accept());
-  const assistantTaskDeletePromise = page.waitForResponse(response => response.url().includes(`/api/assistant/tasks/${encodeURIComponent(assistantTask.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const assistantTaskDeletePromise = responseWhen(page, response => response.url().includes(`/api/assistant/tasks/${encodeURIComponent(assistantTask.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.locator('.p-record-section').filter({ hasText: `${assistantTaskTitle} updated` }).getByRole('button', { name: 'Delete', exact: true }).click();
   assert((await assistantTaskDeletePromise).status() === 200, 'Assistant task delete failed');
   const remainingTasks = await requestJson(fixture.baseUrl, '/api/assistant/tasks?project=default', fixture.tokens.assistant);
   assert(remainingTasks.response.ok && !remainingTasks.payload.tasks?.some(task => String(task.id) === String(assistantTask.id)), 'Assistant task deletion did not persist');
 
-  const assistantActivityResponse = page.waitForResponse(response => response.url().includes('/api/assistant/activity?project=default&limit=20') && response.request().method() === 'GET', { timeout: 15_000 });
+  const assistantActivityResponse = responseWhen(page, response => response.url().includes('/api/assistant/activity?project=default&limit=20') && response.request().method() === 'GET', { timeout: 15_000 });
   await page.getByRole('tab', { name: 'Today', exact: true }).click();
   const assistantActivity = await assistantActivityResponse;
   assert(assistantActivity.status() === 200, `Assistant activity returned ${assistantActivity.status()}: ${await assistantActivity.text()}`);
@@ -936,7 +960,7 @@ async function run() {
   const goalDialog = page.getByRole('dialog', { name: 'New goal' });
   const assistantGoalTitle = 'Batch 2B synthetic assistant goal';
   await goalDialog.getByLabel('Name').fill(assistantGoalTitle);
-  const assistantGoalCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/assistant/goals') && response.request().method() === 'POST', { timeout: 15_000 });
+  const assistantGoalCreatePromise = responseWhen(page, response => response.url().endsWith('/api/assistant/goals') && response.request().method() === 'POST', { timeout: 15_000 });
   await goalDialog.getByRole('button', { name: 'Create goal' }).click();
   const assistantGoalCreate = await assistantGoalCreatePromise;
   assert(assistantGoalCreate.status() === 201, `Assistant goal create returned ${assistantGoalCreate.status()}`);
@@ -946,11 +970,11 @@ async function run() {
   await assistantGoalRow.getByRole('button', { name: 'Edit', exact: true }).click();
   const editGoalDialog = page.getByRole('dialog', { name: 'Edit goal' });
   await editGoalDialog.getByLabel('Name').fill(`${assistantGoalTitle} updated`);
-  const assistantGoalPatchPromise = page.waitForResponse(response => response.url().includes(`/api/assistant/goals/${encodeURIComponent(assistantGoal.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  const assistantGoalPatchPromise = responseWhen(page, response => response.url().includes(`/api/assistant/goals/${encodeURIComponent(assistantGoal.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
   await editGoalDialog.getByRole('button', { name: 'Save changes' }).click();
   assert((await assistantGoalPatchPromise).status() === 200, 'Assistant goal update failed');
   page.once('dialog', dialog => dialog.accept());
-  const assistantGoalDeletePromise = page.waitForResponse(response => response.url().includes(`/api/assistant/goals/${encodeURIComponent(assistantGoal.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const assistantGoalDeletePromise = responseWhen(page, response => response.url().includes(`/api/assistant/goals/${encodeURIComponent(assistantGoal.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.locator('.p-record-section').filter({ hasText: `${assistantGoalTitle} updated` }).getByRole('button', { name: 'Delete', exact: true }).click();
   assert((await assistantGoalDeletePromise).status() === 200, 'Assistant goal delete failed');
   const remainingGoals = await requestJson(fixture.baseUrl, '/api/assistant/goals?project=default', fixture.tokens.assistant);
@@ -1004,7 +1028,7 @@ async function run() {
   // Security Audit uses its existing admin-only route, explicitly filtered to
   // the local workspace project. Only safe summary fields are rendered.
   await open('security', fixture.tokens.securityAdmin);
-  const scopedAuditResponse = page.waitForResponse(response => {
+  const scopedAuditResponse = responseWhen(page, response => {
     const url = new URL(response.url());
     return url.pathname === '/api/audit' && url.searchParams.get('project') === 'default';
   }, { timeout: 15_000 });
@@ -1018,7 +1042,7 @@ async function run() {
   results.push({ workflow: 'Security project-scoped audit list', result: 'PASS', evidence: 'The actual React Audit tab loaded GET /api/audit?project=default&limit=100 using security:admin, rendered the synthetic same-project event, and did not render its private metadata marker.' });
 
   await open('security', fixture.tokens.securityRead);
-  const deniedAuditResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/audit', { timeout: 15_000 });
+  const deniedAuditResponse = responseWhen(page, response => new URL(response.url()).pathname === '/api/audit', { timeout: 15_000 });
   await page.getByRole('tab', { name: 'Audit' }).click();
   const deniedAudit = await deniedAuditResponse;
   assert(deniedAudit.status() === 403, `A security:read token unexpectedly received HTTP ${deniedAudit.status()} from the Security Audit route`);
@@ -1032,7 +1056,7 @@ async function run() {
   await page.getByRole('tab', { name: 'Notifications' }).click();
   const taskCompletionPreference = page.getByRole('checkbox', { name: 'Task completion' });
   await expect(taskCompletionPreference).toBeVisible({ timeout: 15_000 });
-  const preferenceWritePromise = page.waitForResponse(response => response.url().endsWith('/api/integrations/preferences') && response.request().method() === 'POST', { timeout: 15_000 });
+  const preferenceWritePromise = responseWhen(page, response => response.url().endsWith('/api/integrations/preferences') && response.request().method() === 'POST', { timeout: 15_000 });
   await taskCompletionPreference.click();
   const preferenceWrite = await preferenceWritePromise;
   assert(preferenceWrite.status() === 201, `React notification preference was not persisted by Python: HTTP ${preferenceWrite.status()} ${await preferenceWrite.text()}`);
@@ -1053,7 +1077,7 @@ async function run() {
   await page.getByRole('tab', { name: 'Marketplace & runtime' }).click();
   const registeredModelName = 'Batch 2A local metadata fixture';
   await page.getByLabel('Model name').fill(registeredModelName);
-  const registerModelPromise = page.waitForResponse(response => response.url().endsWith('/api/local-ai/models/register') && response.request().method() === 'POST', { timeout: 15_000 });
+  const registerModelPromise = responseWhen(page, response => response.url().endsWith('/api/local-ai/models/register') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Register model', exact: true }).click();
   const registerModelResponse = await registerModelPromise;
   assert(registerModelResponse.status() === 201, `React local model metadata registration returned ${registerModelResponse.status()}: ${await registerModelResponse.text()}`);
@@ -1079,13 +1103,13 @@ async function run() {
   await page.getByLabel('Name', { exact: true }).fill(automationName);
   await page.getByLabel('New step 1 Title').fill('Synthetic event title');
   await page.getByLabel('New step 1 Content').fill('Definition-only fixture; this workflow will not be run.');
-  const workflowCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/workflows') && response.request().method() === 'POST', { timeout: 15_000 });
+  const workflowCreatePromise = responseWhen(page, response => response.url().endsWith('/api/workflows') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Save automation' }).click();
   const workflowCreate = await workflowCreatePromise;
   assert(workflowCreate.status() === 201, `React automation creation returned ${workflowCreate.status()}: ${await workflowCreate.text()}`);
   const createdWorkflow = (await workflowCreate.json()).workflow;
   assert(createdWorkflow?.id && createdWorkflow.name === automationName, 'Automation create response omitted the saved workflow');
-  const workflowPreviewPromise = page.waitForResponse(response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}/run`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const workflowPreviewPromise = responseWhen(page, response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}/run`) && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Preview run' }).click();
   const workflowPreviewResponse = await workflowPreviewPromise;
   assert(workflowPreviewResponse.status() === 201, `React automation preview returned ${workflowPreviewResponse.status()}: ${await workflowPreviewResponse.text()}`);
@@ -1096,7 +1120,7 @@ async function run() {
   const workflowEditName = `${automationName} edited`;
   await page.getByRole('tab', { name: 'Configuration' }).click();
   await page.getByLabel('Name', { exact: true }).fill(workflowEditName);
-  const workflowUpdatePromise = page.waitForResponse(response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}`) && response.request().method() === 'PUT', { timeout: 15_000 });
+  const workflowUpdatePromise = responseWhen(page, response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}`) && response.request().method() === 'PUT', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Save configuration' }).click();
   const workflowUpdate = await workflowUpdatePromise;
   assert(workflowUpdate.status() === 200, `React automation update returned ${workflowUpdate.status()}: ${await workflowUpdate.text()}`);
@@ -1106,7 +1130,7 @@ async function run() {
   assert(workflowsAfterUpdate.response.ok && workflowsAfterUpdate.payload.workflows?.some(workflow => String(workflow.id) === String(createdWorkflow.id) && workflow.name === workflowEditName), 'Automation update did not persist in the backend');
   await page.getByRole('button', { name: 'Automation options' }).click();
   page.once('dialog', dialog => dialog.accept());
-  const workflowDeletePromise = page.waitForResponse(response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const workflowDeletePromise = responseWhen(page, response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Delete automation' }).click();
   const workflowDelete = await workflowDeletePromise;
   assert(workflowDelete.ok(), `React automation delete returned ${workflowDelete.status()}: ${await workflowDelete.text()}`);
@@ -1126,7 +1150,7 @@ async function run() {
   await page.getByLabel('Repeat interval (hours)').fill('24');
   await expect(page.getByRole('checkbox', { name: /I approve recurring external network requests/ })).not.toBeChecked();
   page.once('dialog', dialog => dialog.accept());
-  const scraperSchedulePromise = page.waitForResponse(response => response.url().endsWith('/api/scraper/schedule') && response.request().method() === 'POST', { timeout: 15_000 });
+  const scraperSchedulePromise = responseWhen(page, response => response.url().endsWith('/api/scraper/schedule') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Schedule extraction' }).click();
   const scraperSchedule = await scraperSchedulePromise;
   assert(scraperSchedule.status() === 201, `React offline scraper scheduling returned ${scraperSchedule.status()}: ${await scraperSchedule.text()}`);
@@ -1140,7 +1164,7 @@ async function run() {
   const cancelScraperJob = page.getByRole('button', { name: `Cancel scheduled extraction for ${scraperJobLabel}` });
   await expect(cancelScraperJob).toBeVisible();
   page.once('dialog', dialog => dialog.accept());
-  const scraperCancelPromise = page.waitForResponse(response => response.url().endsWith(`/api/scraper/jobs/${scheduledScraperJob.job_id}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const scraperCancelPromise = responseWhen(page, response => response.url().endsWith(`/api/scraper/jobs/${scheduledScraperJob.job_id}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
   await cancelScraperJob.click();
   const scraperCancel = await scraperCancelPromise;
   assert(scraperCancel.status() === 200, `React scraper cancellation returned ${scraperCancel.status()}: ${await scraperCancel.text()}`);
@@ -1165,7 +1189,7 @@ async function run() {
   assert(!apiRequests.slice(requestsBeforeLegacyOffice).some(request => /\/api\/documents\/import(?:\?|$)/.test(new URL(request.url()).pathname + new URL(request.url()).search)), 'React sent an unsupported legacy Office binary to the document importer');
   results.push({ workflow: 'Files unsupported legacy Office input', result: 'PASS', evidence: 'React rejected a synthetic binary .doc with a clear conversion message and made no document-import request; the Python processing service separately rejects legacy .doc/.ppt/.xls before creating a record.' });
   const importedText = 'Batch 2A synthetic document content for import and download verification.';
-  const importResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/documents/import') && response.request().method() === 'POST', { timeout: 15_000 });
+  const importResponsePromise = responseWhen(page, response => response.url().endsWith('/api/documents/import') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByLabel('Choose document to import').setInputFiles({
     name: 'batch2a-synthetic-source.md', mimeType: 'text/markdown', buffer: Buffer.from(importedText),
   });
@@ -1184,7 +1208,7 @@ async function run() {
   const documentDownload = await documentDownloadPromise;
   assert(documentDownload.suggestedFilename() === 'batch2a-synthetic-source.txt', `Unexpected document download filename ${documentDownload.suggestedFilename()}`);
   await page.getByRole('tab', { name: 'Uploaded files', exact: true }).click();
-  const mediaUploadPromise = page.waitForResponse(response => response.url().endsWith('/api/media/ingest') && response.request().method() === 'POST', { timeout: 15_000 });
+  const mediaUploadPromise = responseWhen(page, response => response.url().endsWith('/api/media/ingest') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByLabel('Choose uploaded file').setInputFiles({
     name: 'batch2a-synthetic-media.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic local media upload for the Files workflow.'),
   });
@@ -1204,7 +1228,7 @@ async function run() {
   const deniedMediaDelete = await requestJson(fixture.baseUrl, `/api/media/assets/${encodeURIComponent(uploadedAsset.id)}?project=default`, fixture.tokens.readonly, { method: 'DELETE' });
   assert(deniedMediaDelete.response.status === 403, `media:read token deleted stored media (HTTP ${deniedMediaDelete.response.status})`);
   await page.once('dialog', dialog => dialog.accept());
-  const mediaDeletePromise = page.waitForResponse(response => response.url().includes(`/api/media/assets/${encodeURIComponent(uploadedAsset.id)}?project=default`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const mediaDeletePromise = responseWhen(page, response => response.url().includes(`/api/media/assets/${encodeURIComponent(uploadedAsset.id)}?project=default`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: `Delete ${uploadedAsset.title}` }).click();
   const mediaDeleteResponse = await mediaDeletePromise;
   assert(mediaDeleteResponse.status() === 200, `React stored media deletion returned ${mediaDeleteResponse.status()}: ${await mediaDeleteResponse.text()}`);
@@ -1229,7 +1253,7 @@ async function run() {
   const workspaceNoteDialog = page.getByRole('dialog', { name: 'New workspace note' });
   await workspaceNoteDialog.getByLabel('Note title', { exact: true }).fill(workspaceNoteTitle);
   await workspaceNoteDialog.getByLabel('Note', { exact: true }).fill('Disposable note used to verify authenticated workspace item deletion.');
-  const workspaceCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/workspace/items') && response.request().method() === 'POST', { timeout: 15_000 });
+  const workspaceCreatePromise = responseWhen(page, response => response.url().endsWith('/api/workspace/items') && response.request().method() === 'POST', { timeout: 15_000 });
   await workspaceNoteDialog.getByRole('button', { name: 'Create note', exact: true }).click();
   const workspaceCreate = await workspaceCreatePromise;
   assert(workspaceCreate.status() === 201, `Workspace note create returned ${workspaceCreate.status()}`);
@@ -1239,7 +1263,7 @@ async function run() {
   const updatedWorkspaceTitle = `${workspaceNoteTitle} edited`;
   await page.getByLabel('Note title', { exact: true }).fill(updatedWorkspaceTitle);
   await page.getByLabel('Note content', { exact: true }).fill('Updated disposable note content for project-scope and persistence verification.');
-  const workspaceUpdatePromise = page.waitForResponse(response => response.url().endsWith('/api/workspace/items/update') && response.request().method() === 'POST', { timeout: 15_000 });
+  const workspaceUpdatePromise = responseWhen(page, response => response.url().endsWith('/api/workspace/items/update') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Save note', exact: true }).click();
   const workspaceUpdate = await workspaceUpdatePromise;
   assert(workspaceUpdate.status() === 200, `Workspace note update returned ${workspaceUpdate.status()}`);
@@ -1248,7 +1272,7 @@ async function run() {
   const updatedWorkspaceList = await requestJson(fixture.baseUrl, '/api/workspace/items?project=default&kind=note&limit=100', fixture.tokens.workspace);
   assert(updatedWorkspaceList.response.ok && updatedWorkspaceList.payload.items?.some(item => String(item.id) === String(workspaceItem.id) && String(item.title) === updatedWorkspaceTitle), 'Updated workspace note was not persisted in Python project history');
   await expect(page.getByRole('button', { name: new RegExp(updatedWorkspaceTitle) })).toBeVisible();
-  const workspaceArchivePromise = page.waitForResponse(response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const workspaceArchivePromise = responseWhen(page, response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Archive note' }).click();
   const workspaceArchive = await workspaceArchivePromise;
   assert(workspaceArchive.ok(), `Workspace archive returned ${workspaceArchive.status()}: ${await workspaceArchive.text()}`);
@@ -1259,7 +1283,7 @@ async function run() {
   const archivedWorkspaceRow = page.getByRole('list', { name: 'Workspace notes' }).getByRole('button', { name: new RegExp(updatedWorkspaceTitle) });
   await expect(archivedWorkspaceRow).toContainText('Archived');
   await archivedWorkspaceRow.click();
-  const workspaceRestorePromise = page.waitForResponse(response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}/restore`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const workspaceRestorePromise = responseWhen(page, response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}/restore`) && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Restore note' }).click();
   const workspaceRestore = await workspaceRestorePromise;
   assert(workspaceRestore.ok(), `Workspace restore returned ${workspaceRestore.status()}: ${await workspaceRestore.text()}`);
@@ -1267,7 +1291,7 @@ async function run() {
   assert(restoredWorkspaceList.response.ok && restoredWorkspaceList.payload.items?.some(item => String(item.id) === String(workspaceItem.id) && !item.archived), 'Workspace restore did not persist in the normal item list');
   await page.getByLabel('Show archived').uncheck();
   page.once('dialog', dialog => dialog.accept());
-  const workspaceDeletePromise = page.waitForResponse(response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const workspaceDeletePromise = responseWhen(page, response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Delete note', exact: true }).click();
   const workspaceDelete = await workspaceDeletePromise;
   assert(workspaceDelete.status() === 200, `Workspace note delete returned ${workspaceDelete.status()}`);
@@ -1284,7 +1308,7 @@ async function run() {
   const knowledgeTitle = 'Batch 2A synthetic knowledge source';
   await page.getByLabel('Title', { exact: true }).fill(knowledgeTitle);
   await page.getByLabel('Source text', { exact: true }).fill('Local fixture evidence only. No external research or network provider is used.');
-  const knowledgeIngestPromise = page.waitForResponse(response => response.url().endsWith('/api/knowledge/ingest') && response.request().method() === 'POST', { timeout: 15_000 });
+  const knowledgeIngestPromise = responseWhen(page, response => response.url().endsWith('/api/knowledge/ingest') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Index source', exact: true }).click();
   const knowledgeIngest = await knowledgeIngestPromise;
   assert(knowledgeIngest.status() === 201, `Knowledge source ingestion returned ${knowledgeIngest.status()}`);
@@ -1301,7 +1325,7 @@ async function run() {
   const knowledgeEditDialog = page.getByRole('dialog', { name: 'Edit knowledge source' });
   await knowledgeEditDialog.getByRole('textbox', { name: 'Knowledge source title' }).fill(knowledgeUpdatedTitle);
   await knowledgeEditDialog.getByRole('textbox', { name: 'Knowledge source text' }).fill('Updated local fixture evidence only. No external research or network provider is used.');
-  const knowledgeUpdatePromise = page.waitForResponse(response => response.url().endsWith(`/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}`) && response.request().method() === 'PUT', { timeout: 15_000 });
+  const knowledgeUpdatePromise = responseWhen(page, response => response.url().endsWith(`/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}`) && response.request().method() === 'PUT', { timeout: 15_000 });
   await knowledgeEditDialog.getByRole('button', { name: 'Save source', exact: true }).click();
   const knowledgeUpdate = await knowledgeUpdatePromise;
   assert(knowledgeUpdate.status() === 200, `Knowledge source update returned ${knowledgeUpdate.status()}`);
@@ -1310,7 +1334,7 @@ async function run() {
   await page.getByRole('dialog', { name: knowledgeUpdatedTitle }).getByRole('button', { name: 'Close source details' }).click();
   await page.getByRole('tab', { name: 'Search', exact: true }).click();
   const knowledgeUploadText = 'Batch 2A Knowledge upload: deterministic text extracted locally.';
-  const knowledgeUploadPromise = page.waitForResponse(response => response.url().endsWith('/api/knowledge/upload') && response.request().method() === 'POST', { timeout: 15_000 });
+  const knowledgeUploadPromise = responseWhen(page, response => response.url().endsWith('/api/knowledge/upload') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByLabel('Upload knowledge document').setInputFiles({
     name: 'batch2a-knowledge-upload.txt', mimeType: 'text/plain', buffer: Buffer.from(knowledgeUploadText),
   });
@@ -1321,7 +1345,7 @@ async function run() {
   const listedUploadedKnowledge = await requestJson(fixture.baseUrl, '/api/knowledge/documents?project=default&limit=100', fixture.tokens.knowledge);
   assert(listedUploadedKnowledge.response.ok && listedUploadedKnowledge.payload.documents?.some(document => document.title === 'batch2a-knowledge-upload.txt'), 'Uploaded Knowledge file was not indexed in the project list');
   const richTextBuffer = Buffer.from('{\\rtf1\\ansi Local rich text extraction\\par persisted from RTF upload.}');
-  const rtfUploadPromise = page.waitForResponse(response => response.url().endsWith('/api/knowledge/upload') && response.request().method() === 'POST', { timeout: 15_000 });
+  const rtfUploadPromise = responseWhen(page, response => response.url().endsWith('/api/knowledge/upload') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByLabel('Upload knowledge document').setInputFiles({ name: 'batch2a-knowledge-upload.rtf', mimeType: 'application/rtf', buffer: richTextBuffer });
   const rtfUpload = await rtfUploadPromise;
   const rtfUploadPayload = await rtfUpload.json();
@@ -1330,7 +1354,7 @@ async function run() {
   const knowledgeCollectionRenamed = `${knowledgeCollectionName} · revised`;
   await page.getByRole('tab', { name: 'Collections', exact: true }).click();
   await page.getByLabel('Collection name').fill(knowledgeCollectionName);
-  const knowledgeCollectionCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/semantic/collections') && response.request().method() === 'POST', { timeout: 15_000 });
+  const knowledgeCollectionCreatePromise = responseWhen(page, response => response.url().endsWith('/api/semantic/collections') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Create collection', exact: true }).click();
   const knowledgeCollectionCreate = await knowledgeCollectionCreatePromise;
   assert(knowledgeCollectionCreate.status() === 201, `Knowledge collection create returned ${knowledgeCollectionCreate.status()}`);
@@ -1341,13 +1365,13 @@ async function run() {
   await collectionDetailDialog.getByRole('button', { name: 'Rename', exact: true }).click();
   const collectionRenameDialog = page.getByRole('dialog', { name: 'Rename collection' });
   await collectionRenameDialog.getByRole('textbox', { name: 'New collection name' }).fill(knowledgeCollectionRenamed);
-  const knowledgeCollectionRenamePromise = page.waitForResponse(response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionName)}/rename`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const knowledgeCollectionRenamePromise = responseWhen(page, response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionName)}/rename`) && response.request().method() === 'POST', { timeout: 15_000 });
   await collectionRenameDialog.getByRole('button', { name: 'Rename', exact: true }).click();
   const knowledgeCollectionRename = await knowledgeCollectionRenamePromise;
   assert(knowledgeCollectionRename.status() === 200, `Knowledge collection rename returned ${knowledgeCollectionRename.status()}`);
   const renamedCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default', fixture.tokens.knowledge);
   assert(renamedCollectionRead.response.ok && renamedCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id && collection.name === knowledgeCollectionRenamed), 'Knowledge collection rename did not persist with the same collection ID');
-  const collectionArchivePromise = page.waitForResponse(response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const collectionArchivePromise = responseWhen(page, response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
   await collectionDetailDialog.getByRole('button', { name: 'Archive', exact: true }).click();
   const collectionArchive = await collectionArchivePromise;
   assert(collectionArchive.status() === 200, `Knowledge collection archive returned ${collectionArchive.status()}`);
@@ -1355,7 +1379,7 @@ async function run() {
   const activeCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default', fixture.tokens.knowledge);
   assert(archivedCollectionRead.response.ok && archivedCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id && collection.archived), 'Archived Knowledge collection was not available in the archived listing');
   assert(activeCollectionRead.response.ok && !activeCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id), 'Archived Knowledge collection remained in the active listing');
-  const collectionRestorePromise = page.waitForResponse(response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const collectionRestorePromise = responseWhen(page, response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
   await collectionDetailDialog.getByRole('button', { name: 'Restore', exact: true }).click();
   const collectionRestore = await collectionRestorePromise;
   assert(collectionRestore.status() === 200, `Knowledge collection restore returned ${collectionRestore.status()}`);
@@ -1364,7 +1388,7 @@ async function run() {
   await page.getByRole('dialog').getByRole('button', { name: 'Close collection details' }).click();
   await page.getByRole('button', { name: `Open collection ${knowledgeCollectionRenamed}`, exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
-  const knowledgeCollectionDeletePromise = page.waitForResponse(response => response.url().includes(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const knowledgeCollectionDeletePromise = responseWhen(page, response => response.url().includes(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   const knowledgeCollectionDelete = await knowledgeCollectionDeletePromise;
   assert(knowledgeCollectionDelete.status() === 200, `Knowledge collection delete returned ${knowledgeCollectionDelete.status()}`);
@@ -1381,7 +1405,7 @@ async function run() {
   await page.getByRole('button', { name: `Open ${knowledgeUpdatedTitle}`, exact: true }).click();
   await page.getByRole('dialog').getByText('Updated local fixture evidence only.', { exact: false }).waitFor({ state: 'visible', timeout: 15_000 });
   page.once('dialog', dialog => dialog.accept());
-  const knowledgeDeletePromise = page.waitForResponse(response => response.url().includes(`/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const knowledgeDeletePromise = responseWhen(page, response => response.url().includes(`/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Delete source', exact: true }).click();
   const knowledgeDelete = await knowledgeDeletePromise;
   assert(knowledgeDelete.status() === 200, `Knowledge source delete returned ${knowledgeDelete.status()}`);
@@ -1414,7 +1438,7 @@ async function run() {
   const trashMessage = trashMessageResponse.payload.message;
   await open('communications', fixture.tokens.communication);
   await page.getByRole('button', { name: /Batch 2A synthetic inbox message/ }).click();
-  const replyDraftPromise = page.waitForResponse(response => response.url().endsWith('/api/communication/drafts/reply') && response.request().method() === 'POST', { timeout: 15_000 });
+  const replyDraftPromise = responseWhen(page, response => response.url().endsWith('/api/communication/drafts/reply') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Draft reply', exact: true }).click();
   const replyDraftResponse = await replyDraftPromise;
   assert(replyDraftResponse.status() === 201, `React reply draft returned ${replyDraftResponse.status()}`);
@@ -1422,7 +1446,7 @@ async function run() {
   assert(replyDraft?.id, 'Reply draft response omitted its identifier');
   const draftsAfterReply = await requestJson(fixture.baseUrl, '/api/communication/drafts?project=default&limit=100', fixture.tokens.communication);
   assert(draftsAfterReply.response.ok && draftsAfterReply.payload.drafts?.some(draft => String(draft.id) === String(replyDraft.id)), 'Reply draft did not persist in communication drafts');
-  const copiedDraftPromise = page.waitForResponse(response => response.url().endsWith('/api/communication/drafts') && response.request().method() === 'POST', { timeout: 15_000 });
+  const copiedDraftPromise = responseWhen(page, response => response.url().endsWith('/api/communication/drafts') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Copy to drafts', exact: true }).click();
   const copiedDraftResponse = await copiedDraftPromise;
   assert(copiedDraftResponse.status() === 201, `React inbox draft copy returned ${copiedDraftResponse.status()}: ${await copiedDraftResponse.text()}`);
@@ -1436,7 +1460,7 @@ async function run() {
   await editMessageDialog.getByLabel('Subject').fill('Batch 2A synthetic inbox message · revised');
   await editMessageDialog.getByLabel('Sender').fill('batch2a-updated@example.test');
   await editMessageDialog.getByRole('textbox', { name: 'Message' }).fill('Local-only revised message fixture for draft and archive checks.');
-  const editMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/update') && response.request().method() === 'POST', { timeout: 15_000 });
+  const editMessagePromise = responseWhen(page, response => response.url().endsWith('/api/communication/messages/update') && response.request().method() === 'POST', { timeout: 15_000 });
   await editMessageDialog.getByRole('button', { name: 'Save changes' }).click();
   const editMessageResponse = await editMessagePromise;
   assert(editMessageResponse.status() === 200, `React inbox edit returned ${editMessageResponse.status()}: ${await editMessageResponse.text()}`);
@@ -1444,21 +1468,21 @@ async function run() {
   assert(editedInboxMessage?.subject === 'Batch 2A synthetic inbox message · revised' && editedInboxMessage.body === 'Local-only revised message fixture for draft and archive checks.', 'React inbox edit response did not return the updated record');
   const inboxAfterEdit = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
   assert(inboxAfterEdit.response.ok && inboxAfterEdit.payload.messages?.some(message => String(message.id) === String(importedMessage.id) && message.subject === editedInboxMessage.subject && message.sender === editedInboxMessage.sender && message.body === editedInboxMessage.body), 'Communication message edit did not persist');
-  const archiveMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
+  const archiveMessagePromise = responseWhen(page, response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Archive', exact: true }).click();
   const archiveMessage = await archiveMessagePromise;
   assert(archiveMessage.ok(), `React message archive returned ${archiveMessage.status()}`);
   const inboxAfterArchive = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
   assert(inboxAfterArchive.response.ok && inboxAfterArchive.payload.messages?.some(message => String(message.id) === String(importedMessage.id) && (message.archived === true || Number(message.archived) === 1 || message.folder === 'archive')), 'Communication archive state was not persisted');
   await page.getByRole('button', { name: /Batch 2A synthetic trash message/ }).click();
-  const trashMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
+  const trashMessagePromise = responseWhen(page, response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Move to trash', exact: true }).click();
   const trashResponse = await trashMessagePromise;
   assert(trashResponse.ok(), `React message move-to-trash returned ${trashResponse.status()}`);
   const inboxAfterTrash = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
   assert(inboxAfterTrash.response.ok && inboxAfterTrash.payload.messages?.some(message => String(message.id) === String(trashMessage.id) && message.folder === 'trash'), 'Communication trash state was not persisted');
-  const restoreMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
+  const restoreMessagePromise = responseWhen(page, response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
   const restoreMessage = await restoreMessagePromise;
   assert(restoreMessage.ok(), `React message restore returned ${restoreMessage.status()}`);
@@ -1466,7 +1490,7 @@ async function run() {
   assert(inboxAfterRestore.response.ok && inboxAfterRestore.payload.messages?.some(message => String(message.id) === String(trashMessage.id) && message.folder === 'inbox'), 'Restored message was not persisted in the inbox');
   await page.getByRole('button', { name: /Batch 2A synthetic trash message/ }).click();
   page.once('dialog', dialog => dialog.accept());
-  const permanentDeletePromise = page.waitForResponse(response => response.url().includes(`/api/communication/messages/${encodeURIComponent(trashMessage.id)}?project=default`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const permanentDeletePromise = responseWhen(page, response => response.url().includes(`/api/communication/messages/${encodeURIComponent(trashMessage.id)}?project=default`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Delete message permanently', exact: true }).click();
   const permanentDelete = await permanentDeletePromise;
   assert(permanentDelete.status() === 200, `React permanent message delete returned ${permanentDelete.status()}: ${await permanentDelete.text()}`);
@@ -1489,7 +1513,7 @@ async function run() {
   await page.getByLabel('Name').fill('Batch 2 CRM smoke contact');
   await page.getByLabel('Email').fill('crm-smoke@example.test');
   await page.getByLabel('Notes').fill('Disposable local CRM lifecycle record');
-  const crmCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/contacts') && response.request().method() === 'POST', { timeout: 15_000 });
+  const crmCreatePromise = responseWhen(page, response => response.url().endsWith('/api/contacts') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Save contact' }).click();
   const crmCreateResponse = await crmCreatePromise;
   assert(crmCreateResponse.status() === 201, `React CRM contact creation returned HTTP ${crmCreateResponse.status()}`);
@@ -1503,19 +1527,19 @@ async function run() {
   // Editing replaces the contact heading with inputs, so the original
   // name-based row locator no longer matches after the edit transition.
   const editingCrmRow = page.locator('.p-record-section').filter({ has: page.getByPlaceholder('Email') });
-  const crmPatchPromise = page.waitForResponse(response => response.url().includes(`/api/contacts/${encodeURIComponent(createdCrmContact.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  const crmPatchPromise = responseWhen(page, response => response.url().includes(`/api/contacts/${encodeURIComponent(createdCrmContact.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
   await editingCrmRow.getByRole('button', { name: 'Save', exact: true }).click();
   const crmPatchResponse = await crmPatchPromise;
   assert(crmPatchResponse.ok(), `React CRM contact update returned HTTP ${crmPatchResponse.status()}`);
   crmRead = await requestJson(fixture.baseUrl, '/api/contacts?project=default', fixture.tokens.communication);
   assert(crmRead.response.ok && crmRead.payload.contacts?.some(contact => String(contact.id) === String(createdCrmContact.id) && contact.handles?.email === 'crm-smoke-updated@example.test'), 'Fresh CRM read did not return the updated handle');
-  const crmExportPromise = page.waitForResponse(response => response.url().includes('/api/contacts/export') && response.request().method() === 'GET', { timeout: 15_000 });
+  const crmExportPromise = responseWhen(page, response => response.url().includes('/api/contacts/export') && response.request().method() === 'GET', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Export CRM' }).click();
   const crmExportResponse = await crmExportPromise;
   const crmExport = await crmExportResponse.json();
   assert(crmExportResponse.ok() && crmExport.contacts?.some(contact => String(contact.id) === String(createdCrmContact.id)), 'CRM export omitted the persisted contact');
   page.once('dialog', dialog => dialog.accept());
-  const crmDeletePromise = page.waitForResponse(response => response.url().includes(`/api/contacts/${encodeURIComponent(createdCrmContact.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const crmDeletePromise = responseWhen(page, response => response.url().includes(`/api/contacts/${encodeURIComponent(createdCrmContact.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await crmRow.getByRole('button', { name: 'Delete' }).click();
   assert((await crmDeletePromise).ok(), 'React CRM contact deletion failed');
   crmRead = await requestJson(fixture.baseUrl, '/api/contacts?project=default', fixture.tokens.communication);
@@ -1526,7 +1550,7 @@ async function run() {
   // short synthetic WAV through the existing STT contract. The fixture is
   // silent and does not claim that speech recognition produced a transcript.
   await open('voice', fixture.tokens.voice);
-  const voiceSessionPromise = page.waitForResponse(response => response.url().includes('/api/voice/sessions') && response.request().method() === 'POST', { timeout: 15_000 });
+  const voiceSessionPromise = responseWhen(page, response => response.url().includes('/api/voice/sessions') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'New session', exact: true }).click();
   const voiceSessionResponse = await voiceSessionPromise;
   assert(voiceSessionResponse.status() === 201, `React Voice session creation returned ${voiceSessionResponse.status()}`);
@@ -1536,7 +1560,7 @@ async function run() {
   await page.locator('input[aria-label="Choose audio file"]').setInputFiles({
     name: 'openagent-smoke-silence.wav', mimeType: 'audio/wav', buffer: syntheticSilenceWav(),
   });
-  const voiceSttPromise = page.waitForResponse(response => response.url().endsWith('/api/voice/stt') && response.request().method() === 'POST', { timeout: 30_000 });
+  const voiceSttPromise = responseWhen(page, response => response.url().endsWith('/api/voice/stt') && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Upload and transcribe' }).click();
   const voiceSttResponse = await voiceSttPromise;
   assert(voiceSttResponse.status() === 201, `React Voice upload returned ${voiceSttResponse.status()}: ${await voiceSttResponse.text()}`);
@@ -1549,8 +1573,8 @@ async function run() {
   await page.getByRole('tab', { name: 'Voice settings' }).click();
   await page.getByRole('textbox', { name: 'Text to synthesize' }).fill('Local playback integration fixture.');
   const voicePlaybackPath = `/api/voice/assets/`;
-  const audioPlaybackPromise = page.waitForResponse(response => new URL(response.url()).pathname.startsWith(voicePlaybackPath) && new URL(response.url()).pathname.endsWith('/content') && response.request().method() === 'GET', { timeout: 15_000 });
-  const ttsCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/voice/tts') && response.request().method() === 'POST', { timeout: 15_000 });
+  const audioPlaybackPromise = responseWhen(page, response => new URL(response.url()).pathname.startsWith(voicePlaybackPath) && new URL(response.url()).pathname.endsWith('/content') && response.request().method() === 'GET', { timeout: 15_000 });
+  const ttsCreatePromise = responseWhen(page, response => response.url().endsWith('/api/voice/tts') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Generate local speech artifact' }).click();
   const ttsResponse = await ttsCreatePromise;
   assert(ttsResponse.status() === 201, `React local TTS returned ${ttsResponse.status()}: ${await ttsResponse.text()}`);
@@ -1579,7 +1603,7 @@ async function run() {
   await page.getByRole('tab', { name: 'Sync', exact: true }).click();
   const providerAccountBefore = 'Batch 2B local calendar provider';
   await page.getByLabel('Account reference (optional)').fill(providerAccountBefore);
-  const providerRegisterPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calendar/providers/register' && response.request().method() === 'POST', { timeout: 15_000 });
+  const providerRegisterPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/calendar/providers/register' && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Register provider', exact: true }).click();
   const providerRegister = await providerRegisterPromise;
   assert(providerRegister.status() === 201, `React manual calendar provider registration returned ${providerRegister.status()}`);
@@ -1591,26 +1615,26 @@ async function run() {
   const providerAccountAfter = 'Batch 2B local calendar provider refreshed';
   await page.getByLabel('Account reference (optional)').fill(providerAccountAfter);
   page.once('dialog', dialog => dialog.accept());
-  const providerReauthPromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/calendar/providers/${registeredProvider.provider_id}/reauth` && response.request().method() === 'POST', { timeout: 15_000 });
+  const providerReauthPromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/calendar/providers/${registeredProvider.provider_id}/reauth` && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Re-authenticate provider manual', exact: true }).click();
   const providerReauth = await providerReauthPromise;
   assert(providerReauth.status() === 200, `React calendar provider re-auth returned ${providerReauth.status()}`);
   const providerReauthRead = await requestJson(fixture.baseUrl, '/api/calendar/providers?project=default', fixture.tokens.calendar);
   assert(providerReauthRead.response.ok && providerReauthRead.payload.providers?.some(provider => provider.provider_id === registeredProvider.provider_id && provider.account_ref === providerAccountAfter), 'Provider re-authentication did not persist the updated account reference');
   page.once('dialog', dialog => dialog.accept());
-  const providerDeletePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/calendar/providers/${registeredProvider.provider_id}` && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const providerDeletePromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/calendar/providers/${registeredProvider.provider_id}` && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Remove provider manual', exact: true }).click();
   const providerDelete = await providerDeletePromise;
   assert(providerDelete.status() === 200, `React calendar provider removal returned ${providerDelete.status()}`);
   const providersAfterDelete = await requestJson(fixture.baseUrl, '/api/calendar/providers?project=default', fixture.tokens.calendar);
   assert(providersAfterDelete.response.ok && !providersAfterDelete.payload.providers?.some(provider => provider.provider_id === registeredProvider.provider_id), 'Removed provider remained in the authenticated provider list');
   results.push({ workflow: 'Calendar provider lifecycle', result: 'PASS', evidence: 'React registered a manual iCalendar provider without contacting an external service, re-authenticated it with synthetic account metadata, and removed it after confirmation. Authenticated fresh reads verified registration, updated metadata and final removal.' });
-  const scheduleAnalysisResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calendar/free-slots', { timeout: 15_000 });
+  const scheduleAnalysisResponse = responseWhen(page, response => new URL(response.url()).pathname === '/api/calendar/free-slots', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Find time for a team sync' }).click();
   const scheduleAnalysis = await scheduleAnalysisResponse;
   assert(scheduleAnalysis.ok(), `Calendar assistant availability request returned ${scheduleAnalysis.status()}`);
   await expect(page.locator('#toast-region')).toContainText('Calendar backend found', { timeout: 10_000 });
-  const scheduleSummaryResponse = page.waitForResponse(response => {
+  const scheduleSummaryResponse = responseWhen(page, response => {
     const url = new URL(response.url());
     return url.pathname === '/api/calendar/optimize' && url.searchParams.has('from');
   }, { timeout: 15_000 });
@@ -1642,7 +1666,7 @@ async function run() {
     fields: [...form.querySelectorAll('input')].map(input => ({ name: input.getAttribute('aria-label') || input.type, value: input.value, valid: input.checkValidity() })),
   }));
   assert(calendarFormState.valid, `Calendar create form is invalid before submit: ${JSON.stringify(calendarFormState)}`);
-  const calendarCreatePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calendar/events' && response.request().method() === 'POST', { timeout: 15_000 }).catch(async error => {
+  const calendarCreatePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/calendar/events' && response.request().method() === 'POST', { timeout: 15_000 }).catch(async error => {
     const recent = apiRequests.slice(-12).map(request => `${request.method()} ${new URL(request.url()).pathname}`).join(', ');
     throw new Error(`${error.message}; calendar form=${JSON.stringify(calendarFormState)}; recent API requests=${recent}; visible form errors=${await page.locator('[aria-labelledby="calendar-create-title"] [role="alert"]').allTextContents().catch(() => [])}`);
   });
@@ -1694,7 +1718,7 @@ async function run() {
   await calendarDetails.getByRole('button', { name: 'Edit series' }).click();
   const calendarEdit = page.getByRole('dialog', { name: 'Edit calendar event' });
   await calendarEdit.getByLabel('Title').fill(`${calendarTitle} updated`);
-  const calendarPatchPromise = page.waitForResponse(response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  const calendarPatchPromise = responseWhen(page, response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
   await calendarEdit.getByRole('button', { name: 'Save changes' }).click();
   const calendarPatch = await calendarPatchPromise;
   assert(calendarPatch.status() === 200, `React calendar update returned ${calendarPatch.status()}: ${await calendarPatch.text()}`);
@@ -1717,7 +1741,7 @@ async function run() {
   movedEndDate.setHours(movedEndDate.getHours() + 1);
   await occurrenceStart.fill(toLocalInput(movedStartDate));
   await occurrenceEnd.fill(toLocalInput(movedEndDate));
-  const occurrenceOverridePromise = page.waitForResponse(response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}/override`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const occurrenceOverridePromise = responseWhen(page, response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}/override`) && response.request().method() === 'POST', { timeout: 15_000 });
   await occurrenceEdit.getByRole('button', { name: 'Save changes' }).click();
   const occurrenceOverrideResponse = await occurrenceOverridePromise;
   assert(occurrenceOverrideResponse.status() === 201, `React calendar occurrence edit returned ${occurrenceOverrideResponse.status()}: ${await occurrenceOverrideResponse.text()}`);
@@ -1732,7 +1756,7 @@ async function run() {
   assert(occurrenceRead.response.ok && persistedSeries?.title === `${calendarTitle} updated` && persistedOccurrence?.is_override === true && persistedOccurrence?.title === occurrenceTitle && persistedOccurrence?.location === 'Integration test room', `Calendar occurrence override was not merged into its persisted series: ${JSON.stringify({ status: occurrenceRead.response.status, series: persistedSeries })}`);
   await page.locator('.calendar-upcoming-row').filter({ hasText: occurrenceTitle }).first().click();
   page.once('dialog', dialog => dialog.accept());
-  const calendarDeletePromise = page.waitForResponse(response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  const calendarDeletePromise = responseWhen(page, response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
   await page.getByRole('dialog', { name: occurrenceTitle }).getByRole('button', { name: 'Delete series' }).click();
   const calendarDelete = await calendarDeletePromise;
   assert(calendarDelete.status() === 200, `React calendar delete returned ${calendarDelete.status()}`);
@@ -1744,7 +1768,7 @@ async function run() {
   const dueBeforeAck = await requestJson(fixture.baseUrl, '/api/calendar/reminders?project=default', fixture.tokens.calendar);
   assert(dueBeforeAck.response.ok && dueBeforeAck.payload.reminders?.some(reminder => String(reminder.title ?? reminder.event_title) === 'Batch 2B due reminder fixture'), 'Synthetic due reminder was not available from the real Python API');
   const reminderId = String(dueBeforeAck.payload.reminders.find(reminder => String(reminder.title ?? reminder.event_title) === 'Batch 2B due reminder fixture').reminder_id);
-  const acknowledgePromise = page.waitForResponse(response => response.url().includes(`/api/calendar/reminders/${reminderId}/acknowledge`) && response.request().method() === 'POST', { timeout: 15_000 });
+  const acknowledgePromise = responseWhen(page, response => response.url().includes(`/api/calendar/reminders/${reminderId}/acknowledge`) && response.request().method() === 'POST', { timeout: 15_000 });
   await reminderRow.getByRole('button', { name: 'Acknowledge' }).click();
   const acknowledgeResponse = await acknowledgePromise;
   assert(acknowledgeResponse.status() === 200, `React reminder acknowledgement returned ${acknowledgeResponse.status()}: ${await acknowledgeResponse.text()}`);
@@ -1764,7 +1788,7 @@ async function run() {
   assert(notificationsDisabled.response.status === 201, `Could not set isolated notification preference off: ${notificationsDisabled.response.status}`);
   await page.getByRole('button', { name: 'Refresh reminders' }).click();
   await page.locator('.timeline-row').filter({ hasText: 'Batch 2B manual delivery fixture' }).waitFor({ state: 'visible' });
-  const blockedDeliveryPromise = page.waitForResponse(response => response.url().endsWith('/api/calendar/reminders/deliver') && response.request().method() === 'POST', { timeout: 15_000 });
+  const blockedDeliveryPromise = responseWhen(page, response => response.url().endsWith('/api/calendar/reminders/deliver') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Deliver', exact: true }).click();
   const blockedDelivery = await blockedDeliveryPromise;
   const blockedDeliveryBody = await blockedDelivery.json();
@@ -1773,7 +1797,7 @@ async function run() {
     method: 'POST', body: { project: 'default', scope: 'notifications', key: 'enabled', value: true },
   });
   assert(notificationsEnabled.response.status === 201, `Could not enable isolated notification preference: ${notificationsEnabled.response.status}`);
-  const allowedDeliveryPromise = page.waitForResponse(response => response.url().endsWith('/api/calendar/reminders/deliver') && response.request().method() === 'POST', { timeout: 15_000 });
+  const allowedDeliveryPromise = responseWhen(page, response => response.url().endsWith('/api/calendar/reminders/deliver') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Deliver', exact: true }).click();
   const allowedDelivery = await allowedDeliveryPromise;
   const allowedDeliveryBody = await allowedDelivery.json();
