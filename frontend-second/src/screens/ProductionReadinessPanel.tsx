@@ -1,9 +1,7 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  Mic, Zap, HardDrive, CalendarDays, Play, Square, AlertCircle,
-  CheckCircle2, Clock, Radio, Cpu, Database, Settings2, ChevronRight,
-  Activity, BarChart3, TrendingUp, RotateCcw, Download, Upload,
-  Lock, Shield, Eye, EyeOff, Filter, SortAsc, Plus, X,
+  Mic, Zap, HardDrive, CalendarDays, Play, Square,
+  CheckCircle2, Clock, Radio,
 } from 'lucide-react';
 
 interface TabProps {
@@ -33,7 +31,7 @@ const VoiceSTTPanel: React.FC = () => {
   const [transcript, setTranscript] = useState('');
   const [confidence, setConfidence] = useState(0);
   const [frameCount, setFrameCount] = useState(0);
-  const [sessions, setSessions] = useState([
+  const [sessions] = useState([
     { id: 'voice-1', started: '2 min ago', frames: 45, status: 'Active' },
     { id: 'voice-2', started: '15 min ago', frames: 120, status: 'Completed' },
   ]);
@@ -171,7 +169,7 @@ const VoiceSTTPanel: React.FC = () => {
 };
 
 const AutonomousSchedulerPanel: React.FC = () => {
-  const [reminders, setReminders] = useState([
+  const [reminders] = useState([
     { id: 'r1', event: 'Team Meeting', time: '10:00 AM', delivered: true, status: 'delivered' },
     { id: 'r2', event: 'Project Review', time: '2:30 PM', delivered: false, status: 'pending' },
     { id: 'r3', event: 'Daily Standup', time: '9:00 AM', delivered: true, status: 'delivered' },
@@ -279,7 +277,7 @@ const AutonomousSchedulerPanel: React.FC = () => {
 };
 
 const FineTuningPanel: React.FC = () => {
-  const [jobs, setJobs] = useState([
+  const [jobs] = useState([
     { id: 'job-1', name: 'GPT-2 Fine-tune', status: 'running', progress: 65, eta: '2h 15m' },
     { id: 'job-2', name: 'BERT Adapter', status: 'completed', progress: 100, eta: '—' },
     { id: 'job-3', name: 'T5 Training', status: 'queued', progress: 0, eta: '—' },
