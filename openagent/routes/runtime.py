@@ -1263,6 +1263,9 @@ def build_http_server(
                 self.send_json(media_route.payload, status=media_route.status)
                 return
             workflow_route = handle_workflows_get(parsed.path, parsed.query, workflow_route_dependencies(self))
+            if isinstance(workflow_route, StreamRouteResult):
+                self.send_event_stream(workflow_route.events, headers=workflow_route.headers)
+                return
             if workflow_route is not None:
                 self.send_json(workflow_route.payload, status=workflow_route.status)
                 return

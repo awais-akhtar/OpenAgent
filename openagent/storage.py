@@ -767,6 +767,59 @@ class OpenAgentStore:
             rows = connection.execute(query, params).fetchall()
         return [self._workflow_run_row_to_dict(row) for row in rows]
 
+    def get_workflow_run_events(
+        self,
+        run_id: str,
+        *,
+        after: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Get events for a workflow run with cursor-based pagination.
+
+        Args:
+            run_id: The workflow run ID
+            after: Cursor ID to retrieve events after (pagination)
+            limit: Maximum number of events to return (1-500)
+
+        Returns:
+            Dict with "events", "next", and "cursor" keys
+        """
+        limit = max(1, min(int(limit), 500))
+
+        with self.session() as connection:
+            # Verify run exists
+            run = connection.execute(
+                "SELECT * FROM workflow_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if not run:
+                raise KeyError("Workflow run not found.")
+
+            run_dict = self._workflow_run_row_to_dict(run)
+
+            # For now, return a single event representing the run status
+            # In future, this can be expanded to return detailed step events
+            events = [
+                {
+                    "id": run_dict["id"],
+                    "event_type": "status",
+                    "workflow_id": run_dict["workflow_id"],
+                    "run_id": run_dict["id"],
+                    "status": run_dict["status"],
+                    "timestamp": run_dict["created_at"],
+                    "data": {
+                        "result": run_dict.get("result", {}),
+                        "completed_at": run_dict.get("completed_at"),
+                    },
+                }
+            ]
+
+        return {
+            "events": events,
+            "cursor": run_id,
+            "next": None,
+        }
+
     def enqueue_job(
         self,
         job_type: str,
