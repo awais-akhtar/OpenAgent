@@ -107,16 +107,71 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
             try:
                 # Support cursor-based reconnection with ?after=<cursor> parameter
                 after = (deps.first(params, "after") or "").strip()
-                events = deps.multi_agent.job_events(job_id, owner=deps.owner, after=after, limit=1000)
+
+                # Support event filtering by type: ?type=started,progress
+                event_type_filter = (deps.first(params, "type") or "").strip()
+
+                # Support filtering by job status: ?status=running
+                status_filter = (deps.first(params, "status") or "").strip()
+
+                # Get limit from query param (default 1000 for streaming, max 1000)
+                limit_raw = deps.first(params, "limit")
+                try:
+                    stream_limit = int(limit_raw) if limit_raw is not None else 1000
+                    stream_limit = max(1, min(stream_limit, 1000))
+                except (TypeError, ValueError):
+                    stream_limit = 1000
+
+                # Retrieve events with filters
+                events = deps.multi_agent.job_events(
+                    job_id,
+                    owner=deps.owner,
+                    after=after,
+                    limit=stream_limit,
+                    event_type=event_type_filter if event_type_filter else None,
+                    status_filter=status_filter if status_filter else None,
+                )
+
                 def stream_events():
-                    yield "data: " + json.dumps({"event": "stream_started", "job_id": job_id, "cursor": after}) + "\n\n"
-                    for evt in events.get("events", []):
-                        yield "data: " + json.dumps(evt) + "\n\n"
-                    # Include final cursor for reconnection
-                    last_event_id = events.get("cursor") if events.get("cursor") else ""
-                    yield "data: " + json.dumps({"event": "stream_ended", "job_id": job_id, "next_cursor": last_event_id}) + "\n\n"
+                    """Stream events in SSE format with proper error handling and cleanup."""
+                    try:
+                        # Send stream start event
+                        yield "data: " + json.dumps({
+                            "event": "stream_started",
+                            "job_id": job_id,
+                            "cursor": after,
+                            "filters": {
+                                "type": event_type_filter if event_type_filter else None,
+                                "status": status_filter if status_filter else None,
+                            },
+                        }) + "\n\n"
+
+                        # Stream all events
+                        for evt in events.get("events", []):
+                            yield "data: " + json.dumps(evt) + "\n\n"
+
+                        # Send stream end event with next cursor for pagination
+                        next_cursor = events.get("next") or events.get("cursor") or ""
+                        yield "data: " + json.dumps({
+                            "event": "stream_ended",
+                            "job_id": job_id,
+                            "next_cursor": next_cursor,
+                            "has_more": bool(next_cursor),
+                            "event_count": len(events.get("events", [])),
+                        }) + "\n\n"
+                    except Exception as exc:  # noqa: BLE001
+                        # Send error event before closing
+                        yield "data: " + json.dumps({
+                            "event": "stream_error",
+                            "error": str(exc),
+                            "job_id": job_id,
+                        }) + "\n\n"
+
                 from . import StreamRouteResult
-                return StreamRouteResult(stream_events(), "text/event-stream")
+                return StreamRouteResult(
+                    stream_events(),
+                    {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+                )
             except KeyError as exc:
                 return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
         if remainder.endswith("/events"):

@@ -102,7 +102,9 @@ class AgentsJobEventsStreamTests(TestCase):
         result = handle_get("/api/agents/jobs/job-abc/events/stream", "", deps)
         # StreamRouteResult returns a generator
         self.assertIsNotNone(result)
-        multi_agent.job_events.assert_called_once_with("job-abc", owner="user-1", after="", limit=1000)
+        multi_agent.job_events.assert_called_once_with(
+            "job-abc", owner="user-1", after="", limit=1000, event_type=None, status_filter=None
+        )
 
     def test_events_stream_with_cursor(self):
         agents, multi_agent, store, deps = _deps()

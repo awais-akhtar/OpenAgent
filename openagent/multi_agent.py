@@ -132,6 +132,26 @@ class MultiAgentRuntime:
                     manifest_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_job_events (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    project TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    step TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_job_events_job_id
+                    ON agent_job_events(job_id, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_agent_job_events_project_created
+                    ON agent_job_events(project, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_agent_job_events_type
+                    ON agent_job_events(job_id, event_type);
                 """
             )
         self._reconcile_unfinished_jobs()
@@ -302,25 +322,67 @@ class MultiAgentRuntime:
         owner: str,
         after: str = "",
         limit: int = 100,
+        event_type: str | None = None,
+        status_filter: str | None = None,
     ) -> dict[str, Any]:
-        """Return events for a job with cursor-based pagination."""
+        """Return events for a job with cursor-based pagination, filtering, and aggregation.
+
+        Args:
+            job_id: The job ID to retrieve events for
+            owner: The owner of the job (for authorization)
+            after: Cursor ID to retrieve events after (pagination)
+            limit: Maximum number of events to return (1-500)
+            event_type: Filter by event type (e.g., 'started', 'progress', 'completed', 'failed')
+            status_filter: Filter by job status (e.g., 'running', 'completed', 'failed', 'cancelled')
+        """
         job = self.get_job(job_id, owner=owner)
         if not job:
             raise KeyError("Agent job not found.")
         limit = max(1, min(int(limit), 500))
+
+        # Build the WHERE clause based on filters
+        where_conditions = ["job_id = ?"]
+        params: list[Any] = [job_id]
+
+        # Apply status filter on the job itself
+        if status_filter:
+            where_conditions.append("(SELECT status FROM agent_execution_jobs WHERE id = ?) = ?")
+            params.extend([job_id, status_filter])
+
+        # Apply event type filter
+        if event_type:
+            where_conditions.append("event_type = ?")
+            params.append(event_type)
+
+        # Build base query
+        base_where = " AND ".join(where_conditions)
+
         with self.store.session() as connection:
             if after:
-                rows = connection.execute(
-                    """SELECT * FROM agent_job_events WHERE job_id = ? AND created_at > (
-                        SELECT created_at FROM agent_job_events WHERE job_id = ? AND id = ?
-                    ) ORDER BY created_at ASC, rowid ASC LIMIT ?""",
-                    (job_id, job_id, after, limit),
-                ).fetchall()
+                # Get the rowid of the cursor event for stable pagination
+                cursor_row = connection.execute(
+                    f"SELECT rowid, created_at FROM agent_job_events WHERE id = ?",
+                    (after,),
+                ).fetchone()
+                if not cursor_row:
+                    # Cursor not found, start from beginning
+                    rows = connection.execute(
+                        f"SELECT * FROM agent_job_events WHERE {base_where} ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                        params + [limit],
+                    ).fetchall()
+                else:
+                    cursor_rowid = cursor_row[0]
+                    # Use rowid for stable pagination (handles events with same timestamp)
+                    rows = connection.execute(
+                        f"SELECT * FROM agent_job_events WHERE {base_where} AND rowid > ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                        params + [cursor_rowid, limit],
+                    ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM agent_job_events WHERE job_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
-                    (job_id, limit),
+                    f"SELECT * FROM agent_job_events WHERE {base_where} ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                    params + [limit],
                 ).fetchall()
+
         events = [
             {
                 "id": row["id"],
@@ -332,8 +394,20 @@ class MultiAgentRuntime:
             }
             for row in rows
         ]
+
+        # Compute next cursor: use the last event's ID if we got a full page
         next_cursor = events[-1]["id"] if len(events) == limit else ""
-        return {"events": events, "next": next_cursor, "job_id": job_id}
+
+        return {
+            "events": events,
+            "next": next_cursor,
+            "cursor": next_cursor,  # Backward compatibility
+            "job_id": job_id,
+            "filters": {
+                "event_type": event_type,
+                "status": status_filter,
+            },
+        }
 
     def cancel_job(self, job_id: str, *, owner: str) -> dict[str, Any]:
         job = self.get_job(job_id, owner=owner)
