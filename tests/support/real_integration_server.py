@@ -173,7 +173,7 @@ def main() -> int:
                 # Keep this disposable Agent job active until the real React
                 # cancel control has submitted its authenticated request.
                 print("integration Agent cancellation provider delay entered", file=sys.stderr, flush=True)
-                time.sleep(8)
+                time.sleep(15)
                 return ModelResult(provider="local", model="integration-fixture", content="Synthetic local cancellation fixture.", metadata={})
             if "[integration-resume-fail]" in prompt:
                 raise ProviderConfigurationError("Controlled local failure for resume integration coverage.")
@@ -201,7 +201,7 @@ def main() -> int:
             if "[integration-agent-cancel]" in prompt:
                 # Agent runs use the streaming provider path; hold this marked
                 # fixture here until React submits the real cancel request.
-                time.sleep(8)
+                time.sleep(15)
             if "[integration-research-cancel]" in prompt:
                 # Research synthesis uses the streaming gateway path. Keep its
                 # deterministic local response in flight long enough for the
