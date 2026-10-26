@@ -10,7 +10,7 @@ import {
   Search as SearchIcon, Shield, SlidersHorizontal, Sparkles, SquareTerminal, Terminal, Trash2, Upload, UserRound, X, Zap,
   type LucideIcon,
 } from "lucide-react";
-import { advancedScreenEndpoints, apiConnectionMessage, apiDelete as backendDelete, apiGet as backendGet, apiGetBlob as backendGetBlob, apiPatch as backendPatch, apiPost as backendPost, fetchAdvancedScreenData, type AdvancedRoute, type JsonRecord } from "../api/client";
+import { advancedScreenEndpoints, apiConnectionMessage, apiDelete as backendDelete, apiGet as backendGet, apiGetBlob as backendGetBlob, apiPatch as backendPatch, apiPost as backendPost, apiPut as backendPut, fetchAdvancedScreenData, type AdvancedRoute, type JsonRecord } from "../api/client";
 import { useWorkspaceState } from "../state";
 import { advancedDemoAction, advancedDemoScreen, resetAdvancedDemoRoute } from "../demo/advanced";
 import { demoProvider } from "../demo/provider";
@@ -3784,6 +3784,7 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
   const [noteError, setNoteError] = useState("");
   const [presetName, setPresetName] = useState("");
   const [presetError, setPresetError] = useState("");
+  const [editingPreset, setEditingPreset] = useState<JsonRecord | null>(null);
   const [feedback, setFeedback] = useState("");
   const [exportError, setExportError] = useState("");
 
@@ -3802,9 +3803,19 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
   });
 
   const addPresetMutation = useMutation({
-    mutationFn: () => apiPost("/api/personal-os/presets", { name: presetName.trim(), project: "default" }),
-    onSuccess: async () => { setPresetName(""); setPresetError(""); setFeedback("Preset saved by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    mutationFn: () => editingPreset
+      ? backendPut(`/api/personal-os/presets/${encodeURIComponent(String(editingPreset.id))}`, {
+          ...editingPreset, name: presetName.trim(), project: "default",
+        })
+      : apiPost("/api/personal-os/presets", { name: presetName.trim(), project: "default" }),
+    onSuccess: async () => { setPresetName(""); setEditingPreset(null); setPresetError(""); setFeedback("Preset saved by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
     onError: (e) => setPresetError(e instanceof Error ? e.message : "Failed to create preset"),
+  });
+
+  const deletePresetMutation = useMutation({
+    mutationFn: (id: string) => backendDelete(`/api/personal-os/presets/${encodeURIComponent(id)}`),
+    onSuccess: async () => { setEditingPreset(null); setPresetName(""); setPresetError(""); setFeedback("Preset deleted."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    onError: (error) => setPresetError(apiConnectionMessage(error)),
   });
 
   const exportMutation = useMutation({
@@ -3823,8 +3834,9 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
   if (tab === "Presets") return <section className="p-card">
     <div className="p-card-heading"><h3>Presets</h3></div>
     <div className="row" style={{ gap: 8, marginBottom: 12 }}>
-      <input className="input flex1" placeholder="Preset name" value={presetName} onChange={e => setPresetName(e.target.value)} />
-      <button className="btn sm primary" type="button" disabled={!presetName.trim() || addPresetMutation.isPending} onClick={() => addPresetMutation.mutate()}><Plus className="icon sm"/>Add</button>
+      <input className="input flex1" aria-label="Preset name" placeholder="Preset name" value={presetName} onChange={e => setPresetName(e.target.value)} />
+      <button className="btn sm primary" type="button" disabled={!presetName.trim() || addPresetMutation.isPending} onClick={() => addPresetMutation.mutate()}><Plus className="icon sm"/>{editingPreset ? "Save changes" : "Add"}</button>
+      {editingPreset && <button className="btn sm" type="button" onClick={() => { setEditingPreset(null); setPresetName(""); setPresetError(""); }}>Cancel edit</button>}
     </div>
     {presetError && <p className="caption" role="alert">{presetError}</p>}
     {feedback && <p className="caption" role="status">{feedback}</p>}
@@ -3833,6 +3845,8 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
       : <div className="p-list">{presets.map((p, idx) => <div className="p-list-row" key={String(p.id ?? idx)}>
           <span className="square-icon sm"><UserRound className="icon sm" aria-hidden="true"/></span>
           <div className="flex1"><strong>{String(p.name ?? "Preset")}</strong><small className="muted">{String(p.created_at ?? "")}</small></div>
+          <button className="btn sm" type="button" disabled={addPresetMutation.isPending || deletePresetMutation.isPending} onClick={() => { setEditingPreset(p); setPresetName(String(p.name ?? "")); setPresetError(""); }}>Edit</button>
+          <button className="btn sm danger" type="button" disabled={addPresetMutation.isPending || deletePresetMutation.isPending} onClick={() => { if (window.confirm(`Delete preset "${String(p.name ?? "Preset")}"?`)) deletePresetMutation.mutate(String(p.id)); }}>Delete</button>
         </div>)}</div>}
   </section>;
 
