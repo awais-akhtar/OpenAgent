@@ -162,6 +162,7 @@ class PersonalOS:
         self,
         *,
         name: str,
+        preset_id: str = "",
         project: str = "default",
         owner: str = "",
         kind: str = "chat",
@@ -174,8 +175,15 @@ class PersonalOS:
         if not name:
             raise PersonalOSError("Preset name is required.")
         now = utc_now()
-        record_id = stable_id("preset", project, owner, kind, name)
+        record_id = preset_id or stable_id("preset", project, owner, kind, name)
         with self.store.session() as connection:
+            if preset_id:
+                row = connection.execute(
+                    "SELECT id FROM personal_presets WHERE id = ? AND project = ? AND owner = ?",
+                    (preset_id, project, owner),
+                ).fetchone()
+                if row is None:
+                    raise PersonalOSError("Preset not found.")
             connection.execute(
                 """
                 INSERT INTO personal_presets (
@@ -206,6 +214,16 @@ class PersonalOS:
             )
         self._audit("personal.preset.upsert", record_id, project=project, owner=owner)
         return self.get_preset(record_id) or {}
+
+    def delete_preset(self, preset_id: str, *, project: str = "default", owner: str = "") -> bool:
+        with self.store.session() as connection:
+            deleted = connection.execute(
+                "DELETE FROM personal_presets WHERE id = ? AND project = ? AND owner = ?",
+                (preset_id, project, owner),
+            ).rowcount > 0
+        if deleted:
+            self._audit("personal.preset.delete", preset_id, project=project, owner=owner)
+        return deleted
 
     def get_preset(self, preset_id: str) -> dict[str, Any] | None:
         with self.store.session() as connection:
