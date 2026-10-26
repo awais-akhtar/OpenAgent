@@ -738,6 +738,15 @@ class FineTuningManager:
         4. Track progress and training metrics
 
         Returns immediately with training status.
+
+        Note: Genuine training requires:
+        - Compatible local model files (tokenizer, config) in model_dir
+        - Sufficient system resources for training process
+        - Proper torch/transformers installation for the selected model architecture
+
+        The training runs in a background thread with periodic checkpointing.
+        Actual model quality depends on dataset size, training duration, and model fit.
+        This implementation supports LoRA-based adaptation for smaller models.
         """
         job = self.get_job(job_id, project=project)
 
