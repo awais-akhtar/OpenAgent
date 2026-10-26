@@ -20,6 +20,7 @@ ROUTES = (
     ("GET", "/api/tasks/{id}/runs"),
     ("GET", "/api/tasks/{id}/destinations"),
     ("GET", "/api/tasks/{id}/deliveries"),
+    ("GET", "/api/scheduler/autonomous/status"),
     ("POST", "/api/tasks"),
     ("POST", "/api/tasks/parse"),
     ("POST", "/api/tasks/run-due"),
@@ -34,6 +35,9 @@ ROUTES = (
     ("POST", "/api/tasks/{id}/webhook"),
     ("POST", "/api/tasks/{id}/destinations"),
     ("POST", "/api/tasks/{id}/delete"),
+    ("POST", "/api/scheduler/autonomous/start"),
+    ("POST", "/api/scheduler/autonomous/stop"),
+    ("POST", "/api/scheduler/autonomous/execute-once"),
     ("PATCH", "/api/tasks/{id}"),
 )
 
@@ -45,6 +49,7 @@ def contract() -> dict[str, Any]:
 @dataclass(frozen=True)
 class SchedulerRouteDependencies:
     scheduler: Scheduler
+    autonomous_scheduler: Any
     first: Any
     parse_bool: Any
     parse_int: Any
@@ -54,6 +59,10 @@ class SchedulerRouteDependencies:
 
 
 def handle_get(path: str, query: str, deps: SchedulerRouteDependencies) -> JsonRouteResult | None:
+    if path == "/api/scheduler/autonomous/status":
+        status = deps.autonomous_scheduler.get_worker_status("default")
+        return JsonRouteResult(status)
+
     if not path.startswith("/api/tasks"):
         return None
     params = parse_qs(query)
@@ -113,6 +122,24 @@ def handle_get(path: str, query: str, deps: SchedulerRouteDependencies) -> JsonR
 
 
 def handle_post(path: str, deps: SchedulerRouteDependencies) -> JsonRouteResult | None:
+    if path == "/api/scheduler/autonomous/start":
+        try:
+            result = deps.autonomous_scheduler.start_worker("default")
+            return JsonRouteResult(result)
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    if path == "/api/scheduler/autonomous/stop":
+        result = deps.autonomous_scheduler.stop_worker("default")
+        return JsonRouteResult(result)
+
+    if path == "/api/scheduler/autonomous/execute-once":
+        try:
+            result = deps.autonomous_scheduler.execute_once("default")
+            return JsonRouteResult(result)
+        except Exception as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
     if not path.startswith("/api/tasks"):
         return None
     payload = deps.read_json()

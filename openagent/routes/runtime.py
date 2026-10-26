@@ -948,6 +948,7 @@ def build_http_server(
     def scheduler_route_dependencies(read_json, query_owner, payload_owner) -> SchedulerRouteDependencies:
         return SchedulerRouteDependencies(
             scheduler=scheduler,
+            autonomous_scheduler=autonomous_scheduler,
             first=first,
             parse_bool=parse_bool,
             parse_int=parse_int,
