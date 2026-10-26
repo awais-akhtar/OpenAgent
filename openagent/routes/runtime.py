@@ -105,7 +105,7 @@ from .contacts_routes import ContactsRouteDependencies, handle_delete as handle_
 from .compute_routes import ComputeRouteDependencies, handle_get as handle_compute_get, handle_post as handle_compute_post
 from .core_routes import CoreRouteDependencies, handle_get as handle_core_get, handle_post as handle_core_post
 from .document_processing_routes import DocumentProcessingRouteDependencies, handle_post as handle_document_processing_post
-from .developer_routes import DeveloperRouteDependencies, handle_get as handle_developer_get, handle_post as handle_developer_post
+from .developer_routes import DeveloperRouteDependencies, handle_get as handle_developer_get, handle_post as handle_developer_post, handle_put as handle_developer_put, handle_delete as handle_developer_delete
 from .draft_routes import DraftRouteDependencies, handle_delete as handle_draft_delete, handle_get as handle_draft_get, handle_post as handle_draft_post, handle_put as handle_draft_put
 from .finetune_routes import FineTuneRouteDependencies, handle_get as handle_finetune_get, handle_post as handle_finetune_post
 from .local_ai_routes import LocalAiRouteDependencies, handle_get as handle_local_ai_get, handle_post as handle_local_ai_post
@@ -4007,6 +4007,13 @@ def build_http_server(
             if knowledge_route is not None:
                 self.send_json(knowledge_route.payload, status=knowledge_route.status)
                 return
+            developer_route = handle_developer_put(
+                parsed.path,
+                developer_route_dependencies(self.read_json),
+            )
+            if developer_route is not None:
+                self.send_json(developer_route.payload, status=developer_route.status)
+                return
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
         def do_PATCH(self) -> None:
@@ -4199,6 +4206,13 @@ def build_http_server(
             )
             if personal_os_delete_route is not None:
                 self.send_json(personal_os_delete_route.payload, status=personal_os_delete_route.status)
+                return
+            developer_route = handle_developer_delete(
+                parsed.path,
+                developer_route_dependencies(self.read_json),
+            )
+            if developer_route is not None:
+                self.send_json(developer_route.payload, status=developer_route.status)
                 return
             if parsed.path.startswith("/api/auth/api-tokens/"):
                 user = self._require_auth()

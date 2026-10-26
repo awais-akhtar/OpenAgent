@@ -352,6 +352,54 @@ class DeveloperPlatform:
             row = connection.execute("SELECT * FROM developer_webhooks WHERE id = ?", (webhook_id,)).fetchone()
         return webhook_row(row) if row else None
 
+    def update_webhook(
+        self,
+        webhook_id: str,
+        *,
+        event: str | None = None,
+        target_url: str | None = None,
+        enabled: bool | None = None,
+        secret_hint: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        webhook = self.get_webhook(webhook_id)
+        if not webhook:
+            raise ValueError(f"Webhook {webhook_id} not found.")
+
+        event = event.strip() or webhook["event"] if event else webhook["event"]
+        target_url = target_url.strip() if target_url else webhook["target_url"]
+        if target_url:
+            parsed = urlparse(target_url)
+            if parsed.scheme not in {"http", "https", "log"}:
+                raise ValueError("Webhook target_url must use http, https, or log scheme.")
+
+        enabled_val = 1 if enabled else (1 if webhook["enabled"] else 0) if enabled is None else (1 if enabled else 0)
+        secret_hint = secret_hint if secret_hint is not None else webhook["secret_hint"]
+        metadata = metadata if metadata is not None else webhook.get("metadata", {})
+
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                UPDATE developer_webhooks
+                SET event = ?, target_url = ?, enabled = ?, secret_hint = ?, metadata_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (event, target_url, enabled_val, secret_hint, json.dumps(metadata, sort_keys=True), now, webhook_id),
+            )
+        self._audit("developer.webhook.update", webhook_id, metadata={"event": event})
+        return self.get_webhook(webhook_id) or {}
+
+    def delete_webhook(self, webhook_id: str) -> dict[str, Any]:
+        webhook = self.get_webhook(webhook_id)
+        if not webhook:
+            raise ValueError(f"Webhook {webhook_id} not found.")
+
+        with self.store.session() as connection:
+            connection.execute("DELETE FROM developer_webhooks WHERE id = ?", (webhook_id,))
+        self._audit("developer.webhook.delete", webhook_id, metadata={"event": webhook["event"]})
+        return {"id": webhook_id, "deleted": True}
+
     def webhooks(self) -> list[dict[str, Any]]:
         with self.store.session() as connection:
             rows = connection.execute("SELECT * FROM developer_webhooks ORDER BY created_at DESC").fetchall()

@@ -28,6 +28,8 @@ ROUTES = (
     ("POST", "/api/developer/api-keys/verify"),
     ("POST", "/api/developer/webhooks"),
     ("POST", "/api/developer/webhooks/dispatch"),
+    ("PUT", "/api/developer/webhooks/{id}"),
+    ("DELETE", "/api/developer/webhooks/{id}"),
     ("POST", "/api/developer/plugins"),
     ("POST", "/api/developer/tools"),
     ("POST", "/api/developer/tools/invoke"),
@@ -38,6 +40,8 @@ ROUTES = (
     ("POST", "/api/developer/graphql"),
 )
 POST_PATHS = frozenset(path for method, path in ROUTES if method == "POST")
+PUT_PATHS = frozenset(path for method, path in ROUTES if method == "PUT")
+DELETE_PATHS = frozenset(path for method, path in ROUTES if method == "DELETE")
 
 
 def contract() -> dict[str, object]:
@@ -172,3 +176,43 @@ def handle_post(path: str, deps: DeveloperRouteDependencies) -> JsonRouteResult 
     except ValueError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
     return None
+
+
+def handle_put(path: str, deps: DeveloperRouteDependencies) -> JsonRouteResult | None:
+    if not path.startswith("/api/developer/webhooks/"):
+        return None
+
+    webhook_id = path.removeprefix("/api/developer/webhooks/").strip("/")
+    if not webhook_id or "/" in webhook_id:
+        return JsonRouteResult({"error": "webhook_id is required."}, HTTPStatus.BAD_REQUEST)
+
+    payload = deps.read_json()
+    developer = deps.developer
+    try:
+        value = developer.update_webhook(
+            webhook_id,
+            event=str(payload.get("event", "")).strip() or None if "event" in payload else None,
+            target_url=str(payload.get("target_url", "")).strip() or None if "target_url" in payload else None,
+            enabled=deps.parse_bool(payload.get("enabled"), default=True) if "enabled" in payload else None,
+            secret_hint=str(payload.get("secret_hint", "")) if "secret_hint" in payload else None,
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+        )
+        return JsonRouteResult({"webhook": value})
+    except ValueError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+
+def handle_delete(path: str, deps: DeveloperRouteDependencies) -> JsonRouteResult | None:
+    if not path.startswith("/api/developer/webhooks/"):
+        return None
+
+    webhook_id = path.removeprefix("/api/developer/webhooks/").strip("/")
+    if not webhook_id or "/" in webhook_id:
+        return JsonRouteResult({"error": "webhook_id is required."}, HTTPStatus.BAD_REQUEST)
+
+    developer = deps.developer
+    try:
+        result = developer.delete_webhook(webhook_id)
+        return JsonRouteResult(result)
+    except ValueError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
