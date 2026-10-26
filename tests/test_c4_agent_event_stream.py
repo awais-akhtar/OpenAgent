@@ -198,6 +198,15 @@ class C4AgentEventStreamTests(TestCase):
         job = self.runtime.start_job("executive", "Multi-filter test", project="default", owner="test_user")
         job_id = job["id"]
 
+        # Ensure job is in running state before recording events
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self.store.session() as connection:
+            connection.execute(
+                "UPDATE agent_execution_jobs SET status=?, progress=? WHERE id=?",
+                ("running", 25, job_id)
+            )
+
         # Create events of different types
         for evt_type in ["checkpoint", "progress", "progress"]:
             self.runtime.record_job_event(
@@ -206,6 +215,10 @@ class C4AgentEventStreamTests(TestCase):
                 project="default",
                 owner="test_user"
             )
+
+        # Verify job is still running for this test
+        job_status = self.runtime.get_job(job_id, owner="test_user")
+        self.assertEqual(job_status.get("status"), "running")
 
         # Filter by type and status
         events = self.runtime.job_events(
@@ -216,3 +229,33 @@ class C4AgentEventStreamTests(TestCase):
         )
         # Should have progress events
         self.assertGreater(len(events["events"]), 0)
+
+    def test_cross_owner_events_denied(self) -> None:
+        """Test that cross-owner event access is denied."""
+        job = self.runtime.start_job("executive", "Cross-owner test", project="default", owner="test_user")
+        job_id = job["id"]
+
+        # Ensure job is in running state
+        with self.store.session() as connection:
+            connection.execute(
+                "UPDATE agent_execution_jobs SET status=? WHERE id=?",
+                ("running", job_id)
+            )
+
+        # Record an event as the original owner
+        self.runtime.record_job_event(
+            job_id,
+            event_type="progress",
+            project="default",
+            owner="test_user"
+        )
+
+        # Try to access events as a different owner (should fail or return empty)
+        other_user_events = self.runtime.job_events(
+            job_id,
+            owner="other_user",
+            event_type="progress"
+        )
+
+        # Other owner should not see events (empty list or unauthorized)
+        self.assertEqual(len(other_user_events.get("events", [])), 0)
