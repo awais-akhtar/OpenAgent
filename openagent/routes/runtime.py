@@ -130,7 +130,7 @@ from .terminal_routes import TerminalRouteDependencies, handle_delete as handle_
 from .tool_runtime_routes import ToolRuntimeRouteDependencies, handle_get as handle_tool_runtime_get, handle_post as handle_tool_runtime_post
 from .twin_routes import TwinRouteDependencies, handle_get as handle_twin_get, handle_post as handle_twin_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
-from .vault_routes import VaultRouteDependencies, handle_get as handle_vault_get, handle_post as handle_vault_post
+from .vault_routes import VaultRouteDependencies, handle_get as handle_vault_get, handle_post as handle_vault_post, handle_patch as handle_vault_patch
 from .vector_routes import VectorRouteDependencies, handle_get as handle_vector_get, handle_post as handle_vector_post
 from .worker_routes import WorkerRouteDependencies, handle_get as handle_worker_get, handle_post as handle_worker_post
 from .workspace_routes import WorkspaceRouteDependencies, handle_delete as handle_workspace_delete, handle_get as handle_workspace_get, handle_post as handle_workspace_post
@@ -4005,6 +4005,10 @@ def build_http_server(
             assistant_route = handle_assistant_patch(parsed.path, parsed.query, assistant_route_dependencies(self.read_json))
             if assistant_route is not None:
                 self.send_json(assistant_route.payload, status=assistant_route.status)
+                return
+            vault_route = handle_vault_patch(parsed.path, vault_route_dependencies(self.read_json))
+            if vault_route is not None:
+                self.send_json(vault_route.payload, status=vault_route.status)
                 return
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 

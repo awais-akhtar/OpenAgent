@@ -15,11 +15,14 @@ ROUTES = (
     ("GET", "/api/vault/status"),
     ("GET", "/api/vault/entries"),
     ("GET", "/api/vault/access-log"),
+    ("GET", "/api/vault/access-requests"),
     ("POST", "/api/vault/entries"),
     ("POST", "/api/vault/store"),
     ("POST", "/api/vault/retrieve"),
     ("POST", "/api/vault/rotate-key"),
     ("POST", "/api/vault/export"),
+    ("POST", "/api/vault/access-requests"),
+    ("PATCH", "/api/vault/access-requests/{request_id}"),
 )
 
 
@@ -36,7 +39,7 @@ class VaultRouteDependencies:
 
 
 def handle_get(path: str, query: str, deps: VaultRouteDependencies) -> JsonRouteResult | None:
-    if path not in {"/api/vault/status", "/api/vault/entries", "/api/vault/access-log"}:
+    if path not in {"/api/vault/status", "/api/vault/entries", "/api/vault/access-log", "/api/vault/access-requests"}:
         return None
     params = parse_qs(query)
     project = deps.first(params, "project") or "default"
@@ -47,6 +50,16 @@ def handle_get(path: str, query: str, deps: VaultRouteDependencies) -> JsonRoute
             project=project,
             limit=deps.parse_int(deps.first(params, "limit"), default=100),
         )})
+    if path == "/api/vault/access-requests":
+        try:
+            requests = deps.vault.list_access_requests(
+                project=project,
+                limit=deps.parse_int(deps.first(params, "limit"), default=50),
+            )
+            return JsonRouteResult({"access_requests": requests})
+        except (AttributeError, NotImplementedError):
+            # If vault service doesn't implement access requests yet, return empty
+            return JsonRouteResult({"access_requests": []})
     return JsonRouteResult({"entries": deps.vault.list_entries(
         project=project,
         category=deps.first(params, "category") or "",
@@ -61,6 +74,22 @@ def handle_post(path: str, deps: VaultRouteDependencies) -> JsonRouteResult | No
     payload = deps.read_json()
     passphrase = str(payload.get("passphrase", "")).strip()
     project = str(payload.get("project", "default")).strip() or "default"
+    if path == "/api/vault/access-requests":
+        # Create a new access request
+        reason = str(payload.get("reason", "")).strip()
+        requested_entries = payload.get("requested_entries", []) if isinstance(payload.get("requested_entries"), list) else []
+        if not reason or not requested_entries:
+            return JsonRouteResult({"error": "reason and requested_entries are required"}, HTTPStatus.BAD_REQUEST)
+        try:
+            request = deps.vault.create_access_request(
+                reason=reason,
+                requested_entries=requested_entries,
+                project=project,
+                duration_minutes=int(payload.get("duration_minutes", 0)) or 60,
+            )
+            return JsonRouteResult({"access_request": request}, HTTPStatus.CREATED)
+        except (AttributeError, NotImplementedError, ValueError) as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
     if path in {"/api/vault/store", "/api/vault/entries"}:
         secret = str(payload.get("secret", "")).strip()
         label = str(payload.get("label", "")).strip()
@@ -98,3 +127,30 @@ def handle_post(path: str, deps: VaultRouteDependencies) -> JsonRouteResult | No
     if not passphrase:
         return JsonRouteResult({"error": "passphrase required"}, HTTPStatus.BAD_REQUEST)
     return JsonRouteResult(deps.vault.export_vault(passphrase, project=project))
+
+
+def handle_patch(path: str, deps: VaultRouteDependencies) -> JsonRouteResult | None:
+    """Handle PATCH requests for vault access request review/approval."""
+    prefix = "/api/vault/access-requests/"
+    if not path.startswith(prefix) or path == prefix:
+        return None
+
+    request_id = path.removeprefix(prefix).strip("/")
+    if not request_id or "/" in request_id:
+        return JsonRouteResult({"error": "request_id is required"}, HTTPStatus.BAD_REQUEST)
+
+    payload = deps.read_json()
+    project = str(payload.get("project", "default")).strip() or "default"
+    action = str(payload.get("action", "")).strip().lower()
+
+    if action not in {"approve", "deny"}:
+        return JsonRouteResult({"error": "action must be 'approve' or 'deny'"}, HTTPStatus.BAD_REQUEST)
+
+    try:
+        if action == "approve":
+            result = deps.vault.approve_access_request(request_id, project=project)
+        else:  # deny
+            result = deps.vault.deny_access_request(request_id, project=project)
+        return JsonRouteResult({"access_request": result})
+    except (AttributeError, NotImplementedError, KeyError, PermissionError) as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
