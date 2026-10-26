@@ -76,37 +76,59 @@ def handle_get(path: str, query: str, deps: WorkflowRouteDependencies) -> JsonRo
         # Stream endpoint: /api/workflows/runs/{id}/events/stream (SSE)
         if path.endswith("/events/stream"):
             try:
-                events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit, project=deps.first(params, "project"))
+                project = deps.first(params, "project") or "default"
+                events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit, project=project)
 
                 def stream_events():
-                    """Stream events in SSE format."""
+                    """Stream events in SSE format with deduplication."""
+                    from . import ServerSentEvent
                     try:
                         # Send stream start event
-                        yield {
-                            "event": "stream_started",
-                            "run_id": run_id,
-                            "cursor": after,
-                        }
+                        yield ServerSentEvent(
+                            data={
+                                "event": "stream_started",
+                                "run_id": run_id,
+                                "cursor": after,
+                                "project": project,
+                            },
+                            event="message",
+                        )
 
-                        # Stream all events
+                        # Stream all events (deduplicate by tracking IDs)
+                        seen_ids = set()
                         for evt in events.get("events", []):
-                            yield evt
+                            evt_id = evt.get("id")
+                            # Skip duplicate events (same ID already sent)
+                            if evt_id and evt_id in seen_ids:
+                                continue
+                            if evt_id:
+                                seen_ids.add(evt_id)
+                            # Verify project matches (security check)
+                            if evt.get("project") != project:
+                                continue
+                            yield ServerSentEvent(data=evt, event="message")
 
                         # Send stream end event
                         next_cursor = events.get("next") or events.get("cursor") or ""
-                        yield {
-                            "event": "stream_ended",
-                            "run_id": run_id,
-                            "next_cursor": next_cursor,
-                            "has_more": bool(events.get("next")),
-                            "event_count": len(events.get("events", [])),
-                        }
+                        yield ServerSentEvent(
+                            data={
+                                "event": "stream_ended",
+                                "run_id": run_id,
+                                "next_cursor": next_cursor,
+                                "has_more": bool(events.get("next")),
+                                "event_count": len(events.get("events", [])),
+                            },
+                            event="message",
+                        )
                     except Exception as exc:  # noqa: BLE001
-                        yield {
-                            "event": "stream_error",
-                            "error": str(exc),
-                            "run_id": run_id,
-                        }
+                        yield ServerSentEvent(
+                            data={
+                                "event": "stream_error",
+                                "error": str(exc),
+                                "run_id": run_id,
+                            },
+                            event="error",
+                        )
 
                 from . import StreamRouteResult
                 return StreamRouteResult(

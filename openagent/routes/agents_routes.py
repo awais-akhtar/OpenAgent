@@ -134,38 +134,55 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
 
                 def stream_events():
                     """Stream events in SSE format with proper error handling and cleanup."""
+                    from . import ServerSentEvent
                     try:
                         # Send stream start event
-                        yield {
-                            "event": "stream_started",
-                            "job_id": job_id,
-                            "cursor": after,
-                            "filters": {
-                                "type": event_type_filter if event_type_filter else None,
-                                "status": status_filter if status_filter else None,
+                        yield ServerSentEvent(
+                            data={
+                                "event": "stream_started",
+                                "job_id": job_id,
+                                "cursor": after,
+                                "filters": {
+                                    "type": event_type_filter if event_type_filter else None,
+                                    "status": status_filter if status_filter else None,
+                                },
                             },
-                        }
+                            event="message",
+                        )
 
-                        # Stream all events
+                        # Stream all events (deduplicate by tracking IDs)
+                        seen_ids = set()
                         for evt in events.get("events", []):
-                            yield evt
+                            evt_id = evt.get("id")
+                            # Skip duplicate events (already seen)
+                            if evt_id and evt_id in seen_ids:
+                                continue
+                            if evt_id:
+                                seen_ids.add(evt_id)
+                            yield ServerSentEvent(data=evt, event="message")
 
                         # Send stream end event with next cursor for pagination
                         next_cursor = events.get("next") or events.get("cursor") or ""
-                        yield {
-                            "event": "stream_ended",
-                            "job_id": job_id,
-                            "next_cursor": next_cursor,
-                            "has_more": bool(events.get("next")),
-                            "event_count": len(events.get("events", [])),
-                        }
+                        yield ServerSentEvent(
+                            data={
+                                "event": "stream_ended",
+                                "job_id": job_id,
+                                "next_cursor": next_cursor,
+                                "has_more": bool(events.get("next")),
+                                "event_count": len(events.get("events", [])),
+                            },
+                            event="message",
+                        )
                     except Exception as exc:  # noqa: BLE001
                         # Send error event before closing
-                        yield {
-                            "event": "stream_error",
-                            "error": str(exc),
-                            "job_id": job_id,
-                        }
+                        yield ServerSentEvent(
+                            data={
+                                "event": "stream_error",
+                                "error": str(exc),
+                                "job_id": job_id,
+                            },
+                            event="error",
+                        )
 
                 from . import StreamRouteResult
                 return StreamRouteResult(
