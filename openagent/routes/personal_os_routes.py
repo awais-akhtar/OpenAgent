@@ -15,6 +15,8 @@ ROUTES = (
     ("GET", "/api/personal-os/status"),
     ("GET", "/api/personal-os/presets"),
     ("POST", "/api/personal-os/presets"),
+    ("PUT", "/api/personal-os/presets/{id}"),
+    ("DELETE", "/api/personal-os/presets/{id}"),
     ("GET", "/api/personal-os/signatures"),
     ("POST", "/api/personal-os/signatures"),
     ("GET", "/api/personal-os/drafts"),
@@ -247,3 +249,69 @@ def handle_post(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult
         raise
 
     return None
+
+
+def handle_put(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult | None:
+    """Handle PUT requests for updating presets."""
+    if not path.startswith("/api/personal-os/presets/"):
+        return None
+
+    preset_id = unquote(path.removeprefix("/api/personal-os/presets/")).strip()
+    if not preset_id or "/" in preset_id:
+        return JsonRouteResult({"error": "preset_id is required"}, HTTPStatus.BAD_REQUEST)
+
+    payload = deps.read_json()
+    pos = deps.personal_os
+    project = str(payload.get("project", "default")).strip() or "default"
+    owner = deps.payload_owner(payload, "local")
+
+    try:
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            return JsonRouteResult({"error": "name is required"}, HTTPStatus.BAD_REQUEST)
+
+        # Update existing preset
+        preset = pos.upsert_preset(
+            name=name,
+            kind=str(payload.get("kind", "chat")),
+            instructions=str(payload.get("instructions", "")),
+            provider=str(payload.get("provider", "auto")),
+            model=str(payload.get("model", "")),
+            parameters=payload.get("parameters") if isinstance(payload.get("parameters"), dict) else None,
+            project=project,
+            owner=owner,
+            preset_id=preset_id,  # Pass ID for update
+        )
+        return JsonRouteResult({"preset": preset})
+    except Exception as exc:  # noqa: BLE001
+        from ..personal_os import PersonalOSError
+        if isinstance(exc, PersonalOSError):
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        raise
+
+
+def handle_delete(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult | None:
+    """Handle DELETE requests for removing presets."""
+    if not path.startswith("/api/personal-os/presets/"):
+        return None
+
+    preset_id = unquote(path.removeprefix("/api/personal-os/presets/")).strip()
+    if not preset_id or "/" in preset_id:
+        return JsonRouteResult({"error": "preset_id is required"}, HTTPStatus.BAD_REQUEST)
+
+    payload = deps.read_json()
+    pos = deps.personal_os
+    project = str(payload.get("project", "default")).strip() or "default"
+    owner = deps.payload_owner(payload, "local")
+
+    try:
+        # Delete preset with ownership validation
+        result = pos.delete_preset(preset_id, project=project, owner=owner)
+        if not result:
+            return JsonRouteResult({"error": "Preset not found or not owned"}, HTTPStatus.NOT_FOUND)
+        return JsonRouteResult({"deleted": preset_id}, HTTPStatus.OK)
+    except Exception as exc:  # noqa: BLE001
+        from ..personal_os import PersonalOSError
+        if isinstance(exc, PersonalOSError):
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        raise

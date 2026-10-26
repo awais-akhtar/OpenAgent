@@ -118,7 +118,7 @@ from .knowledge_routes import KnowledgeRouteDependencies, handle_delete as handl
 from .mcp_runtime_routes import MCPRuntimeRouteDependencies, handle_get as handle_mcp_runtime_get, handle_patch as handle_mcp_runtime_patch, handle_post as handle_mcp_runtime_post
 from .media_routes import MediaContentRouteResult, MediaRouteDependencies, ResponseAlreadySent, handle_delete as handle_media_delete, handle_get as handle_media_get, handle_post as handle_media_post
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
-from .personal_os_routes import PersonalOSRouteDependencies, handle_get as handle_personal_os_get, handle_post as handle_personal_os_post
+from .personal_os_routes import PersonalOSRouteDependencies, handle_get as handle_personal_os_get, handle_post as handle_personal_os_post, handle_put as handle_personal_os_put, handle_delete as handle_personal_os_delete
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
 from .research_routes import ResearchRouteDependencies, handle_get as handle_research_get, handle_post as handle_research_post
@@ -3939,6 +3939,13 @@ def build_http_server(
                 self.send_json(document_route.payload, status=document_route.status)
                 return
             knowledge_route = handle_knowledge_put(parsed.path, knowledge_route_dependencies(self))
+            personal_os_put_route = handle_personal_os_put(
+                parsed.path,
+                personal_os_route_dependencies(self.read_json, self._query_owner, self._payload_owner, first, parse_int),
+            )
+            if personal_os_put_route is not None:
+                self.send_json(personal_os_put_route.payload, status=personal_os_put_route.status)
+                return
             if knowledge_route is not None:
                 self.send_json(knowledge_route.payload, status=knowledge_route.status)
                 return
@@ -4118,6 +4125,13 @@ def build_http_server(
             assistant_route = handle_assistant_delete(parsed.path, parsed.query, assistant_route_dependencies(self.read_json))
             if assistant_route is not None:
                 self.send_json(assistant_route.payload, status=assistant_route.status)
+                return
+            personal_os_delete_route = handle_personal_os_delete(
+                parsed.path,
+                personal_os_route_dependencies(self.read_json, self._query_owner, self._payload_owner, first, parse_int),
+            )
+            if personal_os_delete_route is not None:
+                self.send_json(personal_os_delete_route.payload, status=personal_os_delete_route.status)
                 return
             if parsed.path.startswith("/api/auth/api-tokens/"):
                 user = self._require_auth()
