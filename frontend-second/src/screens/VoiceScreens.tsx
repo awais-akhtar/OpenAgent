@@ -74,9 +74,9 @@ class VoiceWebSocketClient {
         }
       };
 
-      this.ws.onerror = () => {
+      this.ws.onerror = (event: Event) => {
         const errorMsg = 'WebSocket error occurred';
-        console.error(errorMsg);
+        console.error(errorMsg, event);
         this.onErrorCallback?.(errorMsg);
       };
 
