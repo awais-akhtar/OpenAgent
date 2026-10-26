@@ -14,6 +14,48 @@ on the latest recorded reconciliation and does not claim a fresh verifier run.
 
 ## Current result
 
+P12/P14 shared-cache ownership batch (26 October): host KV storage now detaches
+borrowed tensors into immutable buffers, protects block/shape and prefix
+metadata, validates geometry/finite conversion, accounts replacements exactly,
+and rejects pinned/protected capacity exhaustion without overcommit. Complete
+prefix lookup requires an explicit expected_layers inventory; unknown/partial
+inventories cannot advertise reuse. Lookup hashes once up to existing candidate
+extent instead of quadratically rehashing the full query. Stored tensor bytes
+are budgeted; Python metadata and conversion temporaries are not included.
+
+KV and expert leases now serialize access with close, reject post-close work,
+own pins idempotently and cannot unpin a peer's entry. Both registries serialize
+final release/reopen, enforce matching shard contracts, refund failed lease
+construction and drop cache-owned payloads on final release. Expert payloads
+are immutable, conflicting IDs are rejected, and pinned/disabled tier limits
+fail closed. Metadata-only expert promotion is explicitly rejected without a
+physical transfer adapter; logical host-byte tier labels are not GPU evidence.
+Native family caches/placement and the rejected forward-bridge KV path are not
+made complete by these generic host cache changes.
+
+Thirty-one new cache regressions pass. The combined local suite passes 259/259,
+batching smoke 12/12, and scoped Ruff/syntax checks pass. Canonical source/ABI
+checks pass; closure remains 10/17 with 126/171 missing route receipts. No real
+route evidence was generated. Whole-P12/P14 and P13/P15 remain open.
+
+P14 warm-pool ownership/shutdown batch (26 October): factory openings reserve
+capacity before callbacks execute, and post-shutdown acquisitions/publication
+are rejected. A factory cannot lend the same physical owner to two slots.
+Failed discards and lease returns remain tracked for retry; returned or
+returning leases cannot expose owners already recycled or being destroyed.
+Idle expiry now measures idle time, not time spent borrowed. Health probes
+reserve their owners, shutdown reports unfinished workers/construction/probes
+without racing their teardown, and context-manager cleanup preserves original
+errors with retry callbacks. Constructor bounds/timeouts are validated before
+worker startup. Borrowed owners remain live until their leases return;
+synchronous factory/native-close callbacks are not forcibly preempted.
+
+Seventeen new pool boundary tests pass. The combined serving/batching/gateway/
+universal suite passes 228/228 and batching smoke checks pass 12/12. Scoped
+Ruff, syntax and diff checks pass. Fresh canonical verification remains 10/17
+with 126/171 runtime receipts missing; source/ABI checks pass. No runtime
+route receipt was added; full P14 and P13/P15 remain open.
+
 P14 shared batching/forward execution boundary (26 October): partially
 prefilled requests are scheduled again and commit exactly their reserved
 prompt extent instead of skipping tokens or stalling. Premature prefill token

@@ -27,11 +27,14 @@ Architecture
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+
+from .failure_reporting import add_failure_note, failure_detail
 
 logger = logging.getLogger(__name__)
 
@@ -62,25 +65,46 @@ class SessionLease:
         self._pool     = pool
         self._lease_id = lease_id
         self._closed   = False
-        self._lock     = threading.Lock()
+        self._returning = False
+        self._return_in_progress = False
+        self._lock     = threading.RLock()
         self._acquired_at = time.monotonic()
 
     @property
     def session(self) -> Any:
-        return self._session
+        with self._lock:
+            if self._closed or self._returning:
+                raise RuntimeError('session lease has been returned')
+            return self._session
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
+            if self._return_in_progress:
+                raise RuntimeError('session lease return reentry is unsupported')
+            self._returning = True
+            self._return_in_progress = True
+            try:
+                self._pool._return_session(self._lease_id, self._session)
+            finally:
+                self._return_in_progress = False
             self._closed = True
-        self._pool._return_session(self._lease_id, self._session)
 
     def __enter__(self) -> "SessionLease":
         return self
 
-    def __exit__(self, *_: Any) -> None:
-        self.close()
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if exc is None:
+                raise
+            add_failure_note(exc, 'session lease return failed: ' + failure_detail(cleanup))
+            try:
+                exc.cleanup = self.close
+            except BaseException:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +119,9 @@ class _PoolEntry:
     last_used:   float = field(default_factory=time.monotonic)
     use_count:   int   = 0
     healthy:     bool  = True
+    busy:        bool  = False
+    probing:     bool  = False
+    retiring:    bool  = False
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +153,17 @@ class Phase2SessionPool:
         health_check_fn:   Optional[Callable[[Any], bool]] = None,
         health_interval_s: float = 30.0,
     ) -> None:
+        if not callable(session_factory):
+            raise TypeError('callable session factory required')
+        if (type(min_sessions) is not int or type(max_sessions) is not int or
+                not 0 <= min_sessions <= max_sessions or max_sessions <= 0):
+            raise ValueError('pool bounds require 0 <= min_sessions <= max_sessions and positive capacity')
+        for name, value in (('max_idle_s', max_idle_s), ('health_interval_s', health_interval_s)):
+            if (type(value) not in (int, float) or not math.isfinite(value) or
+                    value < 0 or (name == 'health_interval_s' and value == 0)):
+                raise ValueError('finite valid pool time bound required: ' + name)
+        if health_check_fn is not None and not callable(health_check_fn):
+            raise TypeError('pool health check must be callable')
         self._factory          = session_factory
         self._min_sessions     = min_sessions
         self._max_sessions     = max_sessions
@@ -138,6 +176,8 @@ class Phase2SessionPool:
         self._lock   = threading.RLock()
         self._closed = False
         self._next_id = 0
+        self._opening = 0
+        self._callback_threads: set[int] = set()
 
         # Telemetry
         self._total_created  = 0
@@ -153,7 +193,18 @@ class Phase2SessionPool:
         self._health_thread.start()
 
         # Pre-warm
-        self._warm(min_sessions)
+        try:
+            self._warm(min_sessions)
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                add_failure_note(primary, 'pool construction cleanup retained: ' + failure_detail(cleanup))
+                try:
+                    primary.cleanup = self.close
+                except BaseException:
+                    pass
+            raise
 
     # ---- pre-warming --------------------------------------------------------
 
@@ -162,47 +213,80 @@ class Phase2SessionPool:
             try:
                 self._open_and_enqueue()
             except Exception as exc:
-                logger.warning("phase2: pool warm-up failed: %s", exc)
+                logger.warning("phase2: pool warm-up failed: %s", failure_detail(exc))
 
     def _open_and_enqueue(self) -> Optional[_PoolEntry]:
         with self._lock:
-            if len(self._all) >= self._max_sessions:
+            if self._closed or len(self._all) + self._opening >= self._max_sessions:
                 return None
             self._next_id += 1
             entry_id = f"slot-{self._next_id}"
-
-        session = self._factory()
-        entry = _PoolEntry(session=session, entry_id=entry_id)
+            self._opening += 1
+            self._callback_threads.add(threading.get_ident())
+        try:
+            session = self._factory()
+            if session is None:
+                raise TypeError('session factory returned no owner')
+            entry = _PoolEntry(session=session, entry_id=entry_id)
+        except BaseException:
+            with self._lock:
+                self._opening -= 1
+                self._callback_threads.discard(threading.get_ident())
+            raise
         with self._lock:
+            self._opening -= 1
+            self._callback_threads.discard(threading.get_ident())
+            if any(owned.session is session for owned in self._all.values()):
+                raise ValueError('session factory returned an already owned session')
             self._all[entry_id] = entry
             self._total_created += 1
-        self._free.put(entry)
+            if self._closed:
+                self._discard_entry(entry)
+                return None
+            self._free.put(entry)
         return entry
 
     # ---- acquire / return ---------------------------------------------------
 
     def acquire(self, timeout: float = 10.0) -> "SessionLease":
-        """Borrow a session from the pool.  Blocks up to ``timeout`` seconds."""
+        """Borrow a session with a bounded capacity wait.
+
+        The timeout cannot preempt a synchronous factory or owner teardown.
+        Shutdown seals admission; active callbacks remain owned until they exit.
+        """
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0:
+            raise ValueError('finite nonnegative pool acquisition timeout required')
         deadline = time.monotonic() + timeout
 
         while True:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError('session pool is closed')
+                if threading.get_ident() in self._callback_threads:
+                    raise RuntimeError('session pool callback reentry is unsupported')
             # Try to get an idle session
             try:
-                entry = self._free.get(timeout=0.05)
+                entry = self._free.get(timeout=min(0.05, max(0, deadline - time.monotonic())))
                 with self._lock:
-                    if not entry.healthy:
+                    if self._closed:
+                        self._discard_entry(entry)
+                        raise RuntimeError('session pool is closed')
+                    if self._all.get(entry.entry_id) is not entry or entry.busy or entry.probing:
+                        continue
+                    if not entry.healthy or entry.retiring:
                         self._discard_entry(entry)
                         continue
                     entry.last_used = time.monotonic()
                     entry.use_count += 1
                     self._total_acquired += 1
+                    entry.busy = True
                 return SessionLease(entry.session, self, entry.entry_id)
             except queue.Empty:
                 pass
 
             # Try to open a new session
             with self._lock:
-                can_open = len(self._all) < self._max_sessions
+                can_open = not self._closed and len(self._all) + self._opening < self._max_sessions
             if can_open:
                 entry = self._open_and_enqueue()
                 if entry is not None:
@@ -220,25 +304,33 @@ class Phase2SessionPool:
             entry = self._all.get(entry_id)
             if entry is None:
                 return
-            if self._closed or self._max_idle_s > 0:
-                age = time.monotonic() - entry.created_at
-                if self._closed or age > self._max_idle_s:
-                    self._discard_entry(entry)
-                    return
+            if entry.session is not session:
+                raise ValueError('session lease does not own this pool entry')
+            if not entry.busy and not entry.retiring:
+                raise RuntimeError('session pool entry has already been returned')
+            entry.busy = False
+            if self._closed or entry.retiring or not entry.healthy:
+                self._discard_entry(entry)
+                return
             entry.last_used = time.monotonic()
             self._total_recycled += 1
-        self._free.put(entry)
+            self._free.put(entry)
 
     def _discard_entry(self, entry: _PoolEntry) -> None:
         """Close session and remove from pool (called under lock)."""
-        self._all.pop(entry.entry_id, None)
-        self._total_discarded += 1
-        close_fn = getattr(entry.session, "close", None)
-        if callable(close_fn):
-            try:
+        if self._all.get(entry.entry_id) is not entry:
+            return
+        entry.retiring = True
+        entry.healthy = False
+        self._callback_threads.add(threading.get_ident())
+        try:
+            close_fn = getattr(entry.session, "close", None)
+            if callable(close_fn):
                 close_fn()
-            except Exception as exc:
-                logger.debug("phase2: pool discard close error: %s", exc)
+        finally:
+            self._callback_threads.discard(threading.get_ident())
+        self._all.pop(entry.entry_id)
+        self._total_discarded += 1
 
     # ---- health check -------------------------------------------------------
 
@@ -246,35 +338,53 @@ class Phase2SessionPool:
         while not self._health_stop.wait(timeout=self._health_interval_s):
             if self._closed:
                 break
-            self._run_health_check()
-            self._evict_stale()
+            try:
+                self._run_health_check()
+                self._evict_stale()
+            except Exception as error:
+                logger.warning('phase2: pool maintenance failed: %s', failure_detail(error))
 
     def _run_health_check(self) -> None:
         if self._health_check_fn is None:
             return
-        # Drain the free queue, check each session, re-enqueue healthy ones
-        healthy: List[_PoolEntry] = []
-        drained = 0
-        while drained < 32:
+        # Reserve a bounded idle snapshot; callbacks run outside the pool lock.
+        # Shutdown must not close a session while its probe still uses it.
+        with self._lock:
+            count = min(32, self._free.qsize())
+        for _ in range(count):
+            with self._lock:
+                if self._closed:
+                    return
+                try:
+                    entry = self._free.get_nowait()
+                except queue.Empty:
+                    break
+                if self._all.get(entry.entry_id) is not entry or entry.busy or entry.probing:
+                    continue
+                entry.probing = True
+                self._callback_threads.add(threading.get_ident())
+            probe_error = None
             try:
-                entry = self._free.get_nowait()
-                drained += 1
-            except queue.Empty:
-                break
-            try:
-                ok = self._health_check_fn(entry.session)
-            except Exception:
+                ok = bool(self._health_check_fn(entry.session))
+            except BaseException as error:
+                probe_error = error
                 ok = False
-            if ok:
-                entry.healthy = True
-                healthy.append(entry)
-            else:
-                entry.healthy = False
-                with self._lock:
-                    self._discard_entry(entry)
-                logger.debug("phase2: pool health check failed for %s", entry.entry_id)
-        for e in healthy:
-            self._free.put(e)
+            with self._lock:
+                entry.probing = False
+                self._callback_threads.discard(threading.get_ident())
+                if ok and not self._closed and not entry.retiring:
+                    entry.healthy = True
+                    self._free.put(entry)
+                else:
+                    try:
+                        self._discard_entry(entry)
+                    except BaseException as cleanup:
+                        if probe_error is None:
+                            raise
+                        add_failure_note(probe_error, 'pool probe cleanup retained: ' + failure_detail(cleanup))
+                        raise probe_error
+            if probe_error is not None and not isinstance(probe_error, Exception):
+                raise probe_error
         # Re-warm if we dropped below min
         with self._lock:
             deficit = self._min_sessions - len(self._all)
@@ -287,29 +397,41 @@ class Phase2SessionPool:
     def _evict_stale(self) -> None:
         if self._max_idle_s <= 0:
             return
-        now = time.monotonic()
-        stale: List[_PoolEntry] = []
-        live:  List[_PoolEntry] = []
-        while True:
-            try:
-                entry = self._free.get_nowait()
-            except queue.Empty:
-                break
-            if now - entry.last_used > self._max_idle_s:
-                stale.append(entry)
-            else:
-                live.append(entry)
-        for e in live:
-            self._free.put(e)
         with self._lock:
-            for e in stale:
-                self._discard_entry(e)
+            if self._closed:
+                return
+            now = time.monotonic()
+            stale: List[_PoolEntry] = []
+            for _ in range(self._free.qsize()):
+                try:
+                    entry = self._free.get_nowait()
+                except queue.Empty:
+                    break
+                if self._all.get(entry.entry_id) is not entry or entry.busy or entry.probing:
+                    continue
+                if now - entry.last_used > self._max_idle_s:
+                    stale.append(entry)
+                else:
+                    self._free.put(entry)
+            primary = None
+            for entry in stale:
+                try:
+                    self._discard_entry(entry)
+                except BaseException as cleanup:
+                    if primary is None:
+                        primary = cleanup
+                    else:
+                        add_failure_note(primary, 'additional idle session cleanup failed: ' + failure_detail(cleanup))
+            if primary is not None:
+                raise primary
 
     # ---- telemetry ----------------------------------------------------------
 
     @property
     def idle_count(self) -> int:
-        return self._free.qsize()
+        with self._lock:
+            return sum(not entry.busy and not entry.probing and not entry.retiring
+                       for entry in self._all.values())
 
     @property
     def total_count(self) -> int:
@@ -318,10 +440,15 @@ class Phase2SessionPool:
 
     def metrics(self) -> dict:
         with self._lock:
+            idle = sum(not entry.busy and not entry.probing and not entry.retiring
+                       for entry in self._all.values())
             return {
                 "pool_total":           len(self._all),
-                "pool_idle":            self._free.qsize(),
-                "pool_busy":            len(self._all) - self._free.qsize(),
+                "pool_idle":            idle,
+                "pool_busy":            sum(entry.busy for entry in self._all.values()),
+                "pool_opening":         self._opening,
+                "pool_pending_cleanup": sum(entry.retiring for entry in self._all.values()),
+                "pool_probing":         sum(entry.probing for entry in self._all.values()),
                 "pool_max":             self._max_sessions,
                 "pool_created":         self._total_created,
                 "pool_recycled":        self._total_recycled,
@@ -332,28 +459,59 @@ class Phase2SessionPool:
 
     # ---- lifecycle ----------------------------------------------------------
 
-    def close(self) -> None:
+    def close(self, timeout: float = 5.0) -> None:
+        """Seal admission and close idle owners, retaining failed work for retry.
+
+        ``timeout`` bounds the health-worker join, not arbitrary native close
+        callbacks. Borrowed owners are closed when their leases are returned.
+        """
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0:
+            raise ValueError('finite nonnegative pool shutdown timeout required')
         with self._lock:
-            if self._closed:
-                return
+            if threading.get_ident() in self._callback_threads:
+                raise RuntimeError('cannot close session pool from an active pool callback')
             self._closed = True
         self._health_stop.set()
-        self._health_thread.join(timeout=5.0)
-        # Close all idle sessions
-        while True:
-            try:
-                entry = self._free.get_nowait()
-            except queue.Empty:
-                break
-            with self._lock:
-                self._discard_entry(entry)
+        self._health_thread.join(timeout=timeout)
+        if self._health_thread.is_alive():
+            raise TimeoutError('pool health worker still active; retry close')
+        with self._lock:
+            if self._opening or any(entry.probing for entry in self._all.values()):
+                raise TimeoutError('pool construction or probe still active; retry close')
+            while True:
+                try:
+                    self._free.get_nowait()
+                except queue.Empty:
+                    break
+            primary = None
+            for entry in list(self._all.values()):
+                if entry.busy:
+                    continue  # Borrowers retain ownership until lease return.
+                try:
+                    self._discard_entry(entry)
+                except BaseException as cleanup:
+                    if primary is None:
+                        primary = cleanup
+                    else:
+                        add_failure_note(primary, 'additional pool close failure: ' + failure_detail(cleanup))
+            if primary is not None:
+                raise primary
         logger.info("phase2: SessionPool closed (%d discarded)", self._total_discarded)
 
     def __enter__(self) -> "Phase2SessionPool":
         return self
 
-    def __exit__(self, *_: Any) -> None:
-        self.close()
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if exc is None:
+                raise
+            add_failure_note(exc, 'session pool close failed: ' + failure_detail(cleanup))
+            try:
+                exc.cleanup = self.close
+            except BaseException:
+                pass
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,44 @@
 # Phase 1 source implementation checklist
 
+## Shared host-cache ownership reconciliation — 2026-10-26
+
+P12/P14 utility fixes detach and freeze KV payloads, protect prefix/block
+metadata, validate tensor geometry/conversion, account layer replacements
+without inflation and admit capacity atomically around pinned prefixes.
+Complete-prefix reuse requires an explicit layer inventory; no unknown or
+partial inventory is called complete. Lookup now performs one incremental hash
+scan bounded by existing candidate lengths. The byte limit covers stored
+tensors, excluding Python metadata and temporary conversion allocations.
+
+Both KV and expert lease APIs reject closed access and peer unpinning, retain
+one pin per lease, serialize operations with close, and atomically release or
+reopen a checkpoint shard. Failed lease construction refunds its reference;
+last release drops cache-owned arrays/weights/queues. Expert payloads cannot
+change underneath readers, conflicting IDs and pinned/disabled capacity are
+rejected, and metadata-only promotion cannot masquerade as physical placement.
+Logical host-byte cache tiers do not prove GPU residence. Generic cache fixes
+do not certify native physical-cache adapters or enable the restricted bridge.
+
+Thirty-one cache tests pass; the combined local run is 259/259 plus batching
+smoke 12/12. Scoped Ruff and syntax checks pass. Canonical source/ABI checks
+pass; closure remains 10/17 with 126/171 missing route receipts. No real route
+evidence was added. Whole-P12/P14 and P13/P15 remain open.
+
+## Warm-pool lease/shutdown reconciliation — 2026-10-26
+
+P14 pool fixes reserve factory capacity before opening, reject closed-pool
+acquisition and duplicate physical owners, and retain failed discards/returns
+for retry. Leases stop exposing owners once return starts. Idle expiry no
+longer treats time spent borrowed as idle. Probes retain ownership until their
+callbacks exit; shutdown does not destroy their sessions or publish late
+factory results. Constructor and timeout admission are validated, and context
+cleanup preserves primary errors. Borrowed owners close on lease return;
+timeouts do not preempt arbitrary synchronous factory/native-close callbacks.
+Seventeen new pool regressions pass. The combined local suite passes 228/228,
+batching smoke 12/12, and scoped Ruff/syntax/diff checks pass. Canonical source
+and ABI checks pass; closure remains 10/17 with 126/171 route receipts missing.
+No route evidence was generated. Whole-P14 and P13/P15 remain open.
+
 ## Shared batching/forward execution reconciliation — 2026-10-26
 
 Fixed partial-prefill rescheduling and exact reserved-extent cursor commit;
