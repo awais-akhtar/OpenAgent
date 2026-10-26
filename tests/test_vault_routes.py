@@ -8,7 +8,7 @@ import threading
 import unittest
 from urllib.request import Request, urlopen
 
-from openagent.routes.vault_routes import VaultRouteDependencies, contract, handle_get, handle_post
+from openagent.routes.vault_routes import VaultRouteDependencies, contract, handle_get, handle_post, handle_patch
 from openagent.server import build_http_server
 from openagent.storage import OpenAgentStore
 from openagent.vault import EncryptedVault
@@ -42,11 +42,12 @@ class VaultRouteTests(unittest.TestCase):
             self.assertNotIn("ciphertext", access[0])
             for route in contract()["routes"]:
                 with self.subTest(route=route):
-                    result = (
-                        handle_get(route["path"], "project=core", deps)
-                        if route["method"] == "GET"
-                        else handle_post(route["path"], deps)
-                    )
+                    if route["method"] == "GET":
+                        result = handle_get(route["path"], "project=core", deps)
+                    elif route["method"] == "PATCH":
+                        result = handle_patch(route["path"], deps)
+                    else:  # POST
+                        result = handle_post(route["path"], deps)
                     self.assertIsNotNone(result)
             self.assertIsNone(handle_get("/api/chat", "", deps))
             self.assertIsNone(handle_post("/api/chat", deps))

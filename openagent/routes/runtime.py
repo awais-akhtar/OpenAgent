@@ -3941,7 +3941,15 @@ def build_http_server(
             knowledge_route = handle_knowledge_put(parsed.path, knowledge_route_dependencies(self))
             personal_os_put_route = handle_personal_os_put(
                 parsed.path,
-                personal_os_route_dependencies(self.read_json, self._query_owner, self._payload_owner, first, parse_int),
+                PersonalOSRouteDependencies(
+                    personal_os=personal_os,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    first=first,
+                    parse_int=parse_int,
+                ),
             )
             if personal_os_put_route is not None:
                 self.send_json(personal_os_put_route.payload, status=personal_os_put_route.status)
@@ -4128,7 +4136,15 @@ def build_http_server(
                 return
             personal_os_delete_route = handle_personal_os_delete(
                 parsed.path,
-                personal_os_route_dependencies(self.read_json, self._query_owner, self._payload_owner, first, parse_int),
+                PersonalOSRouteDependencies(
+                    personal_os=personal_os,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    first=first,
+                    parse_int=parse_int,
+                ),
             )
             if personal_os_delete_route is not None:
                 self.send_json(personal_os_delete_route.payload, status=personal_os_delete_route.status)
