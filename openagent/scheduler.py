@@ -639,7 +639,7 @@ class Scheduler:
             deliveries.extend(self.deliver_output(run["task_id"], run["id"], run["result"], owner=owner))
         return {"runs": runs, "notifications": notifications, "deliveries": deliveries, "count": len(runs)}
 
-    def run_calendar_due_notifications(self, *, project: str = "default", calendar_system: Any = None) -> dict[str, Any]:
+    def run_calendar_due_notifications(self, *, project: str = "default", calendar_system: Any = None, integration_hub: Any = None) -> dict[str, Any]:
         """Execute due calendar notifications.
 
         This integrates calendar reminder delivery with the scheduled task system.
@@ -649,11 +649,11 @@ class Scheduler:
         integrated into a cron-based scheduler for true autonomous delivery.
         Returns summary of delivered and skipped reminders.
         """
-        if calendar_system is None:
+        if calendar_system is None or integration_hub is None:
             return {"delivered": [], "skipped": [], "notifications_enabled": False, "project": project}
 
         try:
-            result = calendar_system.deliver_due_notifications(project=project)
+            result = calendar_system.deliver_due_notifications(project=project, integration_hub=integration_hub)
             return result
         except Exception as exc:
             return {
