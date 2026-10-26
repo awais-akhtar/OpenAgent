@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 
-def create_tiny_model(directory: Path) -> dict[str, object]:
+def create_tiny_model(directory: Path, dtype: str = "float32") -> dict[str, object]:
     import torch
     from transformers import LlamaConfig, LlamaForCausalLM
 
@@ -25,21 +25,21 @@ def create_tiny_model(directory: Path) -> dict[str, object]:
     torch.manual_seed(17)
     config = LlamaConfig(vocab_size=64, hidden_size=16, intermediate_size=32,
                          num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2)
-    model = LlamaForCausalLM(config)
+    model = LlamaForCausalLM(config).to(dtype=getattr(torch, dtype))
     directory.mkdir(parents=True, exist_ok=False)
     model.save_pretrained(directory, safe_serialization=True)
     return {"architecture": "llama", "parameters": sum(p.numel() for p in model.parameters()),
-            "origin": "locally initialized random test weights; not pretrained", "downloaded_bytes": 0}
+            "origin": "locally initialized random test weights; not pretrained", "downloaded_bytes": 0, "weight_dtype": dtype}
 
 
-def verify() -> dict[str, object]:
+def verify(dtype: str = "float32", evidence_dir: str = "") -> dict[str, object]:
     from openagent.fine_tuning import FineTuningManager
     from openagent.storage import OpenAgentStore
 
     with TemporaryDirectory(prefix="oa-tiny-finetune-") as temporary:
         root = Path(temporary)
         model = root / "tiny-model"
-        identity = create_tiny_model(model)
+        identity = create_tiny_model(model, dtype)
         weights = model / "model.safetensors"
         original_hash = hashlib.sha256(weights.read_bytes()).hexdigest()
         manager = FineTuningManager(OpenAgentStore(root / "runtime"))
@@ -62,6 +62,8 @@ def verify() -> dict[str, object]:
             raise AssertionError("Bounded tiny training did not terminate within 30 seconds")
         if recorded["status"] != "completed":
             raise AssertionError(f"Actual worker failed: {recorded}")
+        assert recorded["output_adapter_id"], "Worker did not register the produced adapter"
+        assert manager.get_adapter(recorded["output_adapter_id"])["stored_path"], "Registered adapter has no artifact path"
         checkpoints = manager.list_checkpoints(job_id=job["id"], project="default")
         assert checkpoints, "Worker completion did not persist a checkpoint"
         checkpoint = Path(checkpoints[0]["adapter_path"])
@@ -73,6 +75,14 @@ def verify() -> dict[str, object]:
         restored = FineTuningManager(OpenAgentStore(root / "runtime"))
         assert restored.get_job(job["id"], project="default")["status"] == "completed"
         assert restored.list_checkpoints(job_id=job["id"], project="default"), "Checkpoint disappeared on reload"
+        if evidence_dir:
+            import shutil
+            destination = Path(evidence_dir)
+            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(weights, destination / "model.safetensors")
+            shutil.copyfile(model / "config.json", destination / "config.json")
+            shutil.copyfile(checkpoint, destination / "adapter_epoch1.json")
+            (destination / "verification-origin.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
         return {"status": "PASS", "model": identity, "job_status": recorded["status"],
                 "checkpoints": len(checkpoints), "adapter_modules": len(matrices),
                 "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
@@ -82,4 +92,9 @@ def verify() -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    print(json.dumps(verify(), indent=2))
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32")
+    parser.add_argument("--evidence-dir", default="")
+    args = parser.parse_args()
+    print(json.dumps(verify(args.dtype, args.evidence_dir), indent=2))

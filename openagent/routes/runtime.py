@@ -129,7 +129,7 @@ from .skill_routes import SkillRouteDependencies, handle_get as handle_skill_get
 from .terminal_routes import TerminalRouteDependencies, handle_delete as handle_terminal_delete, handle_get as handle_terminal_get, handle_post as handle_terminal_post
 from .tool_runtime_routes import ToolRuntimeRouteDependencies, handle_get as handle_tool_runtime_get, handle_post as handle_tool_runtime_post
 from .twin_routes import TwinRouteDependencies, handle_get as handle_twin_get, handle_post as handle_twin_post
-from .voice_routes import VoiceRouteDependencies, handle_post as handle_voice_post
+from .voice_routes import VoiceRouteDependencies, handle_get as handle_voice_get, handle_post as handle_voice_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
 from .vault_routes import VaultRouteDependencies, handle_get as handle_vault_get, handle_post as handle_vault_post, handle_patch as handle_vault_patch
 from .vector_routes import VectorRouteDependencies, handle_get as handle_vector_get, handle_post as handle_vector_post
@@ -142,8 +142,10 @@ from ..semantic_memory import SemanticMemoryManager
 from ..storage import OpenAgentStore
 from ..system_metrics import system_metrics
 from ..ultra_model_engine import UltraModelEngine
+from ..autonomous_scheduler import AutonomousSchedulerManager
 from ..vault import EncryptedVault
 from ..voice import VoiceRuntime
+from ..voice_websocket import VoiceWebSocketStreamManager
 from ..vector_store import VectorStore
 from ..worker import WorkerRuntime
 from ..workspace import WorkspaceManager
@@ -410,6 +412,7 @@ def build_http_server(
     semantic_memory = SemanticMemoryManager(store)
     media = MediaManager(store)
     voice = VoiceRuntime(store)
+    voice_websocket = VoiceWebSocketStreamManager(voice)
     production = ProductionRuntime(store, gateway)
     multi_agent = MultiAgentRuntime(store, gateway)
     communication = CommunicationHub(store)
@@ -477,6 +480,9 @@ def build_http_server(
     document_processing = DocumentProcessing(store, knowledge=knowledge)
     image_studio = ImageStudio(store)
     scheduler = Scheduler(store)
+    autonomous_scheduler = AutonomousSchedulerManager()
+    # Note: integrations is created later, so we'll start the worker after integrations
+    # is instantiated (see below)
     skills = SkillEcosystem(store)
     conversation_organization = ConversationOrganization(store)
     safe_terminal = SafeTerminal(store, workspace_root=Path.cwd())
@@ -675,6 +681,15 @@ def build_http_server(
         backup_provider=enterprise.create_backup,
         backups_provider=enterprise.backups,
     )
+    # Start the autonomous scheduler worker for reminder delivery
+    autonomous_scheduler.create_worker(
+        scheduler,
+        calendar_system=calendar_system,
+        integration_hub=integrations,
+        interval_seconds=60,  # Run every 60 seconds
+        worker_name="default",
+    )
+    autonomous_scheduler.start_worker("default")
     health_routes = HealthRouteDependencies(
         health=store.health,
         system_metrics=lambda: system_metrics(store.data_dir),
@@ -1262,6 +1277,23 @@ def build_http_server(
                 return
             if media_route is not None:
                 self.send_json(media_route.payload, status=media_route.status)
+                return
+            voice_route = handle_voice_get(
+                parsed.path,
+                VoiceRouteDependencies(
+                    voice=voice,
+                    voice_websocket=voice_websocket,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    read_json=self.read_json,
+                    read_query_string=lambda: parse_qs(parsed.query),
+                ),
+            )
+            if voice_route is not None:
+                self.send_json(voice_route.payload, status=voice_route.status)
                 return
             workflow_route = handle_workflows_get(parsed.path, parsed.query, workflow_route_dependencies(self))
             if isinstance(workflow_route, StreamRouteResult):
@@ -3920,12 +3952,14 @@ def build_http_server(
                 parsed.path,
                 VoiceRouteDependencies(
                     voice=voice,
+                    voice_websocket=voice_websocket,
                     first=first,
                     parse_bool=parse_bool,
                     parse_int=parse_int,
                     query_owner=self._query_owner,
                     payload_owner=self._payload_owner,
                     read_json=self.read_json,
+                    read_query_string=lambda: parse_qs(parsed.query),
                 ),
             )
             if voice_route is not None:

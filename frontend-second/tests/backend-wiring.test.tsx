@@ -51,6 +51,35 @@ describe('backend connected screens', () => {
     expect(await screen.findByText(/Response received \(degraded: deterministic-local-agent\)/)).toBeVisible();
   });
 
+  it('disables CPU fine-tuning when the current backend reports no PyTorch', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/finetune/jobs')) return json({ jobs: [{ id: 'queued-tiny', base_model: 'test-local', status: 'queued' }] });
+      if (url.includes('/api/finetune/status')) return json({ cpu_training: { torch_installed: false } });
+      return json({});
+    }));
+    renderWithQuery(<AdvancedScreen route="finetune" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Jobs' }));
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Job', exact: true }), { target: { value: 'queued-tiny' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Model directory', exact: true }), { target: { value: 'C:/test-only/model' } });
+    expect(await screen.findByText('CPU training is unavailable in this backend: PyTorch is not installed.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Start CPU fine-tune', exact: true })).toBeDisabled();
+  });
+
+  it('allows inspecting a completed fine-tune without claiming an absent adapter', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/finetune/jobs')) return json({ jobs: [{ id: 'completed-no-adapter', base_model: 'test-local', status: 'completed', output_adapter_id: '' }] });
+      return json({});
+    }));
+    renderWithQuery(<AdvancedScreen route="finetune" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Jobs' }));
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Job', exact: true }), { target: { value: 'completed-no-adapter' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Monitor selected job', exact: true }));
+    expect(await screen.findByText('Training finished; no adapter registration was reported.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Start CPU fine-tune', exact: true })).toBeDisabled();
+  });
+
   it('uses checked agent execution, scoped access records, approvals and delegation contracts', async () => {
     const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
     let approvals: Array<Record<string, unknown>> = [];

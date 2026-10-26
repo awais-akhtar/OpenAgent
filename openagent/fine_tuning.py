@@ -15,6 +15,7 @@ leaves the machine unless the user explicitly exports and shares.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import time
@@ -500,6 +501,8 @@ class FineTuningManager:
             "adapters": n_adapters,
             "job_statuses": dict(job_statuses),
             "project": project,
+            "cpu_training": {"torch_installed": importlib.util.find_spec("torch") is not None,
+                             "algorithm": "approximate-layer-proxy-lora", "requires_local_model": True},
             "features": [
                 "lora", "qlora", "full-finetune", "dataset-curation",
                 "train-val-split", "jsonl-export", "adapter-versioning",

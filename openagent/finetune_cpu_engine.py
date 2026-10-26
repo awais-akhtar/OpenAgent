@@ -1,7 +1,8 @@
 """CPU streaming fine-tune engine.
 
-Loads model weights layer-by-layer (never the full model at once) so any size
-model can be fine-tuned on a CPU-only machine.  The technique:
+Loads supported model target weights layer-by-layer for a bounded approximate
+CPU adapter update. Compatibility and resource limits must be verified for each
+model format; this is not a complete model-family training implementation.  The technique:
 
   1. Detect model architecture from config.json / metadata.
   2. Iterate shard files in order; for each shard read tensors one at a time
@@ -194,7 +195,7 @@ class StreamingLayerLoader:
                         del tensor
         elif self._torch is not None:
             # Fallback: load the whole shard but only keep target layers
-            state = self._torch.load(str(shard), map_location="cpu")
+            state = self._torch.load(str(shard), map_location="cpu", weights_only=True)
             for name, tensor in state.items():
                 if self.is_target_layer(name):
                     yield name, tensor.clone()
@@ -207,7 +208,7 @@ class StreamingLayerLoader:
     def _iter_torchbin(self, shard: Path) -> Iterator[tuple[str, Any]]:
         if self._torch is None:
             return
-        state: dict[str, Any] = self._torch.load(str(shard), map_location="cpu")
+        state: dict[str, Any] = self._torch.load(str(shard), map_location="cpu", weights_only=True)
         for name, tensor in list(state.items()):
             if self.is_target_layer(name):
                 yield name, tensor.clone()
@@ -384,6 +385,8 @@ class CpuStreamingFineTuner:
         for name, tensor in loader.iter_target_layers():
             self._check_cancelled()
             if tensor.ndim == 2:
+                if not tensor.is_floating_point():
+                    raise RuntimeError("Integer/quantized target weights require a supported dequantizing loader.")
                 out_f, in_f = tensor.shape
                 lm = LoraModule(
                     name=name, out_features=out_f, in_features=in_f,
@@ -517,6 +520,9 @@ class CpuStreamingFineTuner:
                 continue
 
             lm = lora_modules[name]
+            # CPU activations/adapters are FP32. FP16/BF16 checkpoints remain
+            # frozen on disk and are converted only for this loaded layer.
+            base_weight = base_weight.to(dtype=torch.float32)
 
             # Build a minimal activation from input ids
             # (embedding lookup approximation: map ids into the in_features space)

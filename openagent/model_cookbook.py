@@ -484,6 +484,114 @@ class ModelCookbook:
             (uuid4().hex, session_id, level, message, utc_now()),
         )
 
+    def create_serve_plan(
+        self,
+        *,
+        project: str = "default",
+        model_name: str,
+        model_source: str = "local",
+        serve_type: str = "llama-server",
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a serve plan for Ultra Model infrastructure."""
+        plan_id = stable_id("serve-plan", project, model_name, utc_now())
+        now = utc_now()
+        config = config or {}
+
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO model_hosts (id, project, label, host_type, address, config_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    project,
+                    f"{model_name} serve plan",
+                    "local",
+                    config.get("host", "127.0.0.1"),
+                    json.dumps(config),
+                    now,
+                    now,
+                ),
+            )
+
+        return {
+            "id": plan_id,
+            "project": project,
+            "model_name": model_name,
+            "model_source": model_source,
+            "serve_type": serve_type,
+            "config": config,
+            "created_at": now,
+        }
+
+    def create_session(
+        self,
+        *,
+        project: str = "default",
+        serve_plan_id: str,
+    ) -> dict[str, Any]:
+        """Create a session for serving a model."""
+        session_id = uuid4().hex
+        now = utc_now()
+
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO model_serve_sessions (id, project, host_id, status, pid, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, project, serve_plan_id, "ready", 0, now, now),
+            )
+
+        return {
+            "id": session_id,
+            "project": project,
+            "serve_plan_id": serve_plan_id,
+            "status": "ready",
+            "created_at": now,
+        }
+
+    def stop_session(self, session_id: str, *, project: str = "default") -> dict[str, Any]:
+        """Stop a serve session."""
+        now = utc_now()
+
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM model_serve_sessions WHERE id = ? AND project = ?",
+                (session_id, project),
+            ).fetchone()
+
+            if row is None:
+                return {"status": "not_running", "session_id": session_id}
+
+            connection.execute(
+                "UPDATE model_serve_sessions SET status = ?, updated_at = ? WHERE id = ?",
+                ("stopped", now, session_id),
+            )
+
+        return {"status": "stopped", "session_id": session_id}
+
+    def get_readiness_status(self, *, project: str = "default") -> dict[str, Any]:
+        """Get readiness status of Ultra Model infrastructure."""
+        # Check if llama-server or mock is available
+        llama_server_available = False
+
+        try:
+            from openagent.mock_llama_server import run_mock_server
+
+            llama_server_available = True
+        except ImportError:
+            pass
+
+        return {
+            "project": project,
+            "llama_server_available": llama_server_available,
+            "status": "ready" if llama_server_available else "blocked",
+            "message": "llama-server available via mock" if llama_server_available else "llama-server not available",
+        }
+
 
 def host_row(row: Any) -> dict[str, Any]:
     return {
