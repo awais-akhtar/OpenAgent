@@ -186,10 +186,26 @@ export function AgentsScreen() {
     retry: false,
   });
   const jobEvents = Array.isArray(jobEventsQuery.data?.events) ? jobEventsQuery.data.events : jobEventsAccum.current;
+  const resultDetail = (() => {
+    if (activeJobStatus === "failed") {
+      return String(activeJob?.error ?? "Failed");
+    }
+    if (activeJobStatus === "cancelled") {
+      return "Cancelled";
+    }
+    // Check for degraded/fallback status from backend
+    const runMetadata = selectedRun && typeof selectedRun === "object" && "metadata" in selectedRun ? (selectedRun as Record<string, any>).metadata : null;
+    if (runMetadata && runMetadata.degraded === true) {
+      const fallback = runMetadata.fallback ?? "fallback";
+      return `Response received (degraded: ${String(fallback)})`;
+    }
+    return selectedRunResponse ? "Response received" : "Awaiting result";
+  })();
+
   const runStages = [
     { label: "Task submitted", detail: activeJob ? String(activeJob.created_at ?? "Queued by backend") : selectedRun ? String(selectedRun.created_at ?? "Recorded by backend") : dataMode === "live" ? "No job submitted" : "No run recorded", state: activeJob || selectedRun ? "complete" : "" },
     { label: "Agent execution", detail: activeJob ? String(activeJob.current_step ?? activeJob.status ?? "Status not reported") : selectedRun ? "Completed before lifecycle tracking" : "Awaiting a task", state: ["completed"].includes(activeJobStatus) || (!activeJob && selectedRun) ? "complete" : ["running", "queued", "cancelling"].includes(activeJobStatus) ? "active" : "" },
-    { label: "Result", detail: activeJobStatus === "failed" ? String(activeJob?.error ?? "Failed") : activeJobStatus === "cancelled" ? "Cancelled" : selectedRunResponse ? "Response received" : "Awaiting result", state: selectedRunResponse ? "complete" : "" },
+    { label: "Result", detail: resultDetail, state: selectedRunResponse ? "complete" : "" },
     { label: "Next actions", detail: Array.isArray(selectedRun?.next_actions) ? `${selectedRun.next_actions.length} returned` : "None returned", state: Array.isArray(selectedRun?.next_actions) && selectedRun.next_actions.length ? "complete" : "" },
   ];
 
@@ -268,7 +284,11 @@ export function AgentsScreen() {
           <section className={`agent-lane ${mobilePane === pane ? "mobile-selected" : ""}`} key={pane}>
             <header className="lane-head"><div className="row"><span className="avatar blue"><Icon icon={Bot} /></span><div className="flex1"><h3>{pane}</h3><p className="caption">{agentQuery.isLoading ? "Loading backend profiles" : agentQuery.isError ? "Unavailable" : `${laneProfiles(pane).length} matching profiles`}</p></div><Icon icon={MoreHorizontal} /></div></header>
             <div className="lane-body">{agentQuery.isError ? <Disconnected icon={Bot} title="Agent service unavailable" detail={apiConnectionMessage(agentQuery.error)} /> : agentQuery.isLoading ? <div className="caption" role="status">Loading agent profiles…</div> : laneProfiles(pane).length ? laneProfiles(pane).map(agent => <button className="list-row agent-profile-row" type="button" key={String(agent.id)} onClick={() => { setAgentId(String(agent.id ?? "")); setGoal(current => current || String(selectedRun?.goal ?? "")); }} title="Select this backend agent in Run or delegate"><span className="avatar blue"><Icon icon={Bot}/></span><span className="flex1"><strong>{String(agent.name ?? agent.id)}</strong><small className="caption">{String(agent.description ?? "")}</small></span><span className="caption">Select</span></button>) : <div className="empty agent-lane-empty" role="status"><Icon icon={Bot} size="lg"/><h3>No {pane.toLowerCase()} profiles</h3><p>Matching roles from the backend agent directory appear here.</p></div>}
-              {selectedRun && (selectedRunAgent === pane.toLowerCase() || laneProfiles(pane).some(agent => String(agent.id ?? "").toLowerCase() === selectedRunAgent)) && <article className="lane-message"><div className="row"><span className="avatar blue"><Icon icon={Bot}/></span><strong>{String(selectedRun.agent ?? "Agent")}</strong><span className="caption">Backend run</span></div>{selectedRunResponse ? <p>{selectedRunResponse}</p> : <p className="caption">The selected run record contains no response text.</p>}{Array.isArray(selectedRun.next_actions) && selectedRun.next_actions.length > 0 && <div className="lane-note"><h3>Next actions from backend</h3>{selectedRun.next_actions.slice(0, 4).map((action, index) => <p key={`${String(action)}-${index}`}>• {String(action)}</p>)}</div>}</article>}
+              {selectedRun && (selectedRunAgent === pane.toLowerCase() || laneProfiles(pane).some(agent => String(agent.id ?? "").toLowerCase() === selectedRunAgent)) && (() => {
+                const runMeta = typeof selectedRun === "object" && "metadata" in selectedRun ? (selectedRun as Record<string, any>).metadata : null;
+                const isDegraded = runMeta?.degraded === true;
+                return <article className="lane-message"><div className="row"><span className="avatar blue"><Icon icon={Bot}/></span><strong>{String(selectedRun.agent ?? "Agent")}</strong><span className="caption">Backend run{isDegraded ? " (degraded)" : ""}</span></div>{selectedRunResponse ? <p>{selectedRunResponse}</p> : <p className="caption">The selected run record contains no response text.</p>}{isDegraded && <div className="lane-note"><strong>Status</strong><p className="small">This response was generated using {String(runMeta?.fallback ?? "a fallback strategy")}.</p></div>}{Array.isArray(selectedRun.next_actions) && selectedRun.next_actions.length > 0 && <div className="lane-note"><h3>Next actions from backend</h3>{selectedRun.next_actions.slice(0, 4).map((action, index) => <p key={`${String(action)}-${index}`}>• {String(action)}</p>)}</div>}</article>;
+              })()}
               {!(selectedRun && (selectedRunAgent === pane.toLowerCase() || laneProfiles(pane).some(agent => String(agent.id ?? "").toLowerCase() === selectedRunAgent))) && !agentQuery.isError && !agentQuery.isLoading && <div className="lane-activity-empty" role="status"><strong>No activity recorded</strong><p>{selectedRun ? "The selected run has no output for this specialist." : "Backend run messages appear here when recorded."}</p></div>}
             </div>
           </section>
