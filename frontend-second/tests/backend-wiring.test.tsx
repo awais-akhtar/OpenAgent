@@ -183,6 +183,36 @@ describe('backend connected screens', () => {
     expect(await screen.findByRole('button', { name: /sample\.png/ })).toBeVisible();
   });
 
+  it('edits and deletes Personal OS presets without changing identity or configuration', async () => {
+    let presets: Array<Record<string, unknown>> = [{ id: 'preset-owned', name: 'Original', kind: 'research', instructions: 'Keep local.', provider: 'auto', model: 'local-model', parameters: { temperature: 0.2 } }];
+    const writes: Array<{ method: string; body: Record<string, unknown> }> = [];
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      if (url.includes('/api/personal-os/presets/preset-owned') && method === 'PUT') {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        writes.push({ method, body }); presets = [{ ...presets[0], ...body }];
+        return json({ preset: presets[0] });
+      }
+      if (url.includes('/api/personal-os/presets/preset-owned') && method === 'DELETE') {
+        writes.push({ method, body: {} }); presets = []; return json({ deleted: 'preset-owned' });
+      }
+      if (url.includes('/api/personal-os/presets')) return json({ presets });
+      return json({});
+    }));
+    renderWithQuery(<AdvancedScreen route="personalos" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Presets' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit', exact: true }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Preset name' }), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Renamed')).toBeVisible();
+    expect(writes[0].body).toMatchObject({ kind: 'research', instructions: 'Keep local.', model: 'local-model', parameters: { temperature: 0.2 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete', exact: true }));
+    expect(await screen.findByText('No presets')).toBeVisible();
+    expect(writes.map(write => write.method)).toEqual(['PUT', 'DELETE']);
+  });
+
   it('persists Personal OS notes using the backend body field and renders returned notes', async () => {
     const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
     let notes: Array<Record<string, unknown>> = [];
