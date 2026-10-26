@@ -141,6 +141,19 @@ class DigitalTwin:
     def update_profile(
         self, updates: dict[str, Any], *, project: str = "default"
     ) -> dict[str, Any]:
+        """Update profile attributes with versioning.
+
+        Note: For future enhancement (G10), fact/profile field changes should
+        track their source: inferred from interactions, explicitly set by user,
+        imported from external source, etc. This would enable retraction and
+        edit lineage tracking when sources change.
+
+        Current implementation versions the entire profile but does not track
+        individual field provenance. Future enhancement should add:
+        - fact_sources table mapping profile.field -> source metadata
+        - Change history per field with source attribution
+        - Retraction capability when source becomes invalid
+        """
         existing = self.get_profile(project=project)
         profile = existing["profile"]
         profile.update(updates)
