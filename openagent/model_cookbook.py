@@ -211,16 +211,63 @@ class ModelCookbook:
         return self.session(session_id)
 
     def stop(self, session_id: str) -> dict[str, Any]:
+        """Stop a serve session and terminate its process if owned.
+
+        For sessions with active PIDs (mode='local-process'):
+        1. Attempt to terminate the process gracefully
+        2. Verify process termination
+        3. Record audit event and log
+
+        For planned or adopted sessions, only updates status.
+
+        Note: This stops processes that were started by this service.
+        Adopted externally-started processes are not terminated.
+        """
         now = utc_now()
         with self.store.session() as connection:
             row = connection.execute("SELECT * FROM model_serve_sessions WHERE id = ?", (session_id,)).fetchone()
             if row is None:
                 raise KeyError("serve session not found")
+
+            pid = int(row["pid"]) if row["pid"] else 0
+            mode = str(row["mode"] or "").lower()
+
+            # Only attempt to terminate processes we started
+            if pid > 0 and mode == "local-process":
+                try:
+                    import psutil
+                    try:
+                        process = psutil.Process(pid)
+                        if process.is_running():
+                            process.terminate()
+                            # Give it a moment to shut down gracefully
+                            try:
+                                process.wait(timeout=5)
+                                self._log(connection, session_id, "info", f"Process {pid} terminated gracefully.")
+                            except psutil.TimeoutExpired:
+                                # Force kill if it doesn't respond
+                                process.kill()
+                                self._log(connection, session_id, "warning", f"Process {pid} force-killed after timeout.")
+                    except psutil.NoSuchProcess:
+                        self._log(connection, session_id, "info", f"Process {pid} was already terminated.")
+                except ImportError:
+                    # psutil not available, just log and update status
+                    self._log(connection, session_id, "warning", f"Cannot verify process {pid} termination: psutil unavailable.")
+
             connection.execute(
                 "UPDATE model_serve_sessions SET status = 'stopped', stopped_at = ?, updated_at = ? WHERE id = ?",
                 (now, now, session_id),
             )
-            self._log(connection, session_id, "info", "Stop requested and recorded locally.")
+            self._log(connection, session_id, "info", "Stop requested and recorded.")
+
+        self.store.add_audit_event(
+            AuditEvent(
+                actor="model-cookbook",
+                action="model.stop",
+                resource=f"serve:{session_id}",
+                metadata={"pid": pid, "mode": mode},
+            )
+        )
         return self.session(session_id)
 
     def session(self, session_id: str) -> dict[str, Any]:
