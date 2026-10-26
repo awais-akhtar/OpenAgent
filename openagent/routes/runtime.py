@@ -51,6 +51,7 @@ from ..enterprise import EnterpriseManager
 from ..enterprise_identity import EnterpriseIdentity
 from ..fact_provenance import FactProvenanceService
 from ..fine_tuning import FineTuningManager
+from ..legacy_attribution import LegacyAttributionPolicy
 from ..hard_audit import run_hard_audit
 from ..http_security import SlidingWindowRateLimiter, request_rate_class
 from ..image_studio import ImageStudio
@@ -109,6 +110,7 @@ from .document_processing_routes import DocumentProcessingRouteDependencies, han
 from .developer_routes import DeveloperRouteDependencies, handle_get as handle_developer_get, handle_post as handle_developer_post, handle_put as handle_developer_put, handle_delete as handle_developer_delete
 from .draft_routes import DraftRouteDependencies, handle_delete as handle_draft_delete, handle_get as handle_draft_get, handle_post as handle_draft_post, handle_put as handle_draft_put
 from .fact_provenance_routes import FactProvenanceRouteDependencies, handle_get as handle_fact_provenance_get, handle_post as handle_fact_provenance_post
+from .legacy_attribution_routes import LegacyAttributionRouteDependencies, handle_get as handle_legacy_attribution_get, handle_post as handle_legacy_attribution_post
 from .finetune_routes import FineTuneRouteDependencies, handle_get as handle_finetune_get, handle_post as handle_finetune_post
 from .local_ai_routes import LocalAiRouteDependencies, handle_get as handle_local_ai_get, handle_post as handle_local_ai_post
 from .handlers import handler_specs
@@ -470,6 +472,7 @@ def build_http_server(
     digital_twin = DigitalTwin(store)
     vault = EncryptedVault(store)
     fact_provenance = FactProvenanceService(store)
+    legacy_attribution = LegacyAttributionPolicy(store)
     backup_restore = BackupRestoreManager(store)
     scraper = WebScraper(store)
     scraper.recover_interrupted_schedules()
@@ -1080,6 +1083,14 @@ def build_http_server(
             read_json=read_json,
         )
 
+    def legacy_attribution_route_dependencies(read_json, handler) -> LegacyAttributionRouteDependencies:
+        return LegacyAttributionRouteDependencies(
+            legacy_attribution=legacy_attribution,
+            first=first,
+            read_json=read_json,
+            auth_scope_owner=handler._auth_scope_owner,
+        )
+
     def security_route_dependencies(read_json) -> SecurityRouteDependencies:
         return SecurityRouteDependencies(
             security=security_privacy,
@@ -1333,6 +1344,14 @@ def build_http_server(
             )
             if fact_provenance_route is not None:
                 self.send_json(fact_provenance_route.payload, status=fact_provenance_route.status)
+                return
+            legacy_attribution_route = handle_legacy_attribution_get(
+                parsed.path,
+                parsed.query,
+                legacy_attribution_route_dependencies(self.read_json, self),
+            )
+            if legacy_attribution_route is not None:
+                self.send_json(legacy_attribution_route.payload, status=legacy_attribution_route.status)
                 return
             security_route = handle_security_get(
                 parsed.path,
@@ -2334,6 +2353,13 @@ def build_http_server(
             )
             if fact_provenance_route is not None:
                 self.send_json(fact_provenance_route.payload, status=fact_provenance_route.status)
+                return
+            legacy_attribution_route = handle_legacy_attribution_post(
+                parsed.path,
+                legacy_attribution_route_dependencies(self.read_json, self),
+            )
+            if legacy_attribution_route is not None:
+                self.send_json(legacy_attribution_route.payload, status=legacy_attribution_route.status)
                 return
             security_route = handle_security_post(
                 parsed.path,
