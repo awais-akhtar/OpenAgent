@@ -85,7 +85,7 @@ def handle_post(path: str, deps: VaultRouteDependencies) -> JsonRouteResult | No
                 reason=reason,
                 requested_entries=requested_entries,
                 project=project,
-                duration_minutes=int(payload.get("duration_minutes", 0)) or 60,
+                duration_minutes=payload.get("duration_minutes", 60),
             )
             return JsonRouteResult({"access_request": request}, HTTPStatus.CREATED)
         except (AttributeError, NotImplementedError, ValueError) as exc:
@@ -152,5 +152,7 @@ def handle_patch(path: str, deps: VaultRouteDependencies) -> JsonRouteResult | N
         else:  # deny
             result = deps.vault.deny_access_request(request_id, project=project)
         return JsonRouteResult({"access_request": result})
-    except (AttributeError, NotImplementedError, KeyError, PermissionError) as exc:
+    except KeyError as exc:
+        return JsonRouteResult({"error": "Access request not found"}, HTTPStatus.NOT_FOUND)
+    except (AttributeError, NotImplementedError, PermissionError, ValueError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

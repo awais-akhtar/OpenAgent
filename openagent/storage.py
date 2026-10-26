@@ -773,8 +773,9 @@ class OpenAgentStore:
         *,
         after: str = "",
         limit: int = 100,
+        project: str | None = None,
     ) -> dict[str, Any]:
-        """Get events for a workflow run with cursor-based pagination.
+        """Read the recorded final-status snapshot; this is not a live execution stream.
 
         Args:
             run_id: The workflow run ID
@@ -792,7 +793,7 @@ class OpenAgentStore:
                 "SELECT * FROM workflow_runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
-            if not run:
+            if not run or (project is not None and run["project"] != project):
                 raise KeyError("Workflow run not found.")
 
             run_dict = self._workflow_run_row_to_dict(run)
@@ -815,7 +816,7 @@ class OpenAgentStore:
             ]
 
         return {
-            "events": events,
+            "events": [] if after == run_id else events[:limit],
             "cursor": run_id,
             "next": None,
         }
