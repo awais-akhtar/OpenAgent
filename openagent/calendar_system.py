@@ -1258,24 +1258,21 @@ class CalendarSystem:
         created_at = utc_now()
 
         with self.store.session() as conn:
-            # Check if calendar_reminders table exists and has the required columns
+            # Insert into calendar_reminders with the correct schema
             conn.execute(
                 """
                 INSERT INTO calendar_reminders (
-                    id, project, event_id, advance_minutes, method, trigger_at,
-                    scheduled_at, delivery_channel, metadata_json, created_at, triggered
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    id, event_id, project, advance_minutes, method, trigger_at,
+                    created_at, triggered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     reminder_id,
-                    project,
                     event_id,
+                    project,
                     advance_minutes,
-                    "scheduled",
+                    "notification",
                     scheduled_at,
-                    scheduled_at,
-                    delivery_channel,
-                    json.dumps(metadata or {}, sort_keys=True),
                     created_at,
                 ),
             )
@@ -1300,10 +1297,10 @@ class CalendarSystem:
             "event_id": event_id,
             "project": project,
             "scheduled_at": scheduled_at,
-            "delivery_channel": delivery_channel,
             "advance_minutes": advance_minutes,
             "status": "scheduled",
             "created_at": created_at,
+            "delivery_channel": delivery_channel,
         }
 
     # ------------------------------------------------------------------
