@@ -75,39 +75,38 @@ def handle_get(path: str, query: str, deps: WorkflowRouteDependencies) -> JsonRo
 
         # Stream endpoint: /api/workflows/runs/{id}/events/stream (SSE)
         if path.endswith("/events/stream"):
-            import json
             try:
-                events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit)
+                events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit, project=deps.first(params, "project"))
 
                 def stream_events():
                     """Stream events in SSE format."""
                     try:
                         # Send stream start event
-                        yield "data: " + json.dumps({
+                        yield {
                             "event": "stream_started",
                             "run_id": run_id,
                             "cursor": after,
-                        }) + "\n\n"
+                        }
 
                         # Stream all events
                         for evt in events.get("events", []):
-                            yield "data: " + json.dumps(evt) + "\n\n"
+                            yield evt
 
                         # Send stream end event
                         next_cursor = events.get("next") or events.get("cursor") or ""
-                        yield "data: " + json.dumps({
+                        yield {
                             "event": "stream_ended",
                             "run_id": run_id,
                             "next_cursor": next_cursor,
                             "has_more": bool(next_cursor),
                             "event_count": len(events.get("events", [])),
-                        }) + "\n\n"
+                        }
                     except Exception as exc:  # noqa: BLE001
-                        yield "data: " + json.dumps({
+                        yield {
                             "event": "stream_error",
                             "error": str(exc),
                             "run_id": run_id,
-                        }) + "\n\n"
+                        }
 
                 from . import StreamRouteResult
                 return StreamRouteResult(
@@ -119,7 +118,7 @@ def handle_get(path: str, query: str, deps: WorkflowRouteDependencies) -> JsonRo
 
         # Non-stream endpoint: /api/workflows/runs/{id}/events (JSON)
         try:
-            events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit)
+            events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit, project=deps.first(params, "project"))
             return JsonRouteResult(events)
         except KeyError:
             return JsonRouteResult({"error": "Workflow run not found."}, HTTPStatus.NOT_FOUND)

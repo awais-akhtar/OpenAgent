@@ -136,7 +136,7 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
                     """Stream events in SSE format with proper error handling and cleanup."""
                     try:
                         # Send stream start event
-                        yield "data: " + json.dumps({
+                        yield {
                             "event": "stream_started",
                             "job_id": job_id,
                             "cursor": after,
@@ -144,28 +144,28 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
                                 "type": event_type_filter if event_type_filter else None,
                                 "status": status_filter if status_filter else None,
                             },
-                        }) + "\n\n"
+                        }
 
                         # Stream all events
                         for evt in events.get("events", []):
-                            yield "data: " + json.dumps(evt) + "\n\n"
+                            yield evt
 
                         # Send stream end event with next cursor for pagination
                         next_cursor = events.get("next") or events.get("cursor") or ""
-                        yield "data: " + json.dumps({
+                        yield {
                             "event": "stream_ended",
                             "job_id": job_id,
                             "next_cursor": next_cursor,
                             "has_more": bool(next_cursor),
                             "event_count": len(events.get("events", [])),
-                        }) + "\n\n"
+                        }
                     except Exception as exc:  # noqa: BLE001
                         # Send error event before closing
-                        yield "data: " + json.dumps({
+                        yield {
                             "event": "stream_error",
                             "error": str(exc),
                             "job_id": job_id,
-                        }) + "\n\n"
+                        }
 
                 from . import StreamRouteResult
                 return StreamRouteResult(
