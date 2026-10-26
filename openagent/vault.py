@@ -407,215 +407,80 @@ class EncryptedVault:
     # Access Requests
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ensure_requests(conn: Any) -> None:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS vault_access_requests ("
+            "id TEXT PRIMARY KEY, project TEXT NOT NULL, reason TEXT NOT NULL, "
+            "requested_entries TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+            "duration_minutes INTEGER DEFAULT 60, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+
     def create_access_request(
-        self,
-        reason: str,
-        requested_entries: list[str],
-        *,
-        project: str = "default",
-        duration_minutes: int = 60,
+        self, reason: str, requested_entries: list[str], *,
+        project: str = "default", duration_minutes: int = 60,
     ) -> dict[str, Any]:
-        """Create a new access request for vault entries."""
-        if not reason.strip():
+        """Record a review request; approval never bypasses secret retrieval authorization."""
+        if not isinstance(reason, str) or not reason.strip():
             raise ValueError("reason is required")
-        if not requested_entries:
-            raise ValueError("requested_entries cannot be empty")
-
-        request_id = uuid4().hex
-        now = utc_now()
-
+        if (not isinstance(requested_entries, list) or not requested_entries
+                or len(requested_entries) > 100
+                or any(not isinstance(entry, str) or not entry.strip() for entry in requested_entries)):
+            raise ValueError("requested_entries must contain 1 to 100 entry IDs")
+        if isinstance(duration_minutes, bool) or not isinstance(duration_minutes, int) or not 1 <= duration_minutes <= 1440:
+            raise ValueError("duration_minutes must be between 1 and 1440")
+        entries = list(dict.fromkeys(entry.strip() for entry in requested_entries))
+        request_id, now = uuid4().hex, utc_now()
         with self.store.session() as conn:
-            # Create vault_access_requests table if it doesn't exist
-            try:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS vault_access_requests ("
-                    "id TEXT PRIMARY KEY,"
-                    "project TEXT NOT NULL,"
-                    "reason TEXT NOT NULL,"
-                    "requested_entries TEXT NOT NULL,"
-                    "status TEXT NOT NULL DEFAULT 'pending',"
-                    "duration_minutes INTEGER DEFAULT 60,"
-                    "created_at TEXT NOT NULL,"
-                    "updated_at TEXT NOT NULL"
-                    ")"
-                )
-            except Exception:
-                pass  # Table might already exist
-
-            # Store requested entries as JSON
-            entries_json = json.dumps(requested_entries)
+            self._ensure_requests(conn)
+            for entry in entries:
+                if conn.execute("SELECT id FROM vault_entries WHERE id=? AND project=?", (entry, project)).fetchone() is None:
+                    raise ValueError("Requested entry not found in this project")
             conn.execute(
                 "INSERT INTO vault_access_requests "
-                "(id, project, reason, requested_entries, status, duration_minutes, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (request_id, project, reason, entries_json, "pending", duration_minutes, now, now),
+                "(id,project,reason,requested_entries,status,duration_minutes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (request_id, project, reason.strip(), json.dumps(entries), "pending", duration_minutes, now, now),
             )
+        return {"id": request_id, "project": project, "reason": reason.strip(),
+                "requested_entries": entries, "status": "pending", "duration_minutes": duration_minutes,
+                "created_at": now, "updated_at": now}
 
-        return {
-            "id": request_id,
-            "project": project,
-            "reason": reason,
-            "requested_entries": requested_entries,
-            "status": "pending",
-            "duration_minutes": duration_minutes,
-            "created_at": now,
-            "updated_at": now,
-        }
-
-    def list_access_requests(
-        self,
-        *,
-        project: str = "default",
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """List all access requests for a project."""
-        bounded_limit = max(1, min(int(limit), 500))
-
+    def list_access_requests(self, *, project: str = "default", limit: int = 50) -> list[dict[str, Any]]:
         with self.store.session() as conn:
-            # Create table if it doesn't exist
-            try:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS vault_access_requests ("
-                    "id TEXT PRIMARY KEY,"
-                    "project TEXT NOT NULL,"
-                    "reason TEXT NOT NULL,"
-                    "requested_entries TEXT NOT NULL,"
-                    "status TEXT NOT NULL DEFAULT 'pending',"
-                    "duration_minutes INTEGER DEFAULT 60,"
-                    "created_at TEXT NOT NULL,"
-                    "updated_at TEXT NOT NULL"
-                    ")"
-                )
-            except Exception:
-                pass
-
+            self._ensure_requests(conn)
             rows = conn.execute(
-                "SELECT id, project, reason, requested_entries, status, duration_minutes, created_at, updated_at "
-                "FROM vault_access_requests WHERE project=? ORDER BY created_at DESC LIMIT ?",
-                (project, bounded_limit),
+                "SELECT * FROM vault_access_requests WHERE project=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (project, max(1, min(int(limit), 500))),
             ).fetchall()
+        return [dict(row) | {"requested_entries": json.loads(row["requested_entries"])} for row in rows]
 
-        return [
-            {
-                "id": row["id"],
-                "project": row["project"],
-                "reason": row["reason"],
-                "requested_entries": json.loads(row["requested_entries"]),
-                "status": row["status"],
-                "duration_minutes": row["duration_minutes"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            }
-            for row in rows
-        ]
-
-    def approve_access_request(
-        self,
-        request_id: str,
-        *,
-        project: str = "default",
-    ) -> dict[str, Any]:
-        """Approve an access request."""
+    def _review_access_request(self, request_id: str, *, project: str, status: str) -> dict[str, Any]:
         now = utc_now()
-
         with self.store.session() as conn:
-            # Create table if it doesn't exist
-            try:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS vault_access_requests ("
-                    "id TEXT PRIMARY KEY,"
-                    "project TEXT NOT NULL,"
-                    "reason TEXT NOT NULL,"
-                    "requested_entries TEXT NOT NULL,"
-                    "status TEXT NOT NULL DEFAULT 'pending',"
-                    "duration_minutes INTEGER DEFAULT 60,"
-                    "created_at TEXT NOT NULL,"
-                    "updated_at TEXT NOT NULL"
-                    ")"
-                )
-            except Exception:
-                pass
+            self._ensure_requests(conn)
+            row = conn.execute("SELECT * FROM vault_access_requests WHERE id=? AND project=?", (request_id, project)).fetchone()
+            if row is None:
+                raise KeyError("Access request not found")
+            if row["status"] != "pending":
+                raise ValueError("Only pending requests can be reviewed")
+            if status == "approved":
+                for entry in json.loads(row["requested_entries"]):
+                    if conn.execute("SELECT id FROM vault_entries WHERE id=? AND project=?", (entry, project)).fetchone() is None:
+                        raise ValueError("Requested entry no longer exists in this project")
+            changed = conn.execute(
+                "UPDATE vault_access_requests SET status=?, updated_at=? WHERE id=? AND project=? AND status='pending'",
+                (status, now, request_id, project),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Request was already reviewed")
+        self._log_access(request_id, project, "request." + status, success=True)
+        return dict(row) | {"requested_entries": json.loads(row["requested_entries"]), "status": status, "updated_at": now}
 
-            # Check if request exists and belongs to project
-            row = conn.execute(
-                "SELECT id, project, reason, requested_entries, status, duration_minutes, created_at "
-                "FROM vault_access_requests WHERE id=? AND project=?",
-                (request_id, project),
-            ).fetchone()
+    def approve_access_request(self, request_id: str, *, project: str = "default") -> dict[str, Any]:
+        return self._review_access_request(request_id, project=project, status="approved")
 
-            if not row:
-                raise KeyError(f"Access request not found: {request_id}")
-
-            # Update status to approved
-            conn.execute(
-                "UPDATE vault_access_requests SET status=?, updated_at=? WHERE id=?",
-                ("approved", now, request_id),
-            )
-
-        return {
-            "id": row["id"],
-            "project": row["project"],
-            "reason": row["reason"],
-            "requested_entries": json.loads(row["requested_entries"]),
-            "status": "approved",
-            "duration_minutes": row["duration_minutes"],
-            "created_at": row["created_at"],
-            "updated_at": now,
-        }
-
-    def deny_access_request(
-        self,
-        request_id: str,
-        *,
-        project: str = "default",
-    ) -> dict[str, Any]:
-        """Deny an access request."""
-        now = utc_now()
-
-        with self.store.session() as conn:
-            # Create table if it doesn't exist
-            try:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS vault_access_requests ("
-                    "id TEXT PRIMARY KEY,"
-                    "project TEXT NOT NULL,"
-                    "reason TEXT NOT NULL,"
-                    "requested_entries TEXT NOT NULL,"
-                    "status TEXT NOT NULL DEFAULT 'pending',"
-                    "duration_minutes INTEGER DEFAULT 60,"
-                    "created_at TEXT NOT NULL,"
-                    "updated_at TEXT NOT NULL"
-                    ")"
-                )
-            except Exception:
-                pass
-
-            # Check if request exists and belongs to project
-            row = conn.execute(
-                "SELECT id, project, reason, requested_entries, status, duration_minutes, created_at "
-                "FROM vault_access_requests WHERE id=? AND project=?",
-                (request_id, project),
-            ).fetchone()
-
-            if not row:
-                raise KeyError(f"Access request not found: {request_id}")
-
-            # Update status to denied
-            conn.execute(
-                "UPDATE vault_access_requests SET status=?, updated_at=? WHERE id=?",
-                ("denied", now, request_id),
-            )
-
-        return {
-            "id": row["id"],
-            "project": row["project"],
-            "reason": row["reason"],
-            "requested_entries": json.loads(row["requested_entries"]),
-            "status": "denied",
-            "duration_minutes": row["duration_minutes"],
-            "created_at": row["created_at"],
-            "updated_at": now,
-        }
+    def deny_access_request(self, request_id: str, *, project: str = "default") -> dict[str, Any]:
+        return self._review_access_request(request_id, project=project, status="denied")
 
     # ------------------------------------------------------------------
     # Status
