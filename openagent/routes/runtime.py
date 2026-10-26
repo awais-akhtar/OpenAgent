@@ -1209,6 +1209,9 @@ def build_http_server(
                 self.send_json(core_route.payload, status=core_route.status)
                 return
             agent_route = handle_agents_get(parsed.path, parsed.query, agent_route_dependencies(self.read_json, self))
+            if isinstance(agent_route, StreamRouteResult):
+                self.send_event_stream(agent_route.events, headers=agent_route.headers)
+                return
             if agent_route is not None:
                 self.send_json(agent_route.payload, status=agent_route.status)
                 return
