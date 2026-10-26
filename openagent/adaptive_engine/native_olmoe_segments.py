@@ -442,6 +442,9 @@ class NativeOlmoeEdge:
         if max_conversion_bytes is not None and self.conversion_temporary_bound_bytes > _budget(
                 max_conversion_bytes,"max_conversion_bytes"):
             raise MemoryError("edge conversion exceeds max_conversion_bytes")
+        if max_conversion_bytes is not None:
+            # The explicit conversion budget also admits dense-matrix decoding.
+            self._matrix_decode_bytes = max_conversion_bytes
         self.executor = NativeSegmentExecutor(library,max_bytes=self.max_bytes)
         self._lock = threading.RLock()
         self._closed = False

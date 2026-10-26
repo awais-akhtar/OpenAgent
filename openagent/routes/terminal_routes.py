@@ -16,7 +16,9 @@ ROUTE_GROUP = "safe_terminal"
 ROUTES = (
     ("GET", "/api/terminal/runs"),
     ("GET", "/api/terminal/runs/{id}"),
+    ("POST", "/api/terminal/runs"),
     ("POST", "/api/terminal/stream"),
+    ("DELETE", "/api/terminal/runs/{id}"),
 )
 
 
@@ -59,7 +61,7 @@ def handle_get(path: str, query: str, deps: TerminalRouteDependencies) -> JsonRo
 
 
 def handle_post(path: str, deps: TerminalRouteDependencies) -> JsonRouteResult | None:
-    if path != "/api/terminal/stream":
+    if path not in {"/api/terminal/stream", "/api/terminal/runs"}:
         return None
     payload = deps.read_json()
     command = payload.get("command")
@@ -68,7 +70,8 @@ def handle_post(path: str, deps: TerminalRouteDependencies) -> JsonRouteResult |
     if not isinstance(command, list):
         return JsonRouteResult({"error": "command must be a list of command arguments"}, HTTPStatus.BAD_REQUEST)
     try:
-        run = deps.terminal.run(
+        operation = deps.terminal.start if path == "/api/terminal/runs" else deps.terminal.run
+        run = operation(
             command=[str(part) for part in command],
             cwd=str(payload.get("cwd", "")),
             project=str(payload.get("project", "default")).strip() or "default",
@@ -76,6 +79,18 @@ def handle_post(path: str, deps: TerminalRouteDependencies) -> JsonRouteResult |
             timeout_seconds=deps.parse_int(str(payload.get("timeout_seconds", "30")), default=30),
             approved=deps.parse_bool(payload.get("approved"), default=False),
         )
-        return JsonRouteResult({"run": run}, HTTPStatus.CREATED)
+        return JsonRouteResult({"run": run}, HTTPStatus.ACCEPTED if path == "/api/terminal/runs" else HTTPStatus.CREATED)
     except ValueError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+
+def handle_delete(path: str, query: str, deps: TerminalRouteDependencies) -> JsonRouteResult | None:
+    if not path.startswith("/api/terminal/runs/"):
+        return None
+    run_id = unquote(path.removeprefix("/api/terminal/runs/")).strip("/")
+    if not run_id:
+        return JsonRouteResult({"error": "run ID is required"}, HTTPStatus.BAD_REQUEST)
+    try:
+        return JsonRouteResult(deps.terminal.cancel(run_id, owner=deps.query_owner(parse_qs(query))))
+    except KeyError:
+        return JsonRouteResult({"error": "terminal run not found"}, HTTPStatus.NOT_FOUND)

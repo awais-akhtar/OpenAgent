@@ -6,7 +6,7 @@ import unittest
 import json
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from openagent.model_gateway import StreamChunk
 from openagent.research import ResearchEngine
@@ -85,6 +85,62 @@ class ResearchLifecycleTests(unittest.TestCase):
         self.assertIn("/api/research/sessions/{id}/report", paths)
         self.assertIn("/api/research/sessions/{id}/delete", paths)
         self.assertIn("/api/research/sessions/{id}/stream", paths)
+        self.assertIn("/api/research/sessions/{id}/source-notes", paths)
+        self.assertIn("/api/research/sessions/{id}/source-notes/{source_id}", paths)
+
+    def test_source_review_notes_persist_with_session_scope_and_clear(self) -> None:
+        with TemporaryDirectory() as temp:
+            lifecycle = ResearchLifecycle(OpenAgentStore(temp))
+            session = lifecycle.create("Review notes", project="core")
+            lifecycle.start(session["id"])
+            lifecycle.complete(session["id"], {
+                "report": "Report",
+                "sources": [{"id": "paper-1", "title": "Paper"}],
+            })
+            saved = lifecycle.save_source_note(session["id"], "paper-1", "Check the method section.", project="core")
+            self.assertEqual(saved["content"], "Check the method section.")
+            listed = lifecycle.source_notes(session["id"], project="core")
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["source_key"], saved["source_key"])
+            self.assertEqual(listed[0]["content"], saved["content"])
+            with self.assertRaises(KeyError):
+                lifecycle.source_notes(session["id"], project="another-project")
+            with self.assertRaises(KeyError):
+                lifecycle.save_source_note(session["id"], "paper-1", "forged", project="another-project")
+            cleared = lifecycle.save_source_note(session["id"], "paper-1", "", project="core")
+            self.assertEqual(cleared["content"], "")
+            self.assertEqual(lifecycle.source_notes(session["id"], project="core"), [])
+            with self.assertRaises(ValueError):
+                lifecycle.save_source_note(session["id"], "paper-1", "x" * 10001, project="core")
+            lifecycle.save_source_note(session["id"], "paper-1", "Delete with session", project="core")
+            lifecycle.delete(session["id"])
+            with self.assertRaises(KeyError):
+                lifecycle.source_notes(session["id"], project="core")
+
+    def test_http_source_review_notes_save_and_read_with_session(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = OpenAgentStore(temp)
+            lifecycle = ResearchLifecycle(store)
+            session = lifecycle.create("HTTP note persistence", project="core")
+            lifecycle.complete(session["id"], {"report": "Report", "sources": [{"id": "paper-1", "title": "Paper"}]})
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}/api/research/sessions/{session['id']}/source-notes"
+            try:
+                request = Request(
+                    f"{base}/paper-1", data=json.dumps({"project": "core", "content": "Verify claim 2."}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                saved = json.loads(urlopen(request, timeout=5).read())
+                listed = json.loads(urlopen(f"{base}?project=core", timeout=5).read())
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+        self.assertEqual(saved["note"]["content"], "Verify claim 2.")
+        self.assertEqual(listed["notes"][0]["source_key"], "paper-1")
+        self.assertEqual(listed["notes"][0]["content"], "Verify claim 2.")
 
     def test_progress_stream_replays_checkpoints_and_completes(self) -> None:
         with TemporaryDirectory() as temp:

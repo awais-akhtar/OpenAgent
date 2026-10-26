@@ -28,6 +28,8 @@ The default local data directory is:
 %LOCALAPPDATA%\OpenAgent\data
 ```
 
+Installs to a custom `-InstallDir` do not change the user's normal Start Menu or Desktop shortcuts. To create shortcuts for an intentional alternate install, pass `-CreateShortcutsForCustomInstall` explicitly.
+
 The installer uses the local source tree by default and installs the voice/STT extras so microphone transcription can use local Vosk or faster-whisper engines when configured.
 
 It does not upgrade `pip` unless you explicitly pass:

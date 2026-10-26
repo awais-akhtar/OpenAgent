@@ -6,7 +6,8 @@ import unittest
 from openagent.chat import ChatService
 from openagent.conversation_organization import ConversationOrganization
 from openagent.model_gateway import ModelGateway
-from openagent.routes.conversation_routes import ROUTES
+from openagent.models import ChatMessage
+from openagent.routes.conversation_routes import ConversationRouteDependencies, ROUTES, handle_delete
 from openagent.storage import OpenAgentStore
 
 
@@ -47,6 +48,34 @@ class ConversationOrganizationTests(unittest.TestCase):
         self.assertIn("/api/conversations/{id}/branches", paths)
         self.assertIn("/api/conversations/{id}/compact", paths)
         self.assertIn("/api/conversations/{id}", paths)
+
+    def test_delete_route_removes_conversation_messages_and_returns_not_found_for_missing_id(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = OpenAgentStore(temp)
+            organization = ConversationOrganization(store)
+            conversation = store.create_conversation("Disposable chat", project="default", conversation_id="chat-to-delete")
+            store.add_chat_message(ChatMessage(conversation_id=conversation["id"], role="user", content="Synthetic test message"))
+            deps = ConversationRouteDependencies(
+                organization=organization,
+                first=lambda params, key: (params.get(key) or [""])[0],
+                parse_bool=lambda _value, *, default=False: default,
+                parse_int=lambda _value, *, default=100: default,
+                query_owner=lambda _params: "local",
+                payload_owner=lambda _payload: "local",
+                read_json=lambda: {},
+            )
+
+            deleted = handle_delete("/api/conversations/chat-to-delete", deps)
+            self.assertIsNotNone(deleted)
+            self.assertEqual(deleted.status, 200)
+            self.assertEqual(deleted.payload["changed"], [{"id": "chat-to-delete", "deleted": True}])
+            self.assertIsNone(store.get_conversation("chat-to-delete"))
+            self.assertEqual(store.list_chat_messages("chat-to-delete"), [])
+            self.assertEqual(organization.list(project="default"), [])
+
+            missing = handle_delete("/api/conversations/not-found", deps)
+            self.assertIsNotNone(missing)
+            self.assertEqual(missing.status, 404)
 
 
 if __name__ == "__main__":

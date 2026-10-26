@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatScreen } from '../src/screens/HomeChat';
+import { useWorkspaceState } from '../src/state';
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -19,9 +20,33 @@ function openConversationHistory() {
   fireEvent.click(screen.getByRole('button', { name: 'Conversation history' }));
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); history.replaceState({}, '', '/'); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); history.replaceState({}, '', '/'); useWorkspaceState.getState().setDataMode('demo'); });
+beforeEach(() => { useWorkspaceState.getState().setDataMode('live'); });
 
 describe('saved conversation history', () => {
+  it('confirms and deletes a saved conversation through the existing Live endpoint', async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    let deleted = false;
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = init?.method ?? 'GET'; requests.push({ url, method });
+      if (url.includes('/api/models')) return json({ providers: [] });
+      if (url.includes('/api/conversations/organized')) return json({ conversations: deleted ? [] : [{ id: 'c-delete', title: 'Disposable conversation', pinned: false, archived: false }] });
+      if (url.includes('/api/conversations?')) return json({ conversations: deleted ? [] : [{ id: 'c-delete', title: 'Disposable conversation' }] });
+      if (url.endsWith('/api/conversations/c-delete') && method === 'DELETE') { deleted = true; return json({ action: 'delete', changed: [{ id: 'c-delete', deleted: true }], count: 1 }); }
+      if (url.includes('/api/messages')) return json({ messages: [] });
+      return json({ error: `Unexpected ${method} ${url}` }, 404);
+    }));
+
+    renderChat();
+    openConversationHistory();
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Disposable conversation' }));
+    await waitFor(() => expect(requests.some(request => request.method === 'DELETE' && request.url.endsWith('/api/conversations/c-delete'))).toBe(true));
+    expect(await screen.findByText('Conversation deleted.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Disposable conversation' })).not.toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledWith('Delete “Disposable conversation”? This permanently removes the conversation and its messages.');
+  });
+
   it('searches backend history and sends pin, rename and archive changes to the organization API', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal('prompt', vi.fn(() => 'Renamed from UI'));
@@ -48,7 +73,11 @@ describe('saved conversation history', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Rename Project discussion' }));
     await waitFor(() => expect(requests.some(request => request.init?.method === 'PATCH' && JSON.parse(String(request.init.body)).title === 'Renamed from UI')).toBe(true));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Archive Project discussion' }));
+    const archiveButton = screen.getByRole('button', { name: 'Archive Project discussion' });
+    // History actions intentionally disable while the previous mutation and
+    // its refetch are settling; wait for the real interaction to be enabled.
+    await waitFor(() => expect(archiveButton).toBeEnabled());
+    fireEvent.click(archiveButton);
     await waitFor(() => expect(requests.some(request => request.init?.method === 'PATCH' && JSON.parse(String(request.init.body)).archived === true)).toBe(true));
   });
 

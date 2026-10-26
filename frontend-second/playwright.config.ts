@@ -9,7 +9,7 @@ export default defineConfig({
   fullyParallel: true,
   // Keep CI parallelism bounded on smaller runners; browser canvases and
   // local timers otherwise become load-sensitive across the full screen suite.
-  workers: process.env.CI ? 4 : undefined,
+  workers: 4,
   reporter: 'list',
   use: {
     baseURL,

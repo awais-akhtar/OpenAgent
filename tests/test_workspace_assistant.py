@@ -52,6 +52,24 @@ class WorkspaceAssistantTests(unittest.TestCase):
             self.assertEqual(len(canvas_model["edges"]), 2)
             self.assertGreaterEqual(store.health()["event_count"], 3)
 
+    def test_workspace_item_delete_is_project_scoped_leaf_only_and_removes_search_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            workspace = WorkspaceManager(store)
+            parent = workspace.create_item(kind="note", title="Parent note", project="core", content="Parent content")
+            child = workspace.create_item(kind="note", title="Child note", project="core", parent_id=parent["id"], content="Child secret text")
+
+            self.assertFalse(workspace.delete_item(parent["id"], project="other")["deleted"])
+            self.assertIsNotNone(workspace.get_item(parent["id"]))
+            with self.assertRaisesRegex(ValueError, "children"):
+                workspace.delete_item(parent["id"], project="core")
+            self.assertTrue(workspace.delete_item(child["id"], project="core")["deleted"])
+            self.assertFalse(any(item["id"] == child["id"] for item in workspace.search("Child secret text", project="core")))
+            child_events = [event for event in store.list_events(project="core", limit=100) if event.get("metadata", {}).get("workspace_item_id") == child["id"]]
+            self.assertEqual(child_events, [])
+            self.assertTrue(workspace.delete_item(parent["id"], project="core")["deleted"])
+            self.assertIsNone(workspace.get_item(parent["id"]))
+
     def test_assistant_tasks_goals_meetings_travel_and_crm(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

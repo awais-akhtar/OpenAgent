@@ -173,7 +173,7 @@ API int oa_qwen4_add(Tensor x,Tensor value,Tensor output) {
 
 static void qwen4_rotate(float *x,uint64_t n,int64_t position,double theta,double scale) {
     uint64_t j;
-    if(scale==1.0) {rotate(x,n,position,theta);return;}
+    if(scale==1.0) {rotate(x,n,&position,0,1,NULL,theta);return;}
     for(j=0;j<n/2;j++) {
         double angle=((double)position/scale)*pow(theta,-(double)(2*j)/(double)n);
         float a=x[j],b=x[j+n/2];

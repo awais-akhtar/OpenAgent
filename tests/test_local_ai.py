@@ -65,6 +65,15 @@ class LocalAIInfrastructureTests(unittest.TestCase):
 
             benchmark = infra.benchmark(downloaded["id"], prompt="Benchmark locally")
             self.assertGreater(benchmark["tokens_per_second"], 0)
+            history = infra.benchmark_history(model_id=downloaded["id"], limit=10)
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["id"], benchmark["id"])
+            self.assertEqual(history[0]["model"], "Tiny Local Model")
+            self.assertEqual(history[0]["provider"], "local")
+            self.assertNotIn("prompt", history[0])
+            self.assertNotIn("content", history[0])
+            self.assertEqual(infra.benchmark_history(model_id="missing-model"), [])
+            self.assertEqual(len(infra.benchmark_history(limit=0)), 1)
 
             plan = infra.plan_cluster(name="Local cluster", model_id=downloaded["id"], nodes=2)
             self.assertEqual(plan["plan"]["nodes"], 2)

@@ -111,8 +111,8 @@ class DiskExpertStore:
         self._pinned: set[str] = set()
         self._closed = False
         self._stats = dict(hits=0, misses=0, bytes_read=0, mapped_bytes=0, evictions=0,
-                           prefetch_hits=0, prefetch_errors=0, prefetch_dropped=0,
-                           demand_waits=0, read_seconds=0.0)
+                           prefetch_submitted=0, prefetch_hits=0, prefetch_errors=0,
+                           prefetch_dropped=0, demand_waits=0, read_seconds=0.0)
 
     def _path(self, region: ExpertRegion) -> Path:
         if (type(region.path) is not str or not region.path or
@@ -341,6 +341,7 @@ class DiskExpertStore:
                 self._reservations.pop(key, None)
                 raise
             self._pending[key] = job
+            self._stats["prefetch_submitted"] += 1
             return job
 
     def prefetch_many(self, keys: Iterable[str], *, headroom_bytes: int = 0) -> list[Future]:

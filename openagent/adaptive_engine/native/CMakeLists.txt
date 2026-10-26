@@ -92,7 +92,10 @@ set_target_properties(openagent_segment_runtime PROPERTIES
     C_VISIBILITY_PRESET hidden
 )
 if(MSVC)
-    target_compile_options(openagent_segment_runtime PRIVATE /W4)
+    # The public adapter registry and resource ledgers use C11 atomic flags
+    # and reference counters. MSVC keeps these optional atomics experimental
+    # unless explicitly enabled, even with /std:c11.
+    target_compile_options(openagent_segment_runtime PRIVATE /W4 /experimental:c11atomics)
 else()
     target_compile_options(openagent_segment_runtime PRIVATE -Wall -Wextra -Wpedantic)
     if(NOT WIN32)

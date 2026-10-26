@@ -46,6 +46,8 @@ class ModelCookbookTests(unittest.TestCase):
 
             session = cookbook.serve(project="core", host_id=host["id"], model_ref="tiny.gguf", runner="python", args=["--version"])
             self.assertEqual(session["status"], "planned")
+            self.assertEqual(cookbook.sessions(project="core")[0]["id"], session["id"])
+            self.assertEqual(cookbook.sessions(project="other"), [])
             self.assertEqual(cookbook.logs(session["id"])[0]["level"], "info")
 
             adopted = cookbook.adopt(project="core", model_ref="external", runner="ollama", pid=123)
@@ -114,6 +116,11 @@ class ModelCookbookRouteTests(unittest.TestCase):
                 )
                 session = json.loads(urlopen(serve_req, timeout=5).read().decode("utf-8"))["session"]
                 self.assertEqual(session["status"], "planned")
+
+                sessions = json.loads(urlopen(f"{base_url}/api/model-cookbook/sessions?project=core", timeout=5).read().decode("utf-8"))
+                self.assertEqual(sessions["sessions"][0]["id"], session["id"])
+                self.assertEqual(sessions["sessions"][0]["host_id"], host["id"])
+                self.assertEqual(json.loads(urlopen(f"{base_url}/api/model-cookbook/sessions?project=other", timeout=5).read().decode("utf-8"))["sessions"], [])
 
                 logs = json.loads(urlopen(f"{base_url}/api/model-cookbook/logs/{session['id']}", timeout=5).read().decode("utf-8"))
                 self.assertEqual(len(logs["logs"]), 1)

@@ -49,33 +49,46 @@ def pack_matrix(matrix, *, block_count=64):
     _positive(columns, "columns")
     if columns % BLOCK_WIDTH:
         raise ValueError("Q5_1 row widths must be multiples of 32")
-    data = bytearray(rows * columns // BLOCK_WIDTH * BLOCK_BYTES)
-    cursor = 0
-    for row in matrix:
-        for first in range(0, columns, block_count * BLOCK_WIDTH):
-            with np.errstate(over="ignore", invalid="ignore"):
-                chunk = row[first:first + block_count * BLOCK_WIDTH].astype(np.float32).reshape(-1, BLOCK_WIDTH)
-            if not np.isfinite(chunk).all():
-                raise ValueError("weights must be finite and representable as float32")
-            for block in chunk:
-                smallest, largest = float(np.min(block)), float(np.max(block))
-                with np.errstate(over="ignore", under="ignore"):
-                    minimum = np.float16(smallest)
-                    delta = np.float16((largest - smallest) / 31.0)
-                if not np.isfinite(minimum) or not np.isfinite(delta):
-                    raise ValueError("Q5_1 metadata exceeds binary16 range")
-                if smallest == largest:
-                    codes = np.zeros(BLOCK_WIDTH, np.uint8)
-                else:
-                    if delta == 0:
-                        delta = np.float16(2 ** -24)
-                    codes = np.clip(np.rint((block.astype(np.float64) - float(minimum))
-                                           / float(delta)), 0, 31).astype(np.uint8)
-                fifth = sum((int(codes[lane]) // 16) << lane for lane in range(BLOCK_WIDTH))
-                paired = [int(codes[lane]) % 16 + 16 * (int(codes[lane + 16]) % 16)
-                          for lane in range(16)]
-                _RECORD.pack_into(data, cursor, float(delta), float(minimum), fifth, *paired)
-                cursor += BLOCK_BYTES
+    with np.errstate(over="ignore", invalid="ignore"):
+        values = np.asarray(matrix, dtype=np.float32)
+    if not np.isfinite(values).all():
+        raise ValueError("weights must be finite and representable as float32")
+
+    # The affine Q5_1 record is block-local. Bound temporary storage by
+    # block_count and vectorize extrema, FP16 metadata, high bits and nibbles.
+    blocks = values.reshape(-1, BLOCK_WIDTH)
+    blocks_per_chunk = max(1, block_count * max(1, columns // BLOCK_WIDTH))
+    data = bytearray(blocks.shape[0] * BLOCK_BYTES)
+    output = np.frombuffer(data, dtype=np.uint8).reshape(-1, BLOCK_BYTES)
+    lane_weights = (1 << np.arange(8, dtype=np.uint16))[None, None, :]
+    for start in range(0, blocks.shape[0], blocks_per_chunk):
+        chunk = blocks[start:start + blocks_per_chunk]
+        smallest = chunk.min(axis=1).astype(np.float64)
+        largest = chunk.max(axis=1).astype(np.float64)
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            minimum = smallest.astype("<f2")
+            delta = ((largest - smallest) / 31.0).astype("<f2")
+        if not np.isfinite(minimum).all() or not np.isfinite(delta).all():
+            raise ValueError("Q5_1 metadata exceeds binary16 range")
+        nonconstant = smallest != largest
+        delta = delta.copy()
+        delta[nonconstant & (delta == 0)] = np.float16(2 ** -24)
+        codes = np.zeros(chunk.shape, dtype=np.uint8)
+        denominator = delta.astype(np.float64)
+        denominator[(denominator == 0) | ~nonconstant] = 1.0
+        codes[nonconstant] = np.clip(np.rint(
+            (chunk[nonconstant].astype(np.float64)
+             - minimum.astype(np.float64)[nonconstant, None])
+            / denominator[nonconstant, None]), 0, 31).astype(np.uint8)
+
+        high_bits = np.sum((codes >> 4).reshape(-1, 4, 8).astype(np.uint16)
+                           * lane_weights, axis=2, dtype=np.uint16).astype(np.uint8)
+        paired = (codes[:, :16] & 15) | ((codes[:, 16:] & 15) << 4)
+        target = output[start:start + len(chunk)]
+        target[:, :2] = delta.view(np.uint8).reshape(-1, 2)
+        target[:, 2:4] = minimum.view(np.uint8).reshape(-1, 2)
+        target[:, 4:8] = high_bits
+        target[:, 8:] = paired
     return bytes(data)
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from tempfile import TemporaryDirectory
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 
 from openagent.chat import ChatService
 from openagent.chat_artifacts import ChatArtifactService
@@ -45,6 +47,15 @@ class ChatRouteTests(unittest.TestCase):
         stream = handle_post("/api/chat/stream", self.dependencies(payload))
         self.assertIsInstance(stream, StreamRouteResult)
         self.assertTrue(any(event.get("type") == "message" for event in stream.events))
+
+    def test_chat_attachment_owner_comes_from_authenticated_route_context(self) -> None:
+        payload = {"message": "Read my file", "project": "core", "attachments": [{"id": "asset-1"}]}
+        deps = replace(self.dependencies(payload), auth_scope_owner=lambda: "owner-a")
+        with patch.object(self.chat, "send", return_value={"conversation_id": "conv-1"}) as send:
+            result = handle_post("/api/chat", deps)
+        self.assertEqual(result.status, 201)
+        self.assertEqual(send.call_args.kwargs["owner"], "owner-a")
+        self.assertEqual(send.call_args.kwargs["project"], "core")
 
     def test_unowned_path_is_not_handled(self) -> None:
         self.assertIsNone(handle_get("/api/health", "", self.dependencies()))

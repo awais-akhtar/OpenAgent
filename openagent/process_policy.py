@@ -11,7 +11,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Iterable, Mapping, Protocol
+from typing import Callable, Iterable, Mapping, Protocol
 
 
 DEFAULT_ENV_KEYS = frozenset(
@@ -176,6 +176,7 @@ def run_process(
     env: Mapping[str, str] | None = None,
     input_data: str | bytes | None = None,
     cancel_event: CancellationSignal | None = None,
+    on_output: Callable[[str, str], None] | None = None,
 ) -> ProcessResult:
     """Run argv with cwd, environment, timeout, and output limits enforced."""
 
@@ -207,15 +208,46 @@ def run_process(
     truncated = threading.Event()
 
     def drain(name: str, stream: object) -> None:
+        pending = bytearray()
+
+        def publish_lines(*, final: bool = False) -> None:
+            if on_output is None:
+                return
+            while True:
+                newline = pending.find(b"\n")
+                if newline < 0:
+                    if final and pending:
+                        raw = bytes(pending)
+                        pending.clear()
+                    else:
+                        return
+                else:
+                    raw = bytes(pending[: newline + 1])
+                    del pending[: newline + 1]
+                try:
+                    on_output(name, raw.decode("utf-8", errors="replace"))
+                except Exception:
+                    # Output persistence is best-effort; it must never deadlock
+                    # or interrupt the supervised child process.
+                    pass
+
         while True:
-            chunk = stream.read(8192)  # type: ignore[attr-defined]
+            # readline returns as soon as a process flushes a normal line,
+            # unlike buffered read(8192), which can withhold small output
+            # until EOF and defeats incremental terminal display.
+            chunk = stream.readline(8192)  # type: ignore[attr-defined]
             if not chunk:
                 break
             remaining = limit - len(output[name])
             if remaining > 0:
-                output[name].extend(chunk[:remaining])
+                accepted = chunk[:remaining]
+                output[name].extend(accepted)
+                if on_output is not None:
+                    pending.extend(accepted)
+                    publish_lines()
             if len(chunk) > remaining:
                 truncated.set()
+        publish_lines(final=True)
 
     readers = [
         threading.Thread(target=drain, args=("stdout", process.stdout), daemon=True),

@@ -136,10 +136,9 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
                     orphan=-id(resource)
                     self.objects[orphan]=(kind,resource)
                     self.pending[orphan]=cleanup
-                try:
-                    primary.add_note('Qwen3.5 source-bound publication cleanup retained: '+repr(cleanup))
-                except BaseException:
-                    pass
+                from .failure_reporting import add_failure_note, failure_summary
+                add_failure_note(primary,'Qwen3.5 source-bound publication cleanup retained: '+
+                    failure_summary(cleanup))
             raise
         return super()._publish(resource,kind,output)
 
@@ -173,10 +172,9 @@ class NativeQwen35PublicAdapters(NativeMixtralPublicAdapters):
                         orphan=-id(template)
                         self.objects[orphan]=('engine',template)
                         self.pending[orphan]=cleanup
-                    try:
-                        primary.add_note('Qwen3.5 range construction cleanup pending: '+repr(cleanup))
-                    except BaseException:
-                        pass
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(primary,'Qwen3.5 range construction cleanup pending: '+
+                        failure_summary(cleanup))
                 raise
             self._publish(engine,'engine',output)
         def create(engine_id,output,raw_options):

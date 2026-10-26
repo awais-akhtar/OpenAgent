@@ -93,4 +93,37 @@ describe('Files workspace links and notes', () => {
     await screen.findByRole('alert');
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/api\/workspace\/items$/), expect.objectContaining({ method: 'POST' }));
   });
+
+  it('archives and restores a Live workspace note through the archived-items filter', async () => {
+    const item: Record<string, unknown> = { id: 'w-archive', kind: 'note', project: 'default', title: 'Retained meeting notes', content: 'Keep this note', metadata: { workspace_type: 'note' }, archived: false };
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET'); calls.push({ url, method });
+      if (url.includes('/api/documents/library')) return json({ items: [] });
+      if (url.includes('/api/workspace/items?')) {
+        const includeArchived = new URL(url, 'http://localhost').searchParams.get('include_archived') === 'true';
+        return json({ items: includeArchived || !item.archived ? [item] : [] });
+      }
+      if (/\/api\/workspace\/items\/w-archive\/archive$/.test(url) && method === 'POST') { item.archived = true; return json({ archived: true, item_id: 'w-archive' }); }
+      if (/\/api\/workspace\/items\/w-archive\/restore$/.test(url) && method === 'POST') { item.archived = false; return json({ restored: true, item_id: 'w-archive' }); }
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderFiles();
+    fireEvent.click(await screen.findByRole('tab', { name: 'Notes' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Retained meeting notes/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive note' }));
+    await waitFor(() => expect(item.archived).toBe(true));
+    expect(await screen.findByRole('status')).toHaveTextContent('Note archived');
+    expect(screen.queryByRole('button', { name: 'Retained meeting notes' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show archived'));
+    fireEvent.click(await screen.findByRole('button', { name: /Retained meeting notes.*Archived/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore note' }));
+    await waitFor(() => expect(item.archived).toBe(false));
+    expect(await screen.findByRole('status')).toHaveTextContent('Note restored');
+    expect(screen.getByRole('button', { name: /Retained meeting notes/ })).toBeVisible();
+    expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/api/workspace/items/w-archive/archive'))).toBe(true);
+    expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/api/workspace/items/w-archive/restore'))).toBe(true);
+    expect(calls.some(call => call.url.includes('include_archived=true'))).toBe(true);
+  });
 });

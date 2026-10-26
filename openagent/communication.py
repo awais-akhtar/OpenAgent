@@ -24,6 +24,12 @@ from .egress import EgressClient
 from .storage import OpenAgentStore
 
 FOLLOW_UP_RE = re.compile(r"\b(follow up|remind|deadline|due|please|can you|could you|waiting)\b|\?", re.I)
+
+
+class CommunicationMessageNotFoundError(ValueError):
+    """Raised when an inbox record is absent or outside the requested owner/project scope."""
+
+
 OAUTH_PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "generic": {
         "auth_endpoint": "",
@@ -1012,6 +1018,67 @@ class CommunicationHub:
                 row = connection.execute("SELECT * FROM inbox_messages WHERE id = ?", (message_id,)).fetchone()
         return message_row(row) if row else None
 
+    def update_message(
+        self,
+        message_id: str,
+        *,
+        project: str = "default",
+        owner: str = "",
+        subject: str,
+        sender: str,
+        body: str,
+    ) -> dict[str, Any]:
+        message_id = str(message_id or "").strip()
+        project = str(project or "default").strip() or "default"
+        subject = str(subject or "").strip()
+        sender = str(sender or "").strip()
+        body = str(body or "").strip()
+        if not message_id:
+            raise ValueError("A message ID is required.")
+        if not subject or not sender or not body:
+            raise ValueError("Subject, sender and message body are required.")
+        with self.store.session() as connection:
+            params: list[Any] = [message_id, project]
+            owner_clause = ""
+            if owner:
+                owner_clause = " AND owner = ?"
+                params.append(owner)
+            current_row = connection.execute(
+                f"SELECT * FROM inbox_messages WHERE id = ? AND project = ?{owner_clause}",
+                tuple(params),
+            ).fetchone()
+            if current_row is None:
+                raise CommunicationMessageNotFoundError("Message not found in this project.")
+            current = message_row(current_row)
+            connection.execute(
+                f"UPDATE inbox_messages SET subject = ?, sender = ?, body = ?, summary = ? WHERE id = ? AND project = ?{owner_clause}",
+                [subject, sender, body, body[:240], message_id, project, *([owner] if owner else [])],
+            )
+            event_rows = connection.execute(
+                "SELECT id, metadata_json FROM events WHERE project = ? AND type = 'communication' AND source = ?",
+                (project, f"communication:{current.get('platform', 'email')}"),
+            ).fetchall()
+            for event in event_rows:
+                try:
+                    metadata = json.loads(str(event["metadata_json"] or "{}"))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(metadata, dict) or str(metadata.get("message_id", "")) != message_id:
+                    continue
+                event_owner = str(metadata.get("owner", ""))
+                if owner and event_owner and event_owner != owner:
+                    continue
+                connection.execute(
+                    "UPDATE events SET title = ?, content = ? WHERE id = ? AND project = ?",
+                    (f"{current.get('platform', 'email')} message: {subject}", body, str(event["id"]), project),
+                )
+        updated = self.get_message(message_id, owner=owner) or {}
+        self.store.add_audit_event(AuditEvent(
+            actor="communication", action="message.update", resource=f"message:{message_id}", project=project,
+            metadata={"owner": owner or str(current.get("owner", "")), "fields": ["subject", "sender", "body"]},
+        ))
+        return updated
+
     def inbox(
         self,
         *,
@@ -1038,10 +1105,51 @@ class CommunicationHub:
             ).fetchall()
         return [message_row(row) for row in rows]
 
+    def delete_message(
+        self,
+        message_id: str,
+        *,
+        project: str | None = None,
+        owner: str = "",
+    ) -> dict[str, Any]:
+        """Permanently delete a message.  The row is hard-deleted from inbox_messages."""
+        message_id = str(message_id or "").strip()
+        clean_project = str(project or "").strip() or None
+        if not message_id:
+            raise ValueError("A message ID is required.")
+        clauses = ["id = ?"]
+        lookup_params: list[Any] = [message_id]
+        if clean_project is not None:
+            clauses.append("project = ?")
+            lookup_params.append(clean_project)
+        if owner:
+            clauses.append("owner = ?")
+            lookup_params.append(owner)
+        where_clause = " AND ".join(clauses)
+        with self.store.session() as connection:
+            row = connection.execute(
+                f"SELECT * FROM inbox_messages WHERE {where_clause}", tuple(lookup_params)
+            ).fetchone()
+            if row is None:
+                raise CommunicationMessageNotFoundError("Message not found in this project.")
+            snapshot = message_row(row)
+            connection.execute(
+                f"DELETE FROM inbox_messages WHERE {where_clause}", tuple(lookup_params)
+            )
+        self.store.add_audit_event(AuditEvent(
+            actor=owner or "local",
+            action="communication.message.deleted",
+            resource=message_id,
+            project=clean_project or "default",
+            metadata={"subject": snapshot.get("subject", ""), "folder": snapshot.get("folder", "")},
+        ))
+        return {"deleted": True, "message_id": message_id, "subject": snapshot.get("subject", "")}
+
     def mutate_message(
         self,
         message_id: str,
         *,
+        project: str | None = None,
         owner: str = "",
         folder: str | None = None,
         read: bool | None = None,
@@ -1049,9 +1157,10 @@ class CommunicationHub:
         spam: bool | None = None,
         archived: bool | None = None,
     ) -> dict[str, Any]:
-        current = self.get_message(message_id, owner=owner)
-        if current is None:
-            raise ValueError(f"Unknown message '{message_id}'.")
+        message_id = str(message_id or "").strip()
+        clean_project = str(project or "").strip() or None
+        if not message_id:
+            raise ValueError("A message ID is required.")
         updates: dict[str, Any] = {}
         if folder is not None:
             clean_folder = folder.strip().lower()
@@ -1065,13 +1174,31 @@ class CommunicationHub:
             updates["folder"] = "spam"
         elif archived:
             updates["folder"] = "archive"
-        if updates:
-            with self.store.session() as connection:
+        clauses = ["id = ?"]
+        lookup_params: list[Any] = [message_id]
+        if clean_project is not None:
+            clauses.append("project = ?")
+            lookup_params.append(clean_project)
+        if owner:
+            clauses.append("owner = ?")
+            lookup_params.append(owner)
+        where_clause = " AND ".join(clauses)
+        with self.store.session() as connection:
+            current_row = connection.execute(
+                f"SELECT * FROM inbox_messages WHERE {where_clause}", tuple(lookup_params)
+            ).fetchone()
+            if current_row is None:
+                raise CommunicationMessageNotFoundError("Message not found in this project.")
+            current = message_row(current_row)
+            if updates:
                 connection.execute(
-                    f"UPDATE inbox_messages SET {', '.join(f'{key} = ?' for key in updates)} WHERE id = ?",
-                    [*updates.values(), message_id],
+                    f"UPDATE inbox_messages SET {', '.join(f'{key} = ?' for key in updates)} WHERE {where_clause}",
+                    [*updates.values(), *lookup_params],
                 )
-        result = self.get_message(message_id, owner=owner) or {}
+            updated_row = connection.execute(
+                f"SELECT * FROM inbox_messages WHERE {where_clause}", tuple(lookup_params)
+            ).fetchone()
+        result = message_row(updated_row) if updated_row else {}
         self.store.add_audit_event(
             AuditEvent(actor="communication", action="message.mutate", resource=f"message:{message_id}", project=current["project"], metadata={"owner": current["owner"], "updates": updates})
         )
@@ -1371,6 +1498,102 @@ class CommunicationHub:
             "platform": draft["platform"],
             "status": status,
             "created_at": created_at,
+        }
+
+    def send_message(
+        self,
+        message_id: str,
+        *,
+        project: str = "default",
+        owner: str = "",
+        recipients: list[str] | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a message with specified recipients, subject, and body.
+
+        Validates required fields and creates a sent_messages record.
+        """
+        message_id = str(message_id or "").strip()
+        if not message_id:
+            raise ValueError("message_id is required.")
+        if not recipients:
+            raise ValueError("recipients are required.")
+        if not subject:
+            raise ValueError("subject is required.")
+        if not body:
+            raise ValueError("body is required.")
+
+        # Get the original message from inbox
+        original = self.get_message(message_id, owner=owner)
+        if original is None:
+            raise CommunicationMessageNotFoundError(f"Message '{message_id}' not found.")
+        if original["project"] != project:
+            raise CommunicationMessageNotFoundError(f"Message '{message_id}' not in project '{project}'.")
+
+        # Create a sent message record
+        sent_id = stable_id("sent", message_id, utc_now())
+        created_at = utc_now()
+        platform = original.get("platform", "email")
+
+        with self.store.session() as connection:
+            # Insert into sent_messages
+            connection.execute(
+                """
+                INSERT INTO sent_messages (
+                    id, project, owner, draft_id, platform, recipients_json, subject, body, status, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sent_id,
+                    project,
+                    owner or original.get("owner", "local"),
+                    message_id,
+                    platform,
+                    json.dumps(recipients),
+                    subject,
+                    body,
+                    "sent",
+                    json.dumps({"sent_at": created_at, "source": "direct_send"}),
+                    created_at,
+                ),
+            )
+
+            # Update metadata to track sent status
+            metadata = original.get("metadata", {}) if isinstance(original.get("metadata"), dict) else {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError):
+                    metadata = {}
+            metadata["sent_at"] = created_at
+            metadata["sent_id"] = sent_id
+
+            connection.execute(
+                "UPDATE inbox_messages SET metadata_json = ? WHERE id = ? AND project = ?",
+                (json.dumps(metadata), message_id, project),
+            )
+
+        self.store.add_audit_event(
+            AuditEvent(
+                actor=owner or "local",
+                action="message.send",
+                resource=f"message:{message_id}",
+                project=project,
+                status="sent",
+                metadata={"recipients_count": len(recipients), "sent_id": sent_id},
+            )
+        )
+
+        return {
+            "id": sent_id,
+            "message_id": message_id,
+            "project": project,
+            "platform": platform,
+            "recipients": recipients,
+            "subject": subject,
+            "status": "sent",
+            "sent_at": created_at,
         }
 
     def _send_email_via_smtp(self, draft: dict[str, Any]) -> dict[str, Any]:

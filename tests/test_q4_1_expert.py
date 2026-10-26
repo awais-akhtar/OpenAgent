@@ -52,6 +52,32 @@ class Q4AffineTests(unittest.TestCase):
         matrix = np.tile(np.arange(-8, 24), (3, 2))
         self.assertEqual(pack_matrix(matrix, block_count=1), pack_matrix(matrix, block_count=7))
 
+    def test_vectorized_packer_matches_legacy_scalar_bytes(self):
+        rng = np.random.default_rng(407)
+        matrix = rng.normal(0, 3, size=(5, 128)).astype(np.float32)
+        matrix[0, :32] = -2.0
+        matrix[1, 32:64] = np.linspace(-65504, 65504, 32, dtype=np.float32)
+        matrix[2, 64:96] = 0
+        matrix[3, 96] = np.nextafter(np.float32(0), np.float32(1))
+
+        expected = bytearray()
+        for row in matrix:
+            for begin in range(0, matrix.shape[1], 32):
+                block = row[begin:begin + 32].astype(np.float32)
+                minimum = float(np.min(block))
+                maximum = float(np.max(block))
+                offset = np.float16(minimum)
+                delta = np.float16((maximum - minimum) / 15)
+                if maximum != minimum and delta == 0:
+                    delta = np.float16(2 ** -24)
+                codes = np.clip(np.rint((block.astype(np.float64) - float(offset))
+                                        / (float(delta) or 1)), 0, 15).astype(np.uint8)
+                expected.extend(np.asarray((delta, offset), dtype="<f2").tobytes())
+                expected.extend((codes[:16] | (codes[16:] << 4)).tobytes())
+
+        self.assertEqual(pack_matrix(matrix, block_count=1), bytes(expected))
+        self.assertEqual(pack_matrix(matrix, block_count=64), bytes(expected))
+
     def test_invalid_inputs_and_metadata(self):
         for h, i in ((0, 32), (32, 31), (True, 32), (32., 32)):
             with self.assertRaises(ValueError):

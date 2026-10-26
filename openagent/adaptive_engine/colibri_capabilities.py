@@ -37,12 +37,12 @@ _COLIBRI_CAPABILITIES = {
     "openai_compatible": {
         "status": "partial",
         "entrypoint": "/v1/chat/completions, /v1/completions",
-        "scope": "text-only JSON and SSE subset with cooperative cancellation on detected HTTP disconnect; OpenAI chat and text completions emit protocol-specific deltas, terminal events and [DONE]; chat stream_options supports only include_usage; text completions reject messages and max_completion_tokens, while chat completions reject prompt; non-empty text stop sequences are rejected until tokenizer-aware stop adaptation exists; best_of is restricted to an exact integer value of 1; tools and unsupported controls/features are not implemented",
+        "scope": "text-only JSON and SSE subset with cooperative cancellation on detected HTTP disconnect; OpenAI chat and text completions emit protocol-specific deltas, terminal events and [DONE]; chat stream_options supports only include_usage; text completions reject messages and max_completion_tokens, while chat completions reject prompt; up to four bounded non-empty stop strings are encoded by the configured checkpoint tokenizer and applied to generated token prefixes; best_of is restricted to an exact integer value of 1; tools and unsupported controls/features are not implemented",
     },
     "anthropic_messages": {
         "status": "partial",
         "entrypoint": "/v1/messages",
-        "scope": "text-only JSON and SSE subset with cooperative cancellation on detected HTTP disconnect; Messages SSE emits named message/content-block/terminal/error events and usage; non-empty stop_sequences are rejected until tokenizer-aware stop adaptation exists; stream_options, non-null tool_choice, non-empty tools, and non-null thinking are rejected or unavailable",
+        "scope": "text-only JSON and SSE subset with cooperative cancellation on detected HTTP disconnect; Messages SSE emits named message/content-block/terminal/error events and usage; up to four bounded non-empty stop_sequences are encoded by the configured checkpoint tokenizer, applied to generated token prefixes, and returned as stop_sequence when matched; stream_options, non-null tool_choice, non-empty tools, and non-null thinking are rejected or unavailable",
     },
     "gbnf_constrained_generation": {
         "status": "restricted",
@@ -52,7 +52,7 @@ _COLIBRI_CAPABILITIES = {
     "family_tool_protocols": {
         "status": "restricted",
         "entrypoint": "/v1/chat/completions, /v1/messages",
-        "scope": "non-empty tools arrays and non-null tool_choice are rejected; malformed non-array tools values are validation errors; empty tools arrays mean no tools and are accepted",
+        "scope": "tool calls and thinking blocks are not admitted; non-empty tools arrays and non-null tool_choice are rejected; malformed non-array tools values are validation errors; empty tools arrays mean no tools and are accepted",
     },
     "ready_mux_engine_protocol": {
         "status": "not_admitted",

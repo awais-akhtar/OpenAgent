@@ -2,9 +2,9 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { AnimatePresence, LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react';
 import {
   Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, ChevronDown, Code2, Cpu,
-  FlaskConical, Folder, FolderOpen, Globe2, House, Layers3, LockKeyhole, Mail,
-  Menu, MessageCircle, Mic, Network, Package, PanelLeftClose, Command, FileText,
-  Plus, Search, Settings2, Shield, SlidersHorizontal, Terminal, Workflow, X, Bell, Sun, Moon,
+  FlaskConical, Folder, FolderOpen, Globe2, House, Image, Layers3, LockKeyhole, Mail,
+  Menu, MessageCircle, Mic, Network, Package, PanelLeftClose, Command, FileText, BookMarked,
+  Plus, Search, Settings2, Shield, SlidersHorizontal, Terminal, Workflow, X, Bell, Sun, Moon, User, Zap,
 } from 'lucide-react';
 import * as Dialog from './components/ui/dialog';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -37,6 +37,8 @@ const advanced = [
   ['communications', 'Communications', Mail], ['security', 'Security', Shield], ['developer', 'Developer', Terminal],
   ['engine', 'Adaptive engine', Cpu], ['science', 'Scientific AI', FlaskConical], ['twin', 'Personal context', Activity],
   ['vault', 'Vault', LockKeyhole], ['scraper', 'Web scraper', Globe2], ['finetune', 'Fine-tuning', SlidersHorizontal],
+  ['gallery', 'Image Studio', Image], ['cookbook', 'Model Cookbook', BookMarked],
+  ['ultramodel', 'Ultra Model', Zap], ['personalos', 'Personal OS', User],
 ] as const;
 const titles = new Map<string, string>([...primary, ...advanced].map(([id, name]) => [id, name]));
 titles.set('settings', 'Settings');
@@ -67,9 +69,10 @@ function ToolsScreen() {
     { name: 'Create & research', ids: ['research', 'files', 'knowledge', 'codeq', 'voice', 'science'], details: ['Evidence and reports', 'Documents and previews', 'Indexed project sources', 'Coding and Git review', 'Recordings and transcripts', 'Datasets and experiments'] },
     { name: 'Run & connect', ids: ['automations', 'communications', 'scraper', 'finetune', 'engine'], details: ['Scheduled workflows', 'Connected messages', 'Permitted extraction jobs', 'Datasets and training', 'Compute compatibility'] },
     { name: 'Platform & privacy', ids: ['models', 'security', 'vault', 'twin', 'developer', 'settings'], details: ['Providers and capabilities', 'Access and audit', 'Protected credentials', 'Personal context', 'Integrations and APIs', 'Workspace preferences'] },
+    { name: 'Media & models', ids: ['gallery', 'cookbook', 'ultramodel', 'personalos'], details: ['Image library and editing', 'Model hosting and serving', 'Ultra-scale inference control', 'Personal workspace preferences'] },
   ];
   const needle = query.trim().toLowerCase();
-  return <div className="p-workspace p-hub"><header className="p-titlebar"><div><span className="p-kicker"><Layers3 className="icon xs"/>Browse workspace</span><h1>All tools</h1><p>Everything you can do in OpenAgent, organised around your work.</p></div><span className="p-fixture"><Layers3 className="icon xs"/>22 existing feature views</span></header><label className="p-hub-search"><Search className="icon sm"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a tool or capability…" aria-label="Find a tool or capability"/><span>{needle ? 'Filtered' : '22 tools'}</span></label>{groups.map(group => {const items = group.ids.map((id, index) => ({ id, detail: group.details[index], item: allViews.find(([key]) => key === id) })).filter(entry => entry.item && (!needle || `${entry.id} ${entry.item[1]} ${entry.detail} ${group.name}`.toLowerCase().includes(needle))); if (!items.length) return null; return <section className="p-tools-group" key={group.name}><div className="p-section-heading"><h2>{group.name}</h2><span>{items.length} {items.length === 1 ? 'tool' : 'tools'}</span></div><div className="p-tools-grid">{items.map(({ id, detail, item }) => { if (!item) return null; const [, routeLabel, Icon] = item; const label = id === 'assistant' ? 'Personal assistant' : routeLabel; return <button key={id} type="button" className="p-tool-link" data-nav={id}><span className="square-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{detail}</small></span><ArrowRight className="icon sm" aria-hidden="true"/></button>; })}</div></section>; })}{needle && !groups.some(group => group.ids.some((id, i) => `${id} ${titles.get(id)} ${group.details[i]} ${group.name}`.toLowerCase().includes(needle))) && <div className="p-empty" role="status"><Search className="icon lg"/><h3>No matching tools</h3><p>Try another name or capability.</p></div>}</div>;
+  return <div className="p-workspace p-hub"><header className="p-titlebar"><div><span className="p-kicker"><Layers3 className="icon xs"/>Browse workspace</span><h1>All tools</h1><p>Everything you can do in OpenAgent, organised around your work.</p></div><span className="p-fixture"><Layers3 className="icon xs"/>26 existing feature views</span></header><label className="p-hub-search"><Search className="icon sm"/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a tool or capability…" aria-label="Find a tool or capability"/><span>{needle ? 'Filtered' : '26 tools'}</span></label>{groups.map(group => {const items = group.ids.map((id, index) => ({ id, detail: group.details[index], item: allViews.find(([key]) => key === id) })).filter(entry => entry.item && (!needle || `${entry.id} ${entry.item[1]} ${entry.detail} ${group.name}`.toLowerCase().includes(needle))); if (!items.length) return null; return <section className="p-tools-group" key={group.name}><div className="p-section-heading"><h2>{group.name}</h2><span>{items.length} {items.length === 1 ? 'tool' : 'tools'}</span></div><div className="p-tools-grid">{items.map(({ id, detail, item }) => { if (!item) return null; const [, routeLabel, Icon] = item; const label = id === 'assistant' ? 'Personal assistant' : routeLabel; return <button key={id} type="button" className="p-tool-link" data-nav={id}><span className="square-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{detail}</small></span><ArrowRight className="icon sm" aria-hidden="true"/></button>; })}</div></section>; })}{needle && !groups.some(group => group.ids.some((id, i) => `${id} ${titles.get(id)} ${group.details[i]} ${group.name}`.toLowerCase().includes(needle))) && <div className="p-empty" role="status"><Search className="icon lg"/><h3>No matching tools</h3><p>Try another name or capability.</p></div>}</div>;
 }
 
 export function App() {

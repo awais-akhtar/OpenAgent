@@ -170,11 +170,14 @@ def run_production_proof(data_dir: str | Path, *, queue_jobs: int = 100) -> dict
         spec = (root / "frontend-second" / "tests" / "e2e" / "screens.spec.ts").read_text(encoding="utf-8")
         functional_spec = (root / "frontend-second" / "tests" / "e2e" /
                            "all-workspaces-functional-smoke.spec.ts").read_text(encoding="utf-8")
+        e2e_runner = (root / "frontend-second" / "scripts" / "run-e2e.mjs").read_text(encoding="utf-8")
         workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         required = [
             package.get("scripts", {}).get("test:e2e", "").startswith(
                 "npm --prefix frontend-second run test:e2e"),
-            frontend_package.get("scripts", {}).get("test:e2e", "").endswith("playwright test"),
+            frontend_package.get("scripts", {}).get("test:e2e", "") == "node scripts/run-e2e.mjs"
+            and "node_modules/@playwright/test/cli.js" in e2e_runner
+            and "'test', ...process.argv.slice(2)" in e2e_runner,
             "testDir: './tests/e2e'" in config,
             "browserName: 'chromium'" in config,
             "page.on('pageerror'" in spec,

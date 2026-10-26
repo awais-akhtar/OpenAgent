@@ -1,0 +1,40 @@
+/* Workspace-only desktop parity corrections. Keep these scoped to their
+   corresponding screens so the shared application shell remains untouched. */
+@media (min-width: 801px) {
+  /* The canonical document rows have slightly more vertical breathing room. */
+  .files-page .file-record {
+    padding-block: 15px;
+  }
+
+  /* Match the stronger title treatment in the canonical document inspector. */
+  .files-page .preview-column > .row.section-space h2 {
+    font-weight: 700;
+  }
+
+  /* The canonical source list begins closer to its search field and each
+     source row is fractionally taller, preventing accumulated drift below it. */
+  .research-page .research-source-list {
+    margin-top: 22px;
+  }
+
+  .research-page .research-source-row {
+    padding-block: 14px;
+  }
+}
+
+/* ── New screen utility classes (Image Studio, Cookbook, Ultra Model, Personal OS) ── */
+.p-list { display: flex; flex-direction: column; gap: 0; }
+.p-list-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.p-list-row:last-child { border-bottom: 0; }
+
+.p-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 10px; }
+.p-gallery-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); cursor: pointer; text-align: center; transition: border-color 0.15s; }
+.p-gallery-cell:hover, .p-gallery-cell.selected { border-color: var(--blue); }
+.p-gallery-cell.selected { background: var(--blue-soft); }
+.p-gallery-thumb { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; }
+.p-gallery-placeholder { display: flex; align-items: center; justify-content: center; background: var(--surface-2); border-radius: 4px; }
+.p-gallery-label { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+.p-kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+.p-kv-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.p-kv-grid small { color: var(--muted); font-size: 11px; }

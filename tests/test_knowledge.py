@@ -72,6 +72,62 @@ class KnowledgeEngineTests(unittest.TestCase):
             self.assertGreaterEqual(documents[0]["chunk_count"], 1)
             self.assertIn("openagent", documents[0]["tags"])
             self.assertNotIn("source_path", documents[0])
+            detail = knowledge.get_document(document["id"], project="core")
+            self.assertEqual(detail["title"], "OpenAgent Knowledge")
+            self.assertTrue(detail["content"])
+            self.assertEqual(len(detail["chunks"]), document["chunk_count"])
+            self.assertIn("openagent", detail["tags"])
+            with self.assertRaises(KeyError):
+                knowledge.get_document(document["id"], project="other")
+            self.assertEqual(knowledge.delete_document(document["id"], project="other")["deleted"], False)
+            self.assertEqual(knowledge.get_document(document["id"], project="core")["id"], document["id"])
+            self.assertEqual(knowledge.delete_document(document["id"], project="core")["deleted"], True)
+            with self.assertRaises(KeyError):
+                knowledge.get_document(document["id"], project="core")
+
+    def test_update_rebuilds_index_in_place_and_preserves_project_scope(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            knowledge = KnowledgeEngine(store)
+            created = knowledge.ingest_text(
+                "Old handbook",
+                "LegacyZephyr contains the outdated deployment steps and old owner details.",
+                project="core",
+                source="manual",
+                source_path="docs/handbook.md",
+                metadata={"origin": "review"},
+            )
+
+            updated = knowledge.update_document(
+                created["id"],
+                "Current handbook",
+                "CurrentQuasar contains the approved deployment steps and current owner details.",
+                project="core",
+            )
+
+            self.assertEqual(updated["id"], created["id"])
+            self.assertEqual(updated["created_at"], created["created_at"])
+            self.assertEqual(updated["source_path"], "docs/handbook.md")
+            self.assertEqual(updated["source"], "manual")
+            detail = knowledge.get_document(created["id"], project="core")
+            self.assertEqual(detail["title"], "Current handbook")
+            self.assertIn("CurrentQuasar", detail["content"])
+            self.assertNotIn("LegacyZephyr", detail["content"])
+            self.assertEqual(len(knowledge.list_documents(project="core")), 1)
+            self.assertEqual(knowledge.search("LegacyZephyr", project="core"), [])
+            current_results = knowledge.search("CurrentQuasar", project="core")
+            self.assertEqual(len(current_results), 1)
+            self.assertEqual(current_results[0]["document_id"], created["id"])
+            with store.session() as connection:
+                chunks = connection.execute("SELECT COUNT(*) AS count FROM document_chunks WHERE document_id = ?", (created["id"],)).fetchone()["count"]
+                embeddings = connection.execute("SELECT COUNT(*) AS count FROM chunk_embeddings WHERE project = 'core'").fetchone()["count"]
+                stale_entities = connection.execute("SELECT COUNT(*) AS count FROM knowledge_entities WHERE project = 'core' AND name LIKE '%LegacyZephyr%'").fetchone()["count"]
+            self.assertEqual(chunks, updated["chunk_count"])
+            self.assertEqual(embeddings, updated["chunk_count"])
+            self.assertEqual(stale_entities, 0)
+            with self.assertRaises(KeyError):
+                knowledge.update_document(created["id"], "Cross-project edit", "Should not update.", project="other")
+            self.assertEqual(knowledge.get_document(created["id"], project="core")["title"], "Current handbook")
 
 
 if __name__ == "__main__":

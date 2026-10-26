@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from openagent.communication import CommunicationHub
+from openagent.communication import CommunicationMessageNotFoundError
 from openagent.routes.communication_routes import ROUTES
 from openagent.routes.communication_routes import CommunicationRouteDependencies, handle_get, handle_post
 from openagent.storage import OpenAgentStore
@@ -70,6 +71,57 @@ class CommunicationMailboxLifecycleTests(unittest.TestCase):
             self.assertEqual(result["count"], 1)
             self.assertEqual(hub.get_scheduled_send(scheduled["id"])["status"], "sent")
 
+    def test_live_inbox_message_can_be_moved_to_trash_without_deleting_record(self) -> None:
+        with TemporaryDirectory() as temp:
+            hub = CommunicationHub(OpenAgentStore(temp))
+            message = hub.import_message(
+                platform="email", sender="owner@example.test", subject="Retention notice",
+                body="Synthetic local message", project="default", owner="local-owner",
+            )
+            trashed = hub.mutate_message(message["id"], owner="local-owner", folder="trash")
+            self.assertEqual(trashed["folder"], "trash")
+            self.assertEqual(hub.get_message(message["id"], owner="local-owner")["folder"], "trash")
+            self.assertIsNone(hub.get_message(message["id"], owner="another-owner"))
+            other_project_message = hub.import_message(
+                platform="email", sender="owner@example.test", subject="Other project",
+                body="Must remain in inbox", project="other", owner="local-owner",
+            )
+            with self.assertRaises(CommunicationMessageNotFoundError):
+                hub.mutate_message(other_project_message["id"], project="default", owner="local-owner", folder="trash")
+            self.assertEqual(hub.get_message(other_project_message["id"], owner="local-owner")["folder"], "inbox")
+
+    def test_live_message_edit_is_project_and_owner_scoped_and_refreshes_context(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = OpenAgentStore(temp)
+            hub = CommunicationHub(store)
+            message = hub.import_message(
+                platform="email", sender="old@example.test", subject="Obsolete subject", body="Comet violet signal",
+                project="core", owner="alice",
+            )
+            hub.import_message(
+                platform="email", sender="old@example.test", subject="Obsolete subject", body="Different owner record",
+                project="core", owner="bob",
+            )
+            updated = hub.update_message(
+                message["id"], project="core", owner="alice", subject="Fresh subject",
+                sender="new@example.test", body="Amber copper orbit",
+            )
+            self.assertEqual((updated["subject"], updated["sender"], updated["body"]),
+                             ("Fresh subject", "new@example.test", "Amber copper orbit"))
+            self.assertEqual(store.search_events("Comet violet signal", project="core"), [])
+            self.assertTrue(store.search_events("Amber copper orbit", project="core"))
+            with self.assertRaises(CommunicationMessageNotFoundError):
+                hub.update_message(
+                    message["id"], project="core", owner="bob", subject="Forged",
+                    sender="bob@example.test", body="Must not change",
+                )
+            with self.assertRaises(CommunicationMessageNotFoundError):
+                hub.update_message(
+                    message["id"], project="other", owner="alice", subject="Forged",
+                    sender="alice@example.test", body="Must not change",
+                )
+            self.assertEqual(hub.get_message(message["id"], owner="alice")["subject"], "Fresh subject")
+
     def test_routes_cover_mailbox_lifecycle(self) -> None:
         paths = {path for _, path in ROUTES}
         self.assertIn("/api/communication/messages/state", paths)
@@ -106,6 +158,25 @@ class CommunicationMailboxLifecycleTests(unittest.TestCase):
         self.assertEqual(scheduled.payload["scheduled"]["project"], "core")
         self.assertEqual(scheduled.payload["scheduled"]["owner"], "local-user")
         self.assertEqual(processed.payload["project"], "core")
+
+    def test_route_adapter_passes_project_and_owner_to_mailbox_mutation(self) -> None:
+        payload = {"project": "core", "message_id": "message-1", "folder": "trash"}
+
+        class FakeCommunication:
+            def mutate_message(self, message_id, *, project, owner, folder, read, answered, spam, archived):
+                return {"id": message_id, "project": project, "owner": owner, "folder": folder}
+
+        deps = CommunicationRouteDependencies(
+            communication=FakeCommunication(),
+            first=lambda params, key: (params.get(key) or [None])[0],
+            parse_bool=lambda value, default=False: default,
+            parse_int=lambda value, default=0: default,
+            query_owner=lambda params: "",
+            payload_owner=lambda body, default="local": "owner-1",
+            read_json=lambda: payload,
+        )
+        result = handle_post("/api/communication/messages/state", deps)
+        self.assertEqual(result.payload["message"], {"id": "message-1", "project": "core", "owner": "owner-1", "folder": "trash"})
 
 
 if __name__ == "__main__":

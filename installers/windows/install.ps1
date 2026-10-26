@@ -2,6 +2,7 @@ param(
     [string]$SourcePath = "",
     [string]$InstallDir = "$env:LOCALAPPDATA\OpenAgent",
     [switch]$NoDesktopShortcut,
+    [switch]$CreateShortcutsForCustomInstall,
     [switch]$UpgradePip,
     [switch]$SkipVoiceExtras
 )
@@ -12,6 +13,22 @@ if ([string]::IsNullOrWhiteSpace($SourcePath)) {
     $SourcePath = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 } else {
     $SourcePath = (Resolve-Path $SourcePath).Path
+}
+
+$normalizedInstallRoot = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+$managedRuntimeRoot = [System.IO.Path]::GetFullPath((Join-Path $normalizedInstallRoot ".venv\Scripts")).TrimEnd('\') + '\'
+$activeManagedProcessIds = @()
+foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
+    try { $processPath = $process.Path } catch { continue }
+    if ([string]::IsNullOrWhiteSpace($processPath)) { continue }
+    try { $normalizedProcessPath = [System.IO.Path]::GetFullPath($processPath) } catch { continue }
+    if ($normalizedProcessPath.StartsWith($managedRuntimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $activeManagedProcessIds += $process.Id
+    }
+}
+if ($activeManagedProcessIds.Count -gt 0) {
+    $processList = ($activeManagedProcessIds | Sort-Object -Unique) -join ", "
+    throw "OpenAgent is running from the target installation (process IDs: $processList). Close its desktop window and local server before upgrading; user data is untouched."
 }
 
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -32,22 +49,50 @@ $frontendLock = Join-Path $frontendSource "package-lock.json"
 if (-not (Test-Path -LiteralPath $frontendLock)) {
     throw "The approved frontend source is missing: $frontendLock. Use the complete repository."
 }
+$tempRoot = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
+$frontendBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $env:TEMP ("OpenAgent-frontend-build-" + [Guid]::NewGuid().ToString("N"))))
+if (-not $frontendBuildRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to build the frontend outside the temporary directory: $frontendBuildRoot"
+}
+$frontendBuild = Join-Path $frontendBuildRoot "frontend-second"
+$frontendBuildAssets = Join-Path $frontendBuild "dist"
+$frontendNpmCache = Join-Path $frontendBuildRoot "npm-cache"
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npm) { $npm = Get-Command npm -ErrorAction SilentlyContinue }
 if (-not $npm) {
     throw "Node.js/npm is required to build the approved desktop UI. Install Node.js LTS first."
 }
-Push-Location $frontendSource
 try {
-    & $npm.Source ci --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install locked frontend dependencies (npm ci)." }
-    & $npm.Source run build
-    if ($LASTEXITCODE -ne 0) { throw "The approved frontend build failed. Installation stopped to avoid an outdated UI." }
-} finally {
-    Pop-Location
+    New-Item -ItemType Directory -Force -Path $frontendBuild | Out-Null
+    foreach ($relativeFile in @("package.json", "package-lock.json", "tsconfig.json", "index.html", "vite.config.ts")) {
+        Copy-Item -LiteralPath (Join-Path $frontendSource $relativeFile) -Destination $frontendBuild
+    }
+    foreach ($relativeDirectory in @("src", "public", "scripts", "reference")) {
+        Copy-Item -LiteralPath (Join-Path $frontendSource $relativeDirectory) -Destination $frontendBuild -Recurse
+    }
+    Push-Location $frontendBuild
+    try {
+        # Do not mutate or contend with a developer's shared npm cache while
+        # upgrading the desktop from a source checkout.
+        $previousNpmCache = $env:npm_config_cache
+        $env:npm_config_cache = $frontendNpmCache
+        & $npm.Source ci --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install locked frontend dependencies (npm ci)." }
+        & $npm.Source run build
+        if ($LASTEXITCODE -ne 0) { throw "The approved frontend build failed. Installation stopped to avoid an outdated UI." }
+    } finally {
+        $env:npm_config_cache = $previousNpmCache
+        Pop-Location
+    }
+} catch {
+    if (Test-Path -LiteralPath $frontendBuildRoot) {
+        Remove-Item -LiteralPath $frontendBuildRoot -Recurse -Force
+    }
+    throw
 }
-$builtUI = Join-Path $frontendSource "dist"
+$builtUI = $frontendBuildAssets
 if (-not (Test-Path -LiteralPath (Join-Path $builtUI "index.html"))) {
+    if (Test-Path -LiteralPath $frontendBuildRoot) { Remove-Item -LiteralPath $frontendBuildRoot -Recurse -Force }
     throw "The frontend build did not produce dist/index.html; refusing to install the legacy UI."
 }
 
@@ -75,6 +120,7 @@ $uiRollback = Join-Path $InstallDir "ui.previous"
 if (Test-Path -LiteralPath $uiStaging) { Remove-Item -LiteralPath $uiStaging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $uiStaging | Out-Null
 Copy-Item -Path (Join-Path $builtUI "*") -Destination $uiStaging -Recurse -Force
+Remove-Item -LiteralPath $frontendBuildRoot -Recurse -Force
 & $venvPython -c "import sys; from pathlib import Path; from openagent.workbench import validate_desktop_ui; validate_desktop_ui(Path(sys.argv[1]))" $uiStaging
 if ($LASTEXITCODE -ne 0) { throw "Staged frontend assets failed startup validation. Existing UI is unchanged." }
 if (Test-Path -LiteralPath $uiRollback) { Remove-Item -LiteralPath $uiRollback -Recurse -Force }
@@ -116,21 +162,57 @@ function New-OpenAgentShortcut {
     )
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($ShortcutPath)
-    $shortcut.TargetPath = $venvPythonw
+    $expectedPythonw = (Resolve-Path -LiteralPath $venvPythonw).Path
+    $shortcut.TargetPath = $expectedPythonw
     $shortcut.Arguments = "-m openagent.desktop --data-dir `"$dataDir`" --ui-root `"$uiRoot`""
     $shortcut.WorkingDirectory = $InstallDir
     $shortcut.WindowStyle = 7
     $shortcut.Description = "OpenAgent native local desktop"
     $shortcut.Save()
+
+    # Verify the saved link itself, not only the source path. This catches
+    # profile redirection and stale target paths that can make an installed
+    # shortcut fail even though the UI bundle and Python package are present.
+    $savedShortcut = $shell.CreateShortcut($ShortcutPath)
+    if (-not (Test-Path -LiteralPath $savedShortcut.TargetPath) -or
+        [System.IO.Path]::GetFullPath($savedShortcut.TargetPath) -ne $expectedPythonw) {
+        throw "The OpenAgent shortcut target is invalid: $($savedShortcut.TargetPath)"
+    }
 }
 
-$programsDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+# A developer/test install at a custom path must not replace the user's normal
+# OpenAgent shortcuts with links to a temporary data directory. Custom installs
+# create shortcuts only after an explicit opt-in.
+$normalizedInstallDir = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+$defaultInstallDir = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "OpenAgent")).TrimEnd('\')
+$isDefaultInstall = [string]::Equals(
+    $normalizedInstallDir,
+    $defaultInstallDir,
+    [System.StringComparison]::OrdinalIgnoreCase
+)
+$shouldCreateShortcuts = $isDefaultInstall -or $CreateShortcutsForCustomInstall
+if ($shouldCreateShortcuts) {
+    # An elevated installer can have LOCALAPPDATA and APPDATA from different
+    # profiles. For the standard per-user destination, derive the Start Menu
+    # path from InstallDir rather than mixing profiles.
+$defaultInstallSuffix = "\AppData\Local\OpenAgent"
+if ($isDefaultInstall -and $normalizedInstallDir.EndsWith($defaultInstallSuffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    # Use the profile encoded by the actual destination, even if elevation
+    # changed the installer process's APPDATA/LOCALAPPDATA environment.
+    $userProfileRoot = $normalizedInstallDir.Substring(0, $normalizedInstallDir.Length - $defaultInstallSuffix.Length)
+    $programsDir = Join-Path $userProfileRoot "AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
+} else {
+    $programsDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+}
 New-Item -ItemType Directory -Force -Path $programsDir | Out-Null
 New-OpenAgentShortcut -ShortcutPath (Join-Path $programsDir "OpenAgent.lnk")
 
 if (-not $NoDesktopShortcut) {
     $desktopDir = [Environment]::GetFolderPath("Desktop")
     New-OpenAgentShortcut -ShortcutPath (Join-Path $desktopDir "OpenAgent.lnk")
+}
+} else {
+    Write-Host "Custom install path detected; existing Start Menu and Desktop shortcuts were left unchanged. Pass -CreateShortcutsForCustomInstall to opt in."
 }
 
 Write-Host "OpenAgent Desktop installed."

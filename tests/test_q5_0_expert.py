@@ -79,6 +79,32 @@ class Q5FormatTests(unittest.TestCase):
             tolerance = scales[:, None] / 2 + 2 * np.finfo(np.float32).eps * peaks[:, None]
             self.assertTrue(np.all(np.abs(original.reshape(-1, 32) - decoded.reshape(-1, 32)) <= tolerance))
 
+    def test_vectorized_packer_matches_legacy_scalar_bytes(self):
+        rng = np.random.default_rng(507)
+        matrix = rng.normal(0, 3, size=(5, 128)).astype(np.float32)
+        matrix[0, :32] = 0
+        matrix[1, 32:64] = np.linspace(-65504 * 15, 65504 * 15, 32, dtype=np.float32)
+        matrix[2, 64:96] = -2
+        matrix[3, 96] = np.nextafter(np.float32(0), np.float32(1))
+
+        expected = bytearray()
+        for row in matrix:
+            for start in range(0, matrix.shape[1], 32):
+                block = row[start:start + 32].astype(np.float32)
+                peak = float(np.max(np.abs(block)))
+                delta = np.float16(peak / 15.0)
+                if peak > 0 and delta == 0:
+                    delta = np.float16(2 ** -24)
+                codes = np.clip(np.rint(block.astype(np.float64)
+                                        / (float(delta) or 1.0)), -16, 15).astype(np.int16) + 16
+                high_bits = sum((int(code) >> 4) << lane for lane, code in enumerate(codes))
+                nibbles = [(int(codes[lane]) & 15)
+                           | ((int(codes[lane + 16]) & 15) << 4) for lane in range(16)]
+                expected.extend(struct.pack("<eI16B", float(delta), high_bits, *nibbles))
+
+        self.assertEqual(pack_matrix(matrix, block_count=1), bytes(expected))
+        self.assertEqual(pack_matrix(matrix, block_count=64), bytes(expected))
+
     def test_reject_invalid_values_shapes_dimensions_and_payloads(self):
         for h, i in ((0, 32), (32, -32), (31, 32), (True, 32), (32., 32)):
             with self.assertRaises(ValueError):

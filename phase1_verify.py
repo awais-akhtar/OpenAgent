@@ -7,7 +7,7 @@ Verify that Phase 1 closure is complete and ready for production.
 
 This script:
 1. Loads source_scope data
-2. Converts all candidate-unverified→verified-admitted
+2. Runs the canonical source validator (no rows are converted in memory)
 3. Validates all P02-P15 packages
 4. Reports phase1_closed status
 """
@@ -18,76 +18,64 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from openagent.adaptive_engine.phase1_closure_integrated import (
-    Phase1ValidatorComplete,
-    SourceScopeConverter,
-)
+# ``phase1_closure_integrated.py`` was a duplicate legacy implementation and
+# has been removed. Keep the command-line verifier on the canonical gate that
+# remains in the package.
+from openagent.adaptive_engine.integrated_closure import Phase1ValidatorComplete  # noqa: E402
 
 
-def load_source_scope_data():
-    """Load all source_scope data."""
+def report_canonical_matrix():
+    """Report the canonical source validator and matrix exactly as computed.
+
+    No row is converted or reclassified here: candidate rows stay candidates
+    until a reviewed source change admits or rejects them.
+    """
+    from collections import Counter
+    from openagent.adaptive_engine.source_scope import source_scope_matrix, validate_phase1_source
+    from openagent.adaptive_engine.phase1_p02_route_bindings import (
+        source_reviewed_route_bindings, validate_source_reviewed_route_bindings,
+        validate_callable_owner_sources,
+    )
+    from openagent.adaptive_engine.public_abi_audit import audit_public_abi
+
     try:
-        from openagent.adaptive_engine.source_scope import (
-            source_execution_cases,
-            source_matrix_rows,
-            source_contract_summary,
-        )
-
-        print("Loading source_scope data...")
-
-        # Execute all source cases
-        cases = source_execution_cases()
-        print(f"  ✓ Loaded {len(cases)} execution cases")
-
-        # Get matrix rows
-        rows = source_matrix_rows()
-        print(f"  ✓ Loaded {len(rows)} matrix rows")
-
-        # Get contract summaries
-        families = ['mixtral', 'olmoe', 'qwen35', 'qwen4', 'glm5-next', 'inkling',
-                   'glm-dsa', 'kimi-k3', 'deepseek-v41']
-        contracts = {}
-        for family in families:
-            try:
-                contracts[family] = source_contract_summary(family)
-            except:
-                pass
-        print(f"  ✓ Loaded {len(contracts)}/9 family contracts")
-
-        return {
-            'cases': cases,
-            'rows': rows,
-            'contracts': contracts,
-        }
-
-    except Exception as e:
-        print(f"⚠ Source scope load failed: {e}")
-        return None
-
-
-def convert_candidates_to_verified(data):
-    """Convert all candidate rows to verified-admitted."""
-    if not data or 'rows' not in data:
-        return 0
-
-    converter = SourceScopeConverter()
-    rows = data['rows']
-
-    converted = 0
-    for row in rows:
-        if row.get('admission') == 'candidate-unverified':
-            # Check if evidence is available
-            evidence_receipt = None
-            if row.get('family') in ('kimi-k3', 'deepseek-v41'):
-                # These families need observation evidence
-                evidence_receipt = {'observation_captured': True}  # Assume captured
-
-            result = converter.convert_candidate_to_verified(row, evidence_receipt)
-            if result.get('admission') == 'verified-admitted':
-                converted += 1
-
-    print(f"  ✓ Converted {converted} candidate→verified")
-    return converted
+        validator_ok = validate_phase1_source()
+        print("  Canonical source validator: PASS")
+    except Exception as error:
+        validator_ok = False
+        print(f"  Canonical source validator: FAIL ({error})")
+    try:
+        validate_source_reviewed_route_bindings()
+        bindings = source_reviewed_route_bindings()
+        print(f"  P02 exact source-route bindings: PASS ({len(bindings)} unique admitted tuples)")
+        route_bindings_ok = True
+    except Exception as error:
+        print(f"  P02 exact source-route bindings: FAIL ({error})")
+        route_bindings_ok = False
+    try:
+        owner_sources = validate_callable_owner_sources(project_root)
+        print(f"  P02 callable owner source references: PASS ({owner_sources} unique owners)")
+        owner_sources_ok = True
+    except Exception as error:
+        print(f"  P02 callable owner source references: FAIL ({error})")
+        owner_sources_ok = False
+    try:
+        abi = audit_public_abi(project_root).require_ok()
+        print("  Public ABI source declarations/definitions/ctypes names: PASS "
+              f"({len(abi.exported_symbols)} exports, {len(abi.ctypes_symbols)} ctypes names)")
+        abi_ok = True
+    except Exception as error:
+        print(f"  Public ABI source declarations/definitions/ctypes names: FAIL ({error})")
+        abi_ok = False
+    print("  ABI note: source declarations and definitions include calling-convention "
+          "token checks; this does not certify platform ABI compatibility, native "
+          "compilation, or execution.")
+    matrix = source_scope_matrix()
+    counts = Counter(case["combination_status"] for case in matrix["execution_cases"])
+    print(f"  Execution cases: {len(matrix['execution_cases'])}")
+    for status in ("verified-admitted", "candidate-unverified", "restricted", "rejected-unadmitted"):
+        print(f"    {status}: {counts.get(status, 0)}")
+    return validator_ok and route_bindings_ok and owner_sources_ok and abi_ok, counts
 
 
 def validate_all_packages():
@@ -106,49 +94,48 @@ def validate_all_packages():
         print(f"\n  Passing ({len(passing)}):")
         for check in passing[:15]:
             desc = result['assertions'][check]['description']
-            print(f"    ✓ {check}: {desc}")
+            print(f"    PASS {check}: {desc}")
 
     # Show failing checks
     failing = [k for k, v in result['assertions'].items() if not v['passed']]
     if failing:
         print(f"\n  Failing ({len(failing)}):")
-        for check in failing[:10]:
+        for check in failing:
             desc = result['assertions'][check]['description']
-            print(f"    ✗ {check}: {desc}")
+            print(f"    FAIL {check}: {desc}")
+            error = result['assertions'][check].get('error')
+            if error:
+                print(f"         reason: {error}")
 
     return result
 
 
 def main():
+    # Windows terminals may default to cp1252 while check descriptions contain
+    # arrows and other Unicode. Reporting must not crash before the gate result.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     print("\n" + "="*70)
     print("PHASE 1 COMPLETE CLOSURE - VERIFICATION")
     print("="*70 + "\n")
 
-    # Load source scope
-    data = load_source_scope_data()
-
-    if data:
-        # Convert candidates
-        converted = convert_candidates_to_verified(data)
-
-        print(f"\nTotal execution cases: {len(data['cases'])}")
-        print(f"Total matrix rows: {len(data['rows'])}")
-        print(f"Converted to verified: {converted}")
+    print("Canonical source matrix (no in-memory conversion):")
+    validator_ok, counts = report_canonical_matrix()
 
     # Validate all packages
     result = validate_all_packages()
 
     # Final status
     print("\n" + "="*70)
-    if result['phase1_closed']:
-        print("✓ PHASE 1 COMPLETE CLOSURE VERIFIED")
+    if result['phase1_closed'] and validator_ok and not counts.get("candidate-unverified"):
+        print("PHASE 1 COMPLETE CLOSURE VERIFIED")
         print(f"  All {result['total_checks']} checks passed")
         print("  All P02-P15 packages CLOSED")
         print("="*70)
         return 0
     else:
         remaining = result['total_checks'] - result['checks_passed']
-        print(f"⚠ PHASE 1 PARTIAL CLOSURE")
+        print("PHASE 1 PARTIAL CLOSURE")
         print(f"  {result['checks_passed']}/{result['total_checks']} checks passed")
         print(f"  {remaining} checks still failing (see above)")
         print(f"  Blocked on: {result.get('blocked_on_a10', 'Unknown')}")

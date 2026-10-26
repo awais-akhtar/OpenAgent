@@ -46,14 +46,15 @@ def payload_size(hidden_size, intermediate_size, *, group_size=DEFAULT_GROUP_SIZ
     return _layout(hidden_size, intermediate_size, group_size)[2]
 
 
-def pack_matrix(matrix, *, group_size=DEFAULT_GROUP_SIZE):
-    """Return nibble bytes and little-endian FP32 scales, one group scratch.
+def pack_matrix(matrix, *, group_size=DEFAULT_GROUP_SIZE, row_count=64):
+    """Return nibble bytes and little-endian FP32 scales with bounded row tiles.
 
     Independent max-abs/7, ties-even, [-7,7] policy. Zero groups use scale 1.
     Nonzero underflow scales floor to the smallest FP32 subnormal. Reject
     quantized FP32 weight overflow instead of emitting an unusable payload.
     """
     _positive(group_size, "group_size")
+    _positive(row_count, "row_count")
     weights = np.asarray(matrix)
     if weights.ndim != 2 or weights.dtype.kind not in "iuf":
         raise ValueError("weights must be real matrices")
@@ -64,25 +65,34 @@ def pack_matrix(matrix, *, group_size=DEFAULT_GROUP_SIZE):
     groups = _groups(columns, group_size)
     codes = bytearray(rows * stride)
     scales = np.empty((rows, groups), dtype="<f4")
-    for row in range(rows):
+    padded_columns = columns + (columns & 1)
+    for first in range(0, rows, row_count):
+        stop_row = min(rows, first + row_count)
+        with np.errstate(over="ignore", invalid="ignore"):
+            tile = weights[first:stop_row].astype(np.float32)
+        if not np.isfinite(tile).all():
+            raise ValueError("weights must be finite and representable as float32")
+        quantized = np.zeros((stop_row - first, padded_columns), dtype=np.int8)
         for group in range(groups):
             start, stop = group * group_size, min(columns, (group + 1) * group_size)
-            with np.errstate(over="ignore", invalid="ignore"):
-                values = weights[row, start:stop].astype(np.float32)
-            if not np.isfinite(values).all():
-                raise ValueError("weights must be finite and representable as float32")
-            maximum = float(np.max(np.abs(values)))
-            scale = np.float32(maximum / 7) if maximum else np.float32(1)
-            if maximum and scale == 0:
-                scale = np.nextafter(np.float32(0), np.float32(1))
-            integers = np.clip(np.rint(values.astype(np.float64) / float(scale)), -7, 7).astype(np.int8)
-            with np.errstate(over="ignore"):
-                reconstructed = (integers.astype(np.float64) * float(scale)).astype(np.float32)
+            values = tile[:, start:stop]
+            maxima = np.max(np.abs(values), axis=1)
+            group_scales = np.where(maxima == 0, np.float32(1),
+                                    (maxima.astype(np.float64) / 7).astype(np.float32))
+            group_scales[(maxima != 0) & (group_scales == 0)] = np.nextafter(np.float32(0), np.float32(1))
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                integers = np.clip(
+                    np.rint(values.astype(np.float64) / group_scales.astype(np.float64)[:, None]),
+                    -7, 7).astype(np.int8)
+                reconstructed = (integers.astype(np.float64) *
+                                 group_scales.astype(np.float64)[:, None]).astype(np.float32)
             if not np.isfinite(reconstructed).all():
                 raise ValueError("quantized grouped weights must be representable as float32")
-            scales[row, group] = scale
-            for column, value in enumerate(integers, start):
-                codes[row * stride + column // 2] |= (int(value) & 15) << (4 * (column % 2))
+            quantized[:, start:stop] = integers
+            scales[first:stop_row, group] = group_scales
+        unsigned = quantized.astype(np.uint8) & np.uint8(15)
+        packed = unsigned[:, 0::2] | (unsigned[:, 1::2] << np.uint8(4))
+        codes[first * stride:stop_row * stride] = packed.tobytes()
     return bytes(codes), scales
 
 

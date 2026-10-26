@@ -37,6 +37,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
         const rows = scenario === 'empty' ? [] : [{ ...notification, read_at: markedRead ? '2026-10-18T10:02:00Z' : null }];
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ notifications: rows }) });
       });
+      await page.route('**/api/integrations/preferences**', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ preferences: [] }),
+      }));
 
       await page.goto('/?view=settings');
       await page.getByRole('tab', { name: 'Notifications' }).click();

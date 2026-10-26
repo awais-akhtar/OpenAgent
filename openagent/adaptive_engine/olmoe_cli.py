@@ -26,11 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect", help="validate checkpoint metadata and SafeTensors headers")
     inspect.add_argument("model_directory")
 
-    pack = commands.add_parser("pack", help="convert routed experts to row INT8/INT4 or block Q8/Q4/Q5")
+    pack = commands.add_parser("pack", help="preserve FP32 experts or convert routed experts to an admitted packed format")
     pack.add_argument("model_directory")
     pack.add_argument("--output", default=None)
     pack.add_argument("--manifest", default=None)
-    pack.add_argument("--dtype", choices=("int8-row", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32", "e8-lattice-caller-v1", "iq3-format6-98-v1"), default="int8-row")
+    pack.add_argument("--dtype", choices=("float32", "int8-row", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32", "e8-lattice-caller-v1", "iq3-format6-98-v1"), default="int8-row")
     pack.add_argument('--lattice-file', type=Path, help='persisted E8 contract or IQ3 grid')
     pack.add_argument('--lattice-sha256', help='explicit expected contract identity')
     pack.add_argument('--conversion-mib', type=int, default=1024)
@@ -121,6 +121,7 @@ def _dispatch(args) -> int:
             return _inspect(Path(args.model_directory))
         if args.command == "pack":
             defaults = {
+                "float32": ("openagent-experts.f32", "openagent-experts.f32.manifest.json"),
                 "int8-row": ("openagent-experts.i8", "openagent-experts.manifest.json"),
                 "int4-row": ("openagent-experts.i4", "openagent-experts.i4.manifest.json"),
                 "q8_0": ("openagent-experts.q8", "openagent-experts.q8.manifest.json"),

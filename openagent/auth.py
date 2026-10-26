@@ -979,6 +979,7 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
 
 PERSONAL_REMOTE_PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/api/health"),
+        ("GET", "/health"),
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/refresh"),
     ("POST", "/api/auth/register"),
@@ -1021,6 +1022,7 @@ def required_scope_for_path(path: str, method: str = "GET") -> str | None:
         "/api/runtime-tools/browser-test": ("production:read", "production:admin"),
         "/api/inference/status": ("local_ai:read", "local_ai:admin"),
         "/metrics": ("production:read", "production:admin"),
+        "/health": ("production:read", "production:admin"),
         "/v1/colibri/capabilities": ("local_ai:read", "local_ai:admin"),
     }
     if path in exact:

@@ -13,6 +13,10 @@ extern "C" {
 typedef int (*oa_se_cancel)(void *);
 typedef int (*oa_se_write)(void *, const void *, size_t);
 typedef int (*oa_se_read)(void *, void *, size_t);
+/* OpenAgent-private additive observation extension. It does not alter the
+ * published Segment/Edge v1/v2 request or adapter layouts. */
+typedef int (*oa_se_route_observer)(void *,uint32_t,uint64_t,float *,size_t,size_t *,
+    uint32_t *,uint32_t *,uint32_t *,char *,size_t);
 typedef struct {
     uint32_t size, version;
     uint64_t flags;
@@ -132,6 +136,9 @@ OA_API int coli_segment_engine_close(void *, char *, size_t);
 OA_API int coli_segment_session_create(void *, const oa_se_session_options *, void **, char *, size_t);
 OA_API void coli_segment_session_destroy(void *);
 OA_API int coli_segment_run(void *, const oa_se_run *, char *, size_t);
+OA_API int coli_segment_route_observer_register(const char *,oa_se_route_observer);
+OA_API int coli_segment_routes(void *,uint32_t,uint64_t,float *,size_t,size_t *,
+    uint32_t *,uint32_t *,uint32_t *,char *,size_t);
 OA_API int coli_segment_snapshot(void *, oa_se_write, void *, char *, size_t);
 OA_API int coli_segment_restore(void *, oa_se_read, void *, char *, size_t);
 OA_API int coli_edge_adapter_register(const oa_se_edge_adapter *);

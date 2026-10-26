@@ -36,6 +36,7 @@ class ResearchLifecycle:
         parent_id: str = "",
         branch_label: str = "",
         max_attempts: int = 3,
+        owner: str = "",
     ) -> dict[str, Any]:
         query = query.strip()
         if not query:
@@ -48,12 +49,12 @@ class ResearchLifecycle:
             connection.execute(
                 """
                 INSERT INTO research_sessions (
-                    id, project, query, status, parent_id, branch_label, provider,
+                    id, project, owner, query, status, parent_id, branch_label, provider,
                     model, allow_external, max_iterations, max_attempts, created_at, updated_at
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    session_id, project, query, parent_id, branch_label, provider or "auto",
+                    session_id, project, str(owner or "").strip(), query, parent_id, branch_label, provider or "auto",
                     model, 1 if allow_external else 0, max(1, min(int(max_iterations), 12)),
                     max(1, min(int(max_attempts), 10)), now, now,
                 ),
@@ -69,9 +70,13 @@ class ResearchLifecycle:
         include_archived: bool = False,
         status: str = "",
         limit: int = 100,
+        owner: str | None = None,
     ) -> list[dict[str, Any]]:
         where = ["project = ?"]
         values: list[Any] = [project]
+        if owner is not None:
+            where.append("owner = ?")
+            values.append(str(owner).strip())
         if not include_archived:
             where.append("archived = 0")
         if status:
@@ -85,9 +90,15 @@ class ResearchLifecycle:
             ).fetchall()
         return [self._record(row, details=False) for row in rows]
 
-    def get(self, session_id: str) -> dict[str, Any] | None:
+    def get(self, session_id: str, *, owner: str | None = None) -> dict[str, Any] | None:
         with self.store.session() as connection:
-            row = connection.execute("SELECT * FROM research_sessions WHERE id = ?", (session_id,)).fetchone()
+            if owner is None:
+                row = connection.execute("SELECT * FROM research_sessions WHERE id = ?", (session_id,)).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM research_sessions WHERE id = ? AND owner = ?",
+                    (session_id, str(owner).strip()),
+                ).fetchone()
         return self._record(row, details=True) if row else None
 
     def attach_job(self, session_id: str, job_id: str) -> dict[str, Any]:
@@ -173,12 +184,19 @@ class ResearchLifecycle:
         self.checkpoint(session_id, "retry", 0, "Research queued for retry.")
         return self.get(session_id) or {}
 
-    def branch(self, session_id: str, *, query: str = "", label: str = "") -> dict[str, Any]:
-        parent = self._require(session_id)
+    def branch(self, session_id: str, *, query: str = "", label: str = "", owner: str | None = None) -> dict[str, Any]:
+        parent = self.get(session_id, owner=owner)
+        if parent is None:
+            raise KeyError(session_id)
+        with self.store.session() as connection:
+            owner_row = connection.execute("SELECT owner FROM research_sessions WHERE id = ?", (session_id,)).fetchone()
+        if owner_row is None:
+            raise KeyError(session_id)
         return self.create(
             query or parent["query"], project=parent["project"], max_iterations=parent["max_iterations"],
             allow_external=parent["allow_external"], provider=parent["provider"], model=parent["model"],
             parent_id=session_id, branch_label=label or "Research branch", max_attempts=parent["max_attempts"],
+            owner=str(owner_row["owner"] or ""),
         )
 
     def archive(self, session_id: str, *, archived: bool = True) -> dict[str, Any]:
@@ -193,6 +211,7 @@ class ResearchLifecycle:
         with self.store.session() as connection:
             connection.execute("DELETE FROM research_checkpoints WHERE session_id = ?", (session_id,))
             connection.execute("DELETE FROM research_sources WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM research_source_notes WHERE session_id = ?", (session_id,))
             connection.execute("UPDATE research_sessions SET parent_id = '' WHERE parent_id = ?", (session_id,))
             connection.execute("DELETE FROM research_sessions WHERE id = ?", (session_id,))
         self._audit("research.session.delete", session_id, current["project"], {})
@@ -224,6 +243,58 @@ class ResearchLifecycle:
             }
             for row in rows
         ]
+
+    def source_notes(self, session_id: str, *, project: str = "default") -> list[dict[str, Any]]:
+        current = self._require(session_id)
+        if current["project"] != project:
+            raise KeyError(session_id)
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT source_key, content, updated_at FROM research_source_notes WHERE session_id = ? ORDER BY updated_at DESC",
+                (session_id,),
+            ).fetchall()
+        return [
+            {"source_key": row["source_key"], "content": row["content"], "updated_at": row["updated_at"]}
+            for row in rows
+        ]
+
+    def save_source_note(
+        self, session_id: str, source_key: str, content: str, *, project: str = "default",
+    ) -> dict[str, Any]:
+        current = self._require(session_id)
+        if current["project"] != project:
+            raise KeyError(session_id)
+        source_key = str(source_key or "").strip()
+        content = str(content or "").strip()
+        if not source_key:
+            raise ValueError("A source key is required.")
+        if len(source_key) > 512:
+            raise ValueError("Source key must be 512 characters or fewer.")
+        if len(content) > 10000:
+            raise ValueError("Source notes must be 10,000 characters or fewer.")
+        with self.store.session() as connection:
+            if content:
+                updated_at = utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO research_source_notes (session_id, source_key, content, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(session_id, source_key) DO UPDATE SET
+                        content = excluded.content, updated_at = excluded.updated_at
+                    """,
+                    (session_id, source_key, content, updated_at),
+                )
+                result = {"session_id": session_id, "source_key": source_key, "content": content, "updated_at": updated_at}
+                action = "research.source-note.save"
+            else:
+                connection.execute(
+                    "DELETE FROM research_source_notes WHERE session_id = ? AND source_key = ?",
+                    (session_id, source_key),
+                )
+                result = {"session_id": session_id, "source_key": source_key, "content": "", "updated_at": utc_now()}
+                action = "research.source-note.clear"
+        self._audit(action, session_id, project, {"source_key": source_key})
+        return result
 
     def source_graph(self, session_id: str) -> dict[str, Any]:
         current = self._require(session_id)

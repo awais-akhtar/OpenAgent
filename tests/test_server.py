@@ -109,6 +109,89 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(events, ["handler", ("body-read", {"prompt": "hello"}),
                                   "watcher-start", ("body", {"prompt": "hello"})])
 
+    def test_stream_disconnect_reaches_inference_cancellation_callback(self) -> None:
+        from openagent.routes import runtime, ServerSentEvent, StreamRouteResult
+
+        cancellation_observed = threading.Event()
+
+        def fake_inference_post(_path, dependencies):
+            dependencies.read_json()
+
+            def events():
+                yield ServerSentEvent({"type": "started"})
+                deadline = time.monotonic() + 3
+                while not dependencies.cancelled() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if dependencies.cancelled():
+                    cancellation_observed.set()
+
+            return StreamRouteResult(events())
+
+        with TemporaryDirectory() as tmp:
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=5)
+            try:
+                with patch.object(runtime, "handle_inference_post", side_effect=fake_inference_post):
+                    connection.request("POST", "/v1/chat/completions",
+                        body=json.dumps({"model": "fixture", "messages": [], "stream": True}),
+                        headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertTrue(response.readline().startswith(b"data: "))
+                    self.assertEqual(response.readline(), b"\n")
+                    response.close()
+                    self.assertTrue(cancellation_observed.wait(2))
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_chat_stream_disconnect_reaches_cancellation_callback(self) -> None:
+        from openagent.routes import runtime, ServerSentEvent, StreamRouteResult
+
+        cancellation_observed = threading.Event()
+
+        def fake_chat_post(_path, dependencies):
+            dependencies.read_json()
+            self.assertTrue(callable(dependencies.cancelled))
+
+            def events():
+                yield ServerSentEvent({"type": "started"})
+                deadline = time.monotonic() + 3
+                while not dependencies.cancelled() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if dependencies.cancelled():
+                    cancellation_observed.set()
+
+            return StreamRouteResult(events())
+
+        with TemporaryDirectory() as tmp:
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=5)
+            try:
+                with patch.object(runtime, "handle_chat_post", side_effect=fake_chat_post):
+                    connection.request("POST", "/api/chat/stream",
+                        body=json.dumps({"message": "fixture"}),
+                        headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertTrue(response.readline().startswith(b"data: "))
+                    self.assertEqual(response.readline(), b"\n")
+                    response.close()
+                    self.assertTrue(cancellation_observed.wait(2))
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def test_compatibility_stream_route_writes_protocol_sse_without_generic_terminal(self) -> None:
         from openagent.routes import runtime, ServerSentEvent, StreamRouteResult
 
@@ -117,6 +200,18 @@ class ServerTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
+                # Wait until the handler loop is actually serving requests.
+                # Binding happens before serve_forever enters its first select,
+                # which can make the first streaming POST intermittently reset
+                # on Windows under full-suite load.
+                ready = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                try:
+                    ready.request("GET", "/api/health")
+                    readiness = ready.getresponse()
+                    readiness.read()
+                    self.assertEqual(readiness.status, 200)
+                finally:
+                    ready.close()
                 result = StreamRouteResult(iter((
                     ServerSentEvent({"choices": [{"delta": {"role": "assistant"}}]}),
                     ServerSentEvent("[DONE]", raw_data=True, terminal=True),

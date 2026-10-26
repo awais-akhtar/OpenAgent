@@ -11,6 +11,7 @@ import weakref
 
 import numpy as np
 
+from ..failure_reporting import add_failure_note, failure_summary
 from ..native_kimi import NativeKimiKDA
 from ..native_mxfp4 import NativeMXFP4
 from ..native_tensor_ops import NativeTensorOps
@@ -477,7 +478,12 @@ class K3Execution:
             if getattr(self, "_ops", None) is not None:
                 self._ops.close();self._ops=None
             if getattr(self, "_packed", None) is not None:
-                self._packed._release();self._packed=None
+                # NativeMXFP4.close() preserves its finalizer and library
+                # reference when dlclose fails, allowing this executor's
+                # close() to be retried. Calling the finalizer directly marks
+                # it dead before the release callback succeeds and loses that
+                # retry path.
+                self._packed.close();self._packed=None
             _release_libraries(self._raw_libraries)
             self._release.detach()
             self._mla, self._kda, self._weights, self._vision = {}, {}, {}, None
@@ -503,9 +509,18 @@ class K3Execution:
             if not any(mixer is pending for pending in self._pending_kda_cleanup):
                 self._pending_kda_cleanup.append(mixer)
             self._closed = True
-            message = 'K3 FLA mixer cleanup retained for executor close retry: ' + repr(error)
             if primary is not None:
-                primary.add_note(message)
+                add_failure_note(primary,
+                    'K3 FLA mixer cleanup retained for executor close retry: '+
+                    failure_summary(error))
+        if errors and primary is None:
+            # A state swap may already be committed when old recurrent buffers
+            # are retired. The executor is quarantined above and the owners
+            # are retained for close() retry; never report that transition as
+            # a successful reset/forward while cleanup remains pending.
+            message = ('K3 FLA mixer cleanup retained for executor close retry: '+
+                       '; '.join(failure_summary(error) for _, error in errors))
+            raise RuntimeError(message) from errors[0][1]
 
     def _commit_kda_state(self, staged):
         previous = tuple(self._kda.values())

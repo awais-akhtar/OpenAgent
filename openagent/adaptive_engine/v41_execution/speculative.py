@@ -90,6 +90,8 @@ class SpeculativeStep:
     accepted: int
     proposed: int
     rejected: bool
+    # State is committed, but detached rollback receipts still need cleanup.
+    cleanup_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -405,6 +407,8 @@ class SpeculativeDecoder:
         self._lock = threading.RLock()
         self._busy = False
         self._quarantined = False
+        self._cleanup_quarantined = False
+        self._rollback_quarantined = False
         self._pending_release = []
         self._stopped = False
         self._stop_prefixes = ()
@@ -432,7 +436,8 @@ class SpeculativeDecoder:
         if self._closing:
             raise RuntimeError('speculative decoder is closing')
 
-    def _release_states(self, target=None, draft=None, *, primary=None):
+    def _release_states(self, target=None, draft=None, *, primary=None,
+                        committed=False):
         errors = []
         for owner,state in ((self.target,target),(self.proposer,draft)):
             release = getattr(owner,'release_snapshot',None)
@@ -445,29 +450,39 @@ class SpeculativeDecoder:
                 errors.append(failure)
         if errors:
             self._quarantined = True
+            self._cleanup_quarantined = True
             if primary is not None:
                 for error in errors:_add_failure_note(primary,'speculative snapshot cleanup retained: '+_failure_summary(error))
-                return
-            raise RuntimeError('speculative snapshot cleanup retained for retry') from errors[0]
+            if committed:
+                return True
+            if primary is None:
+                raise RuntimeError('speculative snapshot cleanup retained for retry') from errors[0]
+        return False
 
     def retry_cleanup(self):
         with self._lock:
-            self._check_open()
-            if self._busy:
-                raise RuntimeError('cannot retry active speculative cleanup')
-            pending,self._pending_release = self._pending_release,[]
-            errors = []
-            for owner,state in pending:
-                try:
-                    owner.release_snapshot(state)
-                except BaseException as failure:
-                    self._pending_release.append((owner,state))
-                    errors.append(failure)
-            if errors:
-                raise RuntimeError('speculative snapshot cleanup remains pending') from errors[0]
-            retry = getattr(self.proposer,'retry_cleanup',None)
-            if callable(retry):
-                retry()
+            return self._retry_cleanup_locked()
+
+    def _retry_cleanup_locked(self, *, allow_busy=False):
+        self._check_open()
+        if self._busy and not allow_busy:
+            raise RuntimeError('cannot retry active speculative cleanup')
+        pending,self._pending_release = self._pending_release,[]
+        errors = []
+        for owner,state in pending:
+            try:
+                owner.release_snapshot(state)
+            except BaseException as failure:
+                self._pending_release.append((owner,state))
+                errors.append(failure)
+        if errors:
+            raise RuntimeError('speculative snapshot cleanup remains pending') from errors[0]
+        retry = getattr(self.proposer,'retry_cleanup',None)
+        if callable(retry):
+            retry()
+        if self._cleanup_quarantined and not self._rollback_quarantined:
+            self._cleanup_quarantined = False
+            self._quarantined = False
 
     def close(self):
         """Close target and proposer resources with retryable failure semantics."""
@@ -582,6 +597,7 @@ class SpeculativeDecoder:
                 errors.append((name, error))
         if errors:
             self._quarantined = True
+            self._rollback_quarantined = True
             for name, error in errors:
                 _add_failure_note(failure,'speculative '+name+' rollback failed: '+_failure_summary(error))
 
@@ -748,7 +764,8 @@ class SpeculativeDecoder:
             if observed.shape != (self.vocabulary,) or not np.array_equal(observed, logits):
                 raise ValueError('speculative verifier logits differ from target evidence')
 
-    def generate(self, max_new_tokens, *, stop_tokens=(), stop_prefixes=(), cancelled=None):
+    def generate(self, max_new_tokens, *, stop_tokens=(), stop_prefixes=(), cancelled=None,
+                 stop_prefix_start=None):
         """Yield committed steps; cancellation is checked between transactions."""
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError('positive generation limit required')
@@ -761,6 +778,15 @@ class SpeculativeDecoder:
             raise ValueError('invalid stop token')
         stops = frozenset(stop_tokens)
         prefixes = _stop_prefixes(stop_prefixes, self.vocabulary)
+        # Prefix stops belong to this generation's output, not the prompt or
+        # previously committed context. Keep the origin stable across the
+        # yielded speculative transactions so a stop may span step boundaries.
+        with self._lock:
+            if stop_prefix_start is None:
+                stop_prefix_start = len(self.history)
+            if (type(stop_prefix_start) is not int or
+                    not 0 <= stop_prefix_start <= len(self.history)):
+                raise ValueError('stop-prefix generation boundary must lie within committed history')
         emitted = 0
         while emitted < max_new_tokens:
             # Cancellation between yielded transactions is still a cancelled
@@ -775,9 +801,12 @@ class SpeculativeDecoder:
             if remaining <= 0:
                 return
             result = self.step(max_tokens=min(max_new_tokens-emitted, remaining),
-                               stop_tokens=stops, stop_prefixes=prefixes, cancelled=cancelled)
+                               stop_tokens=stops, stop_prefixes=prefixes, cancelled=cancelled,
+                               stop_prefix_start=stop_prefix_start)
             emitted += len(result.tokens)
             yield result
+            if result.cleanup_pending:
+                return
             if self._stopped or result.tokens[-1] in stops:
                 return
 
@@ -840,6 +869,7 @@ class SpeculativeDecoder:
                         self._check_target_state(self.history, self.next_logits)
                     except BaseException as rollback:
                         self._quarantined = True
+                        self._rollback_quarantined = True
                         _add_failure_note(failure,'speculative prefill rollback failed: '+_failure_summary(rollback))
                 raise
             finally:
@@ -848,7 +878,8 @@ class SpeculativeDecoder:
                 finally:
                     self._busy = False
 
-    def step(self, *, max_tokens=None, stop_tokens=(), stop_prefixes=(), cancelled=None):
+    def step(self, *, max_tokens=None, stop_tokens=(), stop_prefixes=(), cancelled=None,
+             stop_prefix_start=None):
         with self._lock,self._cancel_scope(cancelled):
             self._check_open()
             self._cancelled(cancelled)
@@ -866,7 +897,13 @@ class SpeculativeDecoder:
                 raise ValueError('invalid stop token')
             stops = frozenset(stop_tokens)
             prefixes = _stop_prefixes(stop_prefixes, self.vocabulary)
+            prefix_start = (len(self.history) if stop_prefix_start is None
+                            else stop_prefix_start)
+            if type(prefix_start) is not int or not 0 <= prefix_start <= len(self.history):
+                raise ValueError('stop-prefix generation boundary must lie within committed history')
             old_stop_prefixes = self._stop_prefixes
+            old_history, old_logits, old_stopped = (
+                self.history, self.next_logits, self._stopped)
             if self._stopped:
                 raise RuntimeError('generation is already at a stop boundary')
             self._stop_prefixes = prefixes
@@ -939,11 +976,13 @@ class SpeculativeDecoder:
                         break
                     output.append(token)
                     accepted += 1
-                    if token in stops or _matches_stop_prefix(self.history + tuple(output), prefixes):
+                    if token in stops or _matches_stop_prefix(
+                            self.history[prefix_start:] + tuple(output), prefixes):
                         break
                 if (not rejected and len(output) == len(ids) and len(output) < limit and
                         (not output or output[-1] not in stops) and
-                        not _matches_stop_prefix(self.history + tuple(output), prefixes)):
+                        not _matches_stop_prefix(
+                            self.history[prefix_start:] + tuple(output), prefixes)):
                     p = self._probabilities(rows[-1] if ids else self.next_logits)
                     output.append(self._sample(p))
                 # Keep verified cache pages when the entire proposal was accepted.
@@ -988,9 +1027,34 @@ class SpeculativeDecoder:
                 self.history, self.next_logits = new_history, new_logits
                 self._stopped = bool(emitted and
                                      (emitted[-1] in stops or
-                                      _matches_stop_prefix(self.history, prefixes)))
-                return result
+                                      _matches_stop_prefix(
+                                          self.history[prefix_start:], prefixes)))
+                cleanup_pending = self._release_states(
+                    saved, draft_state, committed=True)
+                if cleanup_pending:
+                    # Some owners have transient release failures. Retry once
+                    # before returning so a recoverable cleanup fault does not
+                    # truncate an otherwise healthy multi-step generation.
+                    try:
+                        self._retry_cleanup_locked(allow_busy=True)
+                    except BaseException:
+                        pass
+                    else:
+                        cleanup_pending = False
+                # Cleanup has either completed or retained the receipt for a
+                # retry. Do not release it again in the finally block, and do
+                # not turn a committed transition into an error that discards
+                # its tokens at the serving boundary.
+                saved, draft_state = None, None
+                return SpeculativeStep(result.tokens, result.accepted,
+                    result.proposed, result.rejected, cleanup_pending)
             except BaseException as failure:
+                # Logical publication is part of the same transaction as the
+                # target/draft caches. An asynchronous exception can arrive
+                # between attribute stores in the commit sequence; put the
+                # decoder boundary back before validating physical rollback.
+                self.history, self.next_logits, self._stopped = (
+                    old_history, old_logits, old_stopped)
                 self._rollback(saved, draft_state, rng_state, failure, proposal_rng_state,
                                draft_history)
                 # Stop policy is part of the transactional continuation state;
@@ -1037,5 +1101,7 @@ class SpeculativeDecoder:
                 self._stopped = False
                 self._stop_prefixes = ()
                 self._quarantined = False
+                self._cleanup_quarantined = False
+                self._rollback_quarantined = False
             finally:
                 self._busy = False

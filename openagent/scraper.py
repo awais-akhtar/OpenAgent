@@ -23,6 +23,7 @@ Security
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 import time
@@ -120,6 +121,35 @@ def _validate_url(url: str) -> str:
         return EgressPolicy().authorize(url, approved=True).url
     except EgressError as exc:
         raise ValueError(str(exc)) from exc
+
+
+def _validate_scheduled_url(url: str) -> str:
+    """Validate a URL for storage without performing DNS or network access.
+
+    DNS and resolved-address policy are rechecked immediately before every
+    fetch by ``_validate_url`` and ``EgressClient``. Scheduling a job must work
+    offline and must never resolve or contact its destination.
+    """
+    value = str(url or "").strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Outbound destinations must use a complete HTTP or HTTPS URL.")
+    if parsed.username or parsed.password:
+        raise ValueError("Outbound URLs cannot contain credentials.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("Outbound URL has an invalid port.") from exc
+    hostname = parsed.hostname.rstrip(".").casefold()
+    if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+        raise ValueError("Local and private outbound destinations are blocked.")
+    try:
+        literal = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal = None
+    if literal is not None and not literal.is_global:
+        raise ValueError("Private, link-local, reserved, multicast, and loopback destinations are blocked.")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
 
 
 def _rate_limit(domain: str) -> None:
@@ -284,7 +314,7 @@ class WebScraper:
         allow_external: bool = False,
     ) -> dict[str, Any]:
         """Register a URL for periodic scraping."""
-        url = _validate_url(url.strip())
+        url = _validate_scheduled_url(url)
         now = utc_now()
         job_id = hashlib.md5(f"scrape-{project}-{url}".encode()).hexdigest()
         next_run = (datetime.now(timezone.utc) + timedelta(hours=0.001)).isoformat()
@@ -324,6 +354,76 @@ class WebScraper:
             for r in rows
         ]
 
+    def cancel_scheduled(self, job_id: str, *, project: str = "default") -> dict[str, Any] | None:
+        """Cancel a pending recurring fetch without deleting its history.
+
+        A running fetch is not interruptible; its state is returned unchanged
+        so the caller can report that cancellation arrived too late.
+        """
+        job_id = str(job_id).strip()
+        project = str(project).strip() or "default"
+        if not job_id:
+            return None
+        now = utc_now()
+        cancelled = False
+        with self.store.session() as conn:
+            row = conn.execute(
+                "SELECT id,project,url,interval_hours,last_run,next_run,status,metadata_json,created_at "
+                "FROM scrape_jobs WHERE id=? AND project=?",
+                (job_id, project),
+            ).fetchone()
+            if row is None:
+                return None
+            status = str(row[6] or "")
+            if status in {"scheduled", "awaiting_approval"}:
+                cursor = conn.execute(
+                    "UPDATE scrape_jobs SET status='cancelled', updated_at=? "
+                    "WHERE id=? AND project=? AND status IN ('scheduled','awaiting_approval')",
+                    (now, job_id, project),
+                )
+                if cursor.rowcount == 1:
+                    status = "cancelled"
+                    cancelled = True
+                else:
+                    # A due-job worker may have claimed the row after our
+                    # initial read. Return the committed status so callers do
+                    # not report a stale pending state as cancelled.
+                    current = conn.execute(
+                        "SELECT status FROM scrape_jobs WHERE id=? AND project=?",
+                        (job_id, project),
+                    ).fetchone()
+                    status = str(current[0] or "") if current else ""
+            result = {
+                "id": row[0], "project": row[1], "url": row[2],
+                "interval_hours": row[3], "last_run": row[4], "next_run": row[5],
+                "status": status, "metadata": json.loads(row[7] or "{}"),
+                "created_at": row[8],
+            }
+        if cancelled:
+            self.store.add_audit_event(AuditEvent(
+                actor="scraper", action="scraper.schedule.cancel",
+                resource=f"scraper:job:{job_id}", project=project,
+                status="allowed", metadata={"status": "cancelled"},
+            ))
+        return result
+
+    def recover_interrupted_schedules(self) -> int:
+        """Requeue schedules left in running state by an interrupted process."""
+        now = utc_now()
+        with self.store.session() as conn:
+            cursor = conn.execute(
+                "UPDATE scrape_jobs SET status='scheduled', updated_at=? WHERE status='running'",
+                (now,),
+            )
+            recovered = cursor.rowcount
+        if recovered:
+            self.store.add_audit_event(AuditEvent(
+                actor="scraper", action="scraper.schedule.recover",
+                resource="scraper:jobs", status="allowed",
+                metadata={"recovered_count": recovered},
+            ))
+        return recovered
+
     def run_due_jobs(self, *, project: str = "default") -> dict[str, Any]:
         """Run all scheduled scrape jobs that are due."""
         now = utc_now()
@@ -337,20 +437,34 @@ class WebScraper:
         errors = 0
         for row in rows:
             job_id, url, interval_hours, metadata_json = row
+            # A concurrent cancellation either wins first, or sees running
+            # and reports that the current fetch cannot be interrupted.
+            with self.store.session() as conn:
+                claim = conn.execute(
+                    "UPDATE scrape_jobs SET status='running', updated_at=? "
+                    "WHERE id=? AND project=? AND status='scheduled' AND next_run<=?",
+                    (now, job_id, project, now),
+                )
+                if claim.rowcount != 1:
+                    continue
             metadata = json.loads(metadata_json or "{}")
-            result = self.scrape_url(
-                url,
-                project=project,
-                allow_external=bool(metadata.get("external_approved")),
-            )
+            try:
+                result = self.scrape_url(
+                    url,
+                    project=project,
+                    allow_external=bool(metadata.get("external_approved")),
+                )
+            except (ValueError, PermissionError, EgressError) as exc:
+                result = {"url": url, "status": "error", "status_code": 0, "error": str(exc)}
+                self._record_scrape_audit(project, result)
             status = result.get("status", "error")
             error = result.get("error", "")
             next_run = (datetime.now(timezone.utc) + timedelta(hours=interval_hours)).isoformat()
             scrape_result_id = hashlib.md5(f"{job_id}-{now}".encode()).hexdigest()
             with self.store.session() as conn:
                 conn.execute(
-                    "UPDATE scrape_jobs SET last_run=?, next_run=?, updated_at=? WHERE id=?",
-                    (now, next_run, now, job_id),
+                    "UPDATE scrape_jobs SET last_run=?, next_run=?, status='scheduled', updated_at=? WHERE id=? AND project=?",
+                    (now, next_run, now, job_id, project),
                 )
                 conn.execute(
                     "INSERT INTO scrape_results VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",

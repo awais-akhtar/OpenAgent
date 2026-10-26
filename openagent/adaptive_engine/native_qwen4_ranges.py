@@ -53,6 +53,21 @@ class NativeQwen4Range(NativeQwen4TextDecoder):
                     expected.discard(table);expected.update(sources)
                 if dict(ple_provider.config)!=config:
                     raise ValueError('PLE checkpoint provider configuration differs')
+                # The provider's shard names replace the logical table in the
+                # source inventory.  Name-set equality alone is not sufficient:
+                # otherwise a same-named shard with incompatible row geometry
+                # (or dtype) could be admitted while the provider silently reads
+                # a different physical tensor from its own snapshot.
+                ple_snapshot=ple_provider.snapshot
+                ple_snapshot.assert_unchanged()
+                for sources,_ in ple_provider.bindings.values():
+                    for name in sources:
+                        expected_record=ple_snapshot.tensors.get(name)
+                        source_record=inventory.get(name)
+                        if (expected_record is None or source_record is None or
+                                tuple(source_record['shape'])!=tuple(expected_record.shape) or
+                                source_record.get('dtype')!=expected_record.dtype):
+                            raise ValueError('Qwen4 PLE source shard inventory differs from provider snapshot: '+name)
             if set(inventory)!=expected:
                 raise ValueError('exact complete Qwen4 source inventory required')
             for name,shape in shapes.items():

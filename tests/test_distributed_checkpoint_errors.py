@@ -1,7 +1,10 @@
 """Regression coverage for collective checkpoint error envelopes."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from datetime import timedelta
+import sys
+import threading
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +14,7 @@ from openagent.adaptive_engine.distributed_generation_checkpoint import (
 )
 from openagent.adaptive_engine.distributed_execution import (
     DistributedExecutionService,
+    _collective_cancel_requested,
     _history_digest,
     _required_service_snapshot,
     _valid_result_summary,
@@ -21,6 +25,21 @@ from openagent.adaptive_engine.execution_service import ExecutionSessionSnapshot
 class _LoopbackCollective:
     def all_gather_object(self, records, value, *, group):
         records[:] = [value for _ in records]
+
+
+class _CancellationCollective(_LoopbackCollective):
+    class ReduceOp:
+        MAX = object()
+
+    def __init__(self):
+        self.calls = []
+
+    def all_gather_object(self, records, value, *, group):
+        self.calls.append('all_gather_object')
+        super().all_gather_object(records, value, group=group)
+
+    def all_reduce(self, flag, *, op, group):
+        self.calls.append('all_reduce')
 
 
 class _MalformedReservationCollective:
@@ -41,15 +60,137 @@ class _UnprintableReservationError(Exception):
 
 
 class DistributedCheckpointErrorTests(unittest.TestCase):
+    def test_cancel_flag_allocation_failure_is_agreed_before_all_reduce(self):
+        class Torch:
+            int64 = object()
+
+            @staticmethod
+            def tensor(*_args, **_kwargs):
+                raise MemoryError('injected rank-local tensor allocation failure')
+
+        collective = _CancellationCollective()
+        with self.assertRaisesRegex(RuntimeError, 'cancellation flag allocation failed'):
+            _collective_cancel_requested(collective, Torch, object(), 1, False)
+
+        self.assertEqual(collective.calls, ['all_gather_object'])
+
+    def test_cancel_flag_read_failure_is_agreed_after_all_reduce(self):
+        class Flag:
+            def item(self):
+                raise OSError('injected rank-local reduction result failure')
+
+        class Torch:
+            int64 = object()
+
+            @staticmethod
+            def tensor(*_args, **_kwargs):
+                return Flag()
+
+        collective = _CancellationCollective()
+        with self.assertRaisesRegex(RuntimeError, 'cancellation flag read failed'):
+            _collective_cancel_requested(collective, Torch, object(), 1, False)
+
+        self.assertEqual(collective.calls,
+                         ['all_gather_object', 'all_reduce', 'all_gather_object'])
+
+    def test_root_collective_failure_retires_service_and_local_owners(self):
+        class Service:
+            def __init__(self):
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        service = Service()
+        coordinator = object.__new__(DistributedExecutionService)
+        coordinator.rank = 0
+        coordinator._lock = threading.Lock()
+        coordinator._closed = False
+        coordinator._failed = False
+        coordinator._sequence = 0
+        coordinator.max_control_bytes = 4096
+        coordinator._active_cancel = None
+        coordinator._active_event = None
+        coordinator.service = service
+        coordinator._sessions = {7: 'local-session'}
+        coordinator._snapshots = {11: (7, object())}
+        coordinator._generation_boundaries = {7: object()}
+        coordinator._broadcast = lambda _command: None
+
+        def fail_during_collective(_command):
+            raise OSError('control collective transport failed')
+
+        coordinator._execute = fail_during_collective
+        with self.assertRaisesRegex(OSError, 'control collective transport failed'):
+            coordinator._request('reset', session=7)
+
+        self.assertTrue(coordinator._failed)
+        self.assertEqual(service.close_calls, 1)
+        self.assertEqual(coordinator._sessions, {})
+        self.assertEqual(coordinator._snapshots, {})
+        self.assertEqual(coordinator._generation_boundaries, {})
+
+    def test_control_group_timeout_must_match_across_ranks(self):
+        from openagent.adaptive_engine.execution_service import ExecutionLimits, NativeExecutionService
+
+        class DistributedOperations:
+            @staticmethod
+            def is_initialized():
+                return True
+
+            @staticmethod
+            def get_backend(group):
+                return "gloo"
+
+            @staticmethod
+            def get_rank(group):
+                return 0
+
+            @staticmethod
+            def get_world_size(group):
+                return 2
+
+            @staticmethod
+            def get_global_rank(group, rank):
+                return rank
+
+            @staticmethod
+            def all_gather_object(records, value, *, group):
+                policy = value[1]
+                remote_policy = (*policy[:-1], policy[-1] + 1.0)
+                records[:] = [value, ((), remote_policy)]
+
+        distributed = ModuleType("torch.distributed")
+        for name in ("is_initialized", "get_backend", "get_rank", "get_world_size",
+                     "get_global_rank", "all_gather_object"):
+            setattr(distributed, name, getattr(DistributedOperations, name))
+        torch = ModuleType("torch")
+        torch.distributed = distributed
+        service = NativeExecutionService(
+            lambda: object(), ExecutionLimits(vocabulary=8, context=16, max_new_tokens=4))
+        self.addCleanup(service.close)
+        group = SimpleNamespace(options=SimpleNamespace(_timeout=timedelta(seconds=30)))
+
+        with patch.dict(sys.modules, {"torch": torch, "torch.distributed": distributed}):
+            with self.assertRaisesRegex(ValueError, "control-group timeouts differ"):
+                DistributedExecutionService(service, control_group=group)
+
     def test_rank_snapshot_must_return_rollback_receipt(self):
         class Service:
             def __init__(self, receipt):
                 self.receipt = receipt
                 self.sessions = []
+                self._identity = 'service-instance'
+                self.local = SimpleNamespace(identity='model-identity', tokens=(4, 5))
 
             def snapshot(self, session):
                 self.sessions.append(session)
                 return self.receipt
+
+            def _session(self, session):
+                if session not in (17, '17'):
+                    raise KeyError(session)
+                return self.local
 
         service = Service(None)
         with self.assertRaisesRegex(RuntimeError, 'rollback receipt'):
@@ -58,15 +199,32 @@ class DistributedCheckpointErrorTests(unittest.TestCase):
 
         receipt = object()
         service.receipt = receipt
-        with self.assertRaisesRegex(RuntimeError, 'valid session-bound'):
+        with self.assertRaisesRegex(RuntimeError, 'service-, model-, and history-bound'):
             _required_service_snapshot(service, 17)
 
-        receipt = ExecutionSessionSnapshot('service', '17', 'snapshot-id', 'model', ())
+        receipt = ExecutionSessionSnapshot(
+            'service-instance', '17', 'snapshot-id', 'model-identity', (4, 5))
         service.receipt = receipt
         self.assertIs(_required_service_snapshot(service, '17'), receipt)
 
-        service.receipt = ExecutionSessionSnapshot('service', 'other', 'snapshot-id', 'model', ())
-        with self.assertRaisesRegex(RuntimeError, 'valid session-bound'):
+        service.receipt = ExecutionSessionSnapshot(
+            'foreign-service', '17', 'snapshot-id', 'model-identity', (4, 5))
+        with self.assertRaisesRegex(RuntimeError, 'service-, model-, and history-bound'):
+            _required_service_snapshot(service, '17')
+
+        service.receipt = ExecutionSessionSnapshot(
+            'service-instance', '17', 'snapshot-id', 'foreign-model', (4, 5))
+        with self.assertRaisesRegex(RuntimeError, 'service-, model-, and history-bound'):
+            _required_service_snapshot(service, '17')
+
+        service.receipt = ExecutionSessionSnapshot(
+            'service-instance', '17', 'snapshot-id', 'model-identity', (4,))
+        with self.assertRaisesRegex(RuntimeError, 'service-, model-, and history-bound'):
+            _required_service_snapshot(service, '17')
+
+        service.receipt = ExecutionSessionSnapshot(
+            'service-instance', 'other', 'snapshot-id', 'model-identity', (4, 5))
+        with self.assertRaisesRegex(RuntimeError, 'service-, model-, and history-bound'):
             _required_service_snapshot(service, '17')
 
     def test_generation_receipt_bounds_bytes_before_using_rank_record(self):
@@ -105,6 +263,7 @@ class DistributedCheckpointErrorTests(unittest.TestCase):
         class Service:
             def __init__(self):
                 self.session = Session()
+                self._identity = 'service'
                 self.closed = []
                 self.restored = []
                 self.released = []
@@ -122,6 +281,7 @@ class DistributedCheckpointErrorTests(unittest.TestCase):
                 return SimpleNamespace(context_tokens=len(self.session.tokens))
 
             def _session(self, _session):
+                self.session.identity = 'model'
                 return self.session
 
             def restore(self, _session, _receipt):
@@ -153,6 +313,86 @@ class DistributedCheckpointErrorTests(unittest.TestCase):
         self.assertTrue(coordinator._failed)
         self.assertEqual(service.restored, [True])
         self.assertEqual(service.released, [True])
+        self.assertEqual(service.closed, ['session'])
+        self.assertNotIn(1, coordinator._sessions)
+
+    def test_partial_cache_restore_rolls_back_retires_receipt_and_tears_down_session(self):
+        import json
+
+        class Session:
+            def __init__(self):
+                self.model = SimpleNamespace(identity='model')
+                self.identity = 'model'
+                self.tokens = (4, 5)
+
+        class Service:
+            _identity = 'service'
+
+            def __init__(self):
+                self.session = Session()
+                self.restored = []
+                self.released = []
+                self.closed = []
+                self.load_attempts = 0
+
+            def _session(self, _session):
+                return self.session
+
+            def snapshot(self, _session):
+                return ExecutionSessionSnapshot(
+                    'service', 'session', 'rollback', 'model', self.session.tokens)
+
+            def load_session_cache(self, _session, _source, **_kwargs):
+                self.load_attempts += 1
+                self.session.tokens = (8, 9)
+                raise OSError('injected cache install failure')
+
+            def restore(self, _session, receipt):
+                self.restored.append(receipt)
+                self.session.tokens = receipt.token_ids
+
+            def release_snapshot(self, _session, receipt):
+                self.released.append(receipt)
+
+            def close_session(self, session):
+                self.closed.append(session)
+
+        service = Service()
+        coordinator = object.__new__(DistributedExecutionService)
+        coordinator.service = service
+        coordinator.distributed = _LoopbackCollective()
+        coordinator.group = object()
+        coordinator.rank = 0
+        coordinator.world_size = 1
+        coordinator._sequence = 0
+        coordinator._sessions = {1: 'session'}
+        coordinator._generation_boundaries = {}
+        coordinator._snapshots = {}
+        coordinator._failed = False
+
+        rank_receipt = {'rank': 0, 'filename': 'rank-0.cache', 'bytes': 128,
+                        'sha256': 'c' * 64, 'identity': 'model'}
+        manifest = {'version': 1, 'world_size': 1, 'context_tokens': 2,
+            'history_sha256': _history_digest((1, 2)), 'model_identity': 'model',
+            'ranks': [rank_receipt]}
+        encoded = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+
+        def read_manifest(path):
+            return Path(path), encoded
+
+        command = {'sequence': 0, 'action': 'load_cache', 'session': 1,
+            'directory': 'cache-generation', 'manifest': manifest, 'max_bytes': 1024}
+        with (patch('openagent.adaptive_engine.distributed_generation_checkpoint.read_manifest',
+                    side_effect=read_manifest),
+              patch('openagent.adaptive_engine.cache_file_recovery.verify_service_cache_file')):
+            with self.assertRaisesRegex(RuntimeError, 'distributed execution failed') as caught:
+                coordinator._execute(command)
+
+        self.assertTrue(coordinator._failed)
+        self.assertEqual(service.load_attempts, 1)
+        self.assertEqual(service.session.tokens, (4, 5))
+        self.assertEqual(len(service.restored), 1)
+        self.assertEqual(service.released, service.restored)
         self.assertEqual(service.closed, ['session'])
         self.assertNotIn(1, coordinator._sessions)
 

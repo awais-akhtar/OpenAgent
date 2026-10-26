@@ -276,6 +276,7 @@ _EXPORTS = {
     "GlmDsaSnapshot": ("native_glm_dsa", "GlmDsaSnapshot"),
     "create_glm_dsa_execution_service": ("execution_factories", "create_glm_dsa_execution_service"),
     "open_native_glm_dsa_directory_service": ("execution_factories", "open_native_glm_dsa_directory_service"),
+    "open_native_kimi_linear_directory_service": ("execution_factories", "open_native_kimi_linear_directory_service"),
     "IndependentQwen4TextDecoder": ("independent_qwen4", "IndependentQwen4TextDecoder"),
     "NativeQwen4TextDecoder": ("native_qwen4", "NativeQwen4TextDecoder"),
     "NativeGlm5NextTextDecoder": ("native_glm5_next", "NativeGlm5NextTextDecoder"),
@@ -349,6 +350,239 @@ _EXPORTS = {
     "ModelManifest": ("universal_engine", "ModelManifest"),
     "UniversalEngine": ("universal_engine", "UniversalEngine"),
     "UniversalSession": ("universal_engine", "UniversalSession"),
+
+    # Phase 1B
+    "Phase1BOptimizedSession": ("session_optimizer", "Phase1BOptimizedSession"),
+    "wrap_universal_session_with_phase1b": ("session_optimizer", "wrap_universal_session_with_phase1b"),
+    "phase1b_state_directory": ("session_optimizer", "phase1b_state_directory"),
+    "JITWeightPinner": ("memory_pinning", "JITWeightPinner"),
+    "JITPinRequest": ("memory_pinning", "JITPinRequest"),
+    "SmartPinningStrategy": ("memory_pinning", "SmartPinningStrategy"),
+    "AdaptivePinBudget": ("memory_pinning", "AdaptivePinBudget"),
+    "AdvancedAsyncIOPool": ("async_io_engine", "AdvancedAsyncIOPool"),
+    "IORequest": ("async_io_engine", "IORequest"),
+    "IOCoalescer": ("async_io_engine", "IOCoalescer"),
+    "AdvancedAsyncExecution": ("async_io_engine", "AdvancedAsyncExecution"),
+
+    # Phase 1C
+    "Phase1COptimizedSession": ("prefetch_session_adapter", "Phase1COptimizedSession"),
+    "wrap_phase1b_with_phase1c": ("prefetch_session_adapter", "wrap_phase1b_with_phase1c"),
+    "AffinityClusterMap": ("affinity_prefetch", "AffinityClusterMap"),
+    "ExtendedPrefetchController": ("affinity_prefetch", "ExtendedPrefetchController"),
+    "Phase1CKernelRegistry": ("model_kernel_registry", "Phase1CKernelRegistry"),
+    "DirectIOReader": ("direct_io_reader", "DirectIOReader"),
+
+    # Phase 1D
+    "Phase1DOptimizedSession": ("cpu_kernel_adapter", "Phase1DOptimizedSession"),
+    "wrap_phase1c_with_phase1d": ("cpu_kernel_adapter", "wrap_phase1c_with_phase1d"),
+    "Phase1DKernelDispatch": ("cpu_kernel_dispatch", "Phase1DKernelDispatch"),
+    "SwiGLUKernel": ("cpu_kernel_dispatch", "SwiGLUKernel"),
+    "FusedGLMKernel": ("cpu_kernel_dispatch", "FusedGLMKernel"),
+    "QwenSharedKernel": ("cpu_kernel_dispatch", "QwenSharedKernel"),
+    "DeepSeekMoEKernel": ("cpu_kernel_dispatch", "DeepSeekMoEKernel"),
+    "RoutingMarkovChain": ("speculative_placement", "RoutingMarkovChain"),
+    "SpeculativePlacementEngine": ("speculative_placement", "SpeculativePlacementEngine"),
+    "GrammarSpeculativeDecoder": ("grammar_speculative_decoder", "GrammarSpeculativeDecoder"),
+    "GrammarMode": ("grammar_speculative_decoder", "GrammarMode"),
+
+    # Phase 1E
+    "Phase1EOptimizedSession": ("aot_kernel_adapter", "Phase1EOptimizedSession"),
+    "wrap_phase1d_with_phase1e": ("aot_kernel_adapter", "wrap_phase1d_with_phase1e"),
+    "Phase1EKernelDispatch": ("aot_kernel_cache", "Phase1EKernelDispatch"),
+    "AotKernelCache": ("aot_kernel_cache", "AotKernelCache"),
+    "AvxSwiGLUDispatch": ("aot_kernel_cache", "AvxSwiGLUDispatch"),
+    "ArcGPUExpertBackend": ("aot_kernel_cache", "ArcGPUExpertBackend"),
+
+    # Phase 1F
+    "FamilyHookWirer": ("hook_wiring", "FamilyHookWirer"),
+    "NativeRoutingBridge": ("hook_wiring", "NativeRoutingBridge"),
+    "HookWiringRegistry": ("hook_wiring", "HookWiringRegistry"),
+    "wire_session": ("hook_wiring", "wire_session"),
+    "wire_batch_logits": ("hook_wiring", "wire_batch_logits"),
+    "detect_family": ("hook_wiring", "detect_family"),
+
+    # Phase 1G
+    "Phase1GOptimizedSession": ("draft_model_adapter", "Phase1GOptimizedSession"),
+    "wrap_phase1e_with_phase1g": ("draft_model_adapter", "wrap_phase1e_with_phase1g"),
+    "NgramDraftModel": ("draft_model", "NgramDraftModel"),
+    "NgramLanguageModel": ("draft_model", "NgramLanguageModel"),
+    "SmallModelDraftAdapter": ("draft_model", "SmallModelDraftAdapter"),
+    "PrefixCacheDraftModel": ("draft_model", "PrefixCacheDraftModel"),
+    "Phase1GDraftSelector": ("draft_model", "Phase1GDraftSelector"),
+
+    # Phase 1H
+    "Phase1HNPUSession": ("npu_routing_offload", "Phase1HNPUSession"),
+    "wrap_phase1g_with_phase1h": ("npu_routing_offload", "wrap_phase1g_with_phase1h"),
+    "NPURoutingDispatch": ("npu_routing_offload", "NPURoutingDispatch"),
+    "RoutingMLPSpec": ("npu_routing_offload", "RoutingMLPSpec"),
+    "OpenVINONPUBackend": ("npu_routing_offload", "OpenVINONPUBackend"),
+    "DirectMLNPUBackend": ("npu_routing_offload", "DirectMLNPUBackend"),
+
+    # Phase 2A — shared expert store
+    "SharedExpertEntry": ("shared_expert_store", "SharedExpertEntry"),
+    "SharedExpertStoreShard": ("shared_expert_store", "SharedExpertStoreShard"),
+    "SharedExpertStoreRegistry": ("shared_expert_store", "SharedExpertStoreRegistry"),
+    "SharedExpertLease": ("shared_expert_store", "SharedExpertLease"),
+    "open_shared_expert_store": ("shared_expert_store", "open_shared_expert_store"),
+    "expert_registry_metrics": ("shared_expert_store", "registry_metrics"),
+
+    # Phase 2B — shared KV cache
+    "KVBlock": ("shared_kv_cache", "KVBlock"),
+    "PrefixKVEntry": ("shared_kv_cache", "PrefixKVEntry"),
+    "SharedKVCacheShard": ("shared_kv_cache", "SharedKVCacheShard"),
+    "SharedKVCacheRegistry": ("shared_kv_cache", "SharedKVCacheRegistry"),
+    "SharedKVLease": ("shared_kv_cache", "SharedKVLease"),
+    "open_shared_kv_cache": ("shared_kv_cache", "open_shared_kv_cache"),
+    "kv_registry_metrics": ("shared_kv_cache", "kv_registry_metrics"),
+
+    # Phase 2C — continuous batching
+    "RequestState": ("continuous_batching", "RequestState"),
+    "BatchRequest": ("continuous_batching", "BatchRequest"),
+    "SchedulerConfig": ("continuous_batching", "SchedulerConfig"),
+    "ContinuousBatchScheduler": ("continuous_batching", "ContinuousBatchScheduler"),
+    "BatchWorker": ("continuous_batching", "BatchWorker"),
+    "MultiSessionBatchEngine": ("continuous_batching", "MultiSessionBatchEngine"),
+    "wait_for_request": ("continuous_batching", "wait_for_request"),
+
+    # Phase 2 adapter
+    "Phase2MultiSessionService": ("multi_session_service", "Phase2MultiSessionService"),
+    "Phase2SessionHandle": ("multi_session_service", "Phase2SessionHandle"),
+    "create_multi_session_service": ("multi_session_service", "create_multi_session_service"),
+    # Phase 2 memory manager
+    "MemorySnapshot": ("memory_pressure_manager", "MemorySnapshot"),
+    "MemoryThresholds": ("memory_pressure_manager", "MemoryThresholds"),
+    "SystemMemoryProbe": ("memory_pressure_manager", "SystemMemoryProbe"),
+    "Phase2MemoryManager": ("memory_pressure_manager", "Phase2MemoryManager"),
+    # Phase 2 forward bridge
+    "ForwardSlot": ("forward_bridge", "ForwardSlot"),
+    "Phase2ForwardBridge": ("forward_bridge", "Phase2ForwardBridge"),
+    # Phase 2 request queue
+    "RequestPriority": ("request_queue", "RequestPriority"),
+    "TokenBucket": ("request_queue", "TokenBucket"),
+    "QueueFullError": ("request_queue", "QueueFullError"),
+    "Phase2RequestQueue": ("request_queue", "Phase2RequestQueue"),
+    # Phase 2 session pool
+    "SessionLease": ("session_pool", "SessionLease"),
+    "Phase2SessionPool": ("session_pool", "Phase2SessionPool"),
+    "create_session_pool": ("session_pool", "create_session_pool"),
+
+    # Phase 3 — Tensor Parallel
+    "TensorParallelBackend": ("tensor_parallel_executor", "TensorParallelBackend"),
+    "TensorParallelConfig": ("tensor_parallel_executor", "TensorParallelConfig"),
+    "TensorParallelCommunicator": ("tensor_parallel_executor", "TensorParallelCommunicator"),
+    "ColumnParallelLinear": ("tensor_parallel_executor", "ColumnParallelLinear"),
+    "RowParallelLinear": ("tensor_parallel_executor", "RowParallelLinear"),
+    "TensorParallelExpertShard": ("tensor_parallel_executor", "TensorParallelExpertShard"),
+    "TensorParallelExpertRegistry": ("tensor_parallel_executor", "TensorParallelExpertRegistry"),
+    "Phase3TensorParallelSession": ("tensor_parallel_executor", "Phase3TensorParallelSession"),
+    "wrap_session_with_tensor_parallel": ("tensor_parallel_executor", "wrap_session_with_tensor_parallel"),
+
+    # Phase 3 — Quantization Engine
+    "QuantizationDtype": ("quantization_engine", "QuantizationDtype"),
+    "QuantizationConfig": ("quantization_engine", "QuantizationConfig"),
+    "QuantizedTensor": ("quantization_engine", "QuantizedTensor"),
+    "Int4BlockQuantizer": ("quantization_engine", "Int4BlockQuantizer"),
+    "Int8SymmetricQuantizer": ("quantization_engine", "Int8SymmetricQuantizer"),
+    "Fp8E4M3Quantizer": ("quantization_engine", "Fp8E4M3Quantizer"),
+    "QuantizationCodec": ("quantization_engine", "QuantizationCodec"),
+    "QuantizedExpertWeight": ("quantization_engine", "QuantizedExpertWeight"),
+    "QuantizedExpertStore": ("quantization_engine", "QuantizedExpertStore"),
+    "Phase3QuantizedSession": ("quantization_engine", "Phase3QuantizedSession"),
+    "wrap_session_with_quantization": ("quantization_engine", "wrap_session_with_quantization"),
+
+    # Phase 3 — Speculative Tree Decoder
+    "DraftTreeNode": ("speculative_tree_decoder", "DraftTreeNode"),
+    "DraftTree": ("speculative_tree_decoder", "DraftTree"),
+    "DraftHeadSimulator": ("speculative_tree_decoder", "DraftHeadSimulator"),
+    "TreeSpeculativeDecoder": ("speculative_tree_decoder", "TreeSpeculativeDecoder"),
+    "Phase3SpecTreeSession": ("speculative_tree_decoder", "Phase3SpecTreeSession"),
+    "wrap_session_with_spec_tree": ("speculative_tree_decoder", "wrap_session_with_spec_tree"),
+
+    # Phase 3 — Load Balancer
+    "LoadBalancingStrategy": ("load_balancer", "LoadBalancingStrategy"),
+    "ServiceInstanceState": ("load_balancer", "ServiceInstanceState"),
+    "HealthCheckResult": ("load_balancer", "HealthCheckResult"),
+    "ServiceRegistry": ("load_balancer", "ServiceRegistry"),
+    "LoadBalancer": ("load_balancer", "LoadBalancer"),
+    "LoadBalancerProxy": ("load_balancer", "LoadBalancerProxy"),
+    "Phase3LoadBalancedService": ("load_balancer", "Phase3LoadBalancedService"),
+
+    # Phase 3 — Telemetry Exporter
+    "MetricType": ("telemetry_exporter", "MetricType"),
+    "LabelSet": ("telemetry_exporter", "LabelSet"),
+    "MetricSample": ("telemetry_exporter", "MetricSample"),
+    "LatencyHistogram": ("telemetry_exporter", "LatencyHistogram"),
+    "MetricFamily": ("telemetry_exporter", "MetricFamily"),
+    "TelemetryRegistry": ("telemetry_exporter", "TelemetryRegistry"),
+    "PrometheusTextFormatter": ("telemetry_exporter", "PrometheusTextFormatter"),
+    "Phase3TelemetryCollector": ("telemetry_exporter", "Phase3TelemetryCollector"),
+
+    # Phase 3 — Serving Engine
+    "Role": ("serving_engine", "Role"),
+    "OpenAIChatMessage": ("serving_engine", "ChatMessage"),
+    "CompletionRequest": ("serving_engine", "CompletionRequest"),
+    "ChatCompletionRequest": ("serving_engine", "ChatCompletionRequest"),
+    "CompletionChoice": ("serving_engine", "CompletionChoice"),
+    "ChatCompletionChoice": ("serving_engine", "ChatCompletionChoice"),
+    "CompletionResponse": ("serving_engine", "CompletionResponse"),
+    "ChatCompletionResponse": ("serving_engine", "ChatCompletionResponse"),
+    "StreamChunk": ("serving_engine", "StreamChunk"),
+    "UsageStats": ("serving_engine", "UsageStats"),
+    "TokenizerAdapter": ("serving_engine", "TokenizerAdapter"),
+    "PromptFormatter": ("serving_engine", "PromptFormatter"),
+    "ServingEngine": ("serving_engine", "ServingEngine"),
+
+    # Phase 3 — Inference Service (top-level adapter)
+    "InferenceServiceConfig": ("inference_service", "InferenceServiceConfig"),
+    "InferenceService": ("inference_service", "InferenceService"),
+
+    # Stage 6 — Local AI infrastructure
+    # Model download manager
+    "ModelDownloadManager": ("model_download_manager", "ModelDownloadManager"),
+    "ModelRegistryEntry": ("model_download_manager", "ModelRegistryEntry"),
+    "ModelSource": ("model_download_manager", "ModelSource"),
+    "SourceKind": ("model_download_manager", "SourceKind"),
+    "DownloadJob": ("model_download_manager", "DownloadJob"),
+    "DownloadStatus": ("model_download_manager", "DownloadStatus"),
+    "huggingface_source": ("model_download_manager", "huggingface_source"),
+    "resolve_huggingface_url": ("model_download_manager", "resolve_huggingface_url"),
+    "default_registry_entries": ("model_download_manager", "default_registry_entries"),
+    # Hardware detection
+    "HardwareCapabilities": ("hardware_detection", "HardwareCapabilities"),
+    "CudaDeviceInfo": ("hardware_detection", "CudaDeviceInfo"),
+    "IntelGpuInfo": ("hardware_detection", "IntelGpuInfo"),
+    "NpuInfo": ("hardware_detection", "NpuInfo"),
+    "CpuInfo": ("hardware_detection", "CpuInfo"),
+    "detect_hardware": ("hardware_detection", "detect_hardware"),
+    "get_hardware_capabilities": ("hardware_detection", "get_hardware_capabilities"),
+    # GPU adapters
+    "GpuAdapter": ("gpu_adapters", "GpuAdapter"),
+    "CudaAdapter": ("gpu_adapters", "CudaAdapter"),
+    "IntelArcAdapter": ("gpu_adapters", "IntelArcAdapter"),
+    "CpuFallbackAdapter": ("gpu_adapters", "CpuFallbackAdapter"),
+    "AdapterRegistry": ("gpu_adapters", "AdapterRegistry"),
+    "AdapterBenchmark": ("gpu_adapters", "AdapterBenchmark"),
+    "build_adapter_registry": ("gpu_adapters", "build_adapter_registry"),
+    # Phase 1 adaptive engine sub-components (A04–A07)
+    "FamilyMediaLifecycle": ("phase1_a04_media_lifecycle", "FamilyMediaLifecycle"),
+    "FamilyMediaLifecycleRegistry": ("phase1_a04_media_lifecycle", "FamilyMediaLifecycleRegistry"),
+    "MediaFrame": ("phase1_a04_media_lifecycle", "MediaFrame"),
+    "RNGState": ("phase1_a05_speculative_state", "RNGState"),
+    "SpeculativeStateManager": ("phase1_a05_speculative_state", "SpeculativeStateManager"),
+    "ExpertShardRange": ("phase1_a06_distributed_shard", "ExpertShardRange"),
+    "DistributedCoordinator": ("phase1_a06_distributed_shard", "DistributedCoordinator"),
+    "DistributedConsensus": ("phase1_a06_distributed_shard", "DistributedConsensus"),
+    "DistributedFailureRecovery": ("phase1_a06_distributed_shard", "DistributedFailureRecovery"),
+    "compute_shard_layout": ("phase1_a06_distributed_shard", "compute_shard_layout"),
+    "FormatLoaderSpec": ("phase1_a07_format_loader_placement", "FormatLoaderSpec"),
+    "get_format_spec": ("phase1_a07_format_loader_placement", "get_format_spec"),
+    "require_format_placement": ("phase1_a07_format_loader_placement", "require_format_placement"),
+    "admitted_formats_for_placement": ("phase1_a07_format_loader_placement", "admitted_formats_for_placement"),
+    "RouteBinding": ("phase1_p02_route_bindings", "RouteBinding"),
+    "all_bindings": ("phase1_p02_route_bindings", "all_bindings"),
+    "get_route_binding": ("phase1_p02_route_bindings", "get_route_binding"),
+    "require_route_binding": ("phase1_p02_route_bindings", "require_route_binding"),
+    "validate_all_bindings": ("phase1_p02_route_bindings", "validate_all_bindings"),
 }
 
 __all__ = list(_EXPORTS)

@@ -64,12 +64,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
       await page.getByRole('tab', { name: 'Inbox' }).click();
       await page.getByRole('button', { name: 'Message options for Code review follow-up' }).click();
       await page.getByRole('dialog', { name: 'Code review follow-up' }).getByRole('button', { name: 'Delete' }).click();
-      const confirm = page.getByRole('dialog', { name: 'Delete “Code review follow-up”?' });
+      const confirm = page.getByRole('dialog', { name: 'Delete "Code review follow-up"?' });
       await expect(confirm).toBeVisible();
       await confirm.getByRole('button', { name: 'Cancel' }).click();
       await expect(page.locator('.communications-demo-row').filter({ hasText: 'Code review follow-up' })).toBeVisible();
       await page.getByRole('dialog', { name: 'Code review follow-up' }).getByRole('button', { name: 'Delete' }).click();
-      await page.getByRole('dialog', { name: 'Delete “Code review follow-up”?' }).getByRole('button', { name: 'Delete record' }).click();
+      await page.getByRole('dialog', { name: 'Delete "Code review follow-up"?' }).getByRole('button', { name: 'Delete record' }).click();
       await expect(page.locator('.communications-demo-row').filter({ hasText: 'Code review follow-up' })).toHaveCount(0);
 
       await page.getByRole('button', { name: 'Compose message' }).click();

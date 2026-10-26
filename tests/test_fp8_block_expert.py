@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from openagent.adaptive_engine import fp8_block_expert as fp8
-from openagent.adaptive_engine.expert_kernels import MappingPayloadSource, NumPyRoutedSwiGLUBackend
+from openagent.adaptive_engine.expert_kernels import (ExpertKernelRegistry, MappingPayloadSource,
+                                                      NumPyRoutedSwiGLUBackend)
 from openagent.adaptive_engine.expert_store import DiskExpertStore, ExpertRegion
 
 
@@ -106,6 +107,11 @@ class ReferenceTests(unittest.TestCase):
         result = subprocess.run([sys.executable,"-c",code],env=dict(os.environ,NUMBA_DISABLE_JIT="1"),capture_output=True,text=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_default_registry_exposes_bounded_fp8_reference(self):
+        backend = ExpertKernelRegistry().resolve(dtype=fp8.DTYPE)
+        self.assertIsInstance(backend, fp8.FP8BlockExpertBackend)
+        self.assertTrue(backend.info().available)
+
     def test_retained_failure_mmap_cleanup(self):
         raw = fp8.pack_expert(*[np.ones((2,2))]*3)
         backend = fp8.FP8BlockExpertBackend()
@@ -131,7 +137,7 @@ class ReferenceTests(unittest.TestCase):
                     raise ValueError("inner")
                 except ValueError as cause:
                     raise RuntimeError("reference failure") from cause
-            with patch.object(fp8,"_reference_loop",fail):
+            with patch.object(fp8,"_array_reference_loop",fail):
                 try:
                     backend.execute(store,np.ones(2),[("a",1)],**args)
                 except RuntimeError as error:

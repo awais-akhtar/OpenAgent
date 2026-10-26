@@ -27,6 +27,11 @@ class RecordingGateway:
     def __init__(self) -> None:
         self.messages: list[dict[str, str]] = []
 
+    def select_provider(self, *_args, **_kwargs):
+        # Match the production gateway's provider-selection protocol; these
+        # test doubles intentionally do not construct a real provider.
+        return self
+
     def complete(self, messages, **_kwargs):
         self.messages = list(messages)
         return ModelResult(provider="test", model="test-model", content="Grounded response", metadata={})
@@ -202,7 +207,7 @@ class ChatResearchTests(unittest.TestCase):
 
             with patch('openagent.chat.Path.stat', path_stat):
                 observed = service._vision_attachment([{
-                    'id': asset['id'], 'media_type': 'image'}])
+                    'id': asset['id'], 'media_type': 'image'}], project="core")
 
             self.assertEqual(observed, (payload, asset['mime_type']))
 

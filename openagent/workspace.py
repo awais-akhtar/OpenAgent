@@ -25,6 +25,10 @@ WORKSPACE_KINDS = {
 }
 
 
+class WorkspaceItemNotFoundError(LookupError):
+    """Raised when a workspace item is absent from the requested project."""
+
+
 class WorkspaceManager:
     def __init__(self, store: OpenAgentStore):
         self.store = store
@@ -86,13 +90,23 @@ class WorkspaceManager:
         self,
         item_id: str,
         *,
+        project: str = "default",
         title: str | None = None,
         content: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        item = self.get_item(item_id)
+        item_id = item_id.strip()
+        project = project.strip() or "default"
+        if not item_id:
+            raise WorkspaceItemNotFoundError("Workspace item not found.")
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM workspace_items WHERE id = ? AND project = ?",
+                (item_id, project),
+            ).fetchone()
+        item = workspace_item_row(row) if row else None
         if item is None:
-            raise ValueError(f"Unknown workspace item '{item_id}'.")
+            raise WorkspaceItemNotFoundError("Workspace item not found.")
         updated = {
             "title": item["title"] if title is None else title.strip() or item["title"],
             "content": item["content"] if content is None else content,
@@ -104,7 +118,7 @@ class WorkspaceManager:
                 """
                 UPDATE workspace_items
                 SET title = ?, content = ?, metadata_json = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND project = ?
                 """,
                 (
                     updated["title"],
@@ -112,9 +126,28 @@ class WorkspaceManager:
                     json.dumps(updated["metadata"], sort_keys=True),
                     now,
                     item_id,
+                    project,
                 ),
             )
-        refreshed = self.get_item(item_id) or {}
+        with self.store.session() as connection:
+            refreshed_row = connection.execute(
+                "SELECT * FROM workspace_items WHERE id = ? AND project = ?",
+                (item_id, project),
+            ).fetchone()
+            # Updating an item should replace its searchable context record,
+            # rather than leaving stale content or adding duplicate history.
+            event_rows = connection.execute(
+                "SELECT id, metadata_json FROM events WHERE source = 'workspace' AND project = ?",
+                (project,),
+            ).fetchall()
+            for event in event_rows:
+                try:
+                    event_metadata = json.loads(event["metadata_json"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(event_metadata, dict) and str(event_metadata.get("workspace_item_id", "")) == item_id:
+                    connection.execute("DELETE FROM events WHERE id = ? AND project = ?", (event["id"], project))
+        refreshed = workspace_item_row(refreshed_row) if refreshed_row else {}
         self._index_item(refreshed)
         self._audit("workspace.item.update", item_id, project=refreshed["project"], metadata={"kind": refreshed["kind"]})
         return refreshed
@@ -124,6 +157,93 @@ class WorkspaceManager:
             row = connection.execute("SELECT * FROM workspace_items WHERE id = ?", (item_id,)).fetchone()
         return workspace_item_row(row) if row else None
 
+    def delete_item(self, item_id: str, *, project: str = "default") -> dict[str, Any]:
+        """Delete one leaf workspace item and its searchable workspace events."""
+
+        item_id = item_id.strip()
+        project = project.strip() or "default"
+        if not item_id:
+            return {"deleted": False, "item_id": item_id}
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT id, kind FROM workspace_items WHERE id = ? AND project = ?",
+                (item_id, project),
+            ).fetchone()
+            if row is None:
+                return {"deleted": False, "item_id": item_id}
+            child = connection.execute(
+                "SELECT 1 FROM workspace_items WHERE parent_id = ? AND project = ? LIMIT 1",
+                (item_id, project),
+            ).fetchone()
+            if child is not None:
+                raise ValueError("Move or delete this item's children before deleting it.")
+            event_rows = connection.execute(
+                "SELECT id, metadata_json FROM events WHERE source = 'workspace' AND project = ?",
+                (project,),
+            ).fetchall()
+            linked_event_ids = []
+            for event in event_rows:
+                try:
+                    metadata = json.loads(event["metadata_json"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(metadata, dict) and str(metadata.get("workspace_item_id", "")) == item_id:
+                    linked_event_ids.append(str(event["id"]))
+            for event_id in linked_event_ids:
+                connection.execute("DELETE FROM events WHERE id = ? AND project = ?", (event_id, project))
+            connection.execute(
+                "DELETE FROM workspace_items WHERE id = ? AND project = ?",
+                (item_id, project),
+            )
+        self._audit("workspace.item.delete", item_id, project=project, metadata={"kind": str(row["kind"])})
+        return {"deleted": True, "item_id": item_id, "removed_search_events": len(linked_event_ids)}
+
+    def archive_item(self, item_id: str, *, project: str = "default") -> dict[str, Any]:
+        """Soft-archive a workspace item so it is hidden from normal listings."""
+        item_id = item_id.strip()
+        project = project.strip() or "default"
+        if not item_id:
+            raise ValueError("item_id is required.")
+        now = utc_now()
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT id, kind, archived FROM workspace_items WHERE id = ? AND project = ?",
+                (item_id, project),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Workspace item not found.")
+            if int(row["archived"] or 0):
+                raise ValueError("Item is already archived.")
+            connection.execute(
+                "UPDATE workspace_items SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ? AND project = ?",
+                (now, now, item_id, project),
+            )
+        self._audit("workspace.item.archive", item_id, project=project, metadata={"kind": str(row["kind"])})
+        return {"archived": True, "item_id": item_id}
+
+    def restore_item(self, item_id: str, *, project: str = "default") -> dict[str, Any]:
+        """Restore a previously archived workspace item."""
+        item_id = item_id.strip()
+        project = project.strip() or "default"
+        if not item_id:
+            raise ValueError("item_id is required.")
+        now = utc_now()
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT id, kind, archived FROM workspace_items WHERE id = ? AND project = ?",
+                (item_id, project),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Workspace item not found.")
+            if not int(row["archived"] or 0):
+                raise ValueError("Item is not archived.")
+            connection.execute(
+                "UPDATE workspace_items SET archived = 0, archived_at = '', updated_at = ? WHERE id = ? AND project = ?",
+                (now, item_id, project),
+            )
+        self._audit("workspace.item.restore", item_id, project=project, metadata={"kind": str(row["kind"])})
+        return {"restored": True, "item_id": item_id}
+
     def list_items(
         self,
         *,
@@ -131,9 +251,12 @@ class WorkspaceManager:
         kind: str = "",
         parent_id: str | None = None,
         limit: int = 100,
+        include_archived: bool = False,
     ) -> list[dict[str, Any]]:
         clauses = ["project = ?"]
         params: list[Any] = [project]
+        if not include_archived:
+            clauses.append("(archived = 0 OR archived IS NULL)")
         if kind:
             clauses.append("kind = ?")
             params.append(kind)
@@ -276,6 +399,12 @@ class WorkspaceManager:
 
 
 def workspace_item_row(row: Any) -> dict[str, Any]:
+    try:
+        archived = bool(int(row["archived"] or 0))
+        archived_at = str(row["archived_at"] or "")
+    except (IndexError, TypeError):
+        archived = False
+        archived_at = ""
     return {
         "id": row["id"],
         "project": row["project"],
@@ -286,6 +415,8 @@ def workspace_item_row(row: Any) -> dict[str, Any]:
         "metadata": json.loads(row["metadata_json"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "archived": archived,
+        "archived_at": archived_at,
     }
 
 

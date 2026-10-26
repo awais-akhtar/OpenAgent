@@ -230,6 +230,15 @@ class ModelCookbook:
             raise KeyError("serve session not found")
         return session_row(row)
 
+    def sessions(self, *, project: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+        """List persisted serve sessions for the active project."""
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT * FROM model_serve_sessions WHERE project = ? ORDER BY updated_at DESC LIMIT ?",
+                (project, max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [session_row(row) for row in rows]
+
     def logs(self, session_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
         with self.store.session() as connection:
             rows = connection.execute(

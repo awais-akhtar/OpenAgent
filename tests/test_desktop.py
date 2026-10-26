@@ -21,7 +21,9 @@ from openagent.desktop import (
 from openagent.hard_check import main as hard_check_main
 from openagent.workbench import (
     DEFAULT_WORKBENCH_PORT,
+    DesktopAssetError,
     WorkbenchInstanceLock,
+    _existing_instance_is_healthy,
     build_parser as build_workbench_parser,
     configure_managed_accelerator,
     configure_managed_openvino_model,
@@ -53,14 +55,56 @@ class DesktopTests(unittest.TestCase):
             second.release()
 
     def test_desktop_opens_existing_headless_runtime(self) -> None:
-        with TemporaryDirectory() as tmp, \
+        with TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            with \
+             patch("openagent.workbench.workbench_runtime_dir", return_value=runtime), \
              patch("openagent.workbench.WorkbenchInstanceLock.acquire", return_value=False), \
              patch("openagent.workbench._running_instance_url", return_value="http://127.0.0.1:8765/"), \
+             patch("openagent.workbench._existing_instance_is_healthy", return_value=True), \
              patch("openagent.workbench.focus_openagent_window", return_value=False), \
              patch("openagent.workbench.open_app_window") as open_window:
-            self.assertEqual(launch_workbench(tmp, open_window=True), 0)
-            open_window.assert_called_once()
-            self.assertEqual(open_window.call_args.args[0], "http://127.0.0.1:8765/")
+                self.assertEqual(launch_workbench(tmp, open_window=True), 0)
+                open_window.assert_called_once()
+                self.assertEqual(open_window.call_args.args[0], "http://127.0.0.1:8765/")
+
+    def test_stale_saved_instance_url_never_opens_a_blank_window(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            with \
+             patch("openagent.workbench.workbench_runtime_dir", return_value=runtime), \
+             patch("openagent.workbench.WorkbenchInstanceLock.acquire", return_value=False), \
+             patch("openagent.workbench._running_instance_url", return_value="http://127.0.0.1:8878/"), \
+             patch("openagent.workbench._existing_instance_is_healthy", return_value=False), \
+             patch("openagent.workbench.open_app_window") as open_window:
+                with self.assertRaisesRegex(DesktopAssetError, "saved workbench address is not healthy"):
+                    launch_workbench(tmp, open_window=True)
+                open_window.assert_not_called()
+
+    def test_inaccessible_workbench_lock_is_handled_as_contention(self) -> None:
+        with TemporaryDirectory() as tmp, patch.object(Path, "open", side_effect=PermissionError("locked")):
+            self.assertFalse(WorkbenchInstanceLock(Path(tmp) / "runtime").acquire())
+
+    def test_existing_instance_health_check_rejects_non_loopback_url(self) -> None:
+        self.assertFalse(_existing_instance_is_healthy("http://example.com/"))
+
+    def test_desktop_reports_stale_runtime_instead_of_opening_blank_page(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            with \
+             patch("openagent.workbench.workbench_runtime_dir", return_value=runtime), \
+             patch("openagent.workbench.WorkbenchInstanceLock.acquire", return_value=False), \
+             patch("openagent.workbench._running_instance_url", return_value="http://127.0.0.1:8878/"), \
+             patch("openagent.workbench._existing_instance_is_healthy", return_value=False), \
+             patch("openagent.workbench.open_app_window") as open_window, \
+             patch("openagent.desktop.show_desktop_launch_error") as show_error:
+                self.assertEqual(main(["--no-open", "--data-dir", tmp]), 2)
+                show_error.assert_called_once()
+                self.assertIn("saved workbench address is not healthy", show_error.call_args.args[0])
+                open_window.assert_not_called()
 
     def test_managed_openvino_configuration_requires_complete_local_model(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -108,7 +152,7 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(configure_managed_accelerator(), str(accelerator.resolve()))
                 self.assertEqual(configure_managed_openvino_model(Path(tmp) / "data"), str(model.resolve()))
 
-    def test_installed_runtime_uses_manifest_source_venv_for_development(self) -> None:
+    def test_installed_runtime_does_not_reexec_into_manifest_source_venv(self) -> None:
         import os
         from unittest.mock import patch
 
@@ -116,14 +160,66 @@ class DesktopTests(unittest.TestCase):
             local_app_data = Path(tmp) / "local"
             source = Path(tmp) / "source"
             (source / "openagent").mkdir(parents=True)
-            interpreter = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-            interpreter.parent.mkdir(parents=True)
-            interpreter.write_bytes(b"local-python")
+            (source / "pyproject.toml").write_text("[project]\nname='openagent'\n", encoding="utf-8")
+            source_interpreter = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            source_interpreter.parent.mkdir(parents=True)
+            source_interpreter.write_bytes(b"source-python")
+            installed = Path(tmp) / "install" / ".venv" / ("Lib/site-packages" if os.name == "nt" else "lib/python3/site-packages")
+            installed_package = installed / "openagent"
+            installed_package.mkdir(parents=True)
+            installed_entry = installed_package / "workbench.py"
+            installed_entry.write_text("# installed wheel entry\n", encoding="utf-8")
             manifest = local_app_data / "OpenAgent" / "install-manifest.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(json.dumps({"source": str(source)}), encoding="utf-8")
-            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data), "OPENAGENT_SOURCE_ROOT": ""}, clear=False):
+            with patch("openagent.workbench.__file__", str(installed_entry)), patch.dict(
+                os.environ, {"LOCALAPPDATA": str(local_app_data), "OPENAGENT_SOURCE_ROOT": ""}, clear=False
+            ):
+                self.assertEqual(installation_source_root(), source.resolve())
+                self.assertIsNone(project_venv_python())
+
+    def test_source_checkout_uses_its_virtualenv_for_development(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            package = source / "openagent"
+            package.mkdir(parents=True)
+            (source / "pyproject.toml").write_text("[project]\nname='openagent'\n", encoding="utf-8")
+            interpreter = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"source-python")
+            with patch("openagent.workbench.__file__", str(package / "workbench.py")), patch.dict(
+                os.environ, {"OPENAGENT_SOURCE_ROOT": ""}, clear=False
+            ):
                 self.assertEqual(project_venv_python(), interpreter.resolve())
+
+    def test_installed_editable_package_keeps_its_managed_install_venv(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as tmp:
+            local_app_data = Path(tmp) / "local"
+            source = Path(tmp) / "source"
+            package = source / "openagent"
+            package.mkdir(parents=True)
+            (source / "pyproject.toml").write_text("[project]\nname='openagent'\n", encoding="utf-8")
+            source_interpreter = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            source_interpreter.parent.mkdir(parents=True)
+            source_interpreter.write_bytes(b"source-python")
+            install_venv = local_app_data / "OpenAgent" / ".venv"
+            manifest = local_app_data / "OpenAgent" / "install-manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"source": str(source)}), encoding="utf-8")
+            with patch("openagent.workbench.__file__", str(package / "workbench.py")), patch(
+                "openagent.workbench.sys.prefix", str(install_venv)
+            ), patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": str(local_app_data), "OPENAGENT_SOURCE_ROOT": ""},
+                clear=False,
+            ):
+                self.assertIsNone(project_venv_python())
 
     def test_desktop_status_is_native_and_local(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -266,10 +362,21 @@ class DesktopTests(unittest.TestCase):
     def test_windows_installer_has_runtime_preflight_checks(self) -> None:
         installer = Path(__file__).resolve().parents[1] / "installers" / "windows" / "install.ps1"
         content = installer.read_text(encoding="ascii")
+        self.assertIn("$managedRuntimeRoot = [System.IO.Path]::GetFullPath", content)
+        self.assertIn("$activeManagedProcessIds", content)
+        self.assertIn("Close its desktop window and local server before upgrading", content)
         self.assertIn("Python 3.11 or newer is required", content)
         self.assertIn("$pythonExe -m venv", content)
+        self.assertIn('$frontendBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $env:TEMP', content)
+        self.assertIn("$frontendNpmCache = Join-Path $frontendBuildRoot \"npm-cache\"", content)
+        self.assertIn("$env:npm_config_cache = $frontendNpmCache", content)
+        self.assertIn('foreach ($relativeDirectory in @("src", "public", "scripts", "reference"))', content)
+        self.assertIn("Push-Location $frontendBuild", content)
+        self.assertIn('Remove-Item -LiteralPath $frontendBuildRoot -Recurse -Force', content)
+        self.assertNotIn("Push-Location $frontendSource", content)
         self.assertIn("[switch]$UpgradePip", content)
         self.assertIn("[switch]$SkipVoiceExtras", content)
+        self.assertIn("[switch]$CreateShortcutsForCustomInstall", content)
         self.assertIn("if ($UpgradePip)", content)
         self.assertIn("$SourcePath[media,rag]", content)
         self.assertIn("$SourcePath[full]", content)
@@ -277,6 +384,12 @@ class DesktopTests(unittest.TestCase):
         self.assertIn('Scripts\\pythonw.exe', content)
         self.assertIn('$shortcut.WindowStyle = 7', content)
         self.assertIn('-m openagent.desktop --data-dir', content)
+        self.assertIn('$normalizedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)', content)
+        self.assertIn('$defaultInstallSuffix = "\\AppData\\Local\\OpenAgent"', content)
+        self.assertIn('$userProfileRoot = $normalizedInstallDir.Substring', content)
+        self.assertIn('$programsDir = Join-Path $userProfileRoot "AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs"', content)
+        self.assertIn("$shouldCreateShortcuts = $isDefaultInstall -or $CreateShortcutsForCustomInstall", content)
+        self.assertIn("Custom install path detected; existing Start Menu and Desktop shortcuts were left unchanged", content)
         pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="ascii")
         self.assertIn("openagent-workbench", pyproject)
 

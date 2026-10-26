@@ -10,8 +10,11 @@ from .v41_execution.bf16_projections import PublisherBF16Projections
 
 class BF16TensorParallelProjections(TensorParallelProjections):
     boundary_observation_supported=False
-    def __init__(self,*,provider,checkpoint_identity,group,device,torch_version,max_bytes):
-        super().__init__(group=group,device=device,torch_version=torch_version,max_bytes=max_bytes,dtype='float32')
+    def __init__(self,*,provider,checkpoint_identity,group,device,torch_version,max_bytes,
+                 collective_timeout_seconds=120):
+        super().__init__(group=group,device=device,torch_version=torch_version,
+            max_bytes=max_bytes,dtype='float32',
+            collective_timeout_seconds=collective_timeout_seconds)
         if type(provider) is not PublisherBF16Projections:
             raise TypeError('original publisher BF16 row owner required')
         if type(checkpoint_identity) is not str or not checkpoint_identity:

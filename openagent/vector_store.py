@@ -116,12 +116,19 @@ class VectorStore:
             ).fetchone()
         return collection_row(row)
 
-    def collections(self, *, project: str = "default") -> list[dict[str, Any]]:
+    def collections(self, *, project: str = "default", owner: str = "") -> list[dict[str, Any]]:
+        owner = str(owner).strip()
         with self.store.session() as connection:
-            rows = connection.execute(
-                "SELECT * FROM vector_store_collections WHERE project = ? ORDER BY updated_at DESC",
-                (project,),
-            ).fetchall()
+            if owner:
+                rows = connection.execute(
+                    "SELECT * FROM vector_store_collections WHERE project = ? AND owner = ? ORDER BY updated_at DESC",
+                    (project, owner),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM vector_store_collections WHERE project = ? ORDER BY updated_at DESC",
+                    (project,),
+                ).fetchall()
         return [collection_row(row) for row in rows]
 
     def upsert_text(

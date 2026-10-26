@@ -136,7 +136,12 @@ DESKTOP_MODULES = (
 )
 
 
-def desktop_status(data_dir: Path | str | None = None, *, project: str = "default") -> dict[str, Any]:
+def desktop_status(
+    data_dir: Path | str | None = None,
+    *,
+    project: str = "default",
+    ui_root: Path | str | None = None,
+) -> dict[str, Any]:
     """Return a non-GUI status object for tests, installers, and audits."""
 
     data_path = Path(data_dir).expanduser() if data_dir else desktop_home()
@@ -165,7 +170,7 @@ def desktop_status(data_dir: Path | str | None = None, *, project: str = "defaul
         "desktop_modules": desktop_feature_manifest(),
         "runtime_tools": desktop_runtime_status(),
         "desktop_layout": desktop_layout_manifest(),
-        "modern_workbench": workbench_status(data_path, project=project),
+        "modern_workbench": workbench_status(data_path, project=project, ui_root=ui_root),
         "privacy_boundary": DESKTOP_PRIVACY_BOUNDARY,
     }
 
@@ -1404,7 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     data_dir = Path(args.data_dir).expanduser() if args.data_dir else desktop_home()
     if args.status_json:
-        print(json.dumps(desktop_status(data_dir, project=args.project), indent=2, sort_keys=True))
+        print(json.dumps(desktop_status(data_dir, project=args.project, ui_root=args.ui_root), indent=2, sort_keys=True))
         return 0
     if args.hard_audit_json:
         from .hard_audit import run_hard_audit

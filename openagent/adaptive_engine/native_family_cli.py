@@ -43,7 +43,7 @@ def _pairs(pairs):
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument('--family',required=True,choices=('mixtral','qwen3_5_moe_text','qwen4_exp_text','glm5_next_text','inkling_text','glm5_next','glm_moe_dsa'))
+    result.add_argument('--family',required=True,choices=('mixtral','qwen3_5_moe_text','qwen4_exp_text','glm5_next_text','inkling_text','glm5_next','glm_moe_dsa','kimi_linear'))
     result.add_argument('--checkpoint',required=True,type=Path)
     result.add_argument('--runtime-library',type=Path)
     result.add_argument('--kernel-library',type=Path)
@@ -275,6 +275,18 @@ class _FlatOwner:
                 context_tokens=options['context_tokens'],max_new_tokens=options['max_new_tokens'],
                 max_sessions=options['max_sessions'],prefill_chunk_tokens=options['prefill_chunk_tokens'],
                 max_snapshots_per_session=options.get('max_snapshots_per_session',4))
+        if self.family=='kimi_linear':
+            from .execution_factories import open_native_kimi_linear_directory_service
+            return open_native_kimi_linear_directory_service(
+                self.root, library=self.library, max_weight_bytes=self.weight_bytes,
+                runtime_max_bytes=self.runtime_bytes,
+                max_total_model_bytes=self.total_bytes,
+                context_tokens=options['context_tokens'],
+                max_new_tokens=options['max_new_tokens'],
+                max_sessions=options['max_sessions'],
+                prefill_chunk_tokens=options['prefill_chunk_tokens'],
+                max_snapshots_per_session=options.get('max_snapshots_per_session',4),
+                max_logit_buffer_bytes=options['max_transfer_bytes'])
         from .execution_factories import open_flat_native_directory_service
         return open_flat_native_directory_service(self.root,family=self.family,library=self.library,
             max_weight_bytes=self.weight_bytes,runtime_max_bytes=self.runtime_bytes,
@@ -288,6 +300,7 @@ class PublisherSession(ClosedSetScoringMixin):
     """Gateway-compatible owned service; public registry owners stay pinned."""
     def __init__(self,args,*,cancelled=None):
         self.service,self.session_id,self.tokenizer = None,None,None
+        self._bank_owner = None
         self._lock = threading.RLock()
         self._request_active = False
         self._closed = False
@@ -310,7 +323,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 raise ValueError('public family Segment/Edge batch rows are capped at 4096')
             if type(args.attention_mib) is not int or args.attention_mib<=0:
                 raise ValueError('positive public family callback scratch admission required')
-        flat_family = args.family in ('glm5_next_text','inkling_text','glm5_next') or (
+        flat_family = args.family in ('glm5_next_text','inkling_text','glm5_next','kimi_linear') or (
             args.family=='glm_moe_dsa' and args.runtime_library is None)
         if flat_family and args.runtime_library is not None:
             # These routes construct their decoder from the explicitly
@@ -600,8 +613,9 @@ class PublisherSession(ClosedSetScoringMixin):
                                 pending[0]();pending.pop(0)
                         try:cleanup_construction()
                         except BaseException as cleanup:
-                            primary.cleanup=cleanup_construction
-                            primary.add_note('native bank construction cleanup retained: '+repr(cleanup))
+                            from .failure_reporting import retain_cleanup_failure
+                            retain_cleanup_failure(primary,cleanup_construction,cleanup,
+                                'native bank construction cleanup retained: ')
                     raise
             if args.device is None and not flat_family and not owner.registered_edge:
                 owner.register()
@@ -611,6 +625,7 @@ class PublisherSession(ClosedSetScoringMixin):
                 layers_per_range=args.layers_per_range,max_transfer_bytes=args.transfer_mib*1024**2,
                 max_new_tokens=args.context,max_sessions=2,prefill_chunk_tokens=args.prefill_chunk)
             self.session_id = self.service.open_session()
+            self._bank_owner = owner
             self._artifacts_unchanged()
             if cancel.is_set():
                 raise ExecutionCancelled('native family service load cancelled')
@@ -622,8 +637,9 @@ class PublisherSession(ClosedSetScoringMixin):
                     pending[0]();pending.pop(0)
             try:cleanup_session()
             except BaseException as cleanup:
-                error.cleanup=cleanup_session
-                error.add_note('native family session cleanup remains pending: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,cleanup_session,cleanup,
+                    'native family session cleanup remains pending: ')
             raise
 
     def _artifacts_unchanged(self):
@@ -715,6 +731,9 @@ class PublisherSession(ClosedSetScoringMixin):
             boundary=self.service.restore_generation_checkpoint(self.session_id,source,max_bytes=max_bytes,
                 cancel=cancel,application_identity=self.checkpoint_identity)
             emitted=[]
+            if emit is not None:
+                emit(dict(event='recovered',token_ids=[],text='',
+                    stop_prefixes=[list(prefix) for prefix in boundary.stop_prefixes],recovered=True))
             def event(value):
                 if emit is not None and value.get('event')=='generation.token':
                     emitted.append(value['token_id'])
@@ -727,6 +746,7 @@ class PublisherSession(ClosedSetScoringMixin):
             generated=list(result.token_ids)
             return dict(generated_ids=generated,text=self.tokenizer.decode(generated,skip_special_tokens=True),
                 family=self.family,checkpoint_identity=self.checkpoint_identity,finish_reason=result.finish_reason,
+                stop_prefixes=[list(prefix) for prefix in boundary.stop_prefixes],
                 context_tokens=result.context_tokens,numerical_parity_verified=False,platform_certified=False)
 
     @_reject_session_reentry
@@ -760,6 +780,23 @@ class PublisherSession(ClosedSetScoringMixin):
             return store.recover_into(self.service,self.session_id,key)
 
     @_reject_session_reentry
+    def expert_telemetry_sources(self):
+        """Return the exact expert runtimes/stores this session executes through.
+
+        Bank owners are process-lifetime registry entries shared by sessions
+        with the same artifact identity, so counters are per checkpoint bank.
+        """
+        with self._lock:
+            owner = self._bank_owner
+        if owner is None:
+            return ()
+        sources = []
+        for name in ('expert_runtime', 'operator_expert_runtime', 'store'):
+            value = getattr(owner, name, None)
+            if value is not None and callable(getattr(value, 'status', None)) and value not in sources:
+                sources.append(value)
+        return tuple(sources)
+
     def close(self):
         with self._lock:
             # Do not admit inference against an owner whose shutdown has
@@ -768,7 +805,7 @@ class PublisherSession(ClosedSetScoringMixin):
             if self.service is not None:
                 self.service.close()
                 self.service = None
-            self.session_id,self.tokenizer = None,None
+            self.session_id,self.tokenizer,self._bank_owner = None,None,None
 
 
 def main(argv=None):

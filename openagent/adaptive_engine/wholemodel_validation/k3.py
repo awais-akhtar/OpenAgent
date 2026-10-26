@@ -335,7 +335,7 @@ class K3CandidateFactory:
 
     def __call__(self, *, seed):
         from ..publisher_checkpoint.service import PublisherCheckpoint
-        from ..publisher_checkpoint.k3_adapter import load_k3
+        from ..publisher_checkpoint.k3_adapter import load_k3, k3_route_identity
         from ..k3_execution.executor import K3Execution
         verify_checkpoint(self.root, self.options['checkpoint_path'], self.pins)
         source = inspect.getsourcefile(K3Execution)
@@ -343,12 +343,27 @@ class K3CandidateFactory:
             raise ValueError('actual K3Execution source is not covered by source pins')
         checkpoint = PublisherCheckpoint.open(self.checkpoint, family='kimi_k3')
         c = self.config
+        # Candidate/evidence tooling constructs K3Execution directly instead of
+        # going through create_k3_execution_service. Bind the exact P02 tuple
+        # here, before load_k3 can read or convert any model payload.
+        if 'metal_policy' in self.execution_policies:
+            route_backend, route_arithmetic = 'metal', 'bf16'
+        elif 'fla_policy' in self.execution_policies:
+            route_backend, route_arithmetic = 'fla', 'bf16'
+        elif 'arithmetic_policy' in self.execution_policies:
+            route_backend, route_arithmetic = 'device', 'bf16'
+        else:
+            route_backend, route_arithmetic = 'native', 'fp32-approximate'
+        k3_route_identity(checkpoint, backend=route_backend,
+                          arithmetic=route_arithmetic,
+                          expert_format=c.expert_format)
         payload = load_k3(checkpoint, capacity=c.capacity,
             max_weight_bytes=self.options['max_weight_bytes'], expert_format=c.expert_format,
             projection_epsilon=c.projection_epsilon, l2_epsilon=c.l2_epsilon,
             rotary_mode=c.rotary_mode, rotary_theta=c.rotary_theta,
             include_vision=c.vision is not None,
-            vision_tower_epsilon=2**-23 if c.vision is None else c.vision.tower_epsilon)
+            vision_tower_epsilon=2**-23 if c.vision is None else c.vision.tower_epsilon,
+            source_backend=route_backend, source_arithmetic=route_arithmetic)
         if payload.config != c:
             raise ValueError('injected K3Config differs from unchanged local checkpoint handoff')
         if payload.config_sha256 != self.options['metadata']['config_sha256']:

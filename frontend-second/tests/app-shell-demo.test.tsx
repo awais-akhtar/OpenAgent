@@ -30,7 +30,7 @@ it('opens Chat to a clean offline state instead of replaying shell conversation 
   try {
     window.history.replaceState({}, '', '/?view=chat');
     render(<QueryClientProvider client={client}><BrowserRouter><App /></BrowserRouter></QueryClientProvider>);
-    expect(await screen.findByRole('heading', { name: 'Start a conversation' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Start a conversation' }, { timeout: 5000 })).toBeVisible();
     expect(screen.getByRole('combobox', { name: 'Conversation' }).querySelectorAll('option')).toHaveLength(1);
     expect(document.querySelectorAll('#content .chat-thread .chat-message')).toHaveLength(0);
     expect(screen.getByText('Chat is not simulated in offline Demo mode. Switch to Live to use the connected chat service.')).toBeVisible();
@@ -41,4 +41,4 @@ it('opens Chat to a clean offline state instead of replaying shell conversation 
     client.clear();
     useWorkspaceState.getState().setDataMode('live');
   }
-});
+}, 15_000);

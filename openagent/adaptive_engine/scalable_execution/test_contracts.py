@@ -23,7 +23,7 @@ class InfrastructureContracts(unittest.TestCase):
         self.store = PackedStore(self.root, {"expert": PackedRegion("weights", 0,
             len(payload), hashlib.sha256(payload).hexdigest(), "fixture")}, mapped_budget=Budget(65536))
         self.executor = ScalableExecutor(self.geometry, self.store, self.cache,
-                                         scratch_budget=Budget(64))
+                                         scratch_budget=Budget(512))
         self.cache.create_session("a", "owner")
 
     def tearDown(self):
@@ -86,7 +86,7 @@ class InfrastructureContracts(unittest.TestCase):
 
     def test_budget_failure_is_nonmutating(self):
         with self.assertRaises(MemoryError):
-            self.executor.dispatch("a", "owner", (1,), (), lambda ctx: None, scratch_bytes=65)
+            self.executor.dispatch("a", "owner", (1,), (), lambda ctx: None, scratch_bytes=513)
         self.assertEqual(self.cache.sessions("owner")[0]["position"], 0)
 
     def test_escaped_packed_view_stays_charged(self):
@@ -139,7 +139,7 @@ class InfrastructureContracts(unittest.TestCase):
                 def append(ctx, _):
                     ctx.cache.append_page(tokens, b"abcd" * len(tokens))
                 return ExecutionPlan([DispatchStep(None, append)],
-                    lambda ctx: np.full((len(tokens), 8), invalid), 16)
+                    lambda ctx: np.full((len(tokens), 8), invalid), 256)
             session = ScalableSession(self.executor, "a", "owner", planner,
                                       vocab_size=8, create=False)
             try:
@@ -161,7 +161,7 @@ class InfrastructureContracts(unittest.TestCase):
             dispose=lambda state: disposed.append(state["position"]))
         planner = StateCodecPlanner(self.geometry, codec, phases=lambda ctx, state: (),
             logits=lambda ctx, state: np.zeros((len(ctx.token_ids), 8)),
-            scratch_estimate=lambda tokens, context_limit: 32)
+            scratch_estimate=lambda tokens, context_limit: 512)
         session = ScalableSession(self.executor, "a", "owner", planner, vocab_size=8, create=False)
         try:
             session.forward((1, 2))
@@ -173,8 +173,11 @@ class InfrastructureContracts(unittest.TestCase):
             session.close(preserve_durable_session=True)
 
     def test_cleanup_failure_rolls_back_append(self):
+        fail_once = [True]
         def cleanup():
-            raise RuntimeError("cleanup failed")
+            if fail_once[0]:
+                fail_once[0] = False
+                raise RuntimeError("cleanup failed")
         def step(ctx, _):
             ctx.defer(cleanup)
             ctx.cache.append_page((1,), b"abcd")

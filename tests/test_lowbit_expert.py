@@ -51,6 +51,44 @@ def backends(dtype):
 
 
 class LowBitTests(unittest.TestCase):
+    def test_vectorized_packer_is_byte_identical_to_scalar_layout(self):
+        rng = np.random.default_rng(9001)
+        for dtype in (scalar.INT2, scalar.INT3):
+            bits, group = scalar.parameters(dtype)
+            maximum_code = (1 << (bits - 1)) - 1
+            for shape in ((5, 5), (71, 67), (129, 127)):
+                source = rng.normal(0, 0.2, shape).astype(np.float64)
+                source[0, 0] = np.float64(2 ** -149)
+                source[-1, -1] = 0
+                actual_bytes, actual_scales = scalar.pack_matrix(source, dtype=dtype)
+                values = np.asarray(source)
+                rows, columns = values.shape
+                scale_group = group or columns
+                groups = (columns + scale_group - 1) // scale_group
+                stride = (columns * bits + 7) // 8
+                expected_bytes = bytearray(rows * stride)
+                expected_scales = np.empty((rows, groups), dtype="<f4")
+                for row in range(rows):
+                    for index in range(groups):
+                        start = index * scale_group
+                        end = min(columns, (index + 1) * scale_group)
+                        block = values[row, start:end].astype(np.float32)
+                        maximum = float(np.max(np.abs(block)))
+                        delta = np.float32(maximum / maximum_code) if maximum else np.float32(1)
+                        if maximum and delta == 0:
+                            delta = np.nextafter(np.float32(0), np.float32(1))
+                        codes = np.clip(np.rint(block.astype(np.float64) / float(delta)),
+                                        -maximum_code, maximum_code).astype(np.int8)
+                        expected_scales[row, index] = delta
+                        for column, code in enumerate(codes, start):
+                            address, shift = divmod(column * bits, 8)
+                            encoded = int(code) & ((1 << bits) - 1)
+                            expected_bytes[row * stride + address] |= (encoded << shift) & 255
+                            if shift + bits > 8:
+                                expected_bytes[row * stride + address + 1] |= encoded >> (8 - shift)
+                self.assertEqual(actual_bytes, bytes(expected_bytes))
+                np.testing.assert_array_equal(actual_scales, expected_scales)
+
     def test_scalar_import_without_numba_and_disabled_native(self):
         code = """
 import importlib.abc

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any, Mapping, Sequence
 
 from ..models import AuditEvent, ContextEvent
@@ -98,6 +99,47 @@ class ScientificService:
             if len(proposals) >= max(1, min(int(limit), 500)):
                 break
         return proposals
+
+    def save_execution_result(self, *, project: str, result: Mapping[str, Any], code_sha256: str) -> dict[str, Any]:
+        """Persist an actual bounded code-run result without storing source code."""
+        status = str(result.get("status", "failed"))[:40]
+        record = {
+            "status": status,
+            "returncode": int(result.get("returncode", 1)),
+            "elapsed_ms": max(0.0, float(result.get("elapsed_ms", 0.0))),
+            "attempts": max(0, int(result.get("attempts", 0))),
+            "peak_memory_bytes": max(0, int(result.get("peak_memory_bytes", 0))),
+            "stdout": str(result.get("stdout", ""))[:20_000],
+            "stderr": str(result.get("stderr", ""))[:20_000],
+            "code_sha256": code_sha256[:64],
+        }
+        event = self.store.add_event(ContextEvent(
+            title=f"Scientific execution: {status}",
+            content=json.dumps(record, sort_keys=True),
+            type="scientific_execution",
+            source="scientific-ai",
+            project=project,
+            metadata={"status": status, "returncode": record["returncode"], "code_sha256": record["code_sha256"]},
+        ))
+        self._audit(project, "science.execution.record", str(event["id"]), {"status": status, "returncode": record["returncode"]})
+        return {"id": event["id"], "created_at": event.get("created_at"), **record}
+
+    def list_execution_results(self, *, project: str, limit: int = 100) -> list[dict[str, Any]]:
+        events = self.store.list_events(limit=min(500, max(1, limit * 5)), project=project)
+        records: list[dict[str, Any]] = []
+        for event in events:
+            if event.get("type") != "scientific_execution":
+                continue
+            try:
+                record = json.loads(str(event.get("content", "{}")))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            records.append({"id": event.get("id"), "created_at": event.get("created_at"), **record})
+            if len(records) >= max(1, min(int(limit), 500)):
+                break
+        return records
 
     def save_material_dataset(self, *, project: str, name: str, target: str, records: Sequence[dict[str, Any]], source: str = "upload") -> dict[str, Any]:
         validated = validate_records(records, target=target)

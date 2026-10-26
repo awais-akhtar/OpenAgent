@@ -46,8 +46,7 @@ class SourceScopeConverter:
         3. All adapters are loaded and reachable
         4. Evidence obligation has a receipt (or can be waived for source-paths-only)
         """
-        if case.get('admission') not in ('candidate-unverified', 'rejected-unadmitted'):
-            return case  # Already decided
+        raise RuntimeError('candidate promotion is disabled; use the canonical source matrix and receipt gate')
 
         # Check if all chain dimensions are present
         chain = case.get('callable_chain', {})
@@ -189,9 +188,7 @@ class P02NativeCPUConverter:
         Returns:
             (success, updated_case)
         """
-        # Only process candidates
-        if case.get('admission') != 'candidate-unverified':
-            return case.get('admission') == 'verified-admitted', case
+        raise RuntimeError('candidate promotion is disabled; use the canonical source matrix and receipt gate')
 
         # Check if this is a CPU-native candidate
         if not cls.is_cpu_native_candidate(case):
@@ -902,8 +899,10 @@ class Phase1ValidatorComplete:
     Phase1Validator → verified-admitted only when all chains complete.
     """
 
-    def __init__(self, source_scope_module=None):
+    def __init__(self, source_scope_module=None, receipt_path=None):
         self.source_scope = source_scope_module
+        self.receipt_path = Path(receipt_path) if receipt_path is not None else None
+        self._receipt_error = ''
         self.assertions: Dict[str, Phase1ClosureAssertion] = {}
         self._setup_assertions()
 
@@ -982,13 +981,12 @@ class Phase1ValidatorComplete:
             return False
 
         try:
-            from .source_scope import source_matrix_rows
-            rows = source_matrix_rows()
-            return len(rows) > 0 and all(r.get('admission') in ('candidate-unverified',
-                                                                  'rejected-unadmitted',
-                                                                  'verified-admitted')
-                                        for r in rows)
-        except:
+            rows = self._source_rows()
+            return bool(rows) and all(
+                row.get('admission') in ('rejected-unadmitted', 'verified-admitted') and
+                row.get('combination_status') in ('rejected-unadmitted', 'verified-admitted')
+                for row in rows)
+        except Exception:
             return False
 
     def _check_family_route(self, family: str) -> bool:
@@ -997,17 +995,84 @@ class Phase1ValidatorComplete:
             return False
 
         try:
-            from .source_scope import source_contract_summary
-            contract = source_contract_summary(family)
-
-            # Check all dimensions present
-            required_dims = ['configuration', 'inventory', 'loading', 'execution',
-                           'cache_tp', 'native_abi', 'factory', 'cli', 'gateway',
-                           'recovery', 'tooling']
-
-            return all(contract.get(dim) for dim in required_dims)
-        except:
+            rows = [row for row in self._source_rows() if row.get('family') == family]
+            return bool(rows) and all(
+                row.get('admission') == 'verified-admitted' and
+                row.get('combination_status') == 'verified-admitted' and
+                all(row.get('callable_chain', {}).get(dimension)
+                    for dimension in row.get('chain_order', ()))
+                for row in rows)
+        except Exception:
             return False
+
+    def _source_rows(self):
+        if self.source_scope is not None:
+            matrix = self.source_scope.source_scope_matrix()
+            rows = matrix.get('execution_cases', []) if isinstance(matrix, dict) else []
+            return list(rows)
+        from .source_scope import source_matrix_rows
+        return list(source_matrix_rows())
+
+    def _verified_receipts(self):
+        """Return admitted route receipts after verifying pinned local bytes."""
+        admitted = [row for row in self._source_rows()
+                    if row.get('combination_status') == 'verified-admitted']
+        if self.receipt_path is None or not self.receipt_path.is_file():
+            self._receipt_error = f'{len(admitted)} of {len(admitted)} admitted routes lack runtime receipts'
+            return [], self._receipt_error
+        try:
+            document = json.loads(self.receipt_path.read_text(encoding='utf-8'))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            self._receipt_error = f'invalid runtime receipt manifest: {type(error).__name__}'
+            return [], self._receipt_error
+        if not isinstance(document, dict) or document.get('schema') != 'openagent.phase1-runtime-receipts.v1':
+            self._receipt_error = 'invalid runtime receipt manifest schema'
+            return [], self._receipt_error
+        routes = document.get('routes')
+        if not isinstance(routes, list):
+            self._receipt_error = 'runtime receipt routes must be a list'
+            return [], self._receipt_error
+        by_case = {item.get('case_id'): item for item in routes
+                   if isinstance(item, dict) and isinstance(item.get('case_id'), str)}
+        missing = [row for row in admitted if row.get('case_id') not in by_case]
+        if missing:
+            self._receipt_error = f'{len(missing)} of {len(admitted)} admitted routes lack runtime receipts'
+            return [], self._receipt_error
+        verified = []
+        base = self.receipt_path.parent
+        for row in admitted:
+            receipt = by_case[row['case_id']]
+            artifacts = receipt.get('artifacts')
+            observations = receipt.get('observations')
+            if not isinstance(artifacts, list) or not isinstance(observations, list):
+                self._receipt_error = f"{row['case_id']}: artifact and observation receipts are required"
+                return [], self._receipt_error
+            for item in artifacts + observations:
+                if not isinstance(item, dict) or not isinstance(item.get('path'), str):
+                    self._receipt_error = f"{row['case_id']}: malformed artifact receipt"
+                    return [], self._receipt_error
+                artifact_path = Path(item['path'])
+                if not artifact_path.is_absolute():
+                    artifact_path = base / artifact_path
+                try:
+                    digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+                except OSError:
+                    self._receipt_error = f"{row['case_id']}: receipt artifact is missing or unreadable"
+                    return [], self._receipt_error
+                if item.get('sha256') != digest:
+                    self._receipt_error = f"{row['case_id']}: artifact SHA-256 mismatch"
+                    return [], self._receipt_error
+            verified.append((row, receipt))
+        reused_observations = any(
+            len([item.get('sha256') for item in receipt.get('observations', [])
+                 if isinstance(item, dict)]) !=
+            len({item.get('sha256') for item in receipt.get('observations', [])
+                 if isinstance(item, dict)})
+            for _row, receipt in verified)
+        self._receipt_error = (
+            'one file cannot serve as several observation kinds'
+            if reused_observations else '')
+        return verified, self._receipt_error
 
     def _check_a04_media_lifecycle(self) -> bool:
         """Check A04: media lifecycle complete."""
@@ -1053,18 +1118,27 @@ class Phase1ValidatorComplete:
             return False
 
     def _check_a09_observation(self) -> bool:
-        """Check A09: observation binding."""
-        try:
-            # Check ObservationBindingManager exists
-            methods = ['create_evidence_binding', 'pin_artifact', 'capture_observation']
-            return all(hasattr(ObservationBindingManager, m) for m in methods)
-        except:
-            return False
+        """Check that every admitted route has real hash-pinned artifacts."""
+        receipts, error = self._verified_receipts()
+        return (not error or error == 'one file cannot serve as several observation kinds') and len(receipts) == len([
+            row for row in self._source_rows()
+            if row.get('combination_status') == 'verified-admitted'])
 
     def _check_a10_evidence(self) -> bool:
         """Check A10: evidence requirements declared."""
-        # A10 is declared but blocked on hardware/checkpoints
-        return True
+        receipts, error = self._verified_receipts()
+        if error:
+            return False
+        required_kinds = {'tokens', 'logits', 'cache', 'routing', 'recovery', 'comparison', 'placement'}
+        for _row, receipt in receipts:
+            observations = receipt.get('observations', [])
+            kinds = [item.get('kind') for item in observations if isinstance(item, dict)]
+            hashes = [item.get('sha256') for item in observations if isinstance(item, dict)]
+            if (not required_kinds.issubset(set(kinds)) or
+                    len(kinds) != len(set(kinds)) or len(hashes) != len(set(hashes))):
+                self._receipt_error = 'one file cannot serve as several observation kinds'
+                return False
+        return bool(receipts)
 
     def validate_all(self) -> Dict[str, Any]:
         """
@@ -1085,15 +1159,21 @@ class Phase1ValidatorComplete:
 
         phase1_closed = (passed_count == len(self.assertions))
 
+        assertions = {name: {
+            'passed': a.is_passed,
+            'description': a.description,
+            'error': a.error_message
+        } for name, a in self.assertions.items()}
+        if self._receipt_error:
+            for name in ('A09_observation_binding', 'A10_evidence_requirements'):
+                if name in assertions and not assertions[name]['passed']:
+                    assertions[name]['error'] = self._receipt_error
+
         return {
             'phase1_closed': phase1_closed,
             'checks_passed': passed_count,
             'total_checks': len(self.assertions),
-            'assertions': {name: {
-                'passed': a.is_passed,
-                'description': a.description,
-                'error': a.error_message
-            } for name, a in self.assertions.items()},
+            'assertions': assertions,
             'executed': False,  # No execution evidence on this host
             'numerical_parity_verified': False,  # Requires A10 run
             'platform_certified': False,  # Requires A10 run
@@ -1187,6 +1267,17 @@ def verify_phase1_closed() -> bool:
     validator = Phase1ValidatorComplete()
     result = validator.validate_all()
     return result.get('phase1_closed', False)
+
+
+# Keep the historical import path, but use the receipt-backed implementation
+# as the sole authority.  The expanded legacy classes above remain only for
+# import compatibility; these aliases prevent their presence-only checks and
+# mutation helpers from being called by current application code.
+from .integrated_closure import (  # noqa: E402
+    SourceScopeConverter as SourceScopeConverter,
+    P02NativeCPUConverter as P02NativeCPUConverter,
+    Phase1ValidatorComplete as Phase1ValidatorComplete,
+)
 
 
 if __name__ == '__main__':

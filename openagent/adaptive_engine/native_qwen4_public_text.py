@@ -66,7 +66,9 @@ class NativeQwen4PublicTextDecoder:
         except BaseException as error:
             try:self.close()
             except BaseException as cleanup:
-                error.cleanup=self.close;error.add_note('native Qwen4 public cleanup retained: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,self.close,cleanup,
+                    'native Qwen4 public cleanup retained: ')
             raise
 
     @property
@@ -226,13 +228,17 @@ class NativeQwen4PublicTextDecoder:
             except BaseException as error:
                 primary=error
                 try:self.execution.restore(receipt)
-                except BaseException as failure:error.add_note('native Qwen4 rollback failed: '+repr(failure))
+                except BaseException as failure:
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(error,'native Qwen4 rollback failed: '+failure_summary(failure))
                 raise
             finally:
                 try:self.execution.release_snapshot(receipt)
                 except BaseException as failure:
                     if primary is None:raise
-                    primary.add_note('native Qwen4 receipt cleanup retained: '+repr(failure))
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(primary,'native Qwen4 receipt cleanup retained: '+
+                        failure_summary(failure))
 
     @_exclusive
     def snapshot(self):

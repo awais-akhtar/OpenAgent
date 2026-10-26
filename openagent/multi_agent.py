@@ -200,10 +200,13 @@ class MultiAgentRuntime:
             if not job or cancel.is_set() or job["cancel_requested"]:
                 self._finish_cancelled(job_id)
                 return
+            project = str(job.get("project", "default"))
+            owner = str(job.get("owner", "local"))
             # Progress is a lifecycle milestone, not an estimate of model work.
             self._update_job(job_id, status="running", progress=10, current_step="Agent invocation started")
+            self.record_job_event(job_id, event_type="started", step="invocation", project=project, owner=owner)
             result = self.run_agent(
-                str(job["agent"]), str(job["goal"]), project=str(job["project"]), owner=str(job["owner"]),
+                str(job["agent"]), str(job["goal"]), project=project, owner=owner,
             )
             if cancel.is_set() or self._cancel_requested(job_id):
                 self._finish_cancelled(job_id)
@@ -211,6 +214,8 @@ class MultiAgentRuntime:
             if not self._update_job(job_id, status="running", progress=90, current_step="Agent response recorded"):
                 self._finish_cancelled(job_id)
                 return
+            self.record_job_event(job_id, event_type="result", step="response_recorded",
+                                  payload={"result_preview": str(result)[:200]}, project=project, owner=owner)
             now = utc_now()
             with self.store.session() as connection:
                 completed = connection.execute(
@@ -221,6 +226,8 @@ class MultiAgentRuntime:
                 ).rowcount
             if not completed:
                 self._finish_cancelled(job_id)
+            else:
+                self.record_job_event(job_id, event_type="completed", step="done", project=project, owner=owner)
         except Exception as exc:
             if cancel.is_set() or self._cancel_requested(job_id):
                 self._finish_cancelled(job_id)
@@ -232,6 +239,14 @@ class MultiAgentRuntime:
                        updated_at=?, completed_at=? WHERE id=?""",
                     (str(exc), now, now, job_id),
                 )
+            try:
+                job_meta = self.get_job(job_id)
+                self.record_job_event(job_id, event_type="failed", step="error",
+                                      payload={"error": str(exc)},
+                                      project=str(job_meta.get("project", "default")) if job_meta else "default",
+                                      owner=str(job_meta.get("owner", "local")) if job_meta else "local")
+            except Exception:
+                pass
         finally:
             with self._job_lock:
                 self._job_cancellations.pop(job_id, None)
@@ -254,6 +269,71 @@ class MultiAgentRuntime:
         with self.store.session() as connection:
             row = connection.execute(sql, params).fetchone()
         return agent_job_row(row) if row else None
+
+    def record_job_event(
+        self,
+        job_id: str,
+        *,
+        event_type: str,
+        step: str = "",
+        payload: dict[str, Any] | None = None,
+        project: str = "default",
+        owner: str = "local",
+    ) -> dict[str, Any]:
+        """Append a structured event to a job's event log."""
+        event_id = uuid4().hex
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_job_events (id, job_id, project, owner, event_type, step, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event_id, job_id, project or "default", owner or "local",
+                 str(event_type or "info"), str(step or ""), json.dumps(payload or {}), now),
+            )
+        return {"id": event_id, "job_id": job_id, "event_type": event_type, "step": step,
+                "payload": payload or {}, "created_at": now}
+
+    def job_events(
+        self,
+        job_id: str,
+        *,
+        owner: str,
+        after: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return events for a job with cursor-based pagination."""
+        job = self.get_job(job_id, owner=owner)
+        if not job:
+            raise KeyError("Agent job not found.")
+        limit = max(1, min(int(limit), 500))
+        with self.store.session() as connection:
+            if after:
+                rows = connection.execute(
+                    """SELECT * FROM agent_job_events WHERE job_id = ? AND created_at > (
+                        SELECT created_at FROM agent_job_events WHERE job_id = ? AND id = ?
+                    ) ORDER BY created_at ASC, rowid ASC LIMIT ?""",
+                    (job_id, job_id, after, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM agent_job_events WHERE job_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                    (job_id, limit),
+                ).fetchall()
+        events = [
+            {
+                "id": row["id"],
+                "job_id": row["job_id"],
+                "event_type": row["event_type"],
+                "step": row["step"],
+                "payload": json.loads(row["payload_json"] or "{}"),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+        next_cursor = events[-1]["id"] if len(events) == limit else ""
+        return {"events": events, "next": next_cursor, "job_id": job_id}
 
     def cancel_job(self, job_id: str, *, owner: str) -> dict[str, Any]:
         job = self.get_job(job_id, owner=owner)

@@ -25,6 +25,31 @@ class KernelSelectionTests(unittest.TestCase):
             self.assertEqual(main(["pack", "model"]), 0)
             self.assertEqual(pack.call_args.args[1:3], ("openagent-experts.i8", "openagent-experts.manifest.json"))
 
+    def test_float32_cli_default_paths_match_the_persisted_format(self):
+        from openagent.adaptive_engine.olmoe_cli import main
+
+        with patch("openagent.adaptive_engine.olmoe_cli._pack", return_value=0) as pack:
+            self.assertEqual(main(["pack", "model", "--dtype", "float32"]), 0)
+        self.assertEqual(pack.call_args.args[1:3],
+                         ("openagent-experts.f32", "openagent-experts.f32.manifest.json"))
+
+    def test_every_advertised_packed_dtype_has_default_artifact_paths(self):
+        import argparse
+        from openagent.adaptive_engine.olmoe_cli import main
+
+        root_parser = build_parser()
+        subparsers = next(action for action in root_parser._actions
+                          if isinstance(action, argparse._SubParsersAction))
+        pack_parser = subparsers.choices["pack"]
+        dtype_action = next(action for action in pack_parser._actions if action.dest == "dtype")
+        with patch("openagent.adaptive_engine.olmoe_cli._pack", return_value=0) as pack:
+            for dtype in dtype_action.choices:
+                with self.subTest(dtype=dtype):
+                    self.assertEqual(main(["pack", "model", "--dtype", dtype]), 0)
+                    output, manifest = pack.call_args.args[1:3]
+                    self.assertTrue(output)
+                    self.assertTrue(manifest)
+
     def test_thread_tuning_arguments_preserve_explicit_workload(self):
         args = build_parser().parse_args([
             "tune", "model", "manifest", "hello", "profile.json",

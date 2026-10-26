@@ -17,6 +17,7 @@ class ScienceRouteTests(unittest.TestCase):
         self.assertIn("/api/science/run", paths)
         self.assertIn("/api/science/tools", paths)
         self.assertIn("/api/science/experiments", paths)
+        self.assertIn("/api/science/executions", paths)
         self.assertIn("/api/science/execute", paths)
         self.assertIn("/api/science/memory", paths)
         self.assertIn("/api/science/materials/datasets", paths)
@@ -54,6 +55,39 @@ class ScienceRouteTests(unittest.TestCase):
             self.assertEqual(len(listed.payload["experiments"]), 1)
             self.assertEqual(listed.payload["experiments"][0]["execution_status"], "not_started")
             self.assertEqual(listed.payload["experiments"][0]["proposals"][0]["variables"]["material"], "A")
+
+    def test_approved_code_execution_is_saved_without_source_and_is_project_scoped(self) -> None:
+        with TemporaryDirectory() as temp:
+            service = ScientificService(OpenAgentStore(temp))
+            source = "print('local science result')"
+            deps = ScienceRouteDependencies(
+                agent=None, run_agent=None,
+                read_json=lambda: {"project": "lab", "code": source, "approved": True},
+                service=service,
+            )  # type: ignore[arg-type]
+            result = handle_post("/api/science/execute", deps)
+            self.assertEqual(result.status, 201)
+            execution = result.payload["execution"]
+            self.assertEqual(execution["status"], "completed")
+            self.assertEqual(execution["stdout"].strip(), "local science result")
+            self.assertNotIn("final_code", execution)
+
+            listed = handle_get("/api/science/executions", "project=lab", deps)
+            self.assertEqual(len(listed.payload["executions"]), 1)
+            self.assertEqual(listed.payload["executions"][0]["id"], execution["id"])
+            hidden = handle_get("/api/science/executions", "project=other", deps)
+            self.assertEqual(hidden.payload["executions"], [])
+
+    def test_science_execution_requires_explicit_approval(self) -> None:
+        with TemporaryDirectory() as temp:
+            deps = ScienceRouteDependencies(
+                agent=None, run_agent=None,
+                read_json=lambda: {"project": "lab", "code": "print('must not run')", "approved": False},
+                service=ScientificService(OpenAgentStore(temp)),
+            )  # type: ignore[arg-type]
+            result = handle_post("/api/science/execute", deps)
+            self.assertEqual(result.status, 403)
+            self.assertIn("explicit approval", result.payload["error"])
 
 
 if __name__ == "__main__":

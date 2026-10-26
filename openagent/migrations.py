@@ -710,6 +710,130 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(25, "index-agent-runs-by-project-owner", _statements(
         "CREATE INDEX IF NOT EXISTS idx_agent_runs_project_owner_created ON agent_runs(project, owner, created_at DESC);"
     )),
+    Migration(26, "persist-research-source-review-notes", _statements(
+        """
+        CREATE TABLE IF NOT EXISTS research_source_notes (
+            session_id TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(session_id, source_key),
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_source_notes_session_updated
+            ON research_source_notes(session_id, updated_at DESC);
+        """
+    )),
+    Migration(
+        27,
+        "bind-research-sessions-to-installation-owner",
+        (),
+        add_columns=(AddColumn("research_sessions", "owner TEXT NOT NULL DEFAULT ''"),),
+    ),
+    Migration(
+        28,
+        "add-agent-job-events-table",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS agent_job_events (
+                id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                project TEXT NOT NULL DEFAULT 'default',
+                owner TEXT NOT NULL DEFAULT 'local',
+                event_type TEXT NOT NULL,
+                step TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (job_id, id),
+                FOREIGN KEY (job_id) REFERENCES agent_execution_jobs(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_job_events_job_created
+                ON agent_job_events(job_id, created_at ASC);
+            """,
+        ),
+    ),
+    Migration(
+        29,
+        "add-voice-stream-sessions-table",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS voice_stream_sessions (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL DEFAULT 'default',
+                owner TEXT NOT NULL DEFAULT 'local',
+                voice_session_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open',
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                audio_format TEXT NOT NULL DEFAULT 'webm',
+                language TEXT NOT NULL DEFAULT 'en',
+                stt_engine TEXT NOT NULL DEFAULT '',
+                transcription TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_voice_stream_sessions_owner_created
+                ON voice_stream_sessions(owner, created_at DESC);
+            CREATE TABLE IF NOT EXISTS voice_stream_chunks (
+                id TEXT NOT NULL,
+                stream_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                audio_data BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (stream_id, sequence),
+                FOREIGN KEY (stream_id) REFERENCES voice_stream_sessions(id) ON DELETE CASCADE
+            );
+            """,
+        ),
+    ),
+    Migration(
+        30,
+        "add-workspace-items-archived-column",
+        (),
+        add_columns=(
+            AddColumn("workspace_items", "archived INTEGER NOT NULL DEFAULT 0"),
+            AddColumn("workspace_items", "archived_at TEXT NOT NULL DEFAULT ''"),
+        ),
+    ),
+    Migration(
+        31,
+        "add-finetune-checkpoints-table",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS finetune_checkpoints (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                project TEXT NOT NULL DEFAULT 'default',
+                step INTEGER NOT NULL DEFAULT 0,
+                epoch REAL NOT NULL DEFAULT 0.0,
+                train_loss REAL NOT NULL DEFAULT 0.0,
+                val_loss REAL NOT NULL DEFAULT 0.0,
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                adapter_path TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES finetune_jobs(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_finetune_checkpoints_job_step
+                ON finetune_checkpoints(job_id, step ASC);
+            """,
+        ),
+    ),
+    Migration(
+        32,
+        "add-vector-store-collection-owner",
+        (),
+        add_columns=(
+            AddColumn("vector_store_collections", "owner TEXT NOT NULL DEFAULT ''"),
+        ),
+    ),
+    Migration(
+        33,
+        "add-semantic-vector-collection-archive-state",
+        (),
+        add_columns=(
+            AddColumn("vector_collections", "archived INTEGER NOT NULL DEFAULT 0"),
+            AddColumn("vector_collections", "archived_at TEXT NOT NULL DEFAULT ''"),
+        ),
+    ),
 )
 
 
@@ -752,7 +876,7 @@ class MigrationRunner:
                         f"Migration {migration.version} is destructive and requires a verified backup before execution."
                     )
                 for statement in migration.statements:
-                    self.connection.execute(statement)
+                    self._execute_migration_script(statement)
                 for column in migration.add_columns:
                     if not self._column_exists(column.table, column.name):
                         self.connection.execute(column.canonical)
@@ -770,6 +894,26 @@ class MigrationRunner:
         except Exception:
             self.connection.rollback()
             raise
+
+    def _execute_migration_script(self, script: str) -> None:
+        """Execute every complete SQLite statement without breaking the outer transaction.
+
+        A few migrations are stored as a readable multi-statement SQL block.
+        ``Connection.executescript`` implicitly commits before executing and
+        would break the migration lock/atomicity guarantee, so split using
+        SQLite's own parser and execute each statement on the active transaction.
+        """
+        pending = ""
+        for character in script:
+            pending += character
+            if character == ";" and sqlite3.complete_statement(pending):
+                if pending.strip():
+                    self.connection.execute(pending)
+                pending = ""
+        if pending.strip():
+            if not sqlite3.complete_statement(pending + ";"):
+                raise MigrationError("A migration contains an incomplete SQLite statement.")
+            self.connection.execute(pending)
 
     def _validate_registry(self) -> None:
         versions = [migration.version for migration in self.migrations]

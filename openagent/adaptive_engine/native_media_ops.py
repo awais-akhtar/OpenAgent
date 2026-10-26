@@ -42,8 +42,9 @@ class NativeMediaOps:
         except BaseException as error:
             try:self.close()
             except BaseException as cleanup:
-                error.cleanup=self.close
-                error.add_note('native media library cleanup remains pending: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,self.close,cleanup,
+                    'native media library cleanup remains pending: ')
             raise
 
     def _call(self,name,*arguments):

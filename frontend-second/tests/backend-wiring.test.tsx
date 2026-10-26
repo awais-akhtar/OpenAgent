@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, cleanup, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HomeScreen, ChatScreen } from '../src/screens/HomeChat';
 import { AgentsScreen, AutomationsScreen, ModelsScreen } from '../src/screens/OperationsScreens';
@@ -16,9 +16,27 @@ function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.history.replaceState({}, '', '/'); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); window.history.replaceState({}, '', '/'); useWorkspaceState.getState().setDataMode('live'); });
 
 describe('backend connected screens', () => {
+  it('loads project-scoped task and goal activity on the Live Personal Assistant Today tab', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes('/api/assistant/tasks')) return json({ tasks: [] });
+      if (url.includes('/api/assistant/daily-brief')) return json({ project: 'default', priority_count: 0, recommended_focus: [], open_tasks: [], active_goals: [] });
+      if (url === '/api/assistant/activity?project=default&limit=20') return json({ events: [{ id: 'assistant-audit-1', action: 'assistant.task.create', project: 'default', created_at: '2026-10-25T09:00:00Z' }] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="assistant" />);
+
+    expect(await screen.findByText('assistant.task.create')).toBeVisible();
+    expect(requests).toContain('/api/assistant/activity?project=default&limit=20');
+    expect(requests.some(url => url.startsWith('/api/audit'))).toBe(false);
+  });
+
   it('uses checked agent execution, scoped access records, approvals and delegation contracts', async () => {
     const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
     let approvals: Array<Record<string, unknown>> = [];
@@ -112,6 +130,132 @@ describe('backend connected screens', () => {
     expect(requests.some(url => url.includes('/api/agent-runs'))).toBe(false);
   });
 
+  it('posts a selected Image Studio upscale to the backend global upscale route', async () => {
+    const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      let body: Record<string, unknown> = {};
+      try { body = JSON.parse(String(init?.body ?? '{}')); } catch { /* multipart upload is outside this test. */ }
+      requests.push({ url, method, body });
+      if (url.includes('/api/gallery/library')) return json({ assets: [{ id: 'image-1', filename: 'Source image' }] });
+      if (url.includes('/api/gallery/albums')) return json({ albums: [] });
+      if (url.endsWith('/api/gallery/upscale') && method === 'POST') return json({ asset: { id: 'image-1-upscaled' } }, 201);
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="gallery" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Source image/ }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Operations' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Upscale' }));
+
+    await waitFor(() => expect(requests.some(request => request.url === '/api/gallery/upscale' && request.method === 'POST')).toBe(true));
+    expect(requests.find(request => request.url === '/api/gallery/upscale')?.body).toMatchObject({ asset_id: 'image-1', project: 'default', scale: 2 });
+    expect(requests.some(request => request.url.includes('/api/gallery/image-1/upscale'))).toBe(false);
+  });
+
+  it('uploads Image Studio files using the backend JSON/base64 contract', async () => {
+    const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    let uploaded = false;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      let body: Record<string, unknown> = {};
+      try { body = JSON.parse(String(init?.body ?? '{}')); } catch { /* no request body */ }
+      requests.push({ url, method, body });
+      if (url.includes('/api/gallery/library')) return json({ assets: uploaded ? [{ id: 'uploaded-1', filename: 'sample.png' }] : [] });
+      if (url.includes('/api/gallery/albums')) return json({ albums: [] });
+      if (url.endsWith('/api/gallery/upload') && method === 'POST') { uploaded = true; return json({ asset: { id: 'uploaded-1', filename: body.filename } }, 201); }
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="gallery" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload' }));
+    const image = new File([new Uint8Array([137, 80, 78, 71])], 'sample.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Select image file'), { target: { files: [image] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload' }));
+
+    await waitFor(() => expect(requests.some(request => request.url === '/api/gallery/upload' && request.method === 'POST')).toBe(true));
+    expect(requests.find(request => request.url === '/api/gallery/upload')?.body).toMatchObject({
+      filename: 'sample.png', content_type: 'image/png', content_base64: 'iVBORw==', project: 'default',
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Library' }));
+    expect(await screen.findByRole('button', { name: /sample\.png/ })).toBeVisible();
+  });
+
+  it('persists Personal OS notes using the backend body field and renders returned notes', async () => {
+    const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    let notes: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      let body: Record<string, unknown> = {};
+      try { body = JSON.parse(String(init?.body ?? '{}')); } catch { /* no request body */ }
+      requests.push({ url, method, body });
+      if (url.includes('/api/personal-os/status')) return json({ status: 'ready', note_count: notes.length });
+      if (url.includes('/api/personal-os/presets')) return json({ presets: [] });
+      if (url.includes('/api/personal-os/notes') && method === 'GET') return json({ notes });
+      if (url.includes('/api/personal-os/notes') && method === 'POST') {
+        notes = [{ id: 'note-1', title: String(body.title), body: String(body.body) }];
+        return json({ note: notes[0] }, 201);
+      }
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="personalos" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Notes' }));
+    fireEvent.change(await screen.findByPlaceholderText('Write a note…'), { target: { value: 'Keep the weekly review concise.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save note' }));
+
+    expect(await screen.findByText('Keep the weekly review concise.')).toBeVisible();
+    expect(requests.find(request => request.url === '/api/personal-os/notes' && request.method === 'POST')?.body).toMatchObject({ title: 'Personal note', body: 'Keep the weekly review concise.', project: 'default' });
+  });
+
+  it('creates and closes a Model Cookbook serve plan with persisted session logs', async () => {
+    const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    let hosts: Array<Record<string, unknown>> = [];
+    let sessions: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      let body: Record<string, unknown> = {};
+      try { body = JSON.parse(String(init?.body ?? '{}')); } catch { /* no request body */ }
+      requests.push({ url, method, body });
+      if (url.includes('/api/model-cookbook/hosts') && method === 'GET') return json({ hosts });
+      if (url.includes('/api/model-cookbook/sessions')) return json({ sessions });
+      if (url.includes('/api/model-cookbook/hardware-fit')) return json({ recommended_bits: 4 });
+      if (url.includes('/api/model-cookbook/hosts') && method === 'POST') {
+        hosts = [{ id: 'host-1', label: String(body.label), address: String(body.address), host_type: body.host_type }];
+        return json({ host: hosts[0] }, 201);
+      }
+      if (url.endsWith('/api/model-cookbook/serve')) {
+        sessions = [{ id: 'session-1', host_id: String(body.host_id), model_ref: String(body.model_ref), runner: String(body.runner), status: 'planned', mode: 'plan' }];
+        return json({ session: sessions[0] }, 201);
+      }
+      if (url.endsWith('/api/model-cookbook/stop/session-1')) {
+        sessions = sessions.map(session => ({ ...session, status: 'stopped' }));
+        return json({ session: sessions[0] });
+      }
+      if (url.endsWith('/api/model-cookbook/logs/session-1')) return json({ logs: [{ id: 'log-1', message: 'Serve plan created' }] });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="cookbook" />);
+    fireEvent.change(screen.getByPlaceholderText('Host name'), { target: { value: 'Local host' } });
+    fireEvent.change(screen.getByPlaceholderText('Host address'), { target: { value: '127.0.0.1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect((await screen.findAllByText('Local host', { exact: true })).length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Model reference to serve' }), { target: { value: 'small-model' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create serve plan' }));
+    expect(await screen.findByText(/No process was launched/)).toBeVisible();
+    expect(requests.find(request => request.url.endsWith('/api/model-cookbook/hosts') && request.method === 'POST')?.body).toMatchObject({ label: 'Local host', address: '127.0.0.1', project: 'default' });
+    expect(requests.find(request => request.url.endsWith('/api/model-cookbook/serve'))?.body).toMatchObject({ host_id: 'host-1', model_ref: 'small-model', runner: 'ollama', allow_process: false });
+    fireEvent.click(await screen.findByRole('button', { name: 'Close plan' }));
+    await waitFor(() => expect(requests.some(request => request.url.endsWith('/api/model-cookbook/stop/session-1'))).toBe(true));
+    fireEvent.click(screen.getByRole('tab', { name: 'Logs' }));
+    expect(await screen.findByText('Serve plan created')).toBeVisible();
+  });
+
   it('filters calendar events with the selected backend calendar', async () => {
     const eventUrls: string[] = [];
     const freeSlotUrls: string[] = [];
@@ -129,7 +273,36 @@ describe('backend connected screens', () => {
     expect((await screen.findAllByText('Team planning')).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Find slots' }));
     expect(await screen.findByText(/backend suggested/)).toBeInTheDocument();
-    expect(freeSlotUrls.some(url => url.includes('duration=60'))).toBe(true);
+    expect(freeSlotUrls.some(url => url.includes('duration=60') && url.includes('calendar_id=team-calendar'))).toBe(true);
+  });
+
+  it('runs Calendar assistant suggestions against existing backend analysis endpoints without writing events', async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, method: String(init?.method ?? 'GET') });
+      if (url.includes('/api/calendar/calendars')) return json({ calendars: [{ id: 'personal', name: 'Personal' }] });
+      if (url.includes('/api/calendar/events')) return json({ events: [] });
+      if (url.includes('/api/calendar/free-slots')) return json({ slots: [{ starts_at: '2026-10-26T09:00:00Z', ends_at: '2026-10-26T10:00:00Z', duration_minutes: 60 }] });
+      if (url.includes('/api/calendar/optimize')) return json({ total_events: 3, total_scheduled_minutes: 180, conflicts: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderWithQuery(<CalendarScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Find time for a team sync' }));
+    expect(await screen.findByText(/Calendar backend found 1 available time/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Move a meeting to next week' }));
+    await waitFor(() => expect(requests.filter(request => request.url.includes('/api/calendar/free-slots'))).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Summarise my week' }));
+    expect(await screen.findByText(/Calendar backend reviewed 3 events and found 0 conflicts/)).toBeVisible();
+
+    const availabilityCalls = requests.filter(request => request.url.includes('/api/calendar/free-slots'));
+    expect(availabilityCalls).toHaveLength(2);
+    const firstRange = new URL(availabilityCalls[0].url, 'http://localhost');
+    const nextRange = new URL(availabilityCalls[1].url, 'http://localhost');
+    expect(Date.parse(nextRange.searchParams.get('from') ?? '') - Date.parse(firstRange.searchParams.get('from') ?? '')).toBe(7 * 86_400_000);
+    expect(requests.some(request => request.url.includes('/api/calendar/optimize'))).toBe(true);
+    expect(requests.some(request => request.url.includes('/api/calendar/events') && request.method === 'POST')).toBe(false);
   });
 
   it('loads providers and streams chat, persisting the backend-created conversation ID', async () => {
@@ -280,6 +453,48 @@ describe('backend connected screens', () => {
     expect(screen.getByText('Local test model')).toBeVisible();
   });
 
+  it('loads saved backend benchmark history without exposing prompts or generated text', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); calls.push(url);
+      if (url.endsWith('/api/models')) return json({ providers: [] });
+      if (url.endsWith('/api/local-ai/models')) return json({ models: [] });
+      if (url.endsWith('/api/local-ai/hardware')) return json({ cpu_count: 8, ram_gb: 16 });
+      if (url.endsWith('/api/model-policy')) return json({ routing_policy: 'local-first' });
+      if (url.endsWith('/api/local-ai/setup/status')) return json({});
+      if (url.endsWith('/api/local-ai/marketplace')) return json({ models: [] });
+      if (url.endsWith('/api/local-ai/adapters')) return json({ adapters: [] });
+      if (url.includes('/api/local-ai/jobs?')) return json({ jobs: [] });
+      if (url.includes('/api/local-ai/benchmarks?')) return json({ benchmarks: [{ id: 'benchmark-1', model_id: 'model-1', model: 'Local model', provider: 'local', prompt_tokens: 3, output_tokens: 9, duration_ms: 250, tokens_per_second: 36, created_at: '2026-10-24T10:00:00Z' }] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+    renderWithQuery(<ModelsScreen />);
+    fireEvent.click(screen.getByText('Provider setup'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Setup activity' }));
+    expect(await screen.findByText('Local model')).toBeInTheDocument();
+    expect(screen.getByText('250 ms')).toBeInTheDocument();
+    expect(screen.getByText('36 tokens/s')).toBeInTheDocument();
+    expect(screen.getByText('3 / 9')).toBeInTheDocument();
+    expect(screen.queryByText(/Hello OpenAgent|Synthetic private prompt|Synthetic generated output/i)).not.toBeInTheDocument();
+    expect(calls.some(url => url.includes('/api/local-ai/benchmarks?limit=50'))).toBe(true);
+  });
+
+  it('keeps benchmark history local and clearly unmeasured in Demo mode', async () => {
+    useWorkspaceState.getState().setDataMode('demo');
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); calls.push(url);
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+    renderWithQuery(<ModelsScreen />);
+    fireEvent.click(screen.getByText('Add provider'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Setup activity' }));
+    expect(await screen.findByRole('heading', { name: 'No measured benchmarks in Demo' })).toBeInTheDocument();
+    expect(calls.filter(url => url.includes('/api/'))).toEqual([]);
+    useWorkspaceState.getState().setDataMode('live');
+  });
+
   it('uses backend setup, registration, and confirmed removal contracts for local models', async () => {
     const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -333,6 +548,12 @@ describe('backend connected screens', () => {
     renderWithQuery(<KnowledgeScreen />);
     fireEvent.click(screen.getByRole('tab', { name: 'Collections' }));
     expect(await screen.findByText('Research')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Open collection Research' }));
+    const details = await screen.findByRole('dialog', { name: 'Research' });
+    expect(within(details).getByText('Vector collection details · backend data')).toBeVisible();
+    expect(within(details).getByText('64')).toBeVisible();
+    expect(calls.some(call => call.url.includes('/api/knowledge/documents/collection-1'))).toBe(false);
+    fireEvent.click(within(details).getByRole('button', { name: 'Close collection details' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Collection name' }), { target: { value: 'Project memory' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create collection' }));
     expect(await screen.findByText('Project memory')).toBeVisible();
@@ -354,14 +575,12 @@ describe('backend connected screens', () => {
     expect((await screen.findAllByText('Follow up')).length).toBeGreaterThan(0);
   });
 
-  it('searches and creates contacts through the scoped communications API', async () => {
-    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+  it('searches communication contacts through the project-scoped communications API', async () => {
     let contacts = [{ id: 'contact-1', name: 'Ada Lovelace', handles: { email: 'ada@example.org' } }];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); const method = init?.method ?? 'GET';
-      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined; calls.push({ url, method, body });
-      if (url.includes('/api/communication/contacts') && method === 'POST') { contacts = [...contacts, { id: 'contact-2', name: String(body?.name), handles: body?.handles as Record<string, string> }]; return json({ contact: contacts[1] }, 201); }
       if (url.includes('/api/communication/contacts')) return json({ contacts });
+      if (url.includes('/api/contacts')) return json({ contacts: [] });
       if (url.includes('/api/communication/inbox')) return json({ messages: [] });
       if (url.includes('/api/communication/connectors')) return json({ connectors: [] });
       return json({ error: `Unexpected request ${method} ${url}` }, 404);
@@ -369,13 +588,52 @@ describe('backend connected screens', () => {
     renderWithQuery(<AdvancedScreen route="communications" />);
     fireEvent.click(screen.getByRole('tab', { name: 'Contacts' }));
     expect(await screen.findByText('Ada Lovelace')).toBeVisible();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search contacts' }), { target: { value: 'Ada' } });
-    fireEvent.click(screen.getByText('Add contact'));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Grace Hopper' } });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Email' }), { target: { value: 'grace@example.org' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
-    expect(await screen.findByText('Saved by the backend.')).toBeVisible();
-    expect(calls.find(call => call.url.includes('/api/communication/contacts') && call.method === 'POST')?.body).toMatchObject({ name: 'Grace Hopper', handles: { email: 'grace@example.org' }, project: 'default' });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search communication contacts' }), { target: { value: 'Ada' } });
+    expect(screen.getByText('Ada Lovelace')).toBeVisible();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search communication contacts' }), { target: { value: 'not found' } });
+    expect(screen.queryByText('Ada Lovelace')).not.toBeInTheDocument();
+  });
+
+  it('performs CRM create, edit, delete and export using the backend handles contract', async () => {
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    let crm = [{ id: 'crm-1', project: 'default', name: 'Ada Lovelace', handles: { email: 'ada@example.org' }, notes: 'First programmer' }];
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:crm-export'), revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET');
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      calls.push({ url, method, body });
+      if (url.includes('/api/communication/contacts')) return json({ contacts: [] });
+      if (url.endsWith('/api/contacts/export')) return json({ project: 'default', count: crm.length, contacts: crm });
+      if (url.endsWith('/api/contacts') && method === 'GET') return json({ contacts: crm });
+      if (url.endsWith('/api/contacts') && method === 'POST') { const contact = { id: 'crm-2', project: 'default', ...body }; crm = [...crm, contact]; return json({ contact }, 201); }
+      if (url.endsWith('/api/contacts/crm-1') && method === 'PATCH') { crm = crm.map(contact => contact.id === 'crm-1' ? { ...contact, ...body } : contact); return json({ contact: crm[0] }); }
+      if (url.endsWith('/api/contacts/crm-1') && method === 'DELETE') { crm = crm.filter(contact => contact.id !== 'crm-1'); return json({ deleted: true, contact_id: 'crm-1' }); }
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="communications" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Contacts' }));
+    expect(await screen.findByText('Ada Lovelace')).toBeVisible();
+    expect(screen.getByText('ada@example.org')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByPlaceholderText('Email'), { target: { value: 'ada.new@example.org' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(calls.find(call => call.method === 'PATCH')?.body).toMatchObject({ handles: { email: 'ada.new@example.org' } }));
+
+    fireEvent.click(screen.getByText('Add CRM contact'));
+    const addForm = screen.getByText('Add CRM contact').closest('details') as HTMLElement;
+    fireEvent.change(within(addForm).getByLabelText('Name'), { target: { value: 'Grace Hopper' } });
+    fireEvent.change(within(addForm).getByLabelText('Email'), { target: { value: 'grace@example.org' } });
+    fireEvent.change(within(addForm).getByLabelText('Notes'), { target: { value: 'Compiler pioneer' } });
+    fireEvent.click(within(addForm).getByRole('button', { name: 'Save contact' }));
+    await waitFor(() => expect(calls.find(call => call.method === 'POST' && call.url.endsWith('/api/contacts'))?.body).toMatchObject({ name: 'Grace Hopper', handles: { email: 'grace@example.org' }, notes: 'Compiler pioneer', project: 'default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Export CRM' }));
+    await waitFor(() => expect(calls.some(call => call.method === 'GET' && call.url.endsWith('/api/contacts/export'))).toBe(true));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
+    await waitFor(() => expect(calls.some(call => call.method === 'DELETE' && call.url.endsWith('/api/contacts/crm-1'))).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Ada Lovelace')).not.toBeInTheDocument());
   });
 
   it('creates local communication calendar events using validated event times', async () => {
@@ -516,7 +774,7 @@ describe('backend connected screens', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search inbox messages' }), { target: { value: 'runbook' } });
     expect(screen.getAllByText('Release plan').length).toBeGreaterThan(0);
     fireEvent.change(screen.getByRole('textbox', { name: 'Search inbox messages' }), { target: { value: 'missing' } });
-    expect(screen.getByText('No messages match “missing”.')).toBeInTheDocument();
+    expect(screen.getByText('No messages match "missing".')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Compose message' }));
     expect(await screen.findByRole('tab', { name: 'Drafts' })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByRole('heading', { name: 'Create a draft' })).toBeInTheDocument();
@@ -656,6 +914,106 @@ describe('backend connected screens', () => {
     expect(writes.every(write => write.body.name === 'Retryable dataset')).toBe(true);
   });
 
+  it('cancels only a backend-reported queued Fine-tuning job', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    const writes: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/finetune/jobs/') && url.endsWith('/cancel') && init?.method === 'POST') {
+        writes.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
+        return json({ job: { id: 'queued-1', project: 'default', status: 'cancelled' } });
+      }
+      if (url.includes('/api/finetune/jobs')) return json({ jobs: [{ id: 'queued-1', project: 'default', status: 'queued', dataset_id: 'dataset-1', method: 'lora', base_model: 'qwen' }] });
+      if (url.includes('/api/finetune/datasets')) return json({ datasets: [{ id: 'dataset-1', name: 'Support', format: 'jsonl' }] });
+      if (url.includes('/api/finetune/status')) return json({ datasets: 1, jobs: 1, adapters: 0 });
+      if (url.includes('/api/finetune/adapters')) return json({ adapters: [] });
+      if (url.includes('/api/finetune/templates')) return json({ templates: [] });
+      if (url.includes('/api/local-ai/models')) return json({ models: [] });
+      if (url.includes('/api/local-ai/jobs')) return json({ jobs: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="finetune" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Jobs' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel queued job' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toMatchObject({ url: expect.stringContaining('/api/finetune/jobs/queued-1/cancel'), body: { project: 'default' } });
+    expect(await screen.findByText('The backend accepted the request. Check its returned state before assuming work has started.')).toBeVisible();
+  });
+
+  it('starts only queued Fine-tuning jobs, polls backend status and requests running-job cancellation', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    const writes: Array<{ url: string; body: Record<string, unknown> }> = [];
+    let statusReads = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/run-cpu') && init?.method === 'POST') { writes.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> }); return json({ started: true, job_id: 'queued-1' }, 202); }
+      if (url.endsWith('/cancel') && init?.method === 'POST') { writes.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> }); return json({ job: { id: 'queued-1', project: 'default', status: 'cancelling' } }, 202); }
+      if (url.includes('/stream-status')) { statusReads += 1; return json({ job_id: 'queued-1', status: statusReads < 2 ? 'running' : 'cancelled', progress: statusReads < 2 ? 0.25 : 0.25, current_loss: 1.2, checkpoints: [] }); }
+      if (url.includes('/api/finetune/jobs')) return json({ jobs: [
+        { id: 'queued-1', project: 'default', status: 'queued', dataset_id: 'dataset-1', method: 'lora', base_model: 'local-model' },
+        { id: 'running-2', project: 'default', status: 'running', dataset_id: 'dataset-1', method: 'lora', base_model: 'other-model' },
+      ] });
+      if (url.includes('/api/finetune/datasets')) return json({ datasets: [{ id: 'dataset-1', name: 'Support', format: 'jsonl' }] });
+      if (url.includes('/api/finetune/status')) return json({ datasets: 1, jobs: 2, adapters: 0 });
+      if (url.includes('/api/finetune/adapters')) return json({ adapters: [] });
+      if (url.includes('/api/finetune/templates')) return json({ templates: [] });
+      if (url.includes('/api/local-ai/models')) return json({ models: [] });
+      if (url.includes('/api/local-ai/jobs')) return json({ jobs: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="finetune" />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Jobs' }));
+    const jobSelect = await screen.findByLabelText('Job');
+    expect(within(jobSelect).getByRole('option', { name: /other-model \(running\)/ })).toBeInTheDocument();
+    fireEvent.change(jobSelect, { target: { value: 'running-2' } });
+    expect(screen.getByRole('button', { name: 'Start CPU fine-tune' })).toBeDisabled();
+    fireEvent.change(jobSelect, { target: { value: 'queued-1' } });
+    fireEvent.change(screen.getByLabelText('Model directory'), { target: { value: 'C:\\models\\synthetic-test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start CPU fine-tune' }));
+    await waitFor(() => expect(writes.some(write => write.url.endsWith('/queued-1/run-cpu'))).toBe(true));
+    expect(await screen.findByRole('button', { name: 'Cancel training' }, { timeout: 5000 })).toBeVisible();
+    expect(screen.getByText('Backend-reported progress')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel training' }));
+    await waitFor(() => expect(writes.some(write => write.url.endsWith('/queued-1/cancel'))).toBe(true));
+    expect(await screen.findByText('Job ended with status: cancelled', {}, { timeout: 6000 })).toBeVisible();
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: expect.stringContaining('/run-cpu'), body: { model_dir: 'C:\\models\\synthetic-test', project: 'default' } }),
+      expect.objectContaining({ url: expect.stringContaining('/cancel'), body: { project: 'default' } }),
+    ]));
+  });
+
+  it('runs approved Scientific AI code and displays persisted real output in Reports', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    let submitted: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/science/execute') && init?.method === 'POST') {
+        submitted = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({ execution: { id: 'science-run-1', status: 'completed', returncode: 0, elapsed_ms: 12, attempts: 1, peak_memory_bytes: 1024, stdout: 'local science result\\n', stderr: '', code_sha256: 'abc123' } }, 201);
+      }
+      if (url.includes('/api/science/executions')) return json({ executions: submitted ? [{ id: 'science-run-1', status: 'completed', returncode: 0, elapsed_ms: 12, attempts: 1, stdout: 'local science result\\n', stderr: '', code_sha256: 'abc123' }] : [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="science" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Reports' }));
+    const source = await screen.findByLabelText('Python source');
+    const runButton = await screen.findByRole('button', { name: 'Run approved code' });
+    expect(runButton).toBeDisabled();
+    fireEvent.change(source, { target: { value: "print('local science result')" } });
+    fireEvent.click(screen.getByLabelText(/I reviewed this Python source/));
+    fireEvent.click(runButton);
+    await waitFor(() => expect(submitted).toMatchObject({ project: 'default', approved: true, timeout_seconds: 10, memory_limit_mb: 512 }));
+    expect(submitted?.code).toBe("print('local science result')");
+    const reportSection = (await screen.findByText('Recorded scientific executions')).closest('section');
+    expect(reportSection).toBeVisible();
+    expect(reportSection?.querySelector('pre')).toHaveTextContent('local science result');
+  });
+
   it('loads persisted science proposals with their honest execution state', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -673,7 +1031,7 @@ describe('backend connected screens', () => {
     useWorkspaceState.getState().setDataMode('live');
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/twin/sources')) return json({ sources: [{ id: 'source-1', kind: 'research', topics: ['materials', 'planning'], content: 'private original prompt', context: { local_path: 'private/path' }, created_at: '2026-10-14T08:00:00Z' }] });
+      if (url.includes('/api/twin/sources')) return json({ sources: [{ id: 'source-1', kind: 'research', topics: ['materials', 'planning'], preference_signals: [{ category: 'topic', key: 'materials', value: 'materials', relationship: 'topic signal supplied to the preference learner' }], content: 'private original prompt', context: { local_path: 'private/path' }, created_at: '2026-10-14T08:00:00Z' }] });
       return json({ error: `Unexpected request ${url}` }, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -682,6 +1040,8 @@ describe('backend connected screens', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/twin/sources'), expect.anything()));
     await waitFor(() => expect(screen.getByText('research')).toBeVisible());
     await waitFor(() => expect(screen.getByText(/Topics: materials, planning/)).toBeVisible());
+    await waitFor(() => expect(screen.getByText('Inferred preference signals:')).toBeVisible());
+    expect(screen.getByText('Inferred preference signals:').closest('p')).toHaveTextContent('materials');
     expect(screen.queryByText(/private original prompt|private\/path/)).not.toBeInTheDocument();
   });
 
@@ -744,7 +1104,7 @@ describe('backend connected screens', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); let body: Record<string, unknown> = {}; try { body = JSON.parse(String(init?.body ?? '{}')); } catch { /* GET */ }
       if (init?.method === 'POST') calls.push({ url, body });
-      if (url.includes('/api/scraper/jobs')) return json({ jobs: [{ id: 'job-1', label: 'Docs refresh', url: 'https://docs.example.test', allow_external: true }] });
+      if (url.includes('/api/scraper/jobs')) return json({ jobs: [{ id: 'job-1', label: 'Docs refresh', url: 'https://docs.example.test', allow_external: true, status: 'scheduled' }] });
       if (url.includes('/api/scraper/status')) return json({ status: 'ready' });
       if (url.endsWith('/api/scraper/run-due')) return json({ processed: 1, results: [{ status: 'completed' }] });
       return json({ error: `Unexpected request ${url}` }, 404);
@@ -763,6 +1123,63 @@ describe('backend connected screens', () => {
     expect(calls.find(call => call.url.endsWith('/api/scraper/run-due'))?.body).toEqual({ project: 'default' });
   });
 
+  it('cancels a pending Live scraper schedule and retains its history row', async () => {
+    let cancelled = false;
+    const calls: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+    const confirmAction = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      let body: Record<string, unknown> = {};
+      try { body = JSON.parse(String(init?.body ?? '{}')); } catch { /* response is not JSON */ }
+      calls.push({ url, method, body });
+      if (url.includes('/api/scraper/jobs/') && url.endsWith('/cancel') && method === 'POST') {
+        cancelled = true;
+        return json({ cancelled: true, job: { id: 'job-1', status: 'cancelled' } });
+      }
+      if (url.includes('/api/scraper/jobs')) return json({ jobs: [{ id: 'job-1', url: 'https://docs.example.test', interval_hours: 24, status: cancelled ? 'cancelled' : 'scheduled', metadata: { label: 'Docs refresh', external_approved: false } }] });
+      if (url.includes('/api/scraper/status')) return json({ status: 'ready' });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="scraper" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Jobs' }));
+    const cancel = await screen.findByRole('button', { name: 'Cancel scheduled extraction for Docs refresh' });
+    fireEvent.click(cancel);
+
+    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/api/scraper/jobs/job-1/cancel'))).toBe(true));
+    expect(confirmAction).toHaveBeenCalledWith(expect.stringContaining('Cancel the recurring extraction'));
+    expect(calls.find(call => call.method === 'POST' && call.url.endsWith('/api/scraper/jobs/job-1/cancel'))?.body).toEqual({ project: 'default' });
+    expect(await screen.findByText('Schedule cancelled. The saved job history has been retained.')).toBeVisible();
+    expect(await screen.findByText('cancelled')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Cancel scheduled extraction for Docs refresh' })).not.toBeInTheDocument();
+  });
+
+  it('reports a due-job claim race as running instead of claiming cancellation succeeded', async () => {
+    let running = false;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET');
+      if (url.includes('/api/scraper/jobs/') && url.endsWith('/cancel') && method === 'POST') {
+        running = true;
+        return json({ cancelled: false, job: { id: 'job-race', status: 'running' } });
+      }
+      if (url.includes('/api/scraper/jobs')) return json({ jobs: [{ id: 'job-race', url: 'https://docs.example.test', interval_hours: 24, status: running ? 'running' : 'scheduled', metadata: { label: 'Claimed Docs Refresh', external_approved: true } }] });
+      if (url.includes('/api/scraper/status')) return json({ status: 'ready' });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+
+    renderWithQuery(<AdvancedScreen route="scraper" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Jobs' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel scheduled extraction for Claimed Docs Refresh' }));
+
+    expect(await screen.findByText('This job is already running. Its current request was not interrupted.')).toBeVisible();
+    expect(screen.getByText('running')).toBeVisible();
+    expect(screen.queryByText(/Schedule cancelled/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel scheduled extraction for Claimed Docs Refresh' })).not.toBeInTheDocument();
+  });
+
   it('creates external access review requests and confirms pending decisions through the security service', async () => {
     const calls: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal('confirm', vi.fn(() => true));
@@ -775,6 +1192,7 @@ describe('backend connected screens', () => {
       if (url.includes('/api/security/status')) return json({ status: 'ok' });
       if (url.includes('/api/security/shares')) return json({ grants: [] });
       if (url.includes('/api/security/egress') && method === 'GET') return json({ requests: [{ id: 'egress-1', destination: 'files.example.test', purpose: 'Upload a user-selected report', resource_type: 'document', status: 'pending' }] });
+      if (url.includes('/api/audit') && method === 'GET') return json({ events: [{ id: 'audit-default-1', actor: 'owner', action: 'secret.reveal', resource: 'vault-entry', project: 'default', status: 'success', created_at: '2026-10-24T20:00:00Z', metadata: { secret_value: 'must-not-render' } }] });
       if (url.endsWith('/api/security/egress/request') && method === 'POST') return json({ request: { id: 'egress-2', status: 'pending' } }, 201);
       if (url.endsWith('/api/security/egress/resolve') && method === 'POST') return json({ request: { id: 'egress-1', status: body.approved ? 'approved' : 'denied' } });
       if (url.endsWith('/api/security/audit-chain/verify') && method === 'POST') return json({ ok: true, verified_events: 12 });
@@ -800,10 +1218,11 @@ describe('backend connected screens', () => {
     expect(calls.find((call) => call.url.endsWith('/api/security/egress/resolve'))?.body).toMatchObject({ request_id: 'egress-1', approved: true, approved_by: 'user' });
 
     fireEvent.click(screen.getByRole('tab', { name: 'Audit' }));
-    expect(await screen.findByText(/existing audit endpoint requires the/i)).toBeVisible();
+    expect(await screen.findByText('secret.reveal')).toBeVisible();
     expect(screen.getByText("security:admin")).toBeVisible();
-    expect(screen.getByText(/can return events across projects when no project filter is supplied/i)).toBeVisible();
-    expect(calls.some((call) => call.url.startsWith('/api/audit'))).toBe(false);
+    expect(screen.getByText(/read-only events for project/i)).toBeVisible();
+    expect(screen.queryByText('must-not-render')).toBeNull();
+    expect(calls.some((call) => call.url === '/api/audit?project=default&limit=100' && call.method === 'GET')).toBe(true);
     fireEvent.click(await screen.findByRole('button', { name: 'Verify chain' }));
     await waitFor(() => expect(calls.some((call) => call.url.endsWith('/api/security/audit-chain/verify') && call.method === 'POST')).toBe(true));
     expect(await screen.findByText('Audit-chain verification completed.')).toBeVisible();

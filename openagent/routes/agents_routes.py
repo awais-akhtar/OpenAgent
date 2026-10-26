@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any, Callable
 from urllib.parse import parse_qs
 
 from ..multi_agent import ApprovalRequired, PermissionDenied
-from . import JsonRouteResult
+from . import JsonRouteResult, StreamRouteResult
 from ._contracts import route_contract
 
 ROUTE_GROUP = "agents"
@@ -17,6 +18,8 @@ ROUTES = (
     ("GET", "/api/agent-runs"),
     ("GET", "/api/agents/jobs"),
     ("GET", "/api/agents/jobs/{id}"),
+    ("GET", "/api/agents/jobs/{id}/events"),
+    ("GET", "/api/agents/jobs/{id}/events/stream"),
     ("POST", "/api/agents/run"),
     ("POST", "/api/agents/run-checked"),
     ("POST", "/api/agents/jobs"),
@@ -96,7 +99,41 @@ def handle_get(path: str, query: str, deps: AgentRouteDependencies) -> JsonRoute
             except (TypeError, ValueError):
                 limit = 50
             return JsonRouteResult({"jobs": deps.multi_agent.jobs(project=project, owner=deps.owner, limit=limit)})
-        job_id = path.removeprefix("/api/agents/jobs/").strip("/")
+        remainder = path.removeprefix("/api/agents/jobs/").strip("/")
+        if remainder.endswith("/events/stream"):
+            job_id = remainder.removesuffix("/events/stream").strip("/")
+            if not job_id or "/" in job_id:
+                return JsonRouteResult({"error": "job id is required."}, HTTPStatus.BAD_REQUEST)
+            try:
+                # Support cursor-based reconnection with ?after=<cursor> parameter
+                after = (deps.first(params, "after") or "").strip()
+                events = deps.multi_agent.job_events(job_id, owner=deps.owner, after=after, limit=1000)
+                def stream_events():
+                    yield "data: " + json.dumps({"event": "stream_started", "job_id": job_id, "cursor": after}) + "\n\n"
+                    for evt in events.get("events", []):
+                        yield "data: " + json.dumps(evt) + "\n\n"
+                    # Include final cursor for reconnection
+                    last_event_id = events.get("cursor") if events.get("cursor") else ""
+                    yield "data: " + json.dumps({"event": "stream_ended", "job_id": job_id, "next_cursor": last_event_id}) + "\n\n"
+                from . import StreamRouteResult
+                return StreamRouteResult(stream_events(), "text/event-stream")
+            except KeyError as exc:
+                return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        if remainder.endswith("/events"):
+            job_id = remainder.removesuffix("/events").strip("/")
+            if not job_id or "/" in job_id:
+                return JsonRouteResult({"error": "job id is required."}, HTTPStatus.BAD_REQUEST)
+            after = (deps.first(params, "after") or "").strip()
+            limit_raw = deps.first(params, "limit")
+            try:
+                limit = int(limit_raw) if limit_raw is not None else 100
+            except (TypeError, ValueError):
+                limit = 100
+            try:
+                return JsonRouteResult(deps.multi_agent.job_events(job_id, owner=deps.owner, after=after, limit=limit))
+            except KeyError as exc:
+                return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        job_id = remainder
         job = deps.multi_agent.get_job(job_id, owner=deps.owner)
         return JsonRouteResult({"job": job} if job else {"error": "Agent job not found."}, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND)
     if path == "/api/agents/marketplace":

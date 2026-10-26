@@ -51,6 +51,7 @@ class PersonalRemoteConfigTests(unittest.TestCase):
     def test_every_declared_private_route_has_an_explicit_scope(self) -> None:
         public = {
             ("GET", "/api/health"),
+            ("GET", "/health"),
             ("POST", "/api/auth/login"),
             ("POST", "/api/auth/refresh"),
             ("POST", "/api/auth/register"),

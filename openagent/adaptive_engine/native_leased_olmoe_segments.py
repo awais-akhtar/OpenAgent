@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -382,12 +383,14 @@ class NativeLeasedOlmoeSegmentSession(NativeOlmoeSegmentSession):
             ids.ctypes.data,weights.ctypes.data,ids.size,keys.ctypes.data,values.ctypes.data,
             keys.size,position,engine.max_bytes))
         accumulator = np.zeros_like(x)
+        layer_id = f"model.layers.{engine.begin+index}"
+        source = engine._source_layers[index] if hasattr(engine,"_source_layers") else engine
+        started = time.perf_counter()
         # Group order follows first occurrence in the native route table. Only
         # selection/lease coordination happens here; weighting is performed in C.
+        # Each distinct expert is leased once for every row (batch-union).
         for expert in dict.fromkeys(map(int,ids.flat)):
             _cancel(cancelled)
-            layer_id = f"model.layers.{engine.begin+index}"
-            source = engine._source_layers[index] if hasattr(engine,"_source_layers") else engine
             region = source.manifest.layers[engine.begin+index].regions[str(expert)]
             key = source._loader.experts.key(layer_id,str(expert))
             with source._loader.experts.store.acquire(key) as payload:
@@ -405,6 +408,11 @@ class NativeLeasedOlmoeSegmentSession(NativeOlmoeSegmentSession):
                     C.c_char_p(packed),len(packed),_tensor(accumulator),updated.ctypes.data,x.size,engine.max_bytes))
                 accumulator = updated
             del packed
+        # Feed the exact native selections back to the runtime: route learning,
+        # bounded lookahead read-ahead and batch-union counters.
+        source._loader.experts.record_external_routes(
+            layer_id, [[str(expert) for expert in row] for row in ids.tolist()],
+            elapsed=time.perf_counter()-started)
         out = np.empty_like(x)
         executor._check(executor._residual(_tensor(residual),_tensor(accumulator),
             out.ctypes.data,out.size,engine.max_bytes))

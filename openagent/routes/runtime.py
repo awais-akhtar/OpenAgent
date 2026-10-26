@@ -76,15 +76,30 @@ from ..tools.runtime import ToolRuntime, register_safe_terminal
 from . import ServerSentEvent, StreamRouteResult
 from .agent_bridge_routes import AgentBridgeRouteDependencies, handle_get as handle_agent_bridge_get, handle_post as handle_agent_bridge_post
 from .agents_routes import AgentRouteDependencies, handle_get as handle_agents_get, handle_post as handle_agents_post
-from .assistant_routes import AssistantRouteDependencies, handle_get as handle_assistant_get, handle_post as handle_assistant_post
+from .assistant_routes import (
+    AssistantRouteDependencies,
+    handle_delete as handle_assistant_delete,
+    handle_get as handle_assistant_get,
+    handle_patch as handle_assistant_patch,
+    handle_post as handle_assistant_post,
+)
 from .advanced_rag_routes import AdvancedRAGRouteDependencies, handle_get as handle_advanced_rag_get, handle_post as handle_advanced_rag_post
 from .adaptive_engine_routes import AdaptiveEngineRouteDependencies, handle_get as handle_adaptive_engine_get, handle_post as handle_adaptive_engine_post
 from .auth_routes import AuthRouteDependencies, handle_delete as handle_auth_delete, handle_get as handle_auth_get, handle_post as handle_auth_post
 from .backup_routes import BackupRouteDependencies, handle_get as handle_backup_get, handle_post as handle_backup_post
-from .calendar_routes import CalendarRouteDependencies, handle_get as handle_calendar_get, handle_post as handle_calendar_post
+from .integrations_routes import IntegrationsRouteDependencies, handle_get as handle_integrations_get, handle_post as handle_integrations_post
+from .calendar_routes import (
+    CalendarRouteDependencies,
+    handle_delete as handle_calendar_delete,
+    handle_get as handle_calendar_get,
+    handle_patch as handle_calendar_patch,
+    handle_post as handle_calendar_post,
+)
+from .production_routes import ProductionRouteDependencies, handle_get as handle_production_get, handle_post as handle_production_post
+from .enterprise_routes import EnterpriseRouteDependencies, handle_get as handle_enterprise_get, handle_post as handle_enterprise_post
 from .chat_routes import ChatRouteDependencies, handle_get as handle_chat_get, handle_post as handle_chat_post
 from .codebase_routes import CodebaseRouteDependencies, handle_get as handle_codebase_get, handle_post as handle_codebase_post
-from .communication_routes import CommunicationRouteDependencies, handle_get as handle_communication_get, handle_post as handle_communication_post
+from .communication_routes import CommunicationRouteDependencies, handle_delete as handle_communication_delete, handle_get as handle_communication_get, handle_post as handle_communication_post
 from .conversation_routes import ConversationRouteDependencies, handle_delete as handle_conversation_delete, handle_get as handle_conversation_get, handle_patch as handle_conversation_patch, handle_post as handle_conversation_post
 from .contacts_routes import ContactsRouteDependencies, handle_delete as handle_contacts_delete, handle_get as handle_contacts_get, handle_patch as handle_contacts_patch, handle_post as handle_contacts_post
 from .compute_routes import ComputeRouteDependencies, handle_get as handle_compute_get, handle_post as handle_compute_post
@@ -93,29 +108,32 @@ from .document_processing_routes import DocumentProcessingRouteDependencies, han
 from .developer_routes import DeveloperRouteDependencies, handle_get as handle_developer_get, handle_post as handle_developer_post
 from .draft_routes import DraftRouteDependencies, handle_delete as handle_draft_delete, handle_get as handle_draft_get, handle_post as handle_draft_post, handle_put as handle_draft_put
 from .finetune_routes import FineTuneRouteDependencies, handle_get as handle_finetune_get, handle_post as handle_finetune_post
+from .local_ai_routes import LocalAiRouteDependencies, handle_get as handle_local_ai_get, handle_post as handle_local_ai_post
 from .handlers import handler_specs
 from .health_routes import HealthRouteDependencies, handle_get as handle_health_get
 from .image_studio_routes import ImageStudioRouteDependencies, handle_get as handle_image_studio_get, handle_post as handle_image_studio_post
 from .identity_routes import IdentityRouteDependencies, handle_delete as handle_identity_delete, handle_get as handle_identity_get, handle_post as handle_identity_post
 from .inference_routes import InferenceRouteDependencies, handle_get as handle_inference_get, handle_post as handle_inference_post
-from .knowledge_routes import KnowledgeRouteDependencies, handle_get as handle_knowledge_get, handle_post as handle_knowledge_post
+from .knowledge_routes import KnowledgeRouteDependencies, handle_delete as handle_knowledge_delete, handle_get as handle_knowledge_get, handle_post as handle_knowledge_post, handle_put as handle_knowledge_put
 from .mcp_runtime_routes import MCPRuntimeRouteDependencies, handle_get as handle_mcp_runtime_get, handle_patch as handle_mcp_runtime_patch, handle_post as handle_mcp_runtime_post
-from .media_routes import MediaRouteDependencies, ResponseAlreadySent, handle_get as handle_media_get, handle_post as handle_media_post
+from .media_routes import MediaContentRouteResult, MediaRouteDependencies, ResponseAlreadySent, handle_delete as handle_media_delete, handle_get as handle_media_get, handle_post as handle_media_post
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
+from .personal_os_routes import PersonalOSRouteDependencies, handle_get as handle_personal_os_get, handle_post as handle_personal_os_post
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
+from .research_routes import ResearchRouteDependencies, handle_get as handle_research_get, handle_post as handle_research_post
 from .scraper_routes import ScraperRouteDependencies, handle_get as handle_scraper_get, handle_post as handle_scraper_post
 from .security_routes import SecurityRouteDependencies, handle_get as handle_security_get, handle_post as handle_security_post
-from .semantic_routes import SemanticRouteDependencies, handle_get as handle_semantic_get, handle_post as handle_semantic_post
+from .semantic_routes import SemanticRouteDependencies, handle_delete as handle_semantic_delete, handle_get as handle_semantic_get, handle_post as handle_semantic_post
 from .skill_routes import SkillRouteDependencies, handle_get as handle_skill_get, handle_post as handle_skill_post
-from .terminal_routes import TerminalRouteDependencies, handle_get as handle_terminal_get, handle_post as handle_terminal_post
+from .terminal_routes import TerminalRouteDependencies, handle_delete as handle_terminal_delete, handle_get as handle_terminal_get, handle_post as handle_terminal_post
 from .tool_runtime_routes import ToolRuntimeRouteDependencies, handle_get as handle_tool_runtime_get, handle_post as handle_tool_runtime_post
 from .twin_routes import TwinRouteDependencies, handle_get as handle_twin_get, handle_post as handle_twin_post
 from .ultra_model_routes import UltraModelRouteDependencies, handle_get as handle_ultra_model_get, handle_post as handle_ultra_model_post
 from .vault_routes import VaultRouteDependencies, handle_get as handle_vault_get, handle_post as handle_vault_post
 from .vector_routes import VectorRouteDependencies, handle_get as handle_vector_get, handle_post as handle_vector_post
 from .worker_routes import WorkerRouteDependencies, handle_get as handle_worker_get, handle_post as handle_worker_post
-from .workspace_routes import WorkspaceRouteDependencies, handle_get as handle_workspace_get, handle_post as handle_workspace_post
+from .workspace_routes import WorkspaceRouteDependencies, handle_delete as handle_workspace_delete, handle_get as handle_workspace_get, handle_post as handle_workspace_post
 from .workflows_routes import WorkflowRouteDependencies, handle_delete as handle_workflows_delete, handle_get as handle_workflows_get, handle_post as handle_workflows_post, handle_put as handle_workflows_put
 from ..scraper import WebScraper
 from ..security_privacy import SecurityPrivacyError, SecurityPrivacyManager
@@ -146,6 +164,16 @@ class RequestRejected(ValueError):
         self.status = status
 
 
+class _RequestCancellationSignal:
+    """Callable request predicate with a thread-safe worker-visible event."""
+
+    def __init__(self, event: threading.Event) -> None:
+        self.worker_event = event
+
+    def __call__(self) -> bool:
+        return self.worker_event.is_set()
+
+
 class _RequestDisconnectWatcher:
     """Cooperatively signal inference cancellation when its HTTP peer closes.
 
@@ -157,6 +185,7 @@ class _RequestDisconnectWatcher:
     def __init__(self, connection) -> None:
         self._connection = connection
         self._cancelled = threading.Event()
+        self.cancellation_signal = _RequestCancellationSignal(self._cancelled)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._watch, name="inference-disconnect", daemon=True)
 
@@ -436,6 +465,7 @@ def build_http_server(
     vault = EncryptedVault(store)
     backup_restore = BackupRestoreManager(store)
     scraper = WebScraper(store)
+    scraper.recover_interrupted_schedules()
     scientific_agent = ScientificAgent(context, gateway=gateway)
     scientific_service = ScientificService(store)
     fine_tuning = FineTuningManager(store)
@@ -758,10 +788,18 @@ def build_http_server(
             headers=handler.headers,
             read_body=handler.rfile.read,
             upload_limit_bytes=settings.upload_limit_bytes,
+            auth_scope_owner=handler._auth_scope_owner,
         )
 
     def finetune_route_dependencies(read_json) -> FineTuneRouteDependencies:
         return FineTuneRouteDependencies(fine_tuning=fine_tuning, read_json=read_json)
+
+    _local_ai_runtime_settings: dict = {"cpu_threads": 0, "memory_limit_mb": 0, "ollama_url": "http://localhost:11434"}
+
+    def local_ai_route_dependencies(read_json) -> LocalAiRouteDependencies:
+        deps = LocalAiRouteDependencies(local_ai=local_ai, read_json=read_json)
+        object.__setattr__(deps, "_runtime_settings", _local_ai_runtime_settings)
+        return deps
 
     def scraper_route_dependencies(read_json) -> ScraperRouteDependencies:
         return ScraperRouteDependencies(scraper=scraper, first=first, parse_bool=parse_bool, read_json=read_json)
@@ -789,6 +827,7 @@ def build_http_server(
             read_json=handler.read_json,
             handle_voice_upload=handler._handle_voice_upload,
             personal_remote=settings.deployment_mode == "personal_remote",
+            auth_scope_owner=handler._auth_scope_owner,
         )
 
     def workflow_route_dependencies(handler) -> WorkflowRouteDependencies:
@@ -921,7 +960,14 @@ def build_http_server(
             read_json=read_json,
         )
 
-    def chat_route_dependencies(read_json) -> ChatRouteDependencies:
+    def chat_route_dependencies(read_json, cancelled=None, disconnect_watcher=None, auth_scope_owner=None) -> ChatRouteDependencies:
+        def read_chat_json():
+            payload = read_json()
+            # Start only after the body is consumed: the watcher peeks at the
+            # socket and must not mistake unread request bytes for a disconnect.
+            if disconnect_watcher is not None:
+                disconnect_watcher.start()
+            return payload
         return ChatRouteDependencies(
             store=store,
             chat=chat,
@@ -929,7 +975,9 @@ def build_http_server(
             first=first,
             parse_bool=parse_bool,
             parse_int=parse_int,
-            read_json=read_json,
+            read_json=read_chat_json if disconnect_watcher is not None else read_json,
+            cancelled=cancelled,
+            auth_scope_owner=auth_scope_owner,
         )
 
     def conversation_route_dependencies(read_json, query_owner, payload_owner) -> ConversationRouteDependencies:
@@ -1192,6 +1240,10 @@ def build_http_server(
             if finetune_route is not None:
                 self.send_json(finetune_route.payload, status=finetune_route.status)
                 return
+            local_ai_route = handle_local_ai_get(parsed.path, parsed.query, local_ai_route_dependencies(self.read_json))
+            if local_ai_route is not None:
+                self.send_json(local_ai_route.payload, status=local_ai_route.status)
+                return
             scraper_route = handle_scraper_get(parsed.path, parsed.query, scraper_route_dependencies(self.read_json))
             if scraper_route is not None:
                 self.send_json(scraper_route.payload, status=scraper_route.status)
@@ -1201,6 +1253,9 @@ def build_http_server(
                 self.send_json(draft_route.payload, status=draft_route.status)
                 return
             media_route = handle_media_get(parsed.path, parsed.query, media_route_dependencies(self))
+            if isinstance(media_route, MediaContentRouteResult):
+                self.send_media_content(media_route.body, content_type=media_route.content_type)
+                return
             if media_route is not None:
                 self.send_json(media_route.payload, status=media_route.status)
                 return
@@ -1228,7 +1283,7 @@ def build_http_server(
             if security_route is not None:
                 self.send_json(security_route.payload, status=security_route.status)
                 return
-            chat_route = handle_chat_get(parsed.path, parsed.query, chat_route_dependencies(self.read_json))
+            chat_route = handle_chat_get(parsed.path, parsed.query, chat_route_dependencies(self.read_json, auth_scope_owner=self._auth_scope_owner))
             if chat_route is not None:
                 self.send_json(chat_route.payload, status=chat_route.status)
                 return
@@ -1411,6 +1466,23 @@ def build_http_server(
             if communication_route is not None:
                 self.send_json(communication_route.payload, status=communication_route.status)
                 return
+            enterprise_route = handle_enterprise_get(
+                parsed.path,
+                parsed.query,
+                EnterpriseRouteDependencies(
+                    enterprise=enterprise,
+                    enterprise_identity=enterprise_identity,
+                    auth=auth,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    bearer_token=lambda: "",
+                    first=first,
+                    parse_qs_param=first,
+                ),
+            )
+            if enterprise_route is not None:
+                self.send_json(enterprise_route.payload, status=enterprise_route.status)
+                return
             calendar_route = handle_calendar_get(
                 parsed.path,
                 parsed.query,
@@ -1428,6 +1500,40 @@ def build_http_server(
             )
             if calendar_route is not None:
                 self.send_json(calendar_route.payload, status=calendar_route.status)
+                return
+            production_route = handle_production_get(
+                parsed.path,
+                parsed.query,
+                ProductionRouteDependencies(
+                    production=production,
+                    crypto=None,
+                    vector_store=vector_store,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    first=first,
+                    parse_qs_param=first,
+                    parse_int=parse_int,
+                ),
+            )
+            if production_route is not None:
+                self.send_json(production_route.payload, status=production_route.status)
+                return
+            research_route = handle_research_get(
+                parsed.path,
+                parsed.query,
+                ResearchRouteDependencies(
+                    research_engine=research_engine,
+                    research_lifecycle=research_lifecycle,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    auth_scope_owner=self._auth_scope_owner,
+                    read_json=self.read_json,
+                ),
+            )
+            if research_route is not None:
+                self.send_json(research_route.payload, status=research_route.status)
                 return
             if parsed.path == "/api/chat/diagnose":
                 params = parse_qs(parsed.query)
@@ -1476,121 +1582,35 @@ def build_http_server(
                     }
                 )
                 return
-            if parsed.path == "/api/integrations/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(integrations.status(project=project))
+            integrations_route = handle_integrations_get(
+                parsed.path,
+                parsed.query,
+                IntegrationsRouteDependencies(
+                    integrations=integrations,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    read_json=self.read_json,
+                ),
+            )
+            if integrations_route is not None:
+                self.send_json(integrations_route.payload, status=integrations_route.status)
                 return
-            if parsed.path == "/api/integrations/pairing-codes":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                include_expired = parse_bool(first(params, "include_expired"), default=True)
-                self.send_json({"codes": integrations.pairing_codes(project=project, include_expired=include_expired)})
-                return
-            if parsed.path == "/api/integrations/preferences":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                scope = first(params, "scope") or ""
-                self.send_json({"preferences": integrations.preferences(project=project, scope=scope)})
-                return
-            if parsed.path == "/api/integrations/diagnostics":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                limit = parse_int(first(params, "limit"), default=20)
-                latest = parse_bool(first(params, "latest"), default=False)
-                if latest:
-                    self.send_json(integrations.diagnostic_snapshot(project=project))
-                else:
-                    self.send_json({"diagnostics": integrations.diagnostics(project=project, limit=limit)})
-                return
-            if parsed.path == "/api/integrations/backups":
-                self.send_json({"backups": enterprise.backups()})
-                return
-            if parsed.path == "/api/integrations/safe-shell":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                limit = parse_int(first(params, "limit"), default=20)
-                self.send_json(integrations.safe_commands(project=project, limit=limit))
-                return
-            if parsed.path == "/api/integrations/parity":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                self.send_json(integrations.feature_matrix(project=project))
-                return
-            if parsed.path == "/api/personal-os/status":
-                params = parse_qs(parsed.query)
-                project = first(params, "project") or "default"
-                owner = self._query_owner(params)
-                self.send_json(personal_os.status(project=project, owner=owner))
-                return
-            if parsed.path == "/api/personal-os/presets":
-                params = parse_qs(parsed.query)
-                self.send_json(
-                    {
-                        "presets": personal_os.presets(
-                            project=first(params, "project") or "default",
-                            owner=self._query_owner(params),
-                            kind=first(params, "kind") or "",
-                        )
-                    }
-                )
-                return
-            if parsed.path == "/api/personal-os/signatures":
-                params = parse_qs(parsed.query)
-                self.send_json({"signatures": personal_os.signatures(project=first(params, "project") or "default", owner=self._query_owner(params))})
-                return
-            if parsed.path == "/api/personal-os/drafts":
-                params = parse_qs(parsed.query)
-                self.send_json(
-                    {
-                        "drafts": personal_os.drafts(
-                            project=first(params, "project") or "default",
-                            owner=self._query_owner(params),
-                            status=first(params, "status") or "",
-                        )
-                    }
-                )
-                return
-            if parsed.path.startswith("/api/personal-os/drafts/") and parsed.path.endswith("/versions"):
-                draft_id = unquote(parsed.path.removeprefix("/api/personal-os/drafts/").removesuffix("/versions")).strip()
-                self.send_json({"versions": personal_os.draft_versions(draft_id)})
-                return
-            if parsed.path == "/api/personal-os/notes":
-                params = parse_qs(parsed.query)
-                self.send_json(
-                    {
-                        "notes": personal_os.notes(
-                            project=first(params, "project") or "default",
-                            owner=self._query_owner(params),
-                            status=first(params, "status") or "",
-                            query=first(params, "q") or "",
-                        )
-                    }
-                )
-                return
-            if parsed.path == "/api/personal-os/gallery":
-                params = parse_qs(parsed.query)
-                self.send_json(
-                    {
-                        "assets": personal_os.gallery(
-                            project=first(params, "project") or "default",
-                            owner=self._query_owner(params),
-                            tag=first(params, "tag") or "",
-                        ),
-                        "stats": personal_os.gallery_stats(
-                            project=first(params, "project") or "default",
-                            owner=self._query_owner(params),
-                        ),
-                    }
-                )
-                return
-            if parsed.path == "/api/personal-os/compare":
-                params = parse_qs(parsed.query)
-                self.send_json({"compares": personal_os.compare_history(project=first(params, "project") or "default", owner=self._query_owner(params))})
-                return
-            if parsed.path == "/api/personal-os/export":
-                params = parse_qs(parsed.query)
-                self.send_json(personal_os.export_bundle(project=first(params, "project") or "default", owner=self._query_owner(params)))
+            personal_os_route = handle_personal_os_get(
+                parsed.path,
+                parsed.query,
+                PersonalOSRouteDependencies(
+                    personal_os=personal_os,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    first=first,
+                    parse_int=parse_int,
+                ),
+            )
+            if personal_os_route is not None:
+                self.send_json(personal_os_route.payload, status=personal_os_route.status)
                 return
             if parsed.path == "/api/capabilities":
                 self.send_json(vision_coverage())
@@ -1755,20 +1775,23 @@ def build_http_server(
                 return
             if parsed.path == "/api/research/sessions":
                 params = parse_qs(parsed.query)
+                research_owner = self._auth_scope_owner() if auth_enforcement_enabled() else None
                 self.send_json({
                     "sessions": research_lifecycle.list(
                         project=first(params, "project") or "default",
                         include_archived=parse_bool(first(params, "include_archived"), default=False),
                         status=first(params, "status") or "",
                         limit=parse_int(first(params, "limit"), default=100),
+                        owner=research_owner,
                     )
                 })
                 return
             if parsed.path.startswith("/api/research/sessions/"):
+                research_owner = self._auth_scope_owner() if auth_enforcement_enabled() else None
                 suffix = unquote(parsed.path.removeprefix("/api/research/sessions/")).strip("/")
                 if suffix.endswith("/report"):
                     session_id = suffix.removesuffix("/report").strip("/")
-                    session = research_lifecycle.get(session_id)
+                    session = research_lifecycle.get(session_id, owner=research_owner)
                     if session is None:
                         self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
                     else:
@@ -1795,7 +1818,7 @@ def build_http_server(
                     # this check, so translate that race into a terminal SSE
                     # error rather than logging it as an unhandled producer
                     # failure.
-                    if research_lifecycle.get(session_id) is None:
+                    if research_lifecycle.get(session_id, owner=research_owner) is None:
                         self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
                         return
 
@@ -1817,20 +1840,36 @@ def build_http_server(
                 if suffix.endswith("/source-graph"):
                     session_id = suffix.removesuffix("/source-graph").strip("/")
                     try:
+                        if research_lifecycle.get(session_id, owner=research_owner) is None:
+                            raise KeyError(session_id)
                         self.send_json(research_lifecycle.source_graph(session_id))
+                    except KeyError:
+                        self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                if suffix.endswith("/source-notes"):
+                    session_id = suffix.removesuffix("/source-notes").strip("/")
+                    params = parse_qs(parsed.query)
+                    project = first(params, "project") or "default"
+                    try:
+                        if research_lifecycle.get(session_id, owner=research_owner) is None:
+                            raise KeyError(session_id)
+                        self.send_json({"notes": research_lifecycle.source_notes(session_id, project=project)})
                     except KeyError:
                         self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
                     return
                 if suffix.endswith("/checkpoints"):
                     session_id = suffix.removesuffix("/checkpoints").strip("/")
                     params = parse_qs(parsed.query)
+                    if research_lifecycle.get(session_id, owner=research_owner) is None:
+                        self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                        return
                     self.send_json({
                         "checkpoints": research_lifecycle.checkpoints(
                             session_id, after_id=parse_int(first(params, "after_id"), default=0)
                         )
                     })
                     return
-                session = research_lifecycle.get(suffix)
+                session = research_lifecycle.get(suffix, owner=research_owner)
                 if session is None:
                     self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
                 else:
@@ -1936,6 +1975,17 @@ def build_http_server(
             if parsed.path == "/api/local-ai/models":
                 self.send_json({"models": local_ai.models()})
                 return
+            if parsed.path == "/api/local-ai/benchmarks":
+                params = parse_qs(parsed.query)
+                model_id = first(params, "model_id") or ""
+                limit = parse_int(first(params, "limit"), default=50)
+                try:
+                    benchmarks = local_ai.benchmark_history(model_id=model_id, limit=limit)
+                except (TypeError, ValueError) as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"benchmarks": benchmarks})
+                return
             if parsed.path == "/api/local-ai/hardware":
                 self.send_json(local_ai.detect_hardware())
                 return
@@ -2011,6 +2061,7 @@ def build_http_server(
             if parsed.path == "/api/calendar/free-slots":
                 params = parse_qs(parsed.query)
                 project = first(params, "project") or "default"
+                calendar_id = first(params, "calendar_id") or ""
                 from_dt = first(params, "from") or ""
                 to_dt = first(params, "to") or ""
                 duration = parse_int(first(params, "duration"), default=60)
@@ -2018,7 +2069,8 @@ def build_http_server(
                     self.send_json({"error": "from and to query params required"}, status=HTTPStatus.BAD_REQUEST)
                     return
                 self.send_json({"slots": calendar_system.find_free_slots(
-                    project=project, from_dt=from_dt, to_dt=to_dt, duration_minutes=duration,
+                    project=project, calendar_id=calendar_id,
+                    from_dt=from_dt, to_dt=to_dt, duration_minutes=duration,
                 )})
                 return
             if parsed.path == "/api/calendar/reminders":
@@ -2184,6 +2236,10 @@ def build_http_server(
             if finetune_route is not None:
                 self.send_json(finetune_route.payload, status=finetune_route.status)
                 return
+            local_ai_route = handle_local_ai_post(parsed.path, local_ai_route_dependencies(self.read_json))
+            if local_ai_route is not None:
+                self.send_json(local_ai_route.payload, status=local_ai_route.status)
+                return
             scraper_route = handle_scraper_post(parsed.path, scraper_route_dependencies(self.read_json))
             if scraper_route is not None:
                 self.send_json(scraper_route.payload, status=scraper_route.status)
@@ -2220,13 +2276,29 @@ def build_http_server(
             if security_route is not None:
                 self.send_json(security_route.payload, status=security_route.status)
                 return
-            chat_route = handle_chat_post(parsed.path, chat_route_dependencies(self.read_json))
-            if isinstance(chat_route, StreamRouteResult):
-                self.send_event_stream(chat_route.events)
-                return
-            if chat_route is not None:
-                self.send_json(chat_route.payload, status=chat_route.status)
-                return
+            if parsed.path == "/api/chat/stream":
+                disconnect = _RequestDisconnectWatcher(self.connection)
+                try:
+                    chat_route = handle_chat_post(
+                        parsed.path,
+                        chat_route_dependencies(self.read_json, disconnect.cancellation_signal, disconnect, self._auth_scope_owner),
+                    )
+                    if isinstance(chat_route, StreamRouteResult):
+                        self.send_event_stream(chat_route.events)
+                        return
+                    if chat_route is not None:
+                        self.send_json(chat_route.payload, status=chat_route.status)
+                        return
+                finally:
+                    disconnect.close()
+            else:
+                chat_route = handle_chat_post(parsed.path, chat_route_dependencies(self.read_json, auth_scope_owner=self._auth_scope_owner))
+                if isinstance(chat_route, StreamRouteResult):
+                    self.send_event_stream(chat_route.events)
+                    return
+                if chat_route is not None:
+                    self.send_json(chat_route.payload, status=chat_route.status)
+                    return
             identity_route = handle_identity_post(parsed.path, identity_route_dependencies(self))
             if identity_route is not None:
                 self.send_json(identity_route.payload, status=identity_route.status)
@@ -2253,7 +2325,7 @@ def build_http_server(
                     inference_route = handle_inference_post(
                         parsed.path,
                         inference_route_dependencies(
-                            self.read_json, disconnect.cancelled,
+                            self.read_json, disconnect.cancellation_signal,
                             self.headers.get("anthropic-version"), disconnect),
                     )
                     if inference_route is not None:
@@ -2418,6 +2490,22 @@ def build_http_server(
             if communication_route is not None:
                 self.send_json(communication_route.payload, status=communication_route.status)
                 return
+            enterprise_route = handle_enterprise_post(
+                parsed.path,
+                EnterpriseRouteDependencies(
+                    enterprise=enterprise,
+                    enterprise_identity=enterprise_identity,
+                    auth=auth,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    bearer_token=lambda: "",
+                    first=first,
+                    parse_qs_param=first,
+                ),
+            )
+            if enterprise_route is not None:
+                self.send_json(enterprise_route.payload, status=enterprise_route.status)
+                return
             # CalDAV sync carries per-run egress controls in the runtime handler below.
             # Other calendar endpoints continue through the extracted route adapter.
             calendar_route = None
@@ -2434,10 +2522,43 @@ def build_http_server(
                         payload_owner=self._payload_owner,
                         auth_scope_owner=self._auth_scope_owner,
                         read_json=self.read_json,
+                        integration_hub=integrations,
                     ),
                 )
             if calendar_route is not None:
                 self.send_json(calendar_route.payload, status=calendar_route.status)
+                return
+            production_route = handle_production_post(
+                parsed.path,
+                ProductionRouteDependencies(
+                    production=production,
+                    crypto=None,
+                    vector_store=vector_store,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    first=first,
+                    parse_qs_param=first,
+                    parse_int=parse_int,
+                ),
+            )
+            if production_route is not None:
+                self.send_json(production_route.payload, status=production_route.status)
+                return
+            research_post_route = handle_research_post(
+                parsed.path,
+                ResearchRouteDependencies(
+                    research_engine=research_engine,
+                    research_lifecycle=research_lifecycle,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    auth_scope_owner=self._auth_scope_owner,
+                    read_json=self.read_json,
+                ),
+            )
+            if research_post_route is not None:
+                self.send_json(research_post_route.payload, status=research_post_route.status)
                 return
             if parsed.path == "/api/events":
                 payload = self.read_json()
@@ -2480,6 +2601,7 @@ def build_http_server(
                         model=model,
                         allow_external=allow_external,
                         attachments=attachments,
+                        owner=self._auth_scope_owner(),
                     )
                 except (ProviderConfigurationError, ValueError) as exc:
                     self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -2537,6 +2659,7 @@ def build_http_server(
                         model=model,
                         allow_external=allow_external,
                         attachments=attachments,
+                        owner=self._auth_scope_owner(),
                     )
                 )
                 return
@@ -2565,219 +2688,33 @@ def build_http_server(
                     return
                 self.send_json({"imported": imported}, status=HTTPStatus.CREATED)
                 return
-            if parsed.path == "/api/integrations/pairing-codes":
-                payload = self.read_json()
-                try:
-                    code = integrations.create_pairing_code(
-                        label=str(payload.get("label", "Local companion")).strip(),
-                        scopes=[str(item) for item in payload.get("scopes", [])] if isinstance(payload.get("scopes"), list) else None,
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        ttl_minutes=parse_int(str(payload.get("ttl_minutes", "15")), default=15),
-                    )
-                except (IntegrationHubError, ValueError) as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"code": code}, status=HTTPStatus.CREATED)
+            integrations_post_route = handle_integrations_post(
+                parsed.path,
+                IntegrationsRouteDependencies(
+                    integrations=integrations,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    read_json=self.read_json,
+                ),
+            )
+            if integrations_post_route is not None:
+                self.send_json(integrations_post_route.payload, status=integrations_post_route.status)
                 return
-            if parsed.path == "/api/integrations/pairing-codes/redeem":
-                payload = self.read_json()
-                try:
-                    paired = integrations.redeem_pairing_code(
-                        code=str(payload.get("code", "")).strip(),
-                        device_name=str(payload.get("device_name", "Local device")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                    )
-                except IntegrationHubError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(paired, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/integrations/preferences":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                scope = str(payload.get("scope", "ui")).strip() or "ui"
-                key = str(payload.get("key", "")).strip()
-                try:
-                    if str(payload.get("action", "")).strip().lower() == "delete":
-                        result = integrations.delete_preference(project=project, scope=scope, key=key)
-                        self.send_json(result)
-                    else:
-                        pref = integrations.set_preference(
-                            project=project,
-                            scope=scope,
-                            key=key,
-                            value=payload.get("value"),
-                        )
-                        self.send_json({"preference": pref}, status=HTTPStatus.CREATED)
-                except IntegrationHubError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                return
-            if parsed.path == "/api/integrations/diagnostics":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                self.send_json({"diagnostic": integrations.create_diagnostic_report(project=project)}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/integrations/backups":
-                payload = self.read_json()
-                project = str(payload.get("project", "default")).strip() or "default"
-                self.send_json(integrations.create_backup(project=project), status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/integrations/safe-shell":
-                payload = self.read_json()
-                try:
-                    result = integrations.run_safe_command(
-                        command_key=str(payload.get("command_key", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        timeout_seconds=parse_int(str(payload.get("timeout_seconds", "15")), default=15),
-                    )
-                except IntegrationHubError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/presets":
-                payload = self.read_json()
-                try:
-                    preset = personal_os.upsert_preset(
-                        name=str(payload.get("name", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                        kind=str(payload.get("kind", "chat")).strip() or "chat",
-                        instructions=str(payload.get("instructions", "")),
-                        provider=str(payload.get("provider", "auto")).strip() or "auto",
-                        model=str(payload.get("model", "")).strip(),
-                        parameters=payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {},
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"preset": preset}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/signatures":
-                payload = self.read_json()
-                try:
-                    signature = personal_os.upsert_signature(
-                        label=str(payload.get("label", "")).strip(),
-                        content=str(payload.get("content", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                        is_default=parse_bool(payload.get("is_default"), default=False),
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"signature": signature}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/drafts":
-                payload = self.read_json()
-                try:
-                    draft = personal_os.save_draft(
-                        title=str(payload.get("title", "")).strip(),
-                        content=str(payload.get("content", "")),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                        draft_id=str(payload.get("draft_id", "")).strip(),
-                        status=str(payload.get("status", "draft")).strip() or "draft",
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"draft": draft}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/notes":
-                payload = self.read_json()
-                try:
-                    note = personal_os.save_note(
-                        title=str(payload.get("title", "")).strip(),
-                        body=str(payload.get("body", "")),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                        note_id=str(payload.get("note_id", "")).strip(),
-                        tags=[str(item) for item in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else [],
-                        due_at=str(payload.get("due_at", "")).strip(),
-                        status=str(payload.get("status", "open")).strip() or "open",
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"note": note}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/gallery":
-                payload = self.read_json()
-                try:
-                    asset = personal_os.add_gallery_asset(
-                        title=str(payload.get("title", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                        media_type=str(payload.get("media_type", "image")).strip() or "image",
-                        source_path=str(payload.get("source_path", "")).strip(),
-                        content=str(payload.get("content", "")),
-                        tags=[str(item) for item in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else [],
-                        metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"asset": asset}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/gallery/favorite":
-                payload = self.read_json()
-                try:
-                    asset = personal_os.set_gallery_favorite(
-                        asset_id=str(payload.get("asset_id", "")).strip(),
-                        favorite=parse_bool(payload.get("favorite"), default=True),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"asset": asset})
-                return
-            if parsed.path == "/api/personal-os/compare/start":
-                payload = self.read_json()
-                try:
-                    compare = personal_os.start_compare(
-                        prompt=str(payload.get("prompt", "")).strip(),
-                        left_output=str(payload.get("left_output", "")),
-                        right_output=str(payload.get("right_output", "")),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                        left_label=str(payload.get("left_label", "A")).strip() or "A",
-                        right_label=str(payload.get("right_label", "B")).strip() or "B",
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"compare": compare}, status=HTTPStatus.CREATED)
-                return
-            if parsed.path == "/api/personal-os/compare/vote":
-                payload = self.read_json()
-                try:
-                    compare = personal_os.vote_compare(
-                        compare_id=str(payload.get("compare_id", "")).strip(),
-                        vote=str(payload.get("vote", "")).strip(),
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json({"compare": compare})
-                return
-            if parsed.path == "/api/personal-os/import":
-                payload = self.read_json()
-                bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else payload
-                try:
-                    result = personal_os.import_bundle(
-                        bundle,
-                        project=str(payload.get("project", "default")).strip() or "default",
-                        owner=self._payload_owner(payload, default=""),
-                    )
-                except PersonalOSError as exc:
-                    self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                self.send_json(result, status=HTTPStatus.CREATED)
+            personal_os_post_route = handle_personal_os_post(
+                parsed.path,
+                PersonalOSRouteDependencies(
+                    personal_os=personal_os,
+                    read_json=self.read_json,
+                    auth_scope_owner=self._auth_scope_owner,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    first=first,
+                    parse_int=parse_int,
+                ),
+            )
+            if personal_os_post_route is not None:
+                self.send_json(personal_os_post_route.payload, status=personal_os_post_route.status)
                 return
             if parsed.path == "/api/settings/runtime":
                 payload = self.read_json()
@@ -2810,6 +2747,7 @@ def build_http_server(
             if parsed.path == "/api/research/sessions":
                 payload = self.read_json()
                 project = str(payload.get("project", "default")).strip() or "default"
+                research_owner = self._auth_scope_owner() if auth_enforcement_enabled() else "local"
                 try:
                     session = research_lifecycle.create(
                         str(payload.get("query", "")), project=project,
@@ -2818,6 +2756,7 @@ def build_http_server(
                         provider=str(payload.get("provider", "auto")).strip() or "auto",
                         model=str(payload.get("model", "")).strip(),
                         max_attempts=parse_int(str(payload.get("max_attempts", "3")), default=3),
+                        owner=research_owner,
                     )
                     job = worker_runtime.enqueue(
                         "research.run",
@@ -2838,8 +2777,32 @@ def build_http_server(
             if parsed.path.startswith("/api/research/sessions/"):
                 payload = self.read_json()
                 suffix = unquote(parsed.path.removeprefix("/api/research/sessions/")).strip("/")
+                note_parts = suffix.split("/")
+                if len(note_parts) >= 3 and note_parts[1] == "source-notes":
+                    session_id = note_parts[0]
+                    source_key = "/".join(note_parts[2:])
+                    project = str(payload.get("project", "default")).strip() or "default"
+                    research_owner = self._auth_scope_owner() if auth_enforcement_enabled() else None
+                    try:
+                        if research_lifecycle.get(session_id, owner=research_owner) is None:
+                            raise KeyError(session_id)
+                        note = research_lifecycle.save_source_note(
+                            session_id, source_key, str(payload.get("content", "")), project=project,
+                        )
+                    except KeyError:
+                        self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                        return
+                    except ValueError as exc:
+                        self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    self.send_json({"note": note})
+                    return
                 action = suffix.rsplit("/", 1)[-1] if "/" in suffix else ""
                 session_id = suffix.rsplit("/", 1)[0] if action else suffix
+                research_owner = self._auth_scope_owner() if auth_enforcement_enabled() else None
+                if research_lifecycle.get(session_id, owner=research_owner) is None:
+                    self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
                 try:
                     if action == "cancel":
                         session = research_lifecycle.cancel(session_id)
@@ -2853,7 +2816,8 @@ def build_http_server(
                             research_lifecycle.retry(session_id)
                             if action == "retry"
                             else research_lifecycle.branch(
-                                session_id, query=str(payload.get("query", "")).strip(), label=str(payload.get("label", "")).strip()
+                                session_id, query=str(payload.get("query", "")).strip(), label=str(payload.get("label", "")).strip(),
+                                owner=research_owner,
                             )
                         )
                         job = worker_runtime.enqueue(
@@ -2870,7 +2834,10 @@ def build_http_server(
                     else:
                         self.send_json({"error": "Unknown research session action."}, status=HTTPStatus.NOT_FOUND)
                         return
-                except (KeyError, ValueError) as exc:
+                except KeyError:
+                    self.send_json({"error": "Research session not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                except ValueError as exc:
                     self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                     return
                 self.send_json({"session": session}, status=HTTPStatus.ACCEPTED)
@@ -3965,6 +3932,10 @@ def build_http_server(
             if document_route is not None:
                 self.send_json(document_route.payload, status=document_route.status)
                 return
+            knowledge_route = handle_knowledge_put(parsed.path, knowledge_route_dependencies(self))
+            if knowledge_route is not None:
+                self.send_json(knowledge_route.payload, status=knowledge_route.status)
+                return
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
         def do_PATCH(self) -> None:
@@ -4007,6 +3978,28 @@ def build_http_server(
             if document_route is not None:
                 self.send_json(document_route.payload, status=document_route.status)
                 return
+            calendar_route = handle_calendar_patch(
+                parsed.path,
+                parsed.query,
+                CalendarRouteDependencies(
+                    calendar_system=calendar_system,
+                    calendar_sync=calendar_sync,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    auth_scope_owner=self._auth_scope_owner,
+                    read_json=self.read_json,
+                ),
+            )
+            if calendar_route is not None:
+                self.send_json(calendar_route.payload, status=calendar_route.status)
+                return
+            assistant_route = handle_assistant_patch(parsed.path, parsed.query, assistant_route_dependencies(self.read_json))
+            if assistant_route is not None:
+                self.send_json(assistant_route.payload, status=assistant_route.status)
+                return
             self.send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
 
         def do_DELETE(self) -> None:
@@ -4017,9 +4010,52 @@ def build_http_server(
                 return
             if not self._enforce_auth_gate(parsed.path, "DELETE"):
                 return
+            terminal_route = handle_terminal_delete(
+                parsed.path, parsed.query,
+                terminal_route_dependencies(self.read_json, self._query_owner, self._payload_owner),
+            )
+            if terminal_route is not None:
+                self.send_json(terminal_route.payload, status=terminal_route.status)
+                return
+            media_route = handle_media_delete(parsed.path, parsed.query, media_route_dependencies(self))
+            if media_route is not None:
+                self.send_json(media_route.payload, status=media_route.status)
+                return
+            workspace_route = handle_workspace_delete(parsed.path, parsed.query, workspace_route_dependencies(self.read_json))
+            if workspace_route is not None:
+                self.send_json(workspace_route.payload, status=workspace_route.status)
+                return
+            knowledge_route = handle_knowledge_delete(
+                parsed.path, parsed.query, knowledge_route_dependencies(self),
+            )
+            if knowledge_route is not None:
+                self.send_json(knowledge_route.payload, status=knowledge_route.status)
+                return
+            semantic_route = handle_semantic_delete(
+                parsed.path, parsed.query, semantic_route_dependencies(self.read_json),
+            )
+            if semantic_route is not None:
+                self.send_json(semantic_route.payload, status=semantic_route.status)
+                return
             draft_route = handle_draft_delete(parsed.path, draft_route_dependencies(self))
             if draft_route is not None:
                 self.send_json(draft_route.payload, status=draft_route.status)
+                return
+            communication_delete_route = handle_communication_delete(
+                parsed.path,
+                parsed.query,
+                CommunicationRouteDependencies(
+                    communication=communication,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    read_json=self.read_json,
+                ),
+            )
+            if communication_delete_route is not None:
+                self.send_json(communication_delete_route.payload, status=communication_delete_route.status)
                 return
             workflow_route = handle_workflows_delete(parsed.path, workflow_route_dependencies(self))
             if workflow_route is not None:
@@ -4050,6 +4086,28 @@ def build_http_server(
             document_route = handle_document_delete(parsed.path, document_route_dependencies(self))
             if document_route is not None:
                 self.send_json(document_route.payload, status=document_route.status)
+                return
+            calendar_route = handle_calendar_delete(
+                parsed.path,
+                parsed.query,
+                CalendarRouteDependencies(
+                    calendar_system=calendar_system,
+                    calendar_sync=calendar_sync,
+                    first=first,
+                    parse_bool=parse_bool,
+                    parse_int=parse_int,
+                    query_owner=self._query_owner,
+                    payload_owner=self._payload_owner,
+                    auth_scope_owner=self._auth_scope_owner,
+                    read_json=self.read_json,
+                ),
+            )
+            if calendar_route is not None:
+                self.send_json(calendar_route.payload, status=calendar_route.status)
+                return
+            assistant_route = handle_assistant_delete(parsed.path, parsed.query, assistant_route_dependencies(self.read_json))
+            if assistant_route is not None:
+                self.send_json(assistant_route.payload, status=assistant_route.status)
                 return
             if parsed.path.startswith("/api/auth/api-tokens/"):
                 user = self._require_auth()
@@ -4333,6 +4391,7 @@ def build_http_server(
                     language=fields.get("language", "en").strip() or "en",
                     stt_engine=fields.get("stt_engine", "").strip(),
                     allow_fallback_stt=parse_bool(fields.get("allow_fallback_stt"), default=False),
+                    owner=self._auth_scope_owner(),
                     metadata={
                         "client_route": "voice-upload",
                         "content_type": content_type,
@@ -4358,6 +4417,20 @@ def build_http_server(
                             name.lower() in {"retry-after", "x-queue-wait-ms"} and
                             "\r" not in value and "\n" not in value):
                         self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
+
+        def send_media_content(self, body: bytes, *, content_type: str) -> None:
+            """Serve project-authorized local audio with restrictive cache/type headers."""
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "private, no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Disposition", "inline")
                 self.end_headers()
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):

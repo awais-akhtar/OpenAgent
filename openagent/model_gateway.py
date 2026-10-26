@@ -15,13 +15,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 import threading
 import time
 from typing import Any, Iterator, Protocol
 
 from .core_runtime import CPU_MODEL_STACK, model_request_options, smooth_runtime_profile
 from .egress import EgressClient
+from .adaptive_engine.failure_reporting import failure_detail, failure_summary
 from .adaptive_engine.execution_service import ExecutionCancelled
 from .inference_accelerator import (
     AdaptiveCPUInferenceEngine,
@@ -56,7 +57,7 @@ def _closing_provider_stream(chunks: Iterator["StreamChunk"]) -> Iterator["Strea
                 if primary is None:
                     raise
                 try:
-                    primary.add_note("provider stream cleanup failed: " + repr(cleanup))
+                    primary.add_note("provider stream cleanup failed: " + failure_summary(cleanup))
                 except BaseException:
                     pass
 
@@ -279,6 +280,50 @@ class LocalProvider(BaseProvider):
         )
 
 
+def _ollama_vision_messages(messages: list[dict[str, str]], image: bytes) -> list[dict[str, Any]]:
+    """Attach one image to the latest user turn using Ollama's image field."""
+    encoded = base64.b64encode(image).decode("ascii")
+    result = [dict(message) for message in messages]
+    image_index = next(
+        (index for index in range(len(result) - 1, -1, -1) if result[index].get("role") == "user"),
+        None,
+    )
+    if image_index is None:
+        result.append({"role": "user", "content": "Describe the supplied image.", "images": [encoded]})
+    else:
+        result[image_index]["images"] = [encoded]
+    return result
+
+
+def _openai_vision_messages(
+    messages: list[dict[str, str]], image: bytes, media_type: str,
+) -> list[dict[str, Any]]:
+    """Attach one image to the latest user turn using OpenAI image_url parts."""
+    data_url = f"data:{media_type};base64,{base64.b64encode(image).decode('ascii')}"
+    result: list[dict[str, Any]] = []
+    image_attached = False
+    for message in reversed(messages):
+        if not image_attached and message.get("role") == "user":
+            content: list[dict[str, Any]] = []
+            if message.get("content"):
+                content.append({"type": "text", "text": str(message["content"])})
+            content.append({"type": "image_url", "image_url": {"url": data_url}})
+            result.append({"role": "user", "content": content})
+            image_attached = True
+        else:
+            result.append(dict(message))
+    result.reverse()
+    if not image_attached:
+        result.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe the supplied image."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        })
+    return result
+
+
 class OllamaProvider(BaseProvider):
     id = "ollama"
     label = "Ollama"
@@ -379,16 +424,7 @@ class OllamaProvider(BaseProvider):
         options = provider_request_options(messages)
         if max_output_tokens is not None:
             options = {**options, "num_predict": max(1, int(max_output_tokens))}
-        encoded = base64.b64encode(image).decode("ascii")
-        vision_messages = [dict(message) for message in messages]
-        image_index = next(
-            (index for index in range(len(vision_messages) - 1, -1, -1) if vision_messages[index].get("role") == "user"),
-            None,
-        )
-        if image_index is None:
-            vision_messages.append({"role": "user", "content": "Describe the supplied image.", "images": [encoded]})
-        else:
-            vision_messages[image_index]["images"] = [encoded]
+        vision_messages = _ollama_vision_messages(messages, image)
         keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
         response = post_json(
             f"{self.base_url}/api/chat",
@@ -421,6 +457,75 @@ class OllamaProvider(BaseProvider):
                 "smooth_options": options,
             },
         )
+
+    def stream_complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        cancelled=None,
+    ) -> Iterator[StreamChunk]:
+        selected_model = self.resolve_vision_model(model)
+        options = provider_request_options(messages)
+        if max_output_tokens is not None:
+            options = {**options, "num_predict": max(1, int(max_output_tokens))}
+        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+        response = stream_json_lines(
+            f"{self.base_url}/api/chat",
+            {
+                "model": selected_model,
+                "messages": _ollama_vision_messages(messages, image),
+                "stream": True,
+                "options": options,
+                "keep_alive": keep_alive,
+            },
+            headers={},
+            cancelled=cancelled,
+        )
+        primary: BaseException | None = None
+        done_seen = False
+        try:
+            for item in response:
+                content = item.get("message", {}).get("content", "")
+                done = bool(item.get("done"))
+                done_seen = done_seen or done
+                yield StreamChunk(
+                    provider=self.id,
+                    model=selected_model,
+                    content=content,
+                    done=done,
+                    metadata={
+                        "base_url": self.base_url,
+                        "network": True,
+                        "local_network": True,
+                        "modality": "vision",
+                        "media_type": media_type,
+                        "image_transport": "ollama-message-images",
+                        "smooth_options": options,
+                    },
+                )
+                if done:
+                    break
+            if not done_seen:
+                raise ProviderUnavailableError("Ollama vision stream ended without a done record")
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("Ollama vision stream cleanup failed: " + failure_summary(cleanup))
+                    except BaseException:
+                        pass
 
     def stream_complete(
         self,
@@ -469,7 +574,7 @@ class OllamaProvider(BaseProvider):
                     if primary is None:
                         raise
                     try:
-                        primary.add_note("Ollama stream cleanup failed: " + repr(cleanup))
+                        primary.add_note("Ollama stream cleanup failed: " + failure_summary(cleanup))
                     except BaseException:
                         pass
 
@@ -606,7 +711,7 @@ class LlamaCppProvider(BaseProvider):
                     if primary is None:
                         raise
                     try:
-                        primary.add_note("llama.cpp stream cleanup failed: " + repr(cleanup))
+                        primary.add_note("llama.cpp stream cleanup failed: " + failure_summary(cleanup))
                     except BaseException:
                         pass
 
@@ -724,7 +829,7 @@ class OpenVINODirectProvider(BaseProvider):
                     if primary is None:
                         raise
                     try:
-                        primary.add_note("OpenVINO stream cleanup failed: " + repr(cleanup))
+                        primary.add_note("OpenVINO stream cleanup failed: " + failure_summary(cleanup))
                     except BaseException:
                         pass
         if not emitted and final.get("text"):
@@ -811,6 +916,33 @@ class OpenVINODirectProvider(BaseProvider):
                 self._resident_model_ids.add(model_id)
             except Exception as exc:
                 raise ProviderUnavailableError(f"OpenVINO could not load the direct model: {exc}") from exc
+
+
+_OLMOE_KERNEL_BY_FORMAT = {
+    "float32": "native-cpu-numba",
+    "int8-row": "native-cpu-numba",
+    "int2-row": "int2-row-numba",
+    "int3-grouped-g64": "int3-grouped-g64-numba",
+    "int4-row": "packed-int4-numba",
+    "int4-grouped-g64": "grouped-int4-numba",
+    "mxfp4-e2m1-g32-ue8m0": "mxfp4-e2m1-g32-ue8m0-numba",
+    "q4_0": "q4_0-numba",
+    "q4_1": "q4_1-numba",
+    "q5_0": "q5_0-numba",
+    "q5_1": "q5_1-numba",
+    "q8_0": "q8_0-numba",
+    "q8_1": "q8_1-numba",
+    "fp8-e4m3-b128-f32": "fp8-e4m3-b128-f32-numba",
+}
+
+
+def _olmoe_default_kernel_for_format(persisted_format: str) -> str:
+    """Select the format's declared native consumer; never fall back implicitly."""
+    try:
+        return _OLMOE_KERNEL_BY_FORMAT[persisted_format]
+    except KeyError:
+        raise ProviderConfigurationError(
+            f"OLMoE format {persisted_format!r} has no default native consumer") from None
 
 
 class OlmoeDirectProvider(BaseProvider):
@@ -910,6 +1042,16 @@ class OlmoeDirectProvider(BaseProvider):
     def _load(self):
         if self._runtime is None:
             from .adaptive_engine import ExpertKernelRegistry, OlmoeModel, OpenVINOExpertBackend
+
+            if self.preferred_kernel is None:
+                from .adaptive_engine.expert_runtime import SparseExpertManifest
+
+                manifest = SparseExpertManifest.read(self.manifest_path)
+                formats = {layer.dtype for layer in manifest.layers}
+                if len(formats) != 1:
+                    raise ProviderConfigurationError(
+                        "OLMoE direct provider requires one homogeneous persisted expert format")
+                self.preferred_kernel = _olmoe_default_kernel_for_format(next(iter(formats)))
 
             kernels = None
             if self.preferred_kernel == "vulkan-wgpu":
@@ -1096,30 +1238,7 @@ class OpenAICompatibleProvider(BaseProvider):
     ) -> ModelResult:
         self.require_configured()
         selected_model = model or self.default_model
-        data_url = f"data:{media_type};base64,{base64.b64encode(image).decode('ascii')}"
-        vision_messages: list[dict[str, Any]] = []
-        image_attached = False
-        for message in reversed(messages):
-            if not image_attached and message.get("role") == "user":
-                content: list[dict[str, Any]] = []
-                if message.get("content"):
-                    content.append({"type": "text", "text": str(message["content"])})
-                content.append({"type": "image_url", "image_url": {"url": data_url}})
-                vision_messages.append({"role": "user", "content": content})
-                image_attached = True
-            else:
-                vision_messages.append(dict(message))
-        vision_messages.reverse()
-        if not image_attached:
-            vision_messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Describe the supplied image."},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                }
-            )
+        vision_messages = _openai_vision_messages(messages, image, media_type)
         payload: dict[str, Any] = {"model": selected_model, "messages": vision_messages, "stream": False}
         if max_output_tokens is not None:
             payload["max_tokens"] = max(1, int(max_output_tokens))
@@ -1146,6 +1265,71 @@ class OpenAICompatibleProvider(BaseProvider):
                 "image_transport": "openai-image-url",
             },
         )
+
+    def stream_complete_vision(
+        self,
+        messages: list[dict[str, str]],
+        image: bytes,
+        *,
+        media_type: str,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        cancelled=None,
+    ) -> Iterator[StreamChunk]:
+        self.require_configured()
+        selected_model = model or self.default_model
+        payload: dict[str, Any] = {
+            "model": selected_model,
+            "messages": _openai_vision_messages(messages, image, media_type),
+            "stream": True,
+        }
+        if max_output_tokens is not None:
+            payload["max_tokens"] = max(1, int(max_output_tokens))
+        response = stream_sse_json(
+            f"{self.base_url}/chat/completions",
+            payload,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            cancelled=cancelled,
+        )
+        primary: BaseException | None = None
+        done_seen = False
+        try:
+            for item in response:
+                done = item.get("done") is True
+                done_seen = done_seen or done
+                yield StreamChunk(
+                    provider=self.id,
+                    model=selected_model,
+                    content=delta_content(item),
+                    done=done,
+                    metadata={
+                        "base_url": self.base_url,
+                        "network": True,
+                        "external": True,
+                        "modality": "vision",
+                        "media_type": media_type,
+                        "image_transport": "openai-image-url",
+                    },
+                )
+                if done:
+                    break
+            if not done_seen:
+                raise ProviderUnavailableError("OpenAI-compatible vision stream ended without a terminal event")
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        raise
+                    try:
+                        primary.add_note("OpenAI-compatible vision stream cleanup failed: " + failure_summary(cleanup))
+                    except BaseException:
+                        pass
 
     def stream_complete(
         self,
@@ -1182,7 +1366,7 @@ class OpenAICompatibleProvider(BaseProvider):
                     if primary is None:
                         raise
                     try:
-                        primary.add_note("OpenAI-compatible stream cleanup failed: " + repr(cleanup))
+                        primary.add_note("OpenAI-compatible stream cleanup failed: " + failure_summary(cleanup))
                     except BaseException:
                         pass
 
@@ -1568,7 +1752,16 @@ class ModelGateway:
         model: str | None = None,
         allow_external: bool = False,
         max_output_tokens: int | None = None,
+        cancelled=None,
     ) -> ModelResult:
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError("completion cancellation must be callable")
+
+        def check_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise ExecutionCancelled("completion request cancelled")
+
+        check_cancelled()
         provider = self.select_provider(provider_id, allow_external=allow_external)
         selected_model = self._effective_provider_model(provider, provider_id=provider_id, model=model)
         plan = self.inference.plan(
@@ -1581,6 +1774,7 @@ class ModelGateway:
         started = time.perf_counter()
         cached = self.inference.get(plan.cache_key)
         if cached is not None:
+            check_cancelled()
             latency_ms = (time.perf_counter() - started) * 1000
             metadata = {
                 **cached.metadata,
@@ -1600,8 +1794,13 @@ class ModelGateway:
             return ModelResult(cached.provider, cached.model, cached.content, metadata)
         fallback_used = False
         try:
+            check_cancelled()
+            provider_options = {"model": selected_model}
+            if provider.id == "native-publisher" and cancelled is not None:
+                provider_options["cancelled"] = cancelled
             with self.inference.activate(plan), _approve_model_egress(allow_external):
-                result = provider.complete(plan.messages, model=selected_model)
+                result = provider.complete(plan.messages, **provider_options)
+            check_cancelled()
             metadata = {
                 **result.metadata,
                 "routing_policy": self.routing_policy,
@@ -1612,16 +1811,19 @@ class ModelGateway:
             # recover by replaying the prompt against a fallback backend.
             if isinstance(exc, (InterruptedError, ExecutionCancelled, _ModelStreamCancelled)):
                 raise
+            check_cancelled()
             fallback = self.select_fallback(provider.id)
             if fallback is None:
                 raise
             fallback_used = True
+            check_cancelled()
             with self.inference.activate(plan):
                 result = fallback.complete(plan.messages, model=None)
+            check_cancelled()
             metadata = {
                 **result.metadata,
                 "fallback_from": provider.id,
-                "fallback_error": str(exc),
+                "fallback_error": failure_detail(exc),
                 "routing_policy": self.routing_policy,
                 "fallback_policy": self.fallback_policy,
             }
@@ -1720,8 +1922,15 @@ class ModelGateway:
         model: str | None = None,
         allow_external: bool = False,
         max_output_tokens: int | None = None,
+        cancelled=None,
     ) -> Iterator[StreamChunk]:
         """Route image streams through the admitted image-aware provider."""
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError("stream cancellation must be callable")
+        def check_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise ExecutionCancelled("vision stream request cancelled")
+        check_cancelled()
         if type(image) is not bytes or not image or len(image) > 256*1024**2:
             raise ValueError("Vision streaming requires bounded non-empty image bytes.")
         if type(media_type) is not str or not media_type.startswith("image/"):
@@ -1741,7 +1950,9 @@ class ModelGateway:
                 max_output_tokens=max_output_tokens)
             metadata = {**result.metadata, 'streaming_mode': 'buffered-vision'}
             for part in chunk_text(result.content):
+                check_cancelled()
                 yield StreamChunk(result.provider, result.model, part, False, metadata)
+            check_cancelled()
             yield StreamChunk(result.provider, result.model, '', True, metadata)
             return
         iterator = None
@@ -1749,11 +1960,15 @@ class ModelGateway:
         primary = None
         terminal_seen = False
         try:
+            check_cancelled()
             with _approve_model_egress(allow_external):
-                iterator = _closing_provider_stream(iter(stream(
-                    messages, image, media_type=media_type, model=selected_model,
-                    max_output_tokens=max_output_tokens)))
+                stream_options = dict(media_type=media_type, model=selected_model,
+                                      max_output_tokens=max_output_tokens)
+                if provider.id in {'native-publisher', 'ollama', 'openai-compatible'}:
+                    stream_options['cancelled'] = cancelled
+                iterator = _closing_provider_stream(iter(stream(messages, image, **stream_options)))
                 for chunk in iterator:
+                    check_cancelled()
                     terminal_seen = _validate_stream_chunk(
                         chunk, provider_id=provider.id, terminal_seen=terminal_seen)
                     if chunk.content and first_token_ms is None:
@@ -1772,6 +1987,9 @@ class ModelGateway:
         except ProviderUnavailableError as exc:
             primary = exc
             raise
+        except ExecutionCancelled as exc:
+            primary = exc
+            raise
         except Exception as exc:
             primary = ProviderUnavailableError(
                 f"Vision streaming failed through provider '{provider.id}': {exc}")
@@ -1788,7 +2006,8 @@ class ModelGateway:
                     if primary is None:
                         raise
                     try:
-                        primary.add_note('vision provider iterator cleanup failed: '+repr(cleanup))
+                        primary.add_note('vision provider iterator cleanup failed: '+
+                                         failure_summary(cleanup))
                     except BaseException:
                         pass
 
@@ -1828,7 +2047,14 @@ class ModelGateway:
         model: str | None = None,
         allow_external: bool = False,
         max_output_tokens: int | None = None,
+        cancelled=None,
     ) -> Iterator[StreamChunk]:
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError("stream cancellation must be callable")
+        def check_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise ExecutionCancelled("stream request cancelled")
+        check_cancelled()
         provider = self.select_provider(provider_id, allow_external=allow_external)
         selected_model = self._effective_provider_model(provider, provider_id=provider_id, model=model)
         plan = self.inference.plan(
@@ -1850,9 +2076,11 @@ class ModelGateway:
                 "fallback_policy": self.fallback_policy,
             }
             for part in chunk_text(cached.content):
+                check_cancelled()
                 if first_token_ms is None:
                     first_token_ms = (time.perf_counter() - started) * 1000
                 yield StreamChunk(cached.provider, cached.model, part, False, metadata)
+            check_cancelled()
             yield StreamChunk(cached.provider, cached.model, "", True, metadata)
             latency_ms = (time.perf_counter() - started) * 1000
             self.inference.record(
@@ -1873,11 +2101,16 @@ class ModelGateway:
         stream_started = False
         terminal_seen = False
         try:
+            check_cancelled()
+            provider_options = {"model": selected_model}
+            if provider.id == 'native-publisher':
+                provider_options['cancelled'] = cancelled
             stream = _closing_provider_stream(
-                provider.stream_complete(plan.messages, model=selected_model))
+                provider.stream_complete(plan.messages, **provider_options))
             try:
                 with self.inference.activate(plan), _approve_model_egress(allow_external):
                     for chunk in stream:
+                        check_cancelled()
                         terminal_seen = _validate_stream_chunk(
                             chunk, provider_id=provider.id, terminal_seen=terminal_seen)
                         if chunk.content:
@@ -1905,7 +2138,13 @@ class ModelGateway:
                         )
             finally:
                 stream.close()
+        except ExecutionCancelled:
+            raise
         except Exception as exc:
+            # Cancellation wins over provider recovery. Starting fallback
+            # after the client has gone away would create fresh work with no
+            # consumer and could publish a second provider's output later.
+            check_cancelled()
             fallback = self.select_fallback(provider.id)
             if fallback is None or stream_started:
                 raise
@@ -1917,6 +2156,7 @@ class ModelGateway:
             try:
                 with self.inference.activate(plan):
                     for chunk in stream:
+                        check_cancelled()
                         terminal_seen = _validate_stream_chunk(
                             chunk, provider_id=fallback.id, terminal_seen=terminal_seen)
                         if chunk.content:
@@ -1928,7 +2168,7 @@ class ModelGateway:
                         final_metadata = {
                             **chunk.metadata,
                             "fallback_from": provider.id,
-                            "fallback_error": str(exc),
+                            "fallback_error": failure_detail(exc),
                             "cache_hit": False,
                             "inference": plan.metadata(),
                             "routing_policy": self.routing_policy,
@@ -2007,7 +2247,8 @@ class ModelGateway:
                 raise
             fallback_used = True
             result = fallback.embed(texts, model=None)
-            metadata = {**result.metadata, "fallback_from": provider.id, "fallback_error": str(exc)}
+            metadata = {**result.metadata, "fallback_from": provider.id,
+                        "fallback_error": failure_detail(exc)}
         latency_ms = (time.perf_counter() - started) * 1000
         metadata = {
             **metadata,
@@ -2413,13 +2654,17 @@ def _stream_model_lines(
     payload: dict[str, Any],
     *,
     headers: dict[str, str],
+    cancelled=None,
 ) -> Iterator[str]:
+    if cancelled is not None and not callable(cancelled):
+        raise ValueError("model stream cancellation must be callable")
     events: Queue[tuple[str | None, BaseException | None]] = Queue(maxsize=64)
-    cancelled = threading.Event()
+    stream_cancelled = threading.Event()
+    request_cancelled = threading.Event()
     approved = _external_approval.get()
 
     def publish(line: str | None, error: BaseException | None = None) -> None:
-        while not cancelled.is_set():
+        while not stream_cancelled.is_set():
             try:
                 events.put((line, error), timeout=0.1)
                 return
@@ -2437,19 +2682,34 @@ def _stream_model_lines(
                 timeout_seconds=model_timeout_seconds(),
                 max_response_bytes=32 * 1024 * 1024, max_redirects=0,
                 on_line=lambda line: publish(line),
-                cancelled=cancelled.is_set,
+                # The caller's predicate is polled only by the consumer thread
+                # below. Egress may read this event from both its socket reader
+                # and cancellation watcher, so never hand it an arbitrary
+                # caller callback.
+                cancelled=request_cancelled.is_set,
             )
             _require_model_http_success(response.status)
         except _ModelStreamCancelled:
             return
+        except InterruptedError as exc:
+            if request_cancelled.is_set():
+                try:
+                    publish(None, ExecutionCancelled("model provider stream cancelled"))
+                except _ModelStreamCancelled:
+                    pass
+            elif not stream_cancelled.is_set():
+                try:
+                    publish(None, exc)
+                except _ModelStreamCancelled:
+                    pass
         except Exception as exc:
-            if not cancelled.is_set():
+            if not stream_cancelled.is_set():
                 try:
                     publish(None, exc)
                 except _ModelStreamCancelled:
                     pass
         finally:
-            if not cancelled.is_set():
+            if not stream_cancelled.is_set():
                 try:
                     publish(None)
                 except _ModelStreamCancelled:
@@ -2458,14 +2718,30 @@ def _stream_model_lines(
     threading.Thread(target=fetch_lines, daemon=True, name="model-provider-stream").start()
     try:
         while True:
-            line, error = events.get()
+            try:
+                line, error = events.get(timeout=0.1)
+            except Empty:
+                if cancelled is not None:
+                    try:
+                        if cancelled():
+                            request_cancelled.set()
+                            stream_cancelled.set()
+                            raise ExecutionCancelled("model provider stream cancelled")
+                    except ExecutionCancelled:
+                        raise
+                    except BaseException as exc:
+                        request_cancelled.set()
+                        stream_cancelled.set()
+                        raise ExecutionCancelled("model stream cancellation callback failed") from exc
+                continue
             if error is not None:
                 raise error
             if line is None:
                 break
             yield line
     finally:
-        cancelled.set()
+        request_cancelled.set()
+        stream_cancelled.set()
 
 
 def _closing_model_lines(lines: Iterator[str]) -> Iterator[str]:
@@ -2486,7 +2762,7 @@ def _closing_model_lines(lines: Iterator[str]) -> Iterator[str]:
                 if primary is None:
                     raise
                 try:
-                    primary.add_note("model line stream cleanup failed: " + repr(cleanup))
+                    primary.add_note("model line stream cleanup failed: " + failure_summary(cleanup))
                 except BaseException:
                     pass
 
@@ -2496,8 +2772,11 @@ def stream_json_lines(
     payload: dict[str, Any],
     *,
     headers: dict[str, str],
+    cancelled=None,
 ) -> Iterator[dict[str, Any]]:
-    for line in _closing_model_lines(_stream_model_lines(url, payload, headers=headers)):
+    for line in _closing_model_lines(_stream_model_lines(
+        url, payload, headers=headers, cancelled=cancelled,
+    )):
         raw = line.strip()
         if raw:
             yield json.loads(raw)
@@ -2508,10 +2787,13 @@ def stream_sse_json(
     payload: dict[str, Any],
     *,
     headers: dict[str, str],
+    cancelled=None,
 ) -> Iterator[dict[str, Any]]:
     done_seen = False
     bare_terminal_seen = False
-    for line in _closing_model_lines(_stream_model_lines(url, payload, headers=headers)):
+    for line in _closing_model_lines(_stream_model_lines(
+        url, payload, headers=headers, cancelled=cancelled,
+    )):
         raw = line.strip()
         if not raw:
             continue

@@ -31,8 +31,8 @@ describe('Voice workspace backend integration', () => {
     }));
 
     const rendered = renderVoice();
-    expect(rendered.container.textContent).toMatch(/no live microphone streaming endpoint/i);
-    fireEvent.click(screen.getByRole('button', { name: 'Create session' }));
+    expect(rendered.container.textContent).toMatch(/Start a recording, then review an accurate transcript/i);
+    fireEvent.click(screen.getByRole('button', { name: 'New session' }));
     expect(await screen.findByText(/Session recorded by the backend/)).toBeInTheDocument();
     expect(calls.find(call => call.url.endsWith('/api/voice/sessions') && call.method === 'POST')).toBeDefined();
     expect(JSON.parse(String(calls.find(call => call.url.endsWith('/api/voice/sessions') && call.method === 'POST')?.body))).toMatchObject({ project: 'default', mode: 'transcription', always_listening: false });
@@ -52,6 +52,122 @@ describe('Voice workspace backend integration', () => {
     expect(uploadBody.audio_base64).toBeTruthy();
   });
 
+  it('records only after microphone permission and uploads the stopped recording to local STT', async () => {
+    const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    const stopTrack = vi.fn();
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream));
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { mediaDevices: { getUserMedia } }));
+    class StubMediaRecorder {
+      static isTypeSupported = vi.fn(() => true);
+      state: RecordingState = 'inactive';
+      mimeType: string;
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(_stream: MediaStream, options?: MediaRecorderOptions) { this.mimeType = options?.mimeType ?? 'audio/webm'; }
+      start() { this.state = 'recording'; }
+      stop() {
+        this.state = 'inactive';
+        this.ondataavailable?.({ data: new Blob(['captured local audio'], { type: this.mimeType }) } as BlobEvent);
+        this.onstop?.(new Event('stop'));
+      }
+    }
+    vi.stubGlobal('MediaRecorder', StubMediaRecorder);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      calls.push({ url, body });
+      if (url.endsWith('/api/voice/status')) return json({ runtime: 'local-session-runtime', microphone_control: 'browser buffered capture', privacy_boundary: 'Audio stays in the local service.' });
+      if (url.endsWith('/api/voice/personas')) return json({ personas: [] });
+      if (url.includes('/api/voice/sessions')) return json({ sessions: [{ id: 'voice-capture-1', mode: 'transcription', status: 'active' }] });
+      if (url.endsWith('/api/voice/stt') && init?.method === 'POST') return json({ transcription: { transcript_status: 'transcribed', stt_engine: 'local-fixture', display_text: 'Buffered microphone recording transcript.' } }, 201);
+      if (url.includes('/api/voice/turns?')) return json({ turns: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderVoice();
+    const startButton = await screen.findByRole('button', { name: 'Start recording' });
+    await vi.waitFor(() => expect(startButton).toBeEnabled());
+    fireEvent.click(startButton);
+    expect(await screen.findByText(/Recording from this browser microphone/)).toBeVisible();
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    expect(screen.getByRole('button', { name: 'Stop and transcribe' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop and transcribe' }));
+    expect(await screen.findByText('Buffered microphone recording transcript.')).toBeVisible();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    const sttCall = calls.find(call => call.url.endsWith('/api/voice/stt'));
+    expect(sttCall?.body).toMatchObject({ project: 'default', session_id: 'voice-capture-1', language: 'en', allow_fallback_stt: false });
+    expect(String(sttCall?.body?.filename)).toMatch(/^voice-recording-.*\.webm$/);
+    expect(sttCall?.body?.audio_base64).toBeTruthy();
+    expect(await screen.findByText('Backend transcription status: transcribed.')).toBeVisible();
+  });
+
+  it('keeps microphone denial local and does not submit audio', async () => {
+    const calls: string[] = [];
+    const getUserMedia = vi.fn(async () => { throw new DOMException('Permission denied', 'NotAllowedError'); });
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { mediaDevices: { getUserMedia } }));
+    vi.stubGlobal('MediaRecorder', class StubMediaRecorder {
+      static isTypeSupported = vi.fn(() => true);
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+      start() {}
+      stop() {}
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); calls.push(url);
+      if (url.endsWith('/api/voice/status')) return json({ runtime: 'local-session-runtime' });
+      if (url.endsWith('/api/voice/personas')) return json({ personas: [] });
+      if (url.includes('/api/voice/sessions')) return json({ sessions: [{ id: 'voice-denied-1', mode: 'transcription', status: 'active' }] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderVoice();
+    const startButton = await screen.findByRole('button', { name: 'Start recording' });
+    await vi.waitFor(() => expect(startButton).toBeEnabled());
+    fireEvent.click(startButton);
+    expect(await screen.findByText(/Microphone permission was denied/i)).toBeVisible();
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(calls.some(url => url.endsWith('/api/voice/stt'))).toBe(false);
+  });
+
+  it('discards a browser recording without uploading it', async () => {
+    const calls: string[] = [];
+    const stopTrack = vi.fn();
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream));
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { mediaDevices: { getUserMedia } }));
+    class StubMediaRecorder {
+      static isTypeSupported = vi.fn(() => true);
+      state: RecordingState = 'inactive';
+      mimeType = 'audio/webm';
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(_stream: MediaStream, options?: MediaRecorderOptions) { this.mimeType = options?.mimeType ?? this.mimeType; }
+      start() { this.state = 'recording'; }
+      stop() {
+        this.state = 'inactive';
+        this.ondataavailable?.({ data: new Blob(['discarded local audio'], { type: this.mimeType }) } as BlobEvent);
+        this.onstop?.(new Event('stop'));
+      }
+    }
+    vi.stubGlobal('MediaRecorder', StubMediaRecorder);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); calls.push(url);
+      if (url.endsWith('/api/voice/status')) return json({ runtime: 'local-session-runtime' });
+      if (url.endsWith('/api/voice/personas')) return json({ personas: [] });
+      if (url.includes('/api/voice/sessions')) return json({ sessions: [{ id: 'voice-discard-1', mode: 'transcription', status: 'active' }] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+
+    renderVoice();
+    const startButton = await screen.findByRole('button', { name: 'Start recording' });
+    await vi.waitFor(() => expect(startButton).toBeEnabled());
+    fireEvent.click(startButton);
+    expect(await screen.findByText(/Recording from this browser microphone/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard recording' }));
+    expect(await screen.findByText(/Recording discarded\. Audio was not uploaded/i)).toBeVisible();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(calls.some(url => url.endsWith('/api/voice/stt'))).toBe(false);
+  });
+
   it('loads transcript turns for a selected backend session and exposes STT provenance', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -68,13 +184,17 @@ describe('Voice workspace backend integration', () => {
     expect(screen.getByText(/audio asset asset-1/)).toBeVisible();
   });
 
-  it('generates a local synthesis artifact and states that playback is unavailable', async () => {
+  it('generates and loads the authenticated local synthesis WAV for playback', async () => {
     const calls: Array<{ url: string; body?: unknown }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       if (url.endsWith('/api/voice/status')) return json({ runtime: 'local-session-runtime', microphone_control: 'explicit-client-audio-input' });
       if (url.endsWith('/api/voice/personas')) return json({ personas: [{ id: 'persona-1', name: 'Local Voice' }] });
-      if (url.endsWith('/api/voice/tts')) return json({ script: { audio_status: 'generated_wav', audio_asset_id: 'asset-tts-1', audio_mime_type: 'audio/wav', privacy_boundary: 'Generated locally.' } }, 201);
+      if (url.endsWith('/api/voice/tts')) return json({ script: { project: 'default', audio_status: 'generated_wav', audio_asset_id: 'asset-tts-1', audio_mime_type: 'audio/wav', privacy_boundary: 'Generated locally.' } }, 201);
+      if (url.includes('/api/voice/assets/asset-tts-1/content')) {
+        const audio = new Uint8Array(64); audio.set([82, 73, 70, 70]);
+        return { ok: true, status: 200, blob: async () => new Blob([audio], { type: 'audio/wav' }) } as Response;
+      }
       return json({ error: `Unexpected request ${url}` }, 404);
     }));
 
@@ -82,7 +202,9 @@ describe('Voice workspace backend integration', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Text to synthesize' }), { target: { value: 'Hello from the local voice runtime.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate local speech artifact' }));
     expect((await screen.findAllByText(/generated_wav/)).length).toBeGreaterThan(0);
-    expect(rendered.container.textContent).toMatch(/cannot play it/i);
+    expect(await screen.findByLabelText('Generated local voice audio')).toHaveAttribute('src', expect.stringMatching(/^blob:/));
+    expect(screen.getByRole('link', { name: 'Download WAV' })).toHaveAttribute('download', 'openagent-voice-asset-tts-1.wav');
+    expect(calls.some(call => call.url.includes('/api/voice/assets/asset-tts-1/content?project=default'))).toBe(true);
     expect(calls.find(call => call.url.endsWith('/api/voice/tts'))?.body).toMatchObject({ text: 'Hello from the local voice runtime.', project: 'default', voice: 'local-script' });
   });
 

@@ -198,6 +198,12 @@ class _Functions:
                 function.argtypes = arguments
                 function.restype = None if name in {"segment_session_destroy", "edge_engine_close"} else C.c_int
                 setattr(self, name, function)
+            route_observer = getattr(self.library, "coli_segment_routes", None)
+            self.segment_routes = route_observer
+            if route_observer is not None:
+                route_observer.argtypes = [p, _U32, _U64, C.POINTER(C.c_float), s,
+                    C.POINTER(s), C.POINTER(_U32), C.POINTER(_U32), C.POINTER(_U32), p, s]
+                route_observer.restype = C.c_int
             self.source.assert_unchanged()
         except BaseException as error:
             try:
@@ -408,6 +414,7 @@ class SegmentEdgeExecution:
         requested = tuple(islice(iter(ranges), 4097))
         if not requested or len(requested) > 4096:
             raise ValueError("one to 4096 contiguous layer ranges required")
+        self._range_bounds = tuple((item.begin, item.end) for item in requested)
         boundary = 0
         for item in requested:
             if type(item) is not SegmentRange or type(item.begin) is not int or item.begin != boundary:
@@ -650,11 +657,19 @@ class SegmentEdgeExecution:
             if not np.isfinite(output).all():raise ArithmeticError('nonfinite native Edge embedding export')
             return output
 
-    def forward(self, token_ids, *, cancel=None,inputs_embeds=None,return_hidden=False):
+    def forward(self, token_ids, *, cancel=None,inputs_embeds=None,return_hidden=False,
+                capture_routes=False,route_width=None):
         from itertools import islice
         with self._lock:
             self._check()
             if type(return_hidden) is not bool:raise ValueError('boolean native hidden export policy required')
+            if type(capture_routes) is not bool:raise ValueError('boolean native route observation policy required')
+            if capture_routes and (not return_hidden or type(route_width) is not int or route_width<=0):
+                raise ValueError('route capture requires hidden output and a positive exact expert width')
+            if not capture_routes and route_width is not None:
+                raise ValueError('route width is valid only when capturing routes')
+            if capture_routes and self._native.segment_routes is None:
+                raise ValueError('native runtime lacks the additive executed-route observation extension')
             if cancel is None:
                 cancel = getattr(self._cancellation, "event", None)
             ids = tuple(islice(iter(token_ids), self._max_rows + 1))
@@ -664,6 +679,12 @@ class SegmentEdgeExecution:
                 raise ValueError("token IDs are outside the edge vocabulary")
             rows, width = len(ids), int(self._edge_caps.width)
             bytes_needed = rows * (2 * width + self.vocabulary + 1) * 4
+            route_words = 0
+            if capture_routes:
+                route_words = rows * self._edge_caps.layers * route_width
+                if route_words > np.iinfo(np.intp).max // 4:
+                    raise MemoryError('complete native route observation exceeds address space')
+                bytes_needed += route_words * 4
             if inputs_embeds is not None:
                 source=np.asarray(inputs_embeds)
                 if source.shape!=(rows,width) or source.dtype!=np.float32:
@@ -671,6 +692,8 @@ class SegmentEdgeExecution:
                 bytes_needed+=source.nbytes
             if bytes_needed > self._transfer_limit:
                 raise MemoryError("activation and logit buffers exceed host transfer admission")
+            route_output = (np.empty((rows, self._edge_caps.layers, route_width), dtype=np.float32)
+                            if capture_routes else None)
             failures = []
 
             def cancelled(_):
@@ -706,7 +729,8 @@ class SegmentEdgeExecution:
                     np.copyto(current,source)
                 if not np.isfinite(current).all():
                     raise ArithmeticError("native edge returned nonfinite embeddings")
-                for _, session, caps in self._segments:
+                for (begin, end), (_, session, caps) in zip(
+                        self._range_bounds, self._segments, strict=True):
                     check_cancel()
                     request = _Run(rows=rows, position=self._position,
                         tokens=tokens.ctypes.data if caps.flags & 1 else None,
@@ -716,6 +740,18 @@ class SegmentEdgeExecution:
                     self._native.call("segment_run", session, C.byref(request))
                     if not np.isfinite(scratch).all():
                         raise ArithmeticError("native range returned nonfinite activations")
+                    if capture_routes:
+                        route_count = rows * (end - begin) * route_width
+                        observed = np.empty((rows, end - begin, route_width), dtype=np.float32)
+                        written, got_begin, got_end, got_width = _SIZE(), _U32(), _U32(), _U32()
+                        self._native.call("segment_routes", session, rows, self._position,
+                            observed.ctypes.data_as(C.POINTER(C.c_float)), route_count,
+                            C.byref(written), C.byref(got_begin), C.byref(got_end), C.byref(got_width))
+                        if (written.value != route_count or got_begin.value != begin or
+                                got_end.value != end or got_width.value != route_width or
+                                not np.isfinite(observed).all()):
+                            raise ValueError('executed native route observation differs from the exact layer partition')
+                        route_output[:, begin:end, :] = observed
                     current, scratch = scratch, current
                 check_cancel()
                 request = _Logits(rows=rows, input=current.ctypes.data, input_bytes=current.nbytes,
@@ -725,6 +761,8 @@ class SegmentEdgeExecution:
                 if not np.isfinite(logits).all():
                     raise ArithmeticError("native edge returned nonfinite logits")
                 self._position += rows
+                if capture_routes:
+                    return logits, current, route_output
                 return (logits,current) if return_hidden else logits
             except BaseException as error:
                 primary_error = error

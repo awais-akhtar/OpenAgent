@@ -53,6 +53,7 @@ def decode_code(code):
 
 
 _LEVELS = np.array([decode_code(c) for c in range(127)], np.float64)
+_CODE_VALUES = np.asarray([decode_code(code) for code in range(256)], np.float32)
 
 
 def pack_matrix(matrix, *, scale_encoding=SCALE_ENCODING):
@@ -102,6 +103,13 @@ def pack_expert(gate, up, down, *, scale_encoding=SCALE_ENCODING):
 def scratch_bytes(hidden_size, intermediate_size):
     _shapes(hidden_size, intermediate_size)
     return intermediate_size * 4
+
+
+def _reference_scratch_bytes(hidden_size, intermediate_size):
+    _shapes(hidden_size, intermediate_size)
+    # gate, up and activation vectors plus the largest bounded 128-row decode tile
+    return 4 * (3 * intermediate_size + hidden_size +
+                128 * max(hidden_size, intermediate_size))
 
 
 def _clear_failure(error):
@@ -159,8 +167,62 @@ def _reference_loop(raw, vector, route_weight, hidden, intermediate, activation,
     return 0
 
 
+def _block_matvec(raw, offset, rows, columns, vector):
+    """Decode one 128-row tile at a time and use NumPy's independent GEMV."""
+    code_count = rows * columns
+    codes = np.frombuffer(raw, dtype=np.uint8, count=code_count, offset=offset).reshape(rows, columns)
+    if np.any((codes & np.uint8(127)) == np.uint8(127)):
+        return None
+    scale_rows, scale_columns = (rows + 127) // 128, (columns + 127) // 128
+    scale_count = scale_rows * scale_columns
+    scale_offset = offset + code_count
+    scales = np.frombuffer(raw, dtype="<f4", count=scale_count, offset=scale_offset)
+    if not np.isfinite(scales).all():
+        return None
+    scales = scales.reshape(scale_rows, scale_columns)
+    output = np.empty(rows, np.float32)
+    for first in range(0, rows, 128):
+        stop = min(rows, first + 128)
+        tile_codes = codes[first:stop]
+        weights = _CODE_VALUES[tile_codes]
+        scale_row = first // 128
+        for col in range(scale_columns):
+            start_col, stop_col = col * 128, min(columns, (col + 1) * 128)
+            weights[:, start_col:stop_col] *= scales[scale_row, col]
+        output[first:stop] = weights @ vector
+    return output
+
+
+def _array_reference_loop(raw, vector, route_weight, hidden, intermediate, output):
+    """Independent bounded FP8 decode/GEMV reference, without Python per-weight loops."""
+    stride = matrix_payload_size(intermediate, hidden)
+    gate = _block_matvec(raw, 0, intermediate, hidden, vector)
+    up = _block_matvec(raw, stride, intermediate, hidden, vector)
+    if gate is None or up is None:
+        return 1
+    sigmoid = np.empty_like(gate)
+    positive = gate >= 0
+    with np.errstate(over="ignore", invalid="ignore"):
+        sigmoid[positive] = 1.0 / (1.0 + np.exp(-gate[positive]))
+        exponential = np.exp(gate[~positive])
+        sigmoid[~positive] = exponential / (1.0 + exponential)
+        activation = (gate * sigmoid) * up
+    if not np.isfinite(activation).all():
+        return 2
+    # Validate/decode down weights only once the activation is available.
+    down = _block_matvec(raw, 2 * stride, hidden, intermediate, activation)
+    if down is None:
+        return 1
+    with np.errstate(over="ignore", invalid="ignore"):
+        updated = output + np.float32(route_weight) * down
+    if not np.isfinite(updated).all():
+        return 2
+    output[:] = updated
+    return 0
+
+
 class FP8BlockExpertBackend:
-    """Explicit scalar reference backend, independent of Numba availability."""
+    """Explicit bounded NumPy reference backend, independent of Numba availability."""
 
     NAME = "fp8-e4m3-b128-f32-reference"
 
@@ -171,7 +233,7 @@ class FP8BlockExpertBackend:
     def info(self):
         return KernelBackendInfo(name=self.NAME, provider="openagent", available=True, priority=-11000,
             capabilities=KernelCapabilities(frozenset({DTYPE}), True, True),
-            evidence=(KernelEvidence("implementation", "Scalar direct-byte FP8 reference execution"),))
+            evidence=(KernelEvidence("implementation", "Bounded FP8 block decode and NumPy GEMV reference"),))
 
     def execute(self, source, inputs, routes, *, hidden_size, intermediate_size, dtype=DTYPE):
         vector = _finite_array(inputs, (hidden_size,), "inputs")
@@ -181,8 +243,8 @@ class FP8BlockExpertBackend:
     def execute_batch(self, source, inputs, route_batch, *, hidden_size, intermediate_size, dtype=DTYPE):
         if dtype != DTYPE:
             raise ValueError("unsupported FP8 dtype")
-        if scratch_bytes(hidden_size, intermediate_size) > self.max_scratch_bytes:
-            raise MemoryError("FP8 activation scratch exceeds max_scratch_bytes")
+        if _reference_scratch_bytes(hidden_size, intermediate_size) > self.max_scratch_bytes:
+            raise MemoryError("FP8 reference decode scratch exceeds max_scratch_bytes")
         if not isinstance(source, ExpertPayloadSource):
             raise TypeError("source must implement acquire(key)")
         batch = _finite_matrix(inputs, hidden_size)
@@ -195,7 +257,6 @@ class FP8BlockExpertBackend:
                 if weight > float(np.finfo(np.float32).max):
                     raise ValueError("route weight must be representable as float32")
         output = np.zeros_like(batch)
-        activation = np.empty(intermediate_size, np.float32)
         expected = payload_size(hidden_size, intermediate_size)
         with np.errstate(over="ignore", invalid="ignore", under="ignore"):
             for row, assignments in enumerate(routes):
@@ -206,8 +267,8 @@ class FP8BlockExpertBackend:
                             raise ValueError("FP8 payload size mismatch")
                         raw = np.frombuffer(payload, np.uint8)
                         try:
-                            status = _reference_loop(raw, batch[row], np.float32(weight), hidden_size,
-                                                     intermediate_size, activation, output[row])
+                            status = _array_reference_loop(raw, batch[row], np.float32(weight),
+                                                           hidden_size, intermediate_size, output[row])
                         except BaseException as error:
                             _clear_failure(error)
                             failure = error

@@ -30,14 +30,19 @@ describe('reference screen set', () => {
     } finally { useWorkspaceState.getState().setDataMode(originalMode); }
   });
 
-  it('keeps developer-only integration guide controls out of the Live workspace', () => {
+  it('opens a truthful Live integration guide without Demo export controls', async () => {
     const originalMode = useWorkspaceState.getState().dataMode;
     useWorkspaceState.getState().setDataMode('live');
     try {
       renderWithClient(<AdvancedScreen route="voice" />);
-      expect(screen.queryByRole('button', { name: 'Integration guide' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('dialog', { name: 'Demo and integration guide' })).not.toBeInTheDocument();
-      expect(screen.queryByText('Live export is unavailable here. No backend export route is configured for this guide.')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Integration guide' }));
+      const guide = await screen.findByRole('dialog', { name: 'Demo and integration guide' });
+      expect(within(guide).getByText('Backend permissions apply')).toBeInTheDocument();
+      expect(within(guide).getByText('Live export is unavailable here. No backend export route is configured for this guide.')).toBeInTheDocument();
+      expect(within(guide).queryByRole('button', { name: 'Export sample data' })).not.toBeInTheDocument();
+      expect(within(guide).queryByText('Only example data')).not.toBeInTheDocument();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Demo and integration guide' })).not.toBeInTheDocument());
     } finally { useWorkspaceState.getState().setDataMode(originalMode); }
   });
 

@@ -121,7 +121,12 @@ class _RecoveryDriver:
             for checkpoint in self.checkpoints:
                 path,before=checkpoint.admit(self.world_size)
                 session=coordinator.open_session()
-                if session is None or any(session is prior for prior in opened):
+                # DistributedExecutionService exposes positive integer
+                # handles. Validate that contract and compare by value: two
+                # equal integer handles are not guaranteed to be the same
+                # Python object (notably once they exceed the small-int cache).
+                if (type(session) is not int or session <= 0 or
+                        any(session == prior for prior in opened)):
                     raise RuntimeError('replacement coordinator returned a foreign or reused session handle')
                 opened.append(session)
                 if type(checkpoint) is RankGenerationRecoveryCheckpoint:
@@ -133,6 +138,12 @@ class _RecoveryDriver:
                 if before!=after:
                     raise ValueError('committed manifest changed while replacement ranks restored')
                 restored[checkpoint.key]=session
+            # A later restore can take time or execute caller-controlled code.
+            # Re-pin every checkpoint together at the handoff boundary so a
+            # manifest changed after its individual restore check cannot
+            # authorize application work on a mixed/stale checkpoint set.
+            for checkpoint in self.checkpoints:
+                checkpoint.admit(self.world_size)
             return self.driver(coordinator,MappingProxyType(restored),self.attempt)
         except BaseException as primary:
             for session in reversed(tuple(opened)):
@@ -197,7 +208,7 @@ def launch_recovered_distributed_execution(service_factory,root_driver,*,checkpo
             failures.append(failure)
     error=RuntimeError('replacement rank recovery exhausted all admitted rendezvous epochs')
     for attempt,failure in enumerate(failures):
-        error.add_note('recovery attempt '+str(attempt)+': '+str(failure))
+        error.add_note('recovery attempt '+str(attempt)+': '+_failure_summary(failure))
     raise error from failures[-1]
 
 

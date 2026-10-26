@@ -485,6 +485,15 @@ API int oa_glm5_next_step_range_streamed(const int32_t *c,const float *f,const i
     return glm5_next_step(c,f,schedule,weights,embed,norm,empty,cache,pos,token,
         outgoing,empty,expert,user,incoming,empty,empty,begin,end,1);
 }
+API int oa_glm5_next_step_range_observed(const int32_t *c,const float *f,const int32_t *schedule,
+    const Buf *weights,Buf embed,Buf norm,Buf *cache,int32_t pos,int64_t token,
+    int32_t begin,int32_t end,Buf incoming,Buf outgoing,ExpertCall expert,void *user,
+    Buf routing_logits,Buf routing_weights) {
+    Buf empty={NULL,0};
+    if(begin<0||end<0||!routing_logits.p||!routing_weights.p)return 1;
+    return glm5_next_step(c,f,schedule,weights,embed,norm,empty,cache,pos,token,
+        outgoing,empty,expert,user,incoming,routing_logits,routing_weights,begin,end,1);
+}
 API int oa_glm5_next_step_observed(const int32_t *c,const float *f,const int32_t *schedule,
     const Buf *weights,Buf embed,Buf norm,Buf head,Buf *cache,
     int32_t pos,int64_t token,Buf hidden,Buf logits,Buf incoming,

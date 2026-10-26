@@ -88,7 +88,7 @@ def handle_get(path: str, query: str, deps: CodebaseRouteDependencies) -> JsonRo
                 run_id = remainder.removesuffix("/events")
                 return JsonRouteResult({"events": deps.codebase.events(run_id, owner=owner, after=deps.parse_int(deps.first(params, "after"), default=0))})
             return JsonRouteResult({"run": deps.codebase.get_run(remainder, owner=owner)})
-    except KeyError as exc:
+    except (KeyError, FileNotFoundError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
     except (ValueError, OSError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

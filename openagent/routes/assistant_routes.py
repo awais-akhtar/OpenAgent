@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any, Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from . import JsonRouteResult
 from ._contracts import route_contract
@@ -15,6 +15,7 @@ ROUTE_GROUP = "assistant"
 ROUTES = (
     ("GET", "/api/assistant/tasks"),
     ("GET", "/api/assistant/goals"),
+    ("GET", "/api/assistant/activity"),
     ("GET", "/api/assistant/daily-brief"),
     ("GET", "/api/assistant/coach"),
     ("GET", "/api/assistant/crm"),
@@ -22,6 +23,10 @@ ROUTES = (
     ("POST", "/api/assistant/goals"),
     ("POST", "/api/assistant/tasks"),
     ("POST", "/api/assistant/tasks/complete"),
+    ("PATCH", "/api/assistant/tasks/{task_id}"),
+    ("DELETE", "/api/assistant/tasks/{task_id}"),
+    ("PATCH", "/api/assistant/goals/{goal_id}"),
+    ("DELETE", "/api/assistant/goals/{goal_id}"),
     ("POST", "/api/assistant/meeting/brief"),
     ("POST", "/api/assistant/meeting/summary"),
     ("POST", "/api/assistant/travel/plan"),
@@ -46,6 +51,17 @@ def handle_get(path: str, query: str, deps: AssistantRouteDependencies) -> JsonR
         return None
     params = parse_qs(query)
     project = deps.first(params, "project") or "default"
+    if path == "/api/assistant/activity":
+        explicit_project = str(deps.first(params, "project") or "").strip()
+        if not explicit_project:
+            return JsonRouteResult({"error": "Project is required for assistant activity."}, HTTPStatus.BAD_REQUEST)
+        try:
+            return JsonRouteResult({"events": deps.assistant.activity_events(
+                project=explicit_project,
+                limit=deps.parse_int(deps.first(params, "limit"), default=20),
+            )})
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
     if path == "/api/assistant/tasks":
         return JsonRouteResult({"tasks": deps.assistant.tasks(
             project=project,
@@ -141,3 +157,48 @@ def handle_post(path: str, deps: AssistantRouteDependencies) -> JsonRouteResult 
         return JsonRouteResult({"record": record}, HTTPStatus.CREATED)
     except (TypeError, ValueError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+
+def _record_route(path: str, kind: str) -> str | None:
+    prefix = f"/api/assistant/{kind}/"
+    if not path.startswith(prefix):
+        return None
+    record_id = unquote(path.removeprefix(prefix)).strip()
+    return record_id if record_id and "/" not in record_id else None
+
+
+def handle_patch(path: str, query: str, deps: AssistantRouteDependencies) -> JsonRouteResult | None:
+    kind = "tasks" if path.startswith("/api/assistant/tasks/") else "goals" if path.startswith("/api/assistant/goals/") else ""
+    if not kind:
+        return None
+    record_id = _record_route(path, kind)
+    if record_id is None:
+        return JsonRouteResult({"error": "A record ID is required."}, HTTPStatus.BAD_REQUEST)
+    payload = deps.read_json()
+    params = parse_qs(query)
+    project = str(payload.get("project") or deps.first(params, "project") or "default").strip()
+    updates = {key: value for key, value in payload.items() if key != "project"}
+    try:
+        item = deps.assistant.update_task(record_id, project=project, updates=updates) if kind == "tasks" else deps.assistant.update_goal(record_id, project=project, updates=updates)
+        return JsonRouteResult({"task" if kind == "tasks" else "goal": item})
+    except KeyError:
+        return JsonRouteResult({"error": "Record not found."}, HTTPStatus.NOT_FOUND)
+    except (TypeError, ValueError) as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+
+def handle_delete(path: str, query: str, deps: AssistantRouteDependencies) -> JsonRouteResult | None:
+    kind = "tasks" if path.startswith("/api/assistant/tasks/") else "goals" if path.startswith("/api/assistant/goals/") else ""
+    if not kind:
+        return None
+    record_id = _record_route(path, kind)
+    if record_id is None:
+        return JsonRouteResult({"error": "A record ID is required."}, HTTPStatus.BAD_REQUEST)
+    project = str(deps.first(parse_qs(query), "project") or "default").strip()
+    try:
+        deleted = deps.assistant.delete_task(record_id, project=project) if kind == "tasks" else deps.assistant.delete_goal(record_id, project=project)
+    except ValueError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+    if not deleted:
+        return JsonRouteResult({"error": "Record not found."}, HTTPStatus.NOT_FOUND)
+    return JsonRouteResult({"deleted": True, "id": record_id, "kind": kind[:-1]})

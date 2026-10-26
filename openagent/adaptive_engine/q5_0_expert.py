@@ -54,30 +54,40 @@ def pack_matrix(matrix, *, block_count=64):
     _positive(width, "columns")
     if width % BLOCK_WIDTH:
         raise ValueError("Q5_0 row widths must be multiples of 32")
-    result = bytearray(rows * width // BLOCK_WIDTH * BLOCK_BYTES)
-    cursor = 0
-    for row in weights:
-        for start in range(0, width, BLOCK_WIDTH * block_count):
-            with np.errstate(over="ignore", invalid="ignore"):
-                values = np.asarray(row[start:start + BLOCK_WIDTH * block_count],
-                                    dtype=np.float32).reshape(-1, BLOCK_WIDTH)
-            if not np.isfinite(values).all():
-                raise ValueError("weights must be finite and representable as float32")
-            for block in values:
-                peak = float(np.max(np.abs(block)))
-                with np.errstate(over="ignore", under="ignore"):
-                    delta = np.float16(peak / 15.0)
-                if not np.isfinite(delta):
-                    raise ValueError("Q5_0 delta exceeds binary16 range")
-                if peak > 0 and delta == 0:
-                    delta = np.float16(2 ** -24)
-                quants = np.clip(np.rint(block.astype(np.float64) / (float(delta) or 1.0)),
-                                 -16, 15).astype(np.int16) + 16
-                high_bits = sum((int(code) >> 4) << lane for lane, code in enumerate(quants))
-                nibbles = [(int(quants[lane]) & 15) | ((int(quants[lane + 16]) & 15) << 4)
-                           for lane in range(16)]
-                _BLOCK.pack_into(result, cursor, float(delta), high_bits, *nibbles)
-                cursor += BLOCK_BYTES
+    with np.errstate(over="ignore", invalid="ignore"):
+        values = np.asarray(weights, dtype=np.float32)
+    if not np.isfinite(values).all():
+        raise ValueError("weights must be finite and representable as float32")
+
+    # Each 32-value block is independent. Keep temporary arrays bounded by
+    # block_count while vectorizing the scale, 5th-bit plane and packed nibbles.
+    blocks = values.reshape(-1, BLOCK_WIDTH)
+    blocks_per_chunk = max(1, block_count * max(1, width // BLOCK_WIDTH))
+    result = bytearray(blocks.shape[0] * BLOCK_BYTES)
+    output = np.frombuffer(result, dtype=np.uint8).reshape(-1, BLOCK_BYTES)
+    lane_weights = (1 << np.arange(8, dtype=np.uint16))[None, None, :]
+    for start in range(0, blocks.shape[0], blocks_per_chunk):
+        chunk = blocks[start:start + blocks_per_chunk]
+        peak = np.max(np.abs(chunk), axis=1).astype(np.float64)
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            delta = (peak / 15.0).astype("<f2")
+        if not np.isfinite(delta).all():
+            raise ValueError("Q5_0 delta exceeds binary16 range")
+        delta = delta.copy()
+        delta[(peak > 0) & (delta == 0)] = np.float16(2 ** -24)
+        denominator = delta.astype(np.float64)
+        denominator[denominator == 0] = 1.0
+        codes = (np.clip(np.rint(chunk.astype(np.float64) / denominator[:, None]),
+                         -16, 15).astype(np.int16) + 16).astype(np.uint8)
+
+        high = codes >> 4
+        high_bytes = np.sum(high.reshape(-1, 4, 8).astype(np.uint16) * lane_weights,
+                            axis=2, dtype=np.uint16).astype(np.uint8)
+        nibbles = (codes[:, :16] & 15) | ((codes[:, 16:] & 15) << 4)
+        target = output[start:start + len(chunk)]
+        target[:, :2] = delta.view(np.uint8).reshape(-1, 2)
+        target[:, 2:6] = high_bytes
+        target[:, 6:] = nibbles
     return bytes(result)
 
 

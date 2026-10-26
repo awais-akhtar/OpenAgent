@@ -1,0 +1,1764 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Local development demo fixtures from the approved HTML only; never production records.",
+  "sourceSha256": "BDCF0F5E24121A94C562B524EF49AB2F9B8582ED5F083B79045AE3C01AAC6CE1",
+  "data": {
+    "topLevel": {
+      "projects": [
+        {
+          "name": "E-commerce Platform",
+          "tag": "Next.js · React · TypeScript",
+          "color": "violet",
+          "files": 42,
+          "updated": "2 minutes ago"
+        },
+        {
+          "name": "AI Research Assistant",
+          "tag": "Python · Retrieval · LLM",
+          "color": "blue",
+          "files": 17,
+          "updated": "1 hour ago"
+        },
+        {
+          "name": "Marketing Website",
+          "tag": "React · Tailwind CSS",
+          "color": "green",
+          "files": 24,
+          "updated": "3 hours ago"
+        },
+        {
+          "name": "Data Analysis Tool",
+          "tag": "Python · Pandas",
+          "color": "orange",
+          "files": 11,
+          "updated": "Yesterday"
+        }
+      ],
+      "chats": [
+        {
+          "title": "Review React project structure",
+          "time": "2 minutes ago"
+        },
+        {
+          "title": "Add authentication to dashboard",
+          "time": "1 hour ago"
+        },
+        {
+          "title": "Create data analysis agent",
+          "time": "3 hours ago"
+        },
+        {
+          "title": "Plan project architecture",
+          "time": "Yesterday"
+        },
+        {
+          "title": "Fix deployment issue",
+          "time": "Monday"
+        }
+      ],
+      "activity": [
+        {
+          "icon": "git-pull-request",
+          "title": "Reviewed React project structure",
+          "detail": "E-commerce Platform · Code review",
+          "time": "2m ago",
+          "tone": "blue"
+        },
+        {
+          "icon": "search",
+          "title": "Completed a research summary",
+          "detail": "AI Research Assistant · Research",
+          "time": "28m ago",
+          "tone": "green"
+        },
+        {
+          "icon": "bot",
+          "title": "Created the Code Reviewer agent",
+          "detail": "AI Agents · Configuration",
+          "time": "1h ago",
+          "tone": "violet"
+        },
+        {
+          "icon": "file-check",
+          "title": "Updated product components",
+          "detail": "src/components/ProductCard.tsx",
+          "time": "3h ago",
+          "tone": "blue"
+        }
+      ],
+      "agents": [
+        {
+          "name": "Coordinator",
+          "role": "Plans work and keeps everyone aligned",
+          "tone": "violet",
+          "icon": "sparkles",
+          "status": "Available"
+        },
+        {
+          "name": "Researcher",
+          "role": "Finds and checks information and sources",
+          "tone": "green",
+          "icon": "search",
+          "status": "Available"
+        },
+        {
+          "name": "Developer",
+          "role": "Analyses code and proposes changes",
+          "tone": "blue",
+          "icon": "code",
+          "status": "Available"
+        },
+        {
+          "name": "Documentation",
+          "role": "Turns technical work into clear guidance",
+          "tone": "orange",
+          "icon": "book-open",
+          "status": "Available"
+        }
+      ],
+      "files": [
+        {
+          "name": "Product requirements specification",
+          "type": "PDF",
+          "meta": "Product · Requirements",
+          "size": "12 MB",
+          "updated": "2 days ago",
+          "tone": "red",
+          "description": "Product goals, acceptance criteria, and technical requirements."
+        },
+        {
+          "name": "System architecture overview",
+          "type": "DOC",
+          "meta": "Architecture · Technical",
+          "size": "1.2 MB",
+          "updated": "4 days ago",
+          "tone": "blue",
+          "description": "Components, dependencies, and system design decisions."
+        },
+        {
+          "name": "Competitor analysis",
+          "type": "XLS",
+          "meta": "Research · Competitive analysis",
+          "size": "856 KB",
+          "updated": "1 week ago",
+          "tone": "green",
+          "description": "Comparison of products and market positioning."
+        },
+        {
+          "name": "Go-to-market strategy",
+          "type": "SLD",
+          "meta": "Strategy · Marketing",
+          "size": "2.1 MB",
+          "updated": "1 week ago",
+          "tone": "orange",
+          "description": "Messaging and audience planning for a product launch."
+        },
+        {
+          "name": "Product review notes",
+          "type": "MD",
+          "meta": "Notes · Product",
+          "size": "42 KB",
+          "updated": "2 weeks ago",
+          "tone": "violet",
+          "description": "Meeting notes, decisions and follow-up actions."
+        },
+        {
+          "name": "React documentation",
+          "type": "LINK",
+          "meta": "Reference · Frontend",
+          "size": "Website",
+          "updated": "3 days ago",
+          "tone": "blue",
+          "description": "Useful API and component documentation."
+        }
+      ],
+      "automations": [
+        {
+          "name": "Daily research brief",
+          "icon": "file-text",
+          "enabled": true,
+          "schedule": "Every weekday · 09:00",
+          "next": "Tomorrow, 09:00",
+          "description": "Find important updates and prepare a concise summary.",
+          "instruction": "Search for relevant AI developments and product updates. Create a short brief with the key points and links to sources."
+        },
+        {
+          "name": "Review code changes",
+          "icon": "code",
+          "enabled": true,
+          "schedule": "Every day · 18:00",
+          "next": "Today, 18:00",
+          "description": "Review recent repository changes and highlight risks."
+        },
+        {
+          "name": "Weekly knowledge digest",
+          "icon": "book-open",
+          "enabled": true,
+          "schedule": "Every Sunday · 10:00",
+          "next": "Sunday, 10:00",
+          "description": "Summarise new information in the knowledge base."
+        },
+        {
+          "name": "Competitor monitoring",
+          "icon": "chart-column",
+          "enabled": true,
+          "schedule": "Every day · 09:00",
+          "next": "Tomorrow, 09:00",
+          "description": "Track competitor activity and important changes."
+        },
+        {
+          "name": "Opportunity alerts",
+          "icon": "bell",
+          "enabled": false,
+          "schedule": "Every weekday · 08:00",
+          "next": "Paused",
+          "description": "Identify relevant new opportunities."
+        }
+      ],
+      "runs": [
+        {
+          "status": "success",
+          "time": "Today, 09:01",
+          "info": "8 sources reviewed",
+          "duration": "2m 14s"
+        },
+        {
+          "status": "success",
+          "time": "Yesterday, 09:00",
+          "info": "6 sources reviewed",
+          "duration": "2m 03s"
+        },
+        {
+          "status": "success",
+          "time": "Monday, 09:00",
+          "info": "7 sources reviewed",
+          "duration": "2m 37s"
+        },
+        {
+          "status": "error",
+          "time": "Sunday, 09:00",
+          "info": "Search service unavailable",
+          "duration": "1m 12s"
+        }
+      ],
+      "models": [
+        {
+          "name": "GPT-4o",
+          "provider": "OpenAI",
+          "meta": "Cloud · Vision · Tools",
+          "tone": "blue",
+          "icon": "bot",
+          "description": "General-purpose chat, coding and document workflows.",
+          "caps": [
+            "Text",
+            "Vision",
+            "Tools"
+          ],
+          "status": "Configured"
+        },
+        {
+          "name": "Claude Sonnet",
+          "provider": "Anthropic",
+          "meta": "Cloud · Reasoning · Code",
+          "tone": "orange",
+          "icon": "brain",
+          "description": "Code analysis, writing and complex documents.",
+          "caps": [
+            "Text",
+            "Reasoning",
+            "Code"
+          ],
+          "status": "Configured"
+        },
+        {
+          "name": "Gemini Pro",
+          "provider": "Google",
+          "meta": "Cloud · Multimodal",
+          "tone": "violet",
+          "icon": "sparkles",
+          "description": "Research and large-document analysis.",
+          "caps": [
+            "Text",
+            "Vision",
+            "Research"
+          ],
+          "status": "Setup required"
+        },
+        {
+          "name": "Llama local",
+          "provider": "Local runtime",
+          "meta": "Local · Privacy-first",
+          "tone": "green",
+          "icon": "cpu",
+          "description": "Local processing with hardware-dependent capabilities.",
+          "caps": [
+            "Text",
+            "Local"
+          ],
+          "status": "Not installed"
+        }
+      ],
+      "researchSources": [
+        {
+          "title": "AutoGen project documentation",
+          "site": "Official documentation",
+          "date": "Source 01"
+        },
+        {
+          "title": "CrewAI framework guide",
+          "site": "Framework documentation",
+          "date": "Source 02"
+        },
+        {
+          "title": "LangGraph overview",
+          "site": "LangChain documentation",
+          "date": "Source 03"
+        },
+        {
+          "title": "Model Context Protocol specification",
+          "site": "Official specification",
+          "date": "Source 04"
+        },
+        {
+          "title": "llama.cpp repository",
+          "site": "GitHub project",
+          "date": "Source 05"
+        }
+      ],
+      "codeFiles": [
+        {
+          "name": "ProductCard.tsx",
+          "path": "src/components/ProductCard.tsx",
+          "lang": "typescript",
+          "content": "import { useState } from 'react';\nimport { Heart, ShoppingCart } from 'lucide-react';\nimport { Button } from '@/components/ui/button';\nimport { Card } from '@/components/ui/card';\n \ninterface ProductCardProps {\n  product: {\n    id: string;\n    name: string;\n    price: number;\n    image: string;\n    rating: number;\n  };\n}\n \nexport function ProductCard({ product }: ProductCardProps) {\n  const [isHovered, setIsHovered] = useState(false);\n  const [isInCart, setIsInCart] = useState(false);\n \n  const addToCart = async () => {\n    try {\n      await cart.add(product.id);\n      setIsInCart(true);\n    } catch (error) {\n      console.error('Unable to add item', error);\n    }\n  };\n \n  return (\n    <Card className=\"group overflow-hidden\">\n      <img src={product.image} alt={product.name} />\n      <h3>{product.name}</h3>\n      <p>{formatPrice(product.price)}</p>\n      <Button onClick={addToCart}>Add to cart</Button>\n    </Card>\n  );\n}"
+        },
+        {
+          "name": "useCart.ts",
+          "path": "src/hooks/useCart.ts",
+          "lang": "typescript",
+          "content": "import { useState } from 'react';\n \nexport function useCart() {\n  const [items, setItems] = useState([]);\n  const [loading, setLoading] = useState(false);\n \n  async function add(id: string) {\n    setLoading(true);\n    try {\n      // Replace this example with the connected API.\n      return { id };\n    } finally {\n      setLoading(false);\n    }\n  }\n \n  return { items, loading, add };\n}"
+        },
+        {
+          "name": "page.tsx",
+          "path": "src/app/page.tsx",
+          "lang": "typescript",
+          "content": "import { ProductCard } from '@/components/ProductCard';\n \nexport default function ShopPage() {\n  return (\n    <main className=\"container mx-auto\">\n      <h1>Products</h1>\n      <ProductCard product={demoProduct} />\n    </main>\n  );\n}"
+        },
+        {
+          "name": "tailwind.config.js",
+          "path": "tailwind.config.js",
+          "lang": "javascript",
+          "content": "export default {\n  content: ['./src/**/*.{js,ts,jsx,tsx}'],\n  theme: { extend: {} },\n  plugins: [],\n};"
+        }
+      ]
+    },
+    "advanced": {
+      "knowledge": {
+        "collections": [
+          {
+            "id": "kn1",
+            "name": "Product documentation",
+            "description": "Release requirements, API contracts and onboarding docs",
+            "status": "Indexed",
+            "count": 12,
+            "owner": "Product team"
+          },
+          {
+            "id": "kn2",
+            "name": "Engineering notes",
+            "description": "Architecture decisions and integration records",
+            "status": "Indexed",
+            "count": 7,
+            "owner": "Engineering"
+          },
+          {
+            "id": "kn3",
+            "name": "Research references",
+            "description": "Sources and comparative analysis",
+            "status": "Indexing",
+            "count": 19,
+            "owner": "Research"
+          }
+        ],
+        "documents": [
+          {
+            "id": "kd1",
+            "name": "Product requirements v1.2",
+            "description": "Launch requirements and success criteria",
+            "status": "Indexed",
+            "count": 34,
+            "owner": "Product documentation"
+          },
+          {
+            "id": "kd2",
+            "name": "Frontend architecture",
+            "description": "Component and routing guidelines",
+            "status": "Indexed",
+            "count": 16,
+            "owner": "Engineering notes"
+          },
+          {
+            "id": "kd3",
+            "name": "Agent frameworks review",
+            "description": "Autonomy, tools and safety comparisons",
+            "status": "Indexed",
+            "count": 14,
+            "owner": "Research references"
+          }
+        ]
+      },
+      "voice": {
+        "recordings": [
+          {
+            "id": "vo1",
+            "name": "Product planning sync",
+            "description": "Review onboarding feedback and release blockers",
+            "status": "Transcribed",
+            "duration": "08:42",
+            "owner": "Workspace"
+          },
+          {
+            "id": "vo2",
+            "name": "Quick idea — agent UI",
+            "description": "Notes about task execution feedback",
+            "status": "Transcribed",
+            "duration": "02:16",
+            "owner": "Workspace"
+          }
+        ],
+        "settings": [
+          {
+            "id": "vs1",
+            "name": "Transcription language",
+            "description": "English (UK)",
+            "status": "Enabled"
+          },
+          {
+            "id": "vs2",
+            "name": "Microphone access",
+            "description": "Demo recording input",
+            "status": "Available"
+          }
+        ]
+      },
+      "assistant": {
+        "tasks": [
+          {
+            "id": "at1",
+            "name": "Review CodeQ permissions",
+            "description": "Verify diff approval and execution boundaries",
+            "status": "In progress",
+            "due": "Today",
+            "priority": "High"
+          },
+          {
+            "id": "at2",
+            "name": "Polish research empty states",
+            "description": "Keep copy concise and helpful",
+            "status": "Todo",
+            "due": "Tomorrow",
+            "priority": "Medium"
+          },
+          {
+            "id": "at3",
+            "name": "Approve design system tokens",
+            "description": "Confirm typography, contrast and motion",
+            "status": "Done",
+            "due": "Yesterday",
+            "priority": "Low"
+          }
+        ],
+        "goals": [
+          {
+            "id": "ag1",
+            "name": "Launch the next OpenAgent release",
+            "description": "Ship a coherent workflow with verified parity",
+            "status": "In progress",
+            "progress": 68
+          },
+          {
+            "id": "ag2",
+            "name": "Reduce frontend regressions",
+            "description": "Introduce visual and API acceptance tests",
+            "status": "In progress",
+            "progress": 43
+          }
+        ]
+      },
+      "communications": {
+        "messages": [
+          {
+            "id": "cm1",
+            "name": "Updated release checklist",
+            "description": "Maya Chen · Please review the new acceptance items before Friday.",
+            "status": "Inbox",
+            "owner": "Maya Chen",
+            "time": "10:42"
+          },
+          {
+            "id": "cm2",
+            "name": "Code review follow-up",
+            "description": "Daniel Park · The file permissions need one more pass.",
+            "status": "Inbox",
+            "owner": "Daniel Park",
+            "time": "Yesterday"
+          },
+          {
+            "id": "cm3",
+            "name": "Weekly progress summary",
+            "description": "To team@demo.example · Ready for review.",
+            "status": "Draft",
+            "owner": "Team",
+            "time": "09:15"
+          },
+          {
+            "id": "cm4",
+            "name": "Design handoff notes",
+            "description": "To product@demo.example · Latest interaction specification attached.",
+            "status": "Sent",
+            "owner": "Product",
+            "time": "Monday"
+          }
+        ],
+        "accounts": [
+          {
+            "id": "ca1",
+            "name": "Demo Mail",
+            "description": "team@demo.example — example inbox",
+            "status": "Connected",
+            "owner": "Workspace"
+          },
+          {
+            "id": "ca2",
+            "name": "Support Queue",
+            "description": "support@demo.example — example helpdesk",
+            "status": "Disconnected",
+            "owner": "Workspace"
+          }
+        ]
+      },
+      "security": {
+        "policies": [
+          {
+            "id": "sp1",
+            "name": "Workspace administrator",
+            "description": "Manage project settings and membership",
+            "status": "Enabled",
+            "owner": "Admin",
+            "scope": "Workspace"
+          },
+          {
+            "id": "sp2",
+            "name": "Agent file edits",
+            "description": "Requires explicit review before writes",
+            "status": "Enforced",
+            "owner": "Agent",
+            "scope": "Files"
+          },
+          {
+            "id": "sp3",
+            "name": "Vault credential use",
+            "description": "Short-lived, audited access",
+            "status": "Enforced",
+            "owner": "Service",
+            "scope": "Secrets"
+          }
+        ],
+        "sessions": [
+          {
+            "id": "ss1",
+            "name": "Chrome · Windows",
+            "description": "Desktop browser · London, UK (demo)",
+            "status": "Current",
+            "owner": "Demo user",
+            "time": "Now"
+          },
+          {
+            "id": "ss2",
+            "name": "Safari · macOS",
+            "description": "Development laptop · example session",
+            "status": "Active",
+            "owner": "Demo user",
+            "time": "Yesterday"
+          }
+        ],
+        "audit": [
+          {
+            "id": "sa1",
+            "name": "Approval granted",
+            "description": "CodeQ change set #42",
+            "status": "Allowed",
+            "owner": "Demo user",
+            "time": "10:48"
+          },
+          {
+            "id": "sa2",
+            "name": "Session authenticated",
+            "description": "Browser sign-in completed",
+            "status": "Allowed",
+            "owner": "Demo user",
+            "time": "09:32"
+          },
+          {
+            "id": "sa3",
+            "name": "Blocked credential reveal",
+            "description": "Protected field lacked permission",
+            "status": "Denied",
+            "owner": "Agent worker",
+            "time": "Yesterday"
+          }
+        ]
+      },
+      "developer": {
+        "connections": [
+          {
+            "id": "dc1",
+            "name": "GitHub",
+            "description": "Repository issues and pull requests",
+            "status": "Connected",
+            "scope": "Repository read"
+          },
+          {
+            "id": "dc2",
+            "name": "MCP filesystem",
+            "description": "Sandbox-only workspace tools",
+            "status": "Connected",
+            "scope": "Scoped files"
+          },
+          {
+            "id": "dc3",
+            "name": "Slack",
+            "description": "Channels and notifications",
+            "status": "Disconnected",
+            "scope": "Read channels"
+          }
+        ],
+        "keys": [
+          {
+            "id": "dk1",
+            "name": "Development integration",
+            "description": "Created for local staging requests",
+            "status": "Active",
+            "scope": "Read only",
+            "lastUsed": "2 hours ago"
+          },
+          {
+            "id": "dk2",
+            "name": "QA automation",
+            "description": "Integration testing",
+            "status": "Active",
+            "scope": "Tasks read/write",
+            "lastUsed": "Yesterday"
+          }
+        ],
+        "webhooks": [
+          {
+            "id": "dw1",
+            "name": "Build notification",
+            "description": "https://hooks.demo.example/build",
+            "status": "Active",
+            "scope": "run.completed"
+          },
+          {
+            "id": "dw2",
+            "name": "New task webhook",
+            "description": "https://hooks.demo.example/tasks",
+            "status": "Paused",
+            "scope": "task.created"
+          }
+        ],
+        "mcp": [
+          {
+            "id": "dm1",
+            "name": "filesystem.list_directory",
+            "description": "List files in the approved sandbox",
+            "status": "Available",
+            "scope": "Files"
+          },
+          {
+            "id": "dm2",
+            "name": "github.search_issues",
+            "description": "Search issues in a selected repository",
+            "status": "Available",
+            "scope": "GitHub"
+          },
+          {
+            "id": "dm3",
+            "name": "browser.open_page",
+            "description": "Open a permitted public page",
+            "status": "Disabled",
+            "scope": "Browser"
+          }
+        ]
+      },
+      "engine": {
+        "hardware": [
+          {
+            "id": "eh1",
+            "name": "CPU · 12 logical cores",
+            "description": "x86_64 · AVX2 support",
+            "status": "Ready",
+            "memory": "24 GB"
+          },
+          {
+            "id": "eh2",
+            "name": "GPU · NVIDIA RTX",
+            "description": "CUDA runtime available in example",
+            "status": "Ready",
+            "memory": "12 GB VRAM"
+          },
+          {
+            "id": "eh3",
+            "name": "System memory",
+            "description": "24 GB available / 32 GB installed",
+            "status": "Healthy"
+          },
+          {
+            "id": "eh4",
+            "name": "Local storage",
+            "description": "214 GB available",
+            "status": "Healthy"
+          }
+        ],
+        "jobs": [
+          {
+            "id": "ej1",
+            "name": "Embeddings refresh",
+            "description": "Re-index project documentation",
+            "status": "Completed",
+            "duration": "1m 42s"
+          },
+          {
+            "id": "ej2",
+            "name": "Local inference benchmark",
+            "description": "Compare quantized model variants",
+            "status": "Completed",
+            "duration": "3m 16s"
+          }
+        ],
+        "plans": [
+          {
+            "id": "ep1",
+            "name": "Balanced local inference",
+            "description": "Use GPU when available, CPU fallback",
+            "status": "Ready",
+            "memory": "8 GB"
+          },
+          {
+            "id": "ep2",
+            "name": "Memory-friendly mode",
+            "description": "Smaller batch size and lower concurrency",
+            "status": "Ready",
+            "memory": "4 GB"
+          }
+        ]
+      },
+      "science": {
+        "projects": [
+          {
+            "id": "sc1",
+            "name": "Model reliability study",
+            "description": "Evaluate calibration and failure rates",
+            "status": "Active",
+            "owner": "Research team"
+          },
+          {
+            "id": "sc2",
+            "name": "Energy-aware inference",
+            "description": "Compare runtime efficiency across models",
+            "status": "Active",
+            "owner": "ML lab"
+          }
+        ],
+        "experiments": [
+          {
+            "id": "se1",
+            "name": "Calibration baseline",
+            "description": "Compare confidence calibration on test split",
+            "status": "Completed",
+            "accuracy": "91.3%",
+            "duration": "2m 18s"
+          },
+          {
+            "id": "se2",
+            "name": "Quantization sweep",
+            "description": "Measure speed-quality tradeoff",
+            "status": "Completed",
+            "accuracy": "88.7%",
+            "duration": "4m 42s"
+          }
+        ],
+        "datasets": [
+          {
+            "id": "sd1",
+            "name": "Validation sample v2",
+            "description": "2,400 examples · JSONL · synthetic fixture",
+            "status": "Validated",
+            "size": "3.2 MB"
+          },
+          {
+            "id": "sd2",
+            "name": "Benchmark telemetry",
+            "description": "Aggregated performance sample",
+            "status": "Validated",
+            "size": "1.8 MB"
+          }
+        ],
+        "reports": [
+          {
+            "id": "sr1",
+            "name": "Model calibration comparison",
+            "description": "Accuracy, ECE and confidence plots",
+            "status": "Published",
+            "owner": "Research team"
+          },
+          {
+            "id": "sr2",
+            "name": "Inference cost analysis",
+            "description": "Latency, throughput and memory results",
+            "status": "Draft",
+            "owner": "ML lab"
+          }
+        ]
+      },
+      "twin": {
+        "preferences": [
+          {
+            "id": "tp1",
+            "name": "Response style",
+            "description": "Concise, practical and professional",
+            "status": "On"
+          },
+          {
+            "id": "tp2",
+            "name": "Preferred tools",
+            "description": "CodeQ, Research, Files",
+            "status": "On"
+          },
+          {
+            "id": "tp3",
+            "name": "Use project context",
+            "description": "Only within this demo workspace",
+            "status": "On"
+          }
+        ],
+        "sources": [
+          {
+            "id": "ts1",
+            "name": "Workspace conversations",
+            "description": "Summaries explicitly stored in example",
+            "status": "Enabled"
+          },
+          {
+            "id": "ts2",
+            "name": "Uploaded documents",
+            "description": "Project files selected for context",
+            "status": "Enabled"
+          },
+          {
+            "id": "ts3",
+            "name": "Connected accounts",
+            "description": "No real accounts in this demo",
+            "status": "Disabled"
+          }
+        ],
+        "history": [
+          {
+            "id": "th1",
+            "name": "Updated response preference",
+            "description": "Requested concise technical answers",
+            "status": "Recorded",
+            "time": "Yesterday"
+          },
+          {
+            "id": "th2",
+            "name": "Reviewed data source",
+            "description": "Confirmed allowed project files",
+            "status": "Recorded",
+            "time": "Monday"
+          }
+        ]
+      },
+      "vault": {
+        "secrets": [
+          {
+            "id": "vt1",
+            "name": "OpenAI development key",
+            "description": "Used by staging chat integration",
+            "status": "Active",
+            "scope": "Model requests",
+            "updated": "3 days ago"
+          },
+          {
+            "id": "vt2",
+            "name": "GitHub integration token",
+            "description": "Repository operations; limited scope",
+            "status": "Active",
+            "scope": "Repository read",
+            "updated": "Last week"
+          },
+          {
+            "id": "vt3",
+            "name": "Database staging password",
+            "description": "Example database connector",
+            "status": "Expiring",
+            "scope": "Staging",
+            "updated": "2 weeks ago"
+          }
+        ],
+        "requests": [
+          {
+            "id": "vr1",
+            "name": "Agent needs GitHub read access",
+            "description": "Repository issue lookup",
+            "status": "Pending",
+            "scope": "Read only"
+          },
+          {
+            "id": "vr2",
+            "name": "CodeQ needs staging key",
+            "description": "Run protected integration tests",
+            "status": "Approved",
+            "scope": "Staging only"
+          }
+        ],
+        "audit": [
+          {
+            "id": "va1",
+            "name": "Token rotated",
+            "description": "OpenAI development key",
+            "status": "Success",
+            "time": "Yesterday"
+          },
+          {
+            "id": "va2",
+            "name": "Access request reviewed",
+            "description": "Limited repository read access",
+            "status": "Approved",
+            "time": "Monday"
+          }
+        ]
+      },
+      "scraper": {
+        "jobs": [
+          {
+            "id": "wj1",
+            "name": "Documentation capture",
+            "description": "https://docs.example.org/start · 8 pages",
+            "status": "Completed",
+            "count": 8,
+            "duration": "24s"
+          },
+          {
+            "id": "wj2",
+            "name": "Release notes snapshot",
+            "description": "https://product.example.org/updates · 3 pages",
+            "status": "Completed",
+            "count": 3,
+            "duration": "13s"
+          }
+        ],
+        "results": [
+          {
+            "id": "wr1",
+            "name": "Documentation capture · JSON",
+            "description": "8 pages · 42 extracted headings",
+            "status": "Available",
+            "count": 42
+          },
+          {
+            "id": "wr2",
+            "name": "Release notes · CSV",
+            "description": "3 pages · 17 records",
+            "status": "Available",
+            "count": 17
+          }
+        ],
+        "rules": [
+          {
+            "id": "wu1",
+            "name": "Respect robots.txt",
+            "description": "Check permission before extraction",
+            "status": "Enabled"
+          },
+          {
+            "id": "wu2",
+            "name": "Rate limit",
+            "description": "2 requests per second",
+            "status": "Enabled"
+          },
+          {
+            "id": "wu3",
+            "name": "Page limit",
+            "description": "Maximum 25 pages per job",
+            "status": "Enabled"
+          }
+        ]
+      },
+      "finetune": {
+        "datasets": [
+          {
+            "id": "fd1",
+            "name": "Support instruction set",
+            "description": "JSONL · 2,450 examples · validated",
+            "status": "Ready",
+            "size": "8.4 MB"
+          },
+          {
+            "id": "fd2",
+            "name": "Code review examples",
+            "description": "JSONL · 1,120 examples · validated",
+            "status": "Ready",
+            "size": "4.2 MB"
+          }
+        ],
+        "jobs": [
+          {
+            "id": "fj1",
+            "name": "Support LoRA adaptation",
+            "description": "3 epochs · rank 16 · learning rate 2e-4",
+            "status": "Completed",
+            "loss": "0.41",
+            "duration": "8m 22s"
+          },
+          {
+            "id": "fj2",
+            "name": "Code review adapter",
+            "description": "2 epochs · rank 8 · learning rate 1e-4",
+            "status": "Completed",
+            "loss": "0.53",
+            "duration": "5m 17s"
+          }
+        ],
+        "checkpoints": [
+          {
+            "id": "fc1",
+            "name": "support-lora-epoch-3",
+            "description": "Adapter weights · safetensors",
+            "status": "Ready",
+            "size": "82 MB"
+          },
+          {
+            "id": "fc2",
+            "name": "code-review-epoch-2",
+            "description": "Adapter weights · safetensors",
+            "status": "Ready",
+            "size": "61 MB"
+          }
+        ],
+        "results": [
+          {
+            "id": "fr1",
+            "name": "Support LoRA evaluation",
+            "description": "Held-out sample · F1 0.86",
+            "status": "Available",
+            "accuracy": "86%"
+          },
+          {
+            "id": "fr2",
+            "name": "Code review evaluation",
+            "description": "Held-out sample · F1 0.82",
+            "status": "Available",
+            "accuracy": "82%"
+          }
+        ]
+      }
+    },
+    "approvedShellFixtures": {
+      "projects": [
+        {
+          "name": "E-commerce Platform",
+          "tag": "Next.js · React · TypeScript",
+          "color": "violet",
+          "files": 42,
+          "updated": "2 minutes ago"
+        },
+        {
+          "name": "AI Research Assistant",
+          "tag": "Python · Retrieval · LLM",
+          "color": "blue",
+          "files": 17,
+          "updated": "1 hour ago"
+        },
+        {
+          "name": "Marketing Website",
+          "tag": "React · Tailwind CSS",
+          "color": "green",
+          "files": 24,
+          "updated": "3 hours ago"
+        },
+        {
+          "name": "Data Analysis Tool",
+          "tag": "Python · Pandas",
+          "color": "orange",
+          "files": 11,
+          "updated": "Yesterday"
+        }
+      ],
+      "chats": [
+        {
+          "title": "Review React project structure",
+          "time": "2 minutes ago"
+        },
+        {
+          "title": "Add authentication to dashboard",
+          "time": "1 hour ago"
+        },
+        {
+          "title": "Create data analysis agent",
+          "time": "3 hours ago"
+        },
+        {
+          "title": "Plan project architecture",
+          "time": "Yesterday"
+        },
+        {
+          "title": "Fix deployment issue",
+          "time": "Monday"
+        }
+      ],
+      "activity": [
+        {
+          "icon": "git-pull-request",
+          "title": "Reviewed React project structure",
+          "detail": "E-commerce Platform · Code review",
+          "time": "2m ago",
+          "tone": "blue"
+        },
+        {
+          "icon": "search",
+          "title": "Completed a research summary",
+          "detail": "AI Research Assistant · Research",
+          "time": "28m ago",
+          "tone": "green"
+        },
+        {
+          "icon": "bot",
+          "title": "Created the Code Reviewer agent",
+          "detail": "AI Agents · Configuration",
+          "time": "1h ago",
+          "tone": "violet"
+        },
+        {
+          "icon": "file-check",
+          "title": "Updated product components",
+          "detail": "src/components/ProductCard.tsx",
+          "time": "3h ago",
+          "tone": "blue"
+        }
+      ],
+      "agents": [
+        {
+          "name": "Coordinator",
+          "role": "Plans work and keeps everyone aligned",
+          "tone": "violet",
+          "icon": "sparkles",
+          "status": "Available"
+        },
+        {
+          "name": "Researcher",
+          "role": "Finds and checks information and sources",
+          "tone": "green",
+          "icon": "search",
+          "status": "Available"
+        },
+        {
+          "name": "Developer",
+          "role": "Analyses code and proposes changes",
+          "tone": "blue",
+          "icon": "code",
+          "status": "Available"
+        },
+        {
+          "name": "Documentation",
+          "role": "Turns technical work into clear guidance",
+          "tone": "orange",
+          "icon": "book-open",
+          "status": "Available"
+        }
+      ],
+      "files": [
+        {
+          "name": "Product requirements specification",
+          "type": "PDF",
+          "meta": "Product · Requirements",
+          "size": "12 MB",
+          "updated": "2 days ago",
+          "tone": "red",
+          "description": "Product goals, acceptance criteria, and technical requirements."
+        },
+        {
+          "name": "System architecture overview",
+          "type": "DOC",
+          "meta": "Architecture · Technical",
+          "size": "1.2 MB",
+          "updated": "4 days ago",
+          "tone": "blue",
+          "description": "Components, dependencies, and system design decisions."
+        },
+        {
+          "name": "Competitor analysis",
+          "type": "XLS",
+          "meta": "Research · Competitive analysis",
+          "size": "856 KB",
+          "updated": "1 week ago",
+          "tone": "green",
+          "description": "Comparison of products and market positioning."
+        },
+        {
+          "name": "Go-to-market strategy",
+          "type": "SLD",
+          "meta": "Strategy · Marketing",
+          "size": "2.1 MB",
+          "updated": "1 week ago",
+          "tone": "orange",
+          "description": "Messaging and audience planning for a product launch."
+        },
+        {
+          "name": "Product review notes",
+          "type": "MD",
+          "meta": "Notes · Product",
+          "size": "42 KB",
+          "updated": "2 weeks ago",
+          "tone": "violet",
+          "description": "Meeting notes, decisions and follow-up actions."
+        },
+        {
+          "name": "React documentation",
+          "type": "LINK",
+          "meta": "Reference · Frontend",
+          "size": "Website",
+          "updated": "3 days ago",
+          "tone": "blue",
+          "description": "Useful API and component documentation."
+        }
+      ],
+      "automations": [
+        {
+          "name": "Daily research brief",
+          "icon": "file-text",
+          "enabled": true,
+          "schedule": "Every weekday · 09:00",
+          "next": "Tomorrow, 09:00",
+          "description": "Find important updates and prepare a concise summary.",
+          "instruction": "Search for relevant AI developments and product updates. Create a short brief with the key points and links to sources."
+        },
+        {
+          "name": "Review code changes",
+          "icon": "code",
+          "enabled": true,
+          "schedule": "Every day · 18:00",
+          "next": "Today, 18:00",
+          "description": "Review recent repository changes and highlight risks."
+        },
+        {
+          "name": "Weekly knowledge digest",
+          "icon": "book-open",
+          "enabled": true,
+          "schedule": "Every Sunday · 10:00",
+          "next": "Sunday, 10:00",
+          "description": "Summarise new information in the knowledge base."
+        },
+        {
+          "name": "Competitor monitoring",
+          "icon": "chart-column",
+          "enabled": true,
+          "schedule": "Every day · 09:00",
+          "next": "Tomorrow, 09:00",
+          "description": "Track competitor activity and important changes."
+        },
+        {
+          "name": "Opportunity alerts",
+          "icon": "bell",
+          "enabled": false,
+          "schedule": "Every weekday · 08:00",
+          "next": "Paused",
+          "description": "Identify relevant new opportunities."
+        }
+      ],
+      "runs": [
+        {
+          "status": "success",
+          "time": "Today, 09:01",
+          "info": "8 sources reviewed",
+          "duration": "2m 14s"
+        },
+        {
+          "status": "success",
+          "time": "Yesterday, 09:00",
+          "info": "6 sources reviewed",
+          "duration": "2m 03s"
+        },
+        {
+          "status": "success",
+          "time": "Monday, 09:00",
+          "info": "7 sources reviewed",
+          "duration": "2m 37s"
+        },
+        {
+          "status": "error",
+          "time": "Sunday, 09:00",
+          "info": "Search service unavailable",
+          "duration": "1m 12s"
+        }
+      ],
+      "models": [
+        {
+          "name": "GPT-4o",
+          "provider": "OpenAI",
+          "meta": "Cloud · Vision · Tools",
+          "tone": "blue",
+          "icon": "bot",
+          "description": "General-purpose chat, coding and document workflows.",
+          "caps": [
+            "Text",
+            "Vision",
+            "Tools"
+          ],
+          "status": "Configured"
+        },
+        {
+          "name": "Claude Sonnet",
+          "provider": "Anthropic",
+          "meta": "Cloud · Reasoning · Code",
+          "tone": "orange",
+          "icon": "brain",
+          "description": "Code analysis, writing and complex documents.",
+          "caps": [
+            "Text",
+            "Reasoning",
+            "Code"
+          ],
+          "status": "Configured"
+        },
+        {
+          "name": "Gemini Pro",
+          "provider": "Google",
+          "meta": "Cloud · Multimodal",
+          "tone": "violet",
+          "icon": "sparkles",
+          "description": "Research and large-document analysis.",
+          "caps": [
+            "Text",
+            "Vision",
+            "Research"
+          ],
+          "status": "Setup required"
+        },
+        {
+          "name": "Llama local",
+          "provider": "Local runtime",
+          "meta": "Local · Privacy-first",
+          "tone": "green",
+          "icon": "cpu",
+          "description": "Local processing with hardware-dependent capabilities.",
+          "caps": [
+            "Text",
+            "Local"
+          ],
+          "status": "Not installed"
+        }
+      ],
+      "researchSources": [
+        {
+          "title": "AutoGen project documentation",
+          "site": "Official documentation",
+          "date": "Source 01"
+        },
+        {
+          "title": "CrewAI framework guide",
+          "site": "Framework documentation",
+          "date": "Source 02"
+        },
+        {
+          "title": "LangGraph overview",
+          "site": "LangChain documentation",
+          "date": "Source 03"
+        },
+        {
+          "title": "Model Context Protocol specification",
+          "site": "Official specification",
+          "date": "Source 04"
+        },
+        {
+          "title": "llama.cpp repository",
+          "site": "GitHub project",
+          "date": "Source 05"
+        }
+      ],
+      "codeFiles": [
+        {
+          "name": "ProductCard.tsx",
+          "path": "src/components/ProductCard.tsx",
+          "lang": "typescript"
+        },
+        {
+          "name": "useCart.ts",
+          "path": "src/hooks/useCart.ts",
+          "lang": "typescript"
+        },
+        {
+          "name": "page.tsx",
+          "path": "src/app/page.tsx",
+          "lang": "typescript"
+        },
+        {
+          "name": "tailwind.config.js",
+          "path": "tailwind.config.js",
+          "lang": "javascript"
+        }
+      ]
+    },
+    "coreFixtures": {
+      "shell": {
+        "projects": [
+          {
+            "name": "E-commerce Platform",
+            "tag": "Next.js · React · TypeScript",
+            "color": "violet",
+            "files": 42,
+            "updated": "2 minutes ago"
+          },
+          {
+            "name": "AI Research Assistant",
+            "tag": "Python · Retrieval · LLM",
+            "color": "blue",
+            "files": 17,
+            "updated": "1 hour ago"
+          },
+          {
+            "name": "Marketing Website",
+            "tag": "React · Tailwind CSS",
+            "color": "green",
+            "files": 24,
+            "updated": "3 hours ago"
+          },
+          {
+            "name": "Data Analysis Tool",
+            "tag": "Python · Pandas",
+            "color": "orange",
+            "files": 11,
+            "updated": "Yesterday"
+          }
+        ],
+        "chats": [
+          {
+            "title": "Review React project structure",
+            "time": "2 minutes ago"
+          },
+          {
+            "title": "Add authentication to dashboard",
+            "time": "1 hour ago"
+          },
+          {
+            "title": "Create data analysis agent",
+            "time": "3 hours ago"
+          },
+          {
+            "title": "Plan project architecture",
+            "time": "Yesterday"
+          },
+          {
+            "title": "Fix deployment issue",
+            "time": "Monday"
+          }
+        ],
+        "activity": [
+          {
+            "icon": "git-pull-request",
+            "title": "Reviewed React project structure",
+            "detail": "E-commerce Platform · Code review",
+            "time": "2m ago",
+            "tone": "blue"
+          },
+          {
+            "icon": "search",
+            "title": "Completed a research summary",
+            "detail": "AI Research Assistant · Research",
+            "time": "28m ago",
+            "tone": "green"
+          },
+          {
+            "icon": "bot",
+            "title": "Created the Code Reviewer agent",
+            "detail": "AI Agents · Configuration",
+            "time": "1h ago",
+            "tone": "violet"
+          },
+          {
+            "icon": "file-check",
+            "title": "Updated product components",
+            "detail": "src/components/ProductCard.tsx",
+            "time": "3h ago",
+            "tone": "blue"
+          }
+        ],
+        "agents": [
+          {
+            "name": "Coordinator",
+            "role": "Plans work and keeps everyone aligned",
+            "tone": "violet",
+            "icon": "sparkles",
+            "status": "Available"
+          },
+          {
+            "name": "Researcher",
+            "role": "Finds and checks information and sources",
+            "tone": "green",
+            "icon": "search",
+            "status": "Available"
+          },
+          {
+            "name": "Developer",
+            "role": "Analyses code and proposes changes",
+            "tone": "blue",
+            "icon": "code",
+            "status": "Available"
+          },
+          {
+            "name": "Documentation",
+            "role": "Turns technical work into clear guidance",
+            "tone": "orange",
+            "icon": "book-open",
+            "status": "Available"
+          }
+        ],
+        "files": [
+          {
+            "name": "Product requirements specification",
+            "type": "PDF",
+            "meta": "Product · Requirements",
+            "size": "12 MB",
+            "updated": "2 days ago",
+            "tone": "red",
+            "description": "Product goals, acceptance criteria, and technical requirements."
+          },
+          {
+            "name": "System architecture overview",
+            "type": "DOC",
+            "meta": "Architecture · Technical",
+            "size": "1.2 MB",
+            "updated": "4 days ago",
+            "tone": "blue",
+            "description": "Components, dependencies, and system design decisions."
+          },
+          {
+            "name": "Competitor analysis",
+            "type": "XLS",
+            "meta": "Research · Competitive analysis",
+            "size": "856 KB",
+            "updated": "1 week ago",
+            "tone": "green",
+            "description": "Comparison of products and market positioning."
+          },
+          {
+            "name": "Go-to-market strategy",
+            "type": "SLD",
+            "meta": "Strategy · Marketing",
+            "size": "2.1 MB",
+            "updated": "1 week ago",
+            "tone": "orange",
+            "description": "Messaging and audience planning for a product launch."
+          },
+          {
+            "name": "Product review notes",
+            "type": "MD",
+            "meta": "Notes · Product",
+            "size": "42 KB",
+            "updated": "2 weeks ago",
+            "tone": "violet",
+            "description": "Meeting notes, decisions and follow-up actions."
+          },
+          {
+            "name": "React documentation",
+            "type": "LINK",
+            "meta": "Reference · Frontend",
+            "size": "Website",
+            "updated": "3 days ago",
+            "tone": "blue",
+            "description": "Useful API and component documentation."
+          }
+        ],
+        "automations": [
+          {
+            "name": "Daily research brief",
+            "icon": "file-text",
+            "enabled": true,
+            "schedule": "Every weekday · 09:00",
+            "next": "Tomorrow, 09:00",
+            "description": "Find important updates and prepare a concise summary.",
+            "instruction": "Search for relevant AI developments and product updates. Create a short brief with the key points and links to sources."
+          },
+          {
+            "name": "Review code changes",
+            "icon": "code",
+            "enabled": true,
+            "schedule": "Every day · 18:00",
+            "next": "Today, 18:00",
+            "description": "Review recent repository changes and highlight risks."
+          },
+          {
+            "name": "Weekly knowledge digest",
+            "icon": "book-open",
+            "enabled": true,
+            "schedule": "Every Sunday · 10:00",
+            "next": "Sunday, 10:00",
+            "description": "Summarise new information in the knowledge base."
+          },
+          {
+            "name": "Competitor monitoring",
+            "icon": "chart-column",
+            "enabled": true,
+            "schedule": "Every day · 09:00",
+            "next": "Tomorrow, 09:00",
+            "description": "Track competitor activity and important changes."
+          },
+          {
+            "name": "Opportunity alerts",
+            "icon": "bell",
+            "enabled": false,
+            "schedule": "Every weekday · 08:00",
+            "next": "Paused",
+            "description": "Identify relevant new opportunities."
+          }
+        ],
+        "runs": [
+          {
+            "status": "success",
+            "time": "Today, 09:01",
+            "info": "8 sources reviewed",
+            "duration": "2m 14s"
+          },
+          {
+            "status": "success",
+            "time": "Yesterday, 09:00",
+            "info": "6 sources reviewed",
+            "duration": "2m 03s"
+          },
+          {
+            "status": "success",
+            "time": "Monday, 09:00",
+            "info": "7 sources reviewed",
+            "duration": "2m 37s"
+          },
+          {
+            "status": "error",
+            "time": "Sunday, 09:00",
+            "info": "Search service unavailable",
+            "duration": "1m 12s"
+          }
+        ],
+        "models": [
+          {
+            "name": "GPT-4o",
+            "provider": "OpenAI",
+            "meta": "Cloud · Vision · Tools",
+            "tone": "blue",
+            "icon": "bot",
+            "description": "General-purpose chat, coding and document workflows.",
+            "caps": [
+              "Text",
+              "Vision",
+              "Tools"
+            ],
+            "status": "Configured"
+          },
+          {
+            "name": "Claude Sonnet",
+            "provider": "Anthropic",
+            "meta": "Cloud · Reasoning · Code",
+            "tone": "orange",
+            "icon": "brain",
+            "description": "Code analysis, writing and complex documents.",
+            "caps": [
+              "Text",
+              "Reasoning",
+              "Code"
+            ],
+            "status": "Configured"
+          },
+          {
+            "name": "Gemini Pro",
+            "provider": "Google",
+            "meta": "Cloud · Multimodal",
+            "tone": "violet",
+            "icon": "sparkles",
+            "description": "Research and large-document analysis.",
+            "caps": [
+              "Text",
+              "Vision",
+              "Research"
+            ],
+            "status": "Setup required"
+          },
+          {
+            "name": "Llama local",
+            "provider": "Local runtime",
+            "meta": "Local · Privacy-first",
+            "tone": "green",
+            "icon": "cpu",
+            "description": "Local processing with hardware-dependent capabilities.",
+            "caps": [
+              "Text",
+              "Local"
+            ],
+            "status": "Not installed"
+          }
+        ],
+        "researchSources": [
+          {
+            "title": "AutoGen project documentation",
+            "site": "Official documentation",
+            "date": "Source 01"
+          },
+          {
+            "title": "CrewAI framework guide",
+            "site": "Framework documentation",
+            "date": "Source 02"
+          },
+          {
+            "title": "LangGraph overview",
+            "site": "LangChain documentation",
+            "date": "Source 03"
+          },
+          {
+            "title": "Model Context Protocol specification",
+            "site": "Official specification",
+            "date": "Source 04"
+          },
+          {
+            "title": "llama.cpp repository",
+            "site": "GitHub project",
+            "date": "Source 05"
+          }
+        ],
+        "codeFiles": [
+          {
+            "name": "ProductCard.tsx",
+            "path": "src/components/ProductCard.tsx",
+            "lang": "typescript"
+          },
+          {
+            "name": "useCart.ts",
+            "path": "src/hooks/useCart.ts",
+            "lang": "typescript"
+          },
+          {
+            "name": "page.tsx",
+            "path": "src/app/page.tsx",
+            "lang": "typescript"
+          },
+          {
+            "name": "tailwind.config.js",
+            "path": "tailwind.config.js",
+            "lang": "javascript"
+          }
+        ]
+      },
+      "research": null,
+      "researchReport": {},
+      "researchCheckpoints": {},
+      "researchGraph": {}
+    }
+  }
+}

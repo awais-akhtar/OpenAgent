@@ -114,6 +114,7 @@ class NativeQwen35Vision:
         self._vision_owners = tuple(owners)
         self.library = C.CDLL(str(Path(library).resolve(strict=True)))
         self._vision_release=_own_library(self.library)
+        self.library.oa_qwen35_vision_version.argtypes = []
         self.library.oa_qwen35_vision_version.restype = C.c_uint64
         if self.library.oa_qwen35_vision_version() != 1:
             raise ValueError('unsupported vision ABI')
@@ -208,7 +209,10 @@ class NativeQwen35Vision:
                     try:
                         candidate.close()
                     except BaseException as cleanup:
-                        primary.add_note('failed Qwen3.5 media candidate cleanup retained: '+repr(cleanup))
+                        from .failure_reporting import add_failure_note, failure_summary
+                        add_failure_note(primary,
+                            'failed Qwen3.5 media candidate cleanup retained: '+
+                            failure_summary(cleanup))
                 raise
             self.decoder = candidate
             return result

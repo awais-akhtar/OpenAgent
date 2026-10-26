@@ -1,0 +1,12 @@
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const errors = [], assets = [];
+page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
+page.on('console', message => { if (message.type() === 'error') errors.push(`console: ${message.text()}`); });
+page.on('response', response => { if (new URL(response.url()).origin === 'http://127.0.0.1:8897') assets.push({ status: response.status(), url: new URL(response.url()).pathname }); });
+await page.goto('http://127.0.0.1:8897/', { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(3000);
+await page.screenshot({ path: '../.qa/desktop-final-20261024/home-diagnostic.png', fullPage: true });
+console.log(JSON.stringify({ title: await page.title(), shellCount: await page.locator('.app-shell').count(), bodyText: (await page.locator('body').innerText()).slice(0, 1000), assets, errors }, null, 2));
+await browser.close();

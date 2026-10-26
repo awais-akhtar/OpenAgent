@@ -38,6 +38,46 @@ class FineTuneRouteTests(TestCase):
                 server.server_close()
                 thread.join(timeout=5)
 
+    def test_http_job_creation_cancellation_and_persistence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            server = build_http_server("127.0.0.1", 0, OpenAgentStore(tmp))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                def post(path: str, payload: dict) -> tuple[int, dict]:
+                    request = Request(
+                        f"{base}{path}", data=json.dumps(payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}, method="POST",
+                    )
+                    with urlopen(request, timeout=10) as response:
+                        return response.status, json.load(response)
+
+                _, dataset_response = post("/api/finetune/datasets", {
+                    "project": "release-check", "name": "Local smoke dataset",
+                })
+                dataset_id = dataset_response["dataset"]["id"]
+                status, job_response = post("/api/finetune/jobs", {
+                    "project": "release-check", "dataset_id": dataset_id,
+                    "base_model": "local-test-model", "method": "lora",
+                })
+                self.assertEqual(status, HTTPStatus.CREATED)
+                job_id = job_response["job"]["id"]
+                self.assertEqual(job_response["job"]["status"], "queued")
+
+                status, cancel_response = post(f"/api/finetune/jobs/{job_id}/cancel", {
+                    "project": "release-check",
+                })
+                self.assertEqual(status, HTTPStatus.OK)
+                self.assertEqual(cancel_response["job"]["status"], "cancelled")
+                with urlopen(f"{base}/api/finetune/jobs?project=release-check", timeout=10) as response:
+                    jobs = json.load(response)["jobs"]
+                self.assertEqual(next(job for job in jobs if job["id"] == job_id)["status"], "cancelled")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def test_runtime_has_no_inline_finetune_dispatch(self) -> None:
         runtime = (Path(__file__).resolve().parents[1] / "openagent" / "routes" / "runtime.py").read_text(encoding="utf-8")
         self.assertNotIn('if parsed.path == "/api/finetune/', runtime)
@@ -50,7 +90,7 @@ class FineTuneRouteTests(TestCase):
     def test_contract_covers_every_declared_get_and_post(self) -> None:
         manager, read_json, deps = self.dependencies()
         routes = contract()["routes"]
-        self.assertEqual(contract()["route_count"], 10)
+        self.assertEqual(contract()["route_count"], 16)
         self.assertEqual({route["method"] for route in routes}, {"GET", "POST"})
         for route in routes:
             with self.subTest(route=route):
@@ -169,6 +209,37 @@ class FineTuneRouteTests(TestCase):
             "", "", project="default", method="lora", config=None, template_id="",
         )
 
+        manager, _, deps = self.dependencies({"dataset_id": "private-dataset", "base_model": "local", "project": "other"})
+        manager.create_job.side_effect = KeyError("Dataset not found in project: private-dataset")
+        result = handle_post("/api/finetune/jobs", deps)
+        self.assertEqual(result.status, HTTPStatus.BAD_REQUEST)
+        self.assertIn("Dataset not found in project", result.payload["error"])
+
+    def test_cancel_job_is_project_scoped_and_reports_conflict(self) -> None:
+        manager, _, deps = self.dependencies({"project": "research"})
+        manager.cancel_queued_job.return_value = {"id": "job-1", "status": "cancelled"}
+        result = handle_post("/api/finetune/jobs/job-1/cancel", deps)
+        self.assertEqual((result.payload, result.status),
+                         ({"job": {"id": "job-1", "status": "cancelled"}}, HTTPStatus.OK))
+        manager.cancel_queued_job.assert_called_once_with("job-1", project="research")
+
+        manager, _, deps = self.dependencies({"project": "research"})
+        manager.cancel_queued_job.return_value = {"id": "job-1", "status": "cancelling"}
+        result = handle_post("/api/finetune/jobs/job-1/cancel", deps)
+        self.assertEqual((result.payload, result.status),
+                         ({"job": {"id": "job-1", "status": "cancelling"}}, HTTPStatus.ACCEPTED))
+
+        manager, _, deps = self.dependencies({"project": "other"})
+        manager.cancel_queued_job.side_effect = KeyError("hidden cross-project job")
+        result = handle_post("/api/finetune/jobs/job-1/cancel", deps)
+        self.assertEqual((result.payload, result.status),
+                         ({"error": "Job not found"}, HTTPStatus.NOT_FOUND))
+
+        manager, _, deps = self.dependencies()
+        manager.cancel_queued_job.side_effect = RuntimeError("Only queued jobs can be cancelled")
+        result = handle_post("/api/finetune/jobs/job-1/cancel", deps)
+        self.assertEqual(result.status, HTTPStatus.CONFLICT)
+
     def test_register_adapter_preserves_numeric_and_module_conversions(self) -> None:
         manager, _, deps = self.dependencies({
             "name": " adapter ", "base_model": " phi ", "project": " science ",
@@ -215,3 +286,46 @@ class FineTuneRouteTests(TestCase):
         result = handle_post("/api/finetune/adapters/activate", deps)
         self.assertEqual((result.payload, result.status),
                          ({"error": "'Adapter not found: a1'"}, HTTPStatus.NOT_FOUND))
+
+    def test_train_job_success(self) -> None:
+        manager, _, deps = self.dependencies({
+            "project": "default",
+            "output_dir": "/models/output",
+            "checkpoint_interval": 10,
+        })
+        manager.start_model_training.return_value = {
+            "started": True,
+            "job_id": "job-1",
+            "status": "running",
+            "output_dir": "/models/output",
+        }
+        result = handle_post("/api/finetune/jobs/job-1/train", deps)
+        self.assertEqual(result.status, HTTPStatus.ACCEPTED)
+        self.assertIn("training", result.payload)
+        manager.start_model_training.assert_called_once()
+        args, kwargs = manager.start_model_training.call_args
+        self.assertEqual(args[0], "job-1")
+        self.assertEqual(kwargs.get("project"), "default")
+        self.assertEqual(kwargs.get("checkpoint_interval"), 10)
+
+    def test_train_job_not_found(self) -> None:
+        manager, _, deps = self.dependencies({"project": "default"})
+        manager.start_model_training.side_effect = KeyError("Job not found")
+        result = handle_post("/api/finetune/jobs/missing/train", deps)
+        self.assertEqual(result.status, HTTPStatus.NOT_FOUND)
+
+    def test_train_job_conflict(self) -> None:
+        manager, _, deps = self.dependencies({"project": "default"})
+        manager.start_model_training.side_effect = RuntimeError("Job is not in a runnable state")
+        result = handle_post("/api/finetune/jobs/job-1/train", deps)
+        self.assertEqual(result.status, HTTPStatus.CONFLICT)
+
+    def test_train_job_missing_id(self) -> None:
+        manager, _, deps = self.dependencies({"project": "default"})
+        result = handle_post("/api/finetune/jobs//train", deps)
+        self.assertEqual(result.status, HTTPStatus.BAD_REQUEST)
+
+    def test_train_job_with_slash_in_id(self) -> None:
+        manager, _, deps = self.dependencies({"project": "default"})
+        result = handle_post("/api/finetune/jobs/a/b/train", deps)
+        self.assertEqual(result.status, HTTPStatus.BAD_REQUEST)

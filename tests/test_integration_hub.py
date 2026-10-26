@@ -126,6 +126,12 @@ class IntegrationHubTests(unittest.TestCase):
                 latest = read_json(f"{base_url}/api/integrations/diagnostics?project=core&latest=true")
                 self.assertIn(latest["status"], {"ok", "needs_attention"})
 
+                diagnostic_history = read_json(f"{base_url}/api/integrations/diagnostics?project=core&limit=5")
+                self.assertIn("diagnostics", diagnostic_history)
+
+                available_safe_commands = read_json(f"{base_url}/api/integrations/safe-shell?project=core&limit=5")
+                self.assertTrue(available_safe_commands["commands"])
+
                 diagnostic = post_json(f"{base_url}/api/integrations/diagnostics", {"project": "core"})
                 self.assertIn("sections", diagnostic["diagnostic"])
 

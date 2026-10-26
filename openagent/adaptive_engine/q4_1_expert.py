@@ -49,29 +49,42 @@ def pack_matrix(matrix, *, block_count=64):
     _positive(columns, "columns")
     if columns % 32:
         raise ValueError("Q4_1 row widths must be multiples of 32")
-    encoded = bytearray()
-    for row in a:
-        for begin in range(0, columns, 32 * block_count):
-            with np.errstate(over="ignore", invalid="ignore"):
-                chunk = row[begin:begin + 32 * block_count].astype(np.float32).reshape(-1, 32)
-            if not np.isfinite(chunk).all():
-                raise ValueError("weights must be finite and representable as float32")
-            for block in chunk:
-                minimum = float(np.min(block))
-                maximum = float(np.max(block))
-                with np.errstate(over="ignore", under="ignore"):
-                    offset = np.float16(minimum)
-                    delta = np.float16((maximum - minimum) / 15)
-                if not np.isfinite(delta) or not np.isfinite(offset):
-                    raise ValueError("Q4_1 metadata exceeds binary16 range")
-                if maximum != minimum and delta == 0:
-                    delta = np.float16(2 ** -24)
-                # Float64 arithmetic keeps finite FP32 endpoint differences safe.
-                codes = np.clip(np.rint((block.astype(np.float64) - float(offset))
-                                       / (float(delta) or 1)), 0, 15).astype(np.uint8)
-                encoded.extend(struct.pack("<ee", float(delta), float(offset)))
-                encoded.extend((codes[:16] | (codes[16:] << 4)).tobytes())
-    return bytes(encoded)
+    with np.errstate(over="ignore", invalid="ignore"):
+        values = np.asarray(a, dtype=np.float32)
+    if not np.isfinite(values).all():
+        raise ValueError("weights must be finite and representable as float32")
+
+    # Q4_1's 32-value blocks are independent. Process a bounded number of
+    # blocks at a time, but vectorize extrema, binary16 metadata and nibble
+    # codes instead of iterating over every block in Python. block_count keeps
+    # its existing memory-bound meaning and does not affect payload ordering.
+    blocks_per_chunk = max(1, block_count * max(1, columns // 32))
+    rows_as_blocks = values.reshape(rows, columns // 32, 32)
+    flat = rows_as_blocks.reshape(-1, 32)
+    output = bytearray(flat.shape[0] * 20)
+    output_view = np.frombuffer(output, dtype=np.uint8).reshape(-1, 20)
+    for start in range(0, flat.shape[0], blocks_per_chunk):
+        block = flat[start:start + blocks_per_chunk]
+        minimum = block.min(axis=1).astype(np.float64)
+        maximum = block.max(axis=1).astype(np.float64)
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            offset = minimum.astype("<f2")
+            delta = ((maximum - minimum) / 15.0).astype("<f2")
+        if not np.isfinite(offset).all() or not np.isfinite(delta).all():
+            raise ValueError("Q4_1 metadata exceeds binary16 range")
+        delta = delta.copy()
+        delta[(maximum != minimum) & (delta == 0)] = np.float16(2 ** -24)
+
+        denominator = delta.astype(np.float64)
+        denominator[denominator == 0] = 1.0
+        codes = np.clip(np.rint(
+            (block.astype(np.float64) - offset.astype(np.float64)[:, None])
+            / denominator[:, None]), 0, 15).astype(np.uint8)
+        target = output_view[start:start + len(block)]
+        target[:, :2] = delta.view(np.uint8).reshape(-1, 2)
+        target[:, 2:4] = offset.view(np.uint8).reshape(-1, 2)
+        target[:, 4:] = codes[:, :16] | (codes[:, 16:] << 4)
+    return bytes(output)
 
 
 def pack_expert(gate, up, down, *, block_count=64):

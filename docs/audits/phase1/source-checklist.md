@@ -1,20 +1,613 @@
 # Phase 1 source implementation checklist
 
-> Verification correction, 2026-10-19: a reported set of seven fixes was
-> checked against Git index, working tree, stash, and live source. No changes
-> are staged and none of the seven implementations is present. The universal
-> engine and task-creation defects remain open. The tracked authoritative queue
-> is `PHASE_1_ACTIVE_TODO.md`. This detailed checklist now lives in the tracked
-> Phase 1 audit directory.
+## Shared batching/forward execution reconciliation — 2026-10-26
 
-For the current remaining work, acceptance gates, and next pass, see
-[PHASE_1_ACTIVE_TODO.md](../../../PHASE_1_ACTIVE_TODO.md). This file retains the detailed
-requirements and audit history.
+Fixed partial-prefill rescheduling and exact reserved-extent cursor commit;
+premature token results cannot skip the rest of the prompt. Fatal worker,
+scheduler and failure-callback errors now wake all requests and seal new
+admission, including the post-failure race. Duplicate/reused request identities
+are rejected. Phase2ForwardBridge fails closed instead of returning random
+tokens or retrying another execution path after a failed state-mutating call.
+It validates outputs, releases completed slots, retains failed teardown for
+retry, and protects slot identity/dispatch ownership. Removed obsolete commit
+logic rather than maintaining two implementations.
+
+The bridge's unbound shared-KV publication/reuse is explicitly rejected before
+resource allocation; its former placeholder data could not establish physical
+cache/schema/position ownership. Other native cache paths are unchanged.
+Prompt chunk staging is not physically chunked native execution. Tests pass
+211/211 plus batching smoke 12/12; scoped Ruff, syntax and diff checks pass.
+Canonical verification remains 10/17, 126/171 receipts missing, source/ABI
+checks passing. No model receipt was added. Whole-P14 and P13/P15 remain open.
+
+> Historical verification correction (2026-10-19; superseded by the current
+> reconciliation below): at that time, seven reported fixes were absent. Do
+> not use that dated finding as the current source status. The detailed
+> checklist in this tracked file is authoritative; the root
+> `PHASE_1_ACTIVE_TODO.md` is an untracked working-tree summary.
+
+For the concise current queue, see
+[PHASE_1_ACTIVE_TODO.md](../../../PHASE_1_ACTIVE_TODO.md). This tracked file
+retains the detailed requirements and audit history.
 
 This checklist defines the completion criteria for the Colibri-inspired
 OpenAgent engine source implementation. Existing implementations should be retained and
 extended. An unchecked item means it needs source review and, where necessary,
 implementation; it does not mean that its entire implementation is absent.
+
+## Current reconciliation — 2026-10-25
+
+This section supersedes the 2026-10-19 current-status assessment and earlier
+dated counts below; those entries are retained as audit history. The root
+`PHASE_1_ACTIVE_TODO.md` is the short active queue, while this document remains
+the detailed P02–P15 requirement record.
+
+**Phase 1 is OPEN.** The canonical `phase1_verify.py` run reports **10/17**
+checks passed and `phase1_closed=false`. A01 and all nine family route-decision
+checks pass; the canonical matrix has 1,334 tuples: 171 source-admitted, zero
+candidate-unverified, 877 restricted, and 286 rejected-unadmitted. Seven
+evidence checks fail because **126/171 admitted tuples** have no valid exact
+runtime receipt. The gaps are Mixtral 18, Qwen3.5 17, Qwen4 21, GLM5-Next 21,
+Inkling 21, GLM-DSA 9, Kimi K3 10, and DeepSeek V4.1 9; backend totals are
+native 46, device 40, and public-range 40. OLMoE has 45/45 receipts.
+
+Separate proposed 108-route capture-path accounting (not Phase 1 closure):
+source commands cover at most 24/63 non-OLMoE target rows—native/device text
+for Inkling, Qwen4, and GLM5 (18), plus public-range text for Qwen4 and
+Inkling (6). The other 39/63 rows lack source capture paths, and all 63 still
+require exact real route receipts. The Inkling addition and its source-only
+validation are recorded below; it created no evidence receipts.
+
+The 25 October whole-tree audit also checked the current application and route
+changes. Canonical source validation, 162 unique exact route bindings, 182
+callable-owner references and static ABI consistency (100 exports/190 ctypes
+references) pass. A complete Python discovery before the latest repairs ran
+2,164 tests with 97 skips and found four defects in integrations parsing,
+Personal OS draft owner/update/import behavior, `/api/models` route inventory,
+and runtime-tool status. Those defects have been corrected and the affected
+route suites pass 13/13 focused tests; the full Python suite has not yet been
+rerun after those edits. Frontend Vitest passes 189/189 when run serially and
+TypeScript passes; two failures under file-parallel execution passed both
+individually and serially. The Ollama smoke-probe certifier now rejects
+certification and the runner is diagnostic-only; its 179 generic/proxied
+records are not runtime evidence. This audit does not change the 126 missing
+exact receipts or close P15.
+
+### 2026-10-25 — Colab capture adapter audit
+
+The submitted family capture modules were reviewed against
+`device_observations.verify_route_receipt()`. The prior Qwen4/Qwen3.5 code
+executed the independent NumPy oracle as the candidate while labeling it
+native/device/public-range, used synthetic cache/media/recovery observations,
+and lacked executed per-layer routing. It could not produce valid receipts.
+The prior Inkling path likewise did not account for accepted/rejected MTP
+proposals or verify restoration of both RNGs, so it could not certify any
+Inkling row. The prior notebook's 47-route CPU claim and backend loops did not
+match the executable capture API.
+
+The working tree now has a shared compiled-native CPU capture path for
+Inkling, Qwen4, and Qwen3.5 text-only routes: it rechecks exact inventory,
+executes the native decoder, compares with the separate reviewed NumPy
+decoder, records per-layer routing and physical cache digests, performs
+snapshot/restore/replay, binds format/ABI evidence to callable chains, pins
+runtime/checkpoint artifacts, and writes only after gate acceptance. Exact
+native text ABI owners are included in the corresponding P02 chains. The
+wrappers admit only `inkling_text`, `qwen4_exp_text`, and `qwen3_5_moe_text`,
+native backend, and F32/F16/BF16; multimodal, device, public-range, and other
+formats reject. Inkling text has no MTP applicability because its inventory
+planner rejects MTP; `inkling_mm_model` remains subject to real media and
+target/draft speculative-state evidence. The Colab notebook documents these
+limited compiled-CPU paths and does not claim they close 108 routes.
+
+Verification for this source change: Python syntax checks, source-scope, all
+162 exact route bindings and 180 callable-owner references, notebook JSON/cell
+validation, and six no-model capture-contract tests pass. Full capture and
+native compilation were not verified here because NumPy/pytest and MSVC `cl`
+are unavailable. No Qwen/Inkling receipts were generated. Canonical totals
+remain 10/17 and 126/171 missing receipts. For the proposed 108-route target,
+Qwen4 still needs multimodal/device/public-range execution; Inkling still needs
+`inkling_mm_model` media and target/draft MTP/RNG capture plus non-native
+routes; GLM5-Next still lacks an independent numerical decoder/capture path;
+and every counted route needs real pinned observations. No Phase 1 or P15
+completion claim is made.
+
+### 2026-10-25 — GLM5 text capture and native recovery follow-up
+
+Added a compiled-native CPU capture command for exact `glm5_next_text` F32,
+F16, and BF16 routes. Its candidate is `NativeGlm5NextTextDecoder`; comparison
+uses the separate `TorchGlm5NextDecoder` equations on an explicitly selected
+CUDA/MPS device, with the ten-file numerical dependency closure pinned in the
+reference registry. The native GLM owner now provides bounded, exact-instance
+snapshot/restore/release receipts for complete KDA/DSA cache banks, and the
+native checkpoint loader admits that bounded snapshot inventory. The exact
+native decoder/source references are present in its P02 ABI chain. The Colab
+notebook now includes only this native text capture loop; it explicitly keeps
+GLM5 publisher media, device, and public-range routes outside its coverage.
+
+Verification for this follow-up: 17 focused tests pass across GLM5 snapshot
+ownership, GLM output capture helpers, capture contracts, and reference-source pins; `py_compile`, the
+source validator, GLM5 CLI help, notebook JSON parsing, and `git diff --check`
+pass. The canonical verifier remains 10/17, with 126/171 admitted route
+receipts absent. The host lacks Torch and a C compiler, so the GLM numerical
+comparison and native build were not executed and no receipts were produced.
+At most three additional target rows per text identity are now capture-capable
+when exact checkpoints, an accelerator for GLM comparison, and a compiler are
+available; the remaining multimodal/device/public-range paths for the 108-row
+target are still unimplemented. P13/P15 remain open.
+
+### 2026-10-25 — Qwen4 text-device capture and receipt source pins
+
+The shared family capture path now supports the exact `qwen4_exp_text` device
+tuple on an explicitly selected CUDA/MPS device. The candidate is the actual
+`TorchQwen4Decoder`; routing is captured from its execution, cache is measured
+from its physical state, and recovery is checked through snapshot/restore and
+replay. The independent NumPy Qwen4 decoder remains the comparator. A contract
+test requires the Qwen4 device owner in both its execution and ABI chains.
+Receipts pin the Torch binary plus the candidate decoder, inherited decoder,
+device forward/policy, checkpoint loader, source catalog, capture runner, and
+evidence gate sources. Capture cleanup also closes both candidate and
+reference if source-chain admission fails.
+
+The Colab device cells run after checkpoint and output variables are defined,
+only for exact text checkpoints. Standalone Inkling now also uses its actual
+`TorchInklingDecoder` on CUDA/MPS, captures its executed routing weights and
+physical cache, and verifies snapshot/restore/replay against its independent
+NumPy decoder. The shared runner handles the Inkling API without passing an
+unsupported routing keyword. Its device decoder owner is now bound into the
+exact P02 device ABI chain, and the receipt pins its forward and policy source
+closure.
+
+These additions provide capture paths for at most 15 of the 63 non-OLMoE
+target rows: three native and three device text rows each for standalone
+Inkling and Qwen4, plus three GLM5 native text rows. This is capture capability,
+not runtime evidence. The local workspace has no Torch installation or exact
+Inkling/Qwen4/GLM5 checkpoints; no fresh target-family receipt was generated.
+The other 48 target rows still lack capture paths, including media/MTP and
+public-range routes. Focused capture/route/evidence tests pass 55/55; Python
+syntax, notebook JSON/order, canonical source validation, and `git diff
+--check` pass. The canonical verifier remains 10/17 with 126/171 admitted
+routes missing valid receipts. P13/P15 remain open.
+
+### 2026-10-25 — GLM5 text-device capture
+
+The shared family runner now also admits exact `glm5_next_text` device capture.
+The candidate is `TorchGlm5NextDecoder` on the caller-selected CUDA/MPS device;
+the comparison implementation is the separately compiled
+`NativeGlm5NextTextDecoder`, not a second instance of the Torch candidate.
+The runner requires the native reference library explicitly, pins it as a
+runtime artifact, records actual device placement and executed routing/cache,
+and exercises candidate snapshot/restore/replay. The device route's P02 ABI
+chain names the actual Torch decoder. Evidence verification selects a distinct
+GLM5 device comparator/source closure from the native-route comparator, so a
+receipt cannot claim same-implementation Torch parity as independent evidence.
+
+This adds capture capability for three GLM5 text-device tuples, bringing the
+maximum capture-path coverage from 15/63 to 18/63 non-OLMoE target rows. The
+remaining 45 lack capture paths, primarily publisher media/MTP and
+public-range combinations. No route receipt is created by adding the code;
+P13/P15 remain open until execution on exact artifacts produces accepted
+receipts. Verification after this change: focused capture/reference/route
+tests pass 25/25, Python syntax and notebook JSON checks pass, all 18 pinned
+GLM5 device candidate sources resolve, the GLM5 capture CLI exposes the
+device/reference-library options, and canonical source validation passes.
+The canonical Phase 1 verifier remains 10/17 with 126/171 admitted receipts
+missing; it does not count source capability as runtime evidence.
+
+The two frontend parallel-only flakes were due to test timeouts around lazy
+Chat rendering and the multi-step Voice CRUD interaction. Those waits now have
+realistic bounds; the default parallel Vitest suite passes 189/189 and the
+TypeScript check passes.
+
+The 25 October P04 source pass added a persistent, provider-owned
+`FamilyMediaLifecycleRegistry` at `NativePublisherProvider`: publisher media
+requests are admitted before session dispatch, decoded image/video-frame
+consumption is recorded at the native call boundary, and completion,
+cancellation, backend error, release, and provider shutdown are wired.
+The decoded-media gateway rejects raw floating-point waveforms with a specific
+reason until Inkling sampling-rate and placeholder-order contracts are carried
+by the public request type. The conditional executor also preserves decoder
+errors and releases error frames if its cancellation observer raises during
+failure classification. Publisher, gateway-vision, multimodal-session and
+lifecycle tests pass 52/52;
+Ruff F821 and `git diff --check` pass for the touched source and test. This is
+a source/lifecycle check, not a real route receipt; the 126 missing receipts
+and 10/17 verifier result are unchanged.
+
+A second A04 review found the lifecycle tracker called the two-argument
+`add_failure_note(primary, note)` helper with only one argument on backend-error
+and close failure paths, allowing cleanup to mask the original error. Error
+notes now attach to the actual backend exception; terminal operations return
+detached frame records; registry shutdown attempts every handler, preserves
+the primary failure, and retains handlers for retry. The project-virtualenv
+media, publisher-media, multimodal, A05, and A06 focused set passes 45/45.
+These are source/lifecycle regressions, not route-bound runtime evidence or
+cross-family caller closure.
+
+P14 publisher-stream review additionally added a consumer-thread cancellation
+check before worker creation and model loading. The focused publisher stream,
+inference-route, and chat-route suites pass 30/30 under the project virtualenv.
+Cancellation after worker startup remains cooperative through backend
+checkpoints; this is one caller boundary, not completion of P14.
+
+P02 now exposes exact source-reviewed binding records for all 162 unique
+admitted six-field tuples (171 rows after publisher-variant expansion),
+validated against the canonical callable chain. This closes catalog binding
+coverage only; it does not replace code review, execution, or route receipts.
+The canonical `phase1_verify.py` source audit now validates and reports this
+coverage explicitly; its latest run passes the P02 binding check and remains
+10/17 overall because 126/171 admitted routes lack runtime evidence.
+
+All **45/45 OLMoE admitted tuples** now have exact route-bound CPU receipts in
+`phase1_runtime_receipts.json`, including local BF16, F32, F16 and public-range
+routes. The final derived-F16 MXFP4 and FP8 captures passed the independent
+NumPy logit comparison at maximum absolute errors `2.384185791015625e-05` and
+`3.0517578125e-05` respectively (tolerance `1e-3`). F16/F32 checkpoints were
+converted from the available BF16 checkpoint and do not prove independent
+upstream F16/F32 provenance. These receipts do not establish other-family
+behavior or accelerator placement. `phase1_verify.py` and the compatibility
+entry point `phase1_complete_closure.py` both report 10/17 and the same 126
+missing receipts; the compatibility command now delegates to the canonical
+verifier rather than generating placeholder evidence. The historical P13/P14/
+P15 adapter delegates closure to that gate and refuses its former presence-only
+stage checks. Focused regressions pass 7/7 for that compatibility gate and
+1/1 for preservation of all rows during twelve concurrent receipt writes.
+
+The 25 October A06 coordinator audit found that `abort_operation()` cleared an
+active consensus without checking whether peers could already have entered a
+collective. It now permits an unpoisoned abort only while preflight is
+incomplete, rejected, or contract-mismatched. After unanimous successful
+preflight or any rank result, abort clears the round, poisons the coordinator,
+and raises `ConsensusError`, requiring a group restart rather than risking
+reuse of stranded peers. The A06 + A02/A04/A05/A07 focused unittest group
+passes 39/39, including the A05 shutdown regression: `SpeculativeStateManager.close()`
+now refuses to erase active ownership leases before rollback/release. This
+closes helper-level unsafe abort/reuse and shutdown boundaries, not transport
+failure detection, arbitrary collective rollback, or family-wide distributed
+execution. Caller tracing also confirms this standalone helper is not wired
+into production `DistributedExecutionService` or family process-group
+construction; its tests are not live distributed-execution evidence. Receipt
+gaps and the overall verifier result remain unchanged.
+
+| Requirement | Current status | Remaining closure boundary |
+| --- | --- | --- |
+| P01 | DONE | None identified by the current queue. |
+| P02 | SOURCE ROUTE DECISIONS PASS; END-TO-END CLOSURE OPEN | Zero candidates and all family route-decision checks pass. The universal boundary compares explicit route source identity against the checkpoint resolver; the resolver now receives the requested route so an OLMoE persisted format selects its matching manifest when several are present. The leased INT4-row rejection names `OlmoeDirectProvider` as the separate non-leased consumer. Both manifest regressions pass. OLMoE int2 execution/rollback, F32-as-BF16 rejection, publisher-route mismatch and leased INT8 have tiny-checkpoint coverage. Complete representative loader/consumer/ABI/factory/CLI/gateway/recovery/tooling traces for every admitted tuple. A local dense Qwen3.5-0.8B checkpoint exists but is explicitly out of scope; no local checkpoint for an admitted non-OLMoE MoE family is available. |
+| P03 | BOUNDED INVENTORY CONTRACT DONE; FAMILY CONSUMERS OPEN | Inkling `chain_norm.*` is retained through its shared MTP consumer. Media aliases under `model.language_model.{vision_tower,audio_tower,visual,video_tower}.*` are canonicalized during component partitioning to match loader admission and exact-set media consumers; duplicate canonical aliases reject. V4.1 CLI and public `open_publisher_v41_service()` factory gate exact checkpoint inventories before opening payloads. The documented direct `PublisherCheckpoint.load_v41_execution_payload()` is also gated before mapped loading; the static directory convenience API delegates to that method rather than rescanning inventory. The standalone checkpoint payload method is native-only; V4.1 distributed execution remains explicitly rejected pending peer-loss consensus. Four AST regressions cover these contracts and ordering. Combined `tests.test_source_scope_inventory` plus `tests.test_p02_candidate_triage` passes 94/94. These close only the reviewed V4.1 boundaries. Reconcile actual optional/shared/MTP/expert/media tensors with family consumers and remaining family factory/CLI/service bypasses using representative checkpoints. No in-scope non-OLMoE family checkpoint is available for full construction evidence. |
+| P04 | IN PROGRESS | Shared publisher provider now owns persistent per-family media lifecycle accounting through session dispatch and terminal cleanup; the conditional executor releases error frames if cancellation classification itself fails (52 focused caller/lifecycle tests). Cross-family order, positions/geometry, borrowed ownership, temporal handling, recovery, all non-publisher callers, and route-bound runtime evidence remain open; OLMoE text receipts mark media not applicable. |
+| P05 | IN PROGRESS | Cross-caller accept/reject, bonus, EOS/context limits, cancellation/restore, target/draft state, RNG, and publication atomicity; OLMoE receipts mark speculation not applicable. The V4.1 generation caller previously matched stop prefixes against prompt plus output, allowing a prompt suffix to truncate generation; DSpark repeated this in normal generation and recovery validation, and recovery needed the original prompt offset so a valid stop could span the checkpoint boundary. Plain and speculative matching now use generated tokens only; DSpark carries the prompt offset across speculative steps and restored checkpoints. New prompt-boundary, transaction-spanning and preserved-offset continuation regressions pass with speculative cancellation, stop and V4.1 cleanup coverage (36/36). The standalone RNG-only `SpeculativeStateManager` is not wired into production family decoders; it treats rollback as terminal until release, rejects same-lease RNG mutation after cancellation, rejects stale snapshots, and now refuses shutdown with live owners. Its suite passes 8/8. Two stale test imports now target the retained canonical grammar/adapter modules, and the focused grammar, adapter, transaction, cancellation, state-manager and distributed-recovery group passes 69/69. This does not prove production caller wiring or physical KV rollback, so cross-serving closure remains open. |
+| P06 | IN PROGRESS | All-rank admission compares the finite control-group timeout; a mismatched peer timeout is rejected. Mocked distributed fault/recovery suites pass 26/26. Real CPU Gloo tests now cover rank loss at coordinator admission and during an in-flight generation, with spawn returning within three times the four-second group timeout. An injected `load_cache` partial-install failure now verifies restoration of prior token history, rollback-receipt release, poisoned-session teardown and coordinator poisoning; recovery/checkpoint/launcher suites pass 20/20. `DistributedFailureRecovery` now requires lowercase SHA-256 history digests and rejects same-position digest rebinding so the current cache receipt cannot be replaced by a divergent state; focused shard/recovery/process-loss/launcher tests pass 19 with 2 skips. These checks do not prove arbitrary operation-time transport consensus, every bank/shard layout or recovery without a fresh group. |
+| P07 | IN PROGRESS; P08 SOURCE CONTRACT DONE | K3 temporal/media, FLA/native continuation, rollback and serving integration still need family runtime evidence. P08 exact-admission schemas are source-complete only. |
+| P09 | PARTIAL | OLMoE CPU formats have exact no-fallback receipts; A07 resolves public-range OLMoE `int8-row` to its concrete Segment/Edge adapter and public-range K3 MXFP4 to `publisher_checkpoint.k3_adapter.load_k3` plus `NativePublisherPublicAdapters`, while preserving distinct native consumers. The universal direct owner explicitly selects the persisted-format Numba consumer where no leased ABI consumer exists. Reconcile every other admitted family/backend consumer, scale/geometry, conversion cleanup, and E8/IQ3 transforms. |
+| P10 | IN PROGRESS | No admitted device tuple has actual accelerator-placement evidence; do not infer placement from registry selection or CPU receipts. The project `.venv` has no Torch. `.accelerator-venv` has CPU-only Torch 2.14.1 and Transformers 4.57.6 (not the pinned 5.16.1); CUDA is unavailable, `nvidia-smi` is absent, and the Windows video-controller query is denied. Device execution and placement capture cannot be performed here. |
+| P11 | SOURCE AUDIT PASS; PARTIAL NATIVE EXECUTION; FAMILY ABI CLOSURE OPEN | Static audit sees 98 declared exports and 190 ctypes names; it rejects missing/duplicate definitions, stale references, parameter-count/type mismatches, and explicit calling-convention token mismatches. `tests.test_public_abi_audit` passes 8/8. The focused ABI/family set passes 68 tests with 11 skips for optional exact model/oracle dependencies. These exercise selected native symbols and ownership contracts only. Family-wide export execution, tensor/head schemas, callbacks, and complete factory/CLI/service wiring remain incomplete. Static token matching does not certify platform calling-convention compatibility or native execution. |
+| P12 | IN PROGRESS | `SpeculativeStateManager.restore()` now rejects an authenticated snapshot whose sequence is behind the registered session, with a regression verifying the newer RNG boundary is unchanged. Full family physical-state ownership, stale/foreign restore across native/distributed callers, cancellation/reentry and distributed rollback/process-loss remain to be reconciled and evidenced. |
+| P13 | IN PROGRESS | 45 exact OLMoE receipts; 126 route receipts still missing. Concurrent receipt-manifest writes are serialized. The available model tree contains OLMoE, dense out-of-scope Qwen3.5-0.8B and OpenVINO Qwen2.5, but no representative checkpoint for another admitted MoE family. The only Torch environment is CPU-only and its Transformers version differs from the pinned oracle version. Publisher/media/speculative/distributed capture adapters and applicable cache/placement/comparison evidence remain outstanding. |
+| P14 | IN PROGRESS | The universal stream bridge invokes caller cancellation predicates only on the consumer thread and signals workers through an event. Native OpenAI `stop` and Anthropic `stop_sequences` are encoded by the active checkpoint tokenizer and passed to the existing token-prefix generation path; matched stop text is withheld in complete and stream responses, and matching is limited to generated output rather than crossing the prompt/cache boundary. Anthropic now receives the exact matched request stop string in provider runtime metadata, and JSON plus SSE report `stop_reason=stop_sequence` with `stop_sequence` populated. Provider and route regressions cover both publication modes. V4.1 plain and DSpark generation/recovery were corrected to match token stops against generated output only; the original prompt offset is carried across speculative steps and restored checkpoints so a prefix can span the resume boundary without matching prompt tokens. The public Colibri capability catalog had stale text claiming API stops were rejected; it now advertises the bounded tokenizer-backed behavior, guarded by `test_colibri_capability_catalog_matches_local_sse_routes`. These close specific stop semantics, not full protocol parity. The provider lifecycle guard permits its owning stream worker while excluding unrelated callers. Focused stop/route/stream/recovery regressions pass 37/37; the expanded native/checkpoint/distributed run passes 82 tests with 8 platform skips. Reconcile each serving caller’s streaming/backpressure, cancellation, warm reuse, recovery, auth, cleanup and error propagation; current OLMoE captures do not prove other callers. |
+| P15 | OPEN | Reconcile every applicable source requirement and obtain required route-bound evidence; do not set `phase1_closed=true` while any verifier checks fail. |
+
+### P09/P10 format-placement and verifier entrypoint correction — 2026-10-25
+
+The A07 global format registry rejected `int8-row` at `public-range` even
+though the OLMoE public ABI owns and validates that exact representation. The
+registry now admits the placement and exposes its real
+`segment_edge_adapters.NativeOlmoePublicAdapters` loader separately from the
+ordinary native `NativeInt8RowExpert`. The same route audit also found that K3
+public serving accepts the checkpoint-bound MXFP4 payload: A07 now resolves
+that placement to `publisher_checkpoint.k3_adapter.load_k3`, and the family
+consumer to `publisher_public_adapters.NativePublisherPublicAdapters`.
+`require_format_execution_consumer()` returns each placement-specific loader
+in its contract. Regressions cover both registry and source-consumer results.
+The same test now makes the
+important boundary explicit: an exact FP8 checkpoint inventory route may be
+admitted, while a generic sparse-expert manifest lacking source-route
+provenance remains rejected by its format-only guard. Thus exact-route counts
+and evidence obligations are unchanged.
+
+The canonical `phase1_verify.py` could not start because it imported the
+removed duplicate `phase1_closure_integrated.py`; it now imports the retained
+`integrated_closure.py`. Latest result: source matrix 1,334 rows (171 admitted,
+0 candidate, 877 restricted, 286 rejected), 162 exact unique bindings, static
+source and ABI checks pass, and closure remains 10/17 with 126 missing route
+receipts (family/backend breakdown in the current reconciliation above). The
+focused P02/A04/A05/A06/A07/source-inventory set passes 92/92 in the project
+environment. Base Python lacks `numpy` and `pytest`; the attempted base
+`unittest` run had 54 dependency/import errors and is not claimed as a pass.
+Publisher execution receipts, actual device placement, native ABI execution,
+and P15 remain open.
+
+### P13 independent reference source closure — 2026-10-24
+
+The comparison gate now has a source-pinned numerical-reference registry for
+OLMoE, Mixtral, Qwen3.5, Qwen4, Inkling, and GLM-DSA. Each receipt must pin
+the exact current source hashes for the reference decoder and every imported
+in-repository equation helper; shared helper changes therefore invalidate old
+comparison evidence. GLM5-Next, Kimi K3, and DeepSeek V4.1 remain ineligible
+until independent numerical references exist. This does **not** add capture
+adapters: `phase1_capture` still captures OLMoE only, no other-family runtime
+receipts were created, and the canonical gate remains 10/17 with 126 missing
+receipts. Comparison identity must also name the exact registered family
+decoder. For Mixtral, the pinned config geometry is checked against the
+selected canonical publisher contract rather than dimensions claimed by
+observations; hidden/intermediate sizes, layers, attention/expert geometry,
+vocabulary, context, normalization and supported embedding/RoPE fields are
+checked when declared. The focused registry and OLMoE source-forgery
+regressions pass 7/7 under the project virtual environment. Existing family decoder test modules
+were also selected, but 13 oracle-dependent tests were skipped because the
+compatible Transformers oracle is unavailable here; this pass therefore does
+not independently validate those families' numerical parity.
+
+### P14 universal owner-construction cleanup retention — 2026-10-24
+
+Two setup-failure paths could orphan a live native resource: a publisher
+`PublisherSession` when its universal owner wrapper failed to construct, and a
+universal owner when `UniversalSession` rejected its rollback protocol. Both
+paths now preserve the primary construction error and attach a retryable
+`cleanup` callback if the first close attempt fails. Regressions retry the
+callback and confirm the exact owner/session is closed; universal engine and
+publisher adapter suites pass 39/39. This is limited to construction-failure
+cleanup retention and does not close the wider P14 caller lifecycle matrix.
+
+### P02/P03 native factory execution ownership — 2026-10-24
+
+The five legacy A02 native factory bodies had not matched the current loader
+contracts: they called an obsolete `family=` argument, omitted required
+libraries, paired external config files with separately loaded checkpoint
+weights, and returned the same mutable decoder after session close. Qwen3.5
+text, Qwen4 text, GLM5 text, and GLM-DSA now share a bounded exact-identity
+factory: `config_path` must resolve to the checkpoint's own `config.json`,
+the source inventory is admitted as native/FP32/float32 before library load,
+the current native decoder loader constructs each instance, and closed mutable
+decoders are never reused across sessions. Qwen3.5's multimodal wrapper is
+explicitly rejected by its text-only factory. V4.1 now delegates to the
+existing three-bank publisher service and its exact inventory gate instead of
+trying to instantiate a nonexistent generic decoder. Regression coverage for
+the factory contracts plus source inventory passes 102/102. No real non-OLMoE
+checkpoint or compiled family library was available, so these paths are not
+runtime-certified and do not close P02/P03/P13/P15.
+
+### P13 routing observation layer-index validation — 2026-10-24
+
+The route receipt gate previously verified only the count of routing layer
+entries and the number of route rows in each entry. A forged receipt could
+substitute an unknown layer name while keeping those counts. Validation now
+requires numeric layer suffixes that cover indices `0..num_hidden_layers-1`
+exactly once, in addition to the existing per-position route and top-k checks.
+A regression re-pins a mutated observation with `model.layers.99`; it is
+rejected. `tests.test_phase1_capture` passes 30/30. This closes one receipt
+schema gap, not publisher-family capture, missing route evidence, or P13/P15:
+the verifier still lacks 126 receipts and remains 10/17.
+
+The same receipt review found that all *listed* checkpoint artifacts were
+hash-checked and constrained to the checkpoint directory, but the verifier did
+not ensure every SafeTensors weight shard in that directory was listed. It now
+requires the pinned `weights` paths to equal the checkpoint's complete direct
+`*.safetensors` shard set exactly once. Regressions remove a shard pin and
+duplicate a shard pin; both are rejected.
+the large-artifact test now adds and pins its extra shard without mutating the
+fixture's original shard. `tests.test_phase1_capture` passes 30/30. This source
+gate does not close the 126 absent runtime receipts or publisher capture.
+
+### P12 targeted family snapshot ownership review — 2026-10-24
+
+Inspected Qwen4 cache restore staging (`qwen4_cache_recovery.py`), K3 batch
+restore rollback (`k3_execution/batch.py`), K3 executor staged restore
+(`k3_execution/executor.py`), and owner/identity/live-receipt checks in GLM-DSA,
+Mixtral and Qwen3.5 snapshots. No distinct reproducible defect was found in
+those inspected paths, so no source change was made. `NativeDeepSeekV41MHC`
+uses geometry-only raw-state restore but is documented as a private equation
+fixture; repository search found no production instantiation, so it is not
+counted as a production recovery owner. This review does not close P12: other
+family paths, serving order, distributed rollback/consensus and process-loss
+recovery remain outstanding. No tests were run for this read-only review.
+
+### P03 V4.1 public entrypoint inventory gates — 2026-10-24
+
+Tracing `PublisherSession` to the independent public factory found a separate
+bypass: `open_publisher_v41_service()` checked exact source-matrix tuples but
+opened `PublisherCheckpoint` without validating the complete checkpoint
+inventory. It now calls `require_checkpoint_inventory_admission()` with the
+exact V4.1 identity, arithmetic, metadata bound, and selected native/device/
+distributed backend before checkpoint or payload opening. The direct CLI has
+the same full-inventory gate. A further trace found the documented
+`PublisherCheckpointService.load_v41_execution_payload()` API also opened and
+materialized the checkpoint independently. Its instance payload method now
+gates the native route before mapped loading, and the static directory
+convenience API delegates to it instead of performing a duplicate inventory
+scan. The public service factory retains its pre-open gate; V4.1 distributed
+execution remains explicitly rejected pending peer-loss consensus. Four AST
+regressions cover these boundaries; the combined source-inventory/candidate-triage suites pass 94/94.
+This closes only the reviewed V4.1 entrypoints; it does not establish full
+tensor-consumer reconciliation or cover other family callers.
+The canonical verifier remains 10/17 with 126 missing exact-route receipts.
+
+### P02 A02 native text factory trace correction — 2026-10-24
+
+The original A02 trace conflated wrapper identities (`qwen3_5_moe`, `qwen4_exp`,
+`glm5_next`) with the separate text factory identities (`qwen3_5_moe_text`,
+`qwen4_exp_text`, `glm5_next_text`), named cache-recovery classes absent from
+the source tree, claimed tensor-parallel owners not wired by those factories,
+and named a CLI class not called by the direct text factories. The trace catalog
+now has separate wrapper-route entries that follow
+`open_native_conditional_directory_service` and the conditional CLI, plus
+separate direct text-factory entries with exact text identities. The latter
+point to service-owned session state and executor snapshots and explicitly
+leave CLI/public ABI and tensor-parallel integration unclaimed. Recovery
+references describe the service's explicit
+`save_session_cache`/`write_session_cache` and `restore_session_cache` APIs,
+not portable family continuation certification.
+The catalog module documentation and command output now state that structural
+population of trace fields is not runtime certification. Four focused trace
+assertions plus the A02 factory, candidate-triage and inventory suites pass
+103/103 under the project `.venv` before the wrapper/text split; the expanded
+focused factory/inventory/triage/universal-path group passes 118/118 after the
+split. A system-Python attempt was invalidated by
+that interpreter lacking NumPy; it is not counted as a code failure.
+
+This corrects the claims for selected wrapper and programmatic text paths only.
+It does not close other family CLI/public ABI wiring, tensor-parallel ownership,
+portable recovery, other backend/format routes, or any runtime receipts. The
+canonical verifier remains 10/17 with 126 missing admitted-route receipts.
+
+The A03 Mixtral and OLMoE rows had the same class of trace defects and were
+corrected in the same pass: Mixtral now names its actual family CLI/public
+adapter chain, decoder-owned `MixtralSnapshot`, and marks tensor-parallel plus
+dedicated whole-model comparison as unestablished. OLMoE now names
+`OlmoeNativeOwner`, the actual `olmoe_cli.main` entrypoint, owner-local decoder
+state receipts, and the registered `wholemodel_validation.olmoe_native`
+adapter; it no longer treats a sparse manifest as a TP owner or claims a
+nonexistent `PublisherSession` class. The trace script's status line was changed
+to ASCII after direct Windows execution raised `UnicodeEncodeError`.
+
+A follow-up found and corrected the same stale-reference defect in DeepSeek
+V4.1, K3 and Inkling: V4.1 now distinguishes publisher target/speculative
+owners from its separately restricted distributed route; K3 names the actual
+`K3Execution` snapshot/cache operations and public factory; Inkling names the
+conditional decoder/service, real `GroupedSnapshot` type, and currently
+disabled generated MTP path. Missing comparison adapters, CLI identities, or
+tensor-parallel owners are recorded as open rather than asserted present. The
+trace regression now covers these references; the full focused four-suite run
+passes 118/118, and direct trace-catalog execution succeeds. This repairs
+selected source claims, not the family-wide path matrix or runtime evidence.
+
+The source trace catalog now has 12 selected entries, including distinct
+Qwen3.5/Qwen4/GLM5 conditional wrapper routes and direct text-factory routes.
+The wrapper traces use canonical wrapper identities; the text traces use exact
+text identities and do not claim wrapper or CLI wiring. A regression requires
+every trace tuple to exactly match one six-field row returned by
+`source_matrix_rows()`. The expanded focused factory, source-inventory,
+candidate-triage and universal production-path suites pass 118/118. This is a
+selected-route source binding, not full 171-route closure or runtime evidence.
+
+### P14 universal Phase 1B facade construction cleanup — 2026-10-24
+
+`AdaptiveExecutionEngine.open_universal_model()` previously opened the
+production adapter owner and then constructed its Phase 1B facade without a
+failure cleanup boundary. If facade construction raised, the base session
+became unreachable while still owning native resources. The method now closes
+that session on facade-construction failure; if close also fails, it attaches
+the existing retryable cleanup callback to the original facade error. A
+production-path regression injects both failures, retries the attached cleanup,
+and confirms the owner closes. The combined focused factory, inventory,
+candidate-triage and production-path group passed 104/104 under `.venv` at that
+point. After the additional A03 trace assertions were included, the expanded
+group `tests.test_phase1_a02_factories`, `tests.test_p02_candidate_triage`,
+`tests.test_source_scope_inventory` and `tests.test_universal_production_path`
+passed 118/118 under `.venv`.
+
+This fixes only the universal Phase 1B wrapping boundary. It does not close
+caller-by-caller cleanup, concurrent facade construction, other serving
+lifecycle paths, or runtime evidence requirements. The canonical verifier
+remains 10/17 with 126 missing admitted-route receipts.
+
+The last full-suite result recorded below predates this 24 October work. The
+focused runs for this update were `tests.test_phase1_closure_gate` (7/7), which
+covers legacy-validator fail-closed behavior, and
+`tests.test_phase1_receipt_manifest_lock` (1/1), which covers concurrent
+receipt preservation. Three focused universal-stream tests pass, covering
+consumer-thread cancellation callbacks and cooperative/uncooperative stream
+abandonment. Two universal OLMoE production-path tests pass, covering direct
+int2 execution with cancellation rollback and the leased INT8 route. The
+universal adapter and engine suites pass 36/36, including source-dtype
+mismatch rejection. Distributed checkpoint, tensor-parallel timeout,
+launcher-failure and recovery-driver suites pass 26/26, including peer timeout
+disagreement. The canonical verifier was rerun after the P03 Inkling MTP-bank,
+P06 timeout-policy, P14 stop/lifecycle, P03 media-alias and P02 explicit-route
+manifest changes and remains 10/17, with zero candidates and 126 missing
+exact-route receipts. This confirms the source changes did not alter route
+decisions or fabricate evidence. After the P14 change,
+The focused stop/route/stream/recovery set passed **37/37**; the expanded run
+including native family text, native checkpoint and distributed consensus
+coverage passed **82 tests with 8 platform skips**. Provider integration
+confirms complete and stream execution receive tokenizer-bound stop IDs and do
+not publish matched stop text; a service regression confirms stops do not
+match across the prompt/generation boundary, and unrelated lifecycle callers
+remain excluded during a stream. After the Inkling auxiliary-bank source fix,
+`tests.test_source_scope_inventory` and `tests.test_p02_candidate_triage` had
+previously passed **88/88**, including `chain_norm.*` header selection,
+auxiliary ownership and MTP consumer admission. The system Python lacks NumPy,
+so its first expanded run failed with import errors. Re-running the same
+90-test command with the project `.venv` passed **90/90**, including both new
+media-alias canonicalization/collision regressions. Use the project
+environment for subsequent verification. After correcting two OLMoE manifest
+selection regressions found by the broader focused runner,
+`test_p0_p1_fixes.py` passed **228 tests with 3 skips** in the project `.venv`;
+this covers the focused P02/P03/universal/OLMoE-capture slice, not the whole
+repository suite. The two failures in its first run were an explicit-route
+manifest selection mismatch and an outdatedly vague consumer error; both now
+have passing regressions.
+No commit or push was made.
+
+### P03 media-alias consumer namespace correction — 2026-10-24
+
+`publisher_conditional_loader` accepts media tensor aliases under
+`model.language_model.*` after canonicalizing that prefix to `model.*` for its
+whole-inventory contract. `partition_weights` previously preserved the source
+alias for vision/audio destinations, while `InklingMediaEncoder` requires an
+exact canonical tensor-name set. The partitioner now applies the same
+canonicalization before handing those banks to consumers; its existing
+duplicate-destination guard rejects a canonical/source-name collision. Two
+targeted regressions pass: one verifies both vision and audio alias names and
+object ownership, and one verifies duplicate vision aliases fail closed.
+The initial system-Python test attempt lacked NumPy; the complete focused
+inventory/candidate suites now pass 90/90 in the project `.venv`. No
+representative Inkling checkpoint is available here.
+This closes only the identified source-name mismatch, not family-wide P03 or
+P04 closure; P03/P04/P15 remain open.
+
+### P02 explicit-route manifest selection and consumer diagnostics — 2026-10-24
+
+The broader focused engine run found that an explicit OLMoE route was source-
+validated by invoking the checkpoint resolver without forwarding the route.
+With multiple packed manifests, that resolver therefore raised ambiguity
+before the adapter could choose the manifest matching the requested persisted
+format. Route-aware resolvers now receive the explicit `ModelRoute`; the
+OLMoE resolver selects its matching persisted-format manifest while preserving
+the existing source-format comparison. Also made the leased Segment/Edge
+`int4-row` rejection name `OlmoeDirectProvider` as the separate available
+consumer. The two previously failing tests now pass, and the focused engine
+runner completes **228 tests with 3 skips**. This does not close P02 family-wide
+or provide non-OLMoE evidence; P02/P13/P15 remain open.
+
+### P11 compiled native ABI and state-contract slice — 2026-10-24
+
+With the project `.venv`, `tests.test_native_kimi_k3_kda`,
+`tests.test_native_deepseek_v41_ced` and `tests.test_segment_abi` passed
+**48/48** while compiling and calling the actual C libraries through their
+Python ABI adapters. Coverage includes counts/null/overlap validation,
+continuation and restore, callback reentry, cancellation, ownership and
+cleanup retry. A separate native family run over Kimi, checkpoint dispatch,
+DeepSeek V4, and public family text ran **53 tests with 11 skips**; skips
+include the pinned official model/oracle suites unavailable in this environment.
+These are selected tiny-fixture ABI exercises, not a complete ABI-symbol map or
+real publisher-checkpoint certification. P11/P13/P15 remain open.
+
+### P06 real CPU Gloo rank-loss check — 2026-10-24
+
+Added `tests/test_distributed_process_loss.py`, an opt-in-by-dependency real
+two-rank CPU Gloo regression. Rank 1 exits abruptly after process-group setup
+but before distributed coordinator admission; the parent observes the worker
+failure in 4.99 seconds with a four-second group timeout (under the test's
+12-second bound), and Torch spawn terminates the survivor. The test passes in
+`.accelerator-venv` using CPU-only
+Torch. This is stronger than the existing mocked timeout/fault tests for
+startup rank loss, but does not prove transport failure during a live model
+operation, rank-local cleanup after an actual OS kill, or distributed model
+recovery/consensus. P06/P12/P15 remain open.
+
+### P10/P13 local evidence-capacity audit — 2026-10-24
+
+The local `models/` directory contains three OLMoE variants (source BF16 and
+derived F16/F32), dense Qwen3.5-0.8B (out of scope for the Qwen3.5-MoE route),
+and OpenVINO Qwen2.5. No checkpoint for another admitted MoE family is present.
+The project `.venv` has no Torch. The separate `.accelerator-venv` has
+CPU-only Torch 2.14.1 and Transformers 4.57.6 rather than the pinned 5.16.1;
+`torch.cuda.is_available()` is false, CUDA version is `None`, device count is
+zero, `nvidia-smi` is absent, and `Get-CimInstance Win32_VideoController`
+returned access denied. Therefore, no honest device-placement receipt can be
+captured on this host. No representative checkpoint for another admitted MoE
+family is present, so no non-OLMoE route receipt can be captured either. The source implementation can
+continue to be audited, but these 126 exact-route evidence gaps remain real;
+P10/P13/P15 stay open pending matching artifacts and executable hardware.
 
 ## Current deep audit — 2026-10-19
 
@@ -492,7 +1085,7 @@ implementations.
 | P11 | IN PROGRESS | Public K3/V4.1 text owners exist; derived identities and snapshot handles enforce ownership; cancellable ABI forwards roll back/quarantine; Mixtral construction retains failed cleanup and Qwen4 engine/session closes are idempotent. Qwen4 rejects final-hidden native entry reentered from its synchronous routing observer callback. GLM-DSA Segment session run, snapshot, restore and close serialize on one per-session lock and reject same-thread reentry from synchronous callbacks. K3/V4.1 publisher ABI session run, snapshot, restore and close now reject same-thread reentry while retaining cross-thread serialization, so cancellation and cache callbacks cannot close or mutate the active session on the callback stack. Mixtral public range sessions now likewise serialize run/snapshot/restore/close and reject same-thread callback reentry. GLM-DSA Segment open now closes its newly-created range engine if capability-record construction fails before public-handle adoption; failed cleanup remains reachable in the adapter's pending-resource inventory. The shared Segment/Edge callback guard clears constructor handles and complete capability records before admission, then clears capability records again if any later open step fails, including after family callbacks populated them but before handle publication. Segment/Edge tokenizer and detokenizer ABI callbacks now zero output count/extent before handle lookup or decoding, while preserving the required-size result for undersized-buffer sizing calls. The Segment callback now rejects a null written-length out-pointer before dereferencing it and returns an ABI callback error with diagnostic state retained. `SegmentBridge.call` now rejects successful fixed-tensor callbacks that report a short/long written extent; if a session forward has already run, the affected handle is quarantined rather than allowing continuation from potentially advanced KV. Qwen3.5 Segment run now validates the exact public run-record size, rejects nonzero token/reserved fields for its hidden-activation wire, requires exact input/output extents, and rejects nonfinite activation input before advancing KV state. Mixtral Segment run now enforces the exact `_Run` record size, rejects unused token/reserved fields, and requires exact hidden-activation input/output extents rather than accepting oversized buffers. | Review all family ABI ranges, hidden/head schemas, callback ownership/reentry across all adapters, registration, continuation, factory/CLI wiring and close order; audit analogous out-parameter behavior across other family adapters. |
 | P12 | IN PROGRESS | Direct Segment ABI cancellation rolls back or quarantines; direct K3 generation publication/restore is lock-scoped; direct V4.1 publication acquires the model or complete DSpark owner lock chain. Distributed cache-load rollback restores prior generation-boundary metadata with physical state, and failed/disagreeing distributed session and whole-service close attempts retry cleanup on retained rank-local owners before leaving the group poisoned. Service cache restore performs file-backed reader final-completeness checks before committing history. OLMoE Segment forward/reset/close and portable snapshot read/write operations now serialize on a per-session reentrant lock. Durable `recover_into` snapshots and serializes the existing caller-owned session, restoring its prior physical/logical state on post-load mismatch rather than closing that existing session; if rollback itself fails, the session is quarantined as closed. Durable `recover` serializes session-registry admission, verifies the returned session is the sole newly created owner, and cleans only registry entries proven to have been created by a malformed/raising recovery attempt, preventing orphan leaks and avoiding cleanup of pre-existing caller sessions. K3 generation-boundary rollback failure now quarantines the executor while preserving `close()` for resource release. Distributed rank cache restore re-admits the shared manifest on each rank immediately before consuming receipts and after physical install; a changed manifest therefore enters the existing collective rollback path. DSpark snapshot capture checks hidden/logit evidence against the captured backbone token history and releases the nested backbone receipt if validation fails, quarantining on cleanup failure. Distributed cache/generation/reset/restore disagreements now close each affected session even after a successful rollback, since the poisoned coordinator cannot dispatch subsequent session cleanup. | Close V4.1 restore and other-family physical state, serving order, stale/foreign restore and distributed failure/consensus lifecycle; distributed close retry is best effort, not rollback or process-loss recovery. |
 | P13 | IN PROGRESS | `source_scope.py` attaches validated evidence obligations to generated rows, now naming function-level observation/cache-schema owners, report schemas, artifact-pin and placement references; absent media adapters are explicit and structurally checked. Each obligation carries an exact execution-row adapter binding while labeling its owner family-schema-reference-only and requiring a separate receipt. Whole-model comparison inputs bind an exact family/model/backend/arithmetic/source/persisted/media row to both declared module:callable factories; the runner joins that binding to the generated source catalog and rejects absent or restricted tuples before importing adapters, then requires both adapters to echo the row. It also rejects media-row bindings without catalogued media adapter/report schema. The runner now rejects any whole-model manifest missing the exact row/artifact-pin binding and resolves catalog source owners against this checkout before importing adapters; the catalog validator requires a comparison report schema on every obligation. P13 owner resolution now parses source syntax and requires the referenced symbol to be declared, rather than accepting a matching word in a comment/docstring/string. Every generated obligation explicitly says `evidence_state=not-captured` and `completion_claim=False`; source-scope validation rejects attempts to promote those generated obligations or the catalog itself to complete/certified. K3 has pinned exact-media fixture and comparison inputs; its comparator rejects absent source-bound per-operation placement observations. Structural validators retain `receipt_present=False`, `executed=False`, and false certification flags. | Add and reconcile exact bindings on every applicable row; capture/pin row-specific observations, cache leaves and runtime artifacts; bind real per-operation placement/comparison receipts. Catalog joins, syntax-tree/filesystem owner checks and execution bindings are structural source contracts, not proof of adapter correctness or produced evidence. No run may use an unbound manifest, but existing configs must be regenerated with exact bindings. K3 media comparison remains restricted pending placement observations for media encode, prefill, continuation decode, and restore. Keep unsupported rows restricted. Direct K3/V4.1 scoring and remaining Colibri surfaces remain separately open. |
-| P14 | IN PROGRESS | Colibri-specific capability status is exposed; `/v1/messages` `x-api-key` is route-scoped and works through opt-in auth scopes. Local OpenAI chat/text and Anthropic messages now support text SSE with protocol-specific terminal/error events, cancellation, and iterator cleanup; chat streaming supports `stream_options.include_usage`. The native publisher bounded FIFO queue supports opt-in queue/timeouts, pre-header 429/Retry-After, health/Prometheus counters, and `X-Queue-Wait-Ms` on JSON and SSE responses. The OpenAI text-completion-only `echo` option is rejected on chat-completion requests; nonempty text stop sequences, Anthropic stream options, tools and unwired controls remain rejected; OpenAI `user` attribution is rejected because no caller-attribution sink is connected. Escaped invalid-Unicode message/stop text returns HTTP request validation errors, and direct native publisher complete/stream/Brio scoring boundaries convert lone-surrogate UTF-8 failures into `ProviderConfigurationError` before session scoring/execution. `/v1/brio` rejects `cache_slot` at the HTTP route boundary; persistent isolated history remains unsupported and the provider also guards non-route callers. The Colibri READY/mux/priority/global queue protocol remains explicitly unavailable. Model-gateway upstream streaming threads consumer-disconnect cancellation into bounded egress reads, closes the active upstream connection if cancellation arrives while blocked in a line read, and preserves cancellation as `InterruptedError` rather than rewrapping it as a generic transport error; it stops dispatching queued lines after cancellation and closes each provider iterator on completion, failure, or consumer disconnect while preserving the primary error. The native publisher vision-stream gateway now explicitly closes its provider iterator on response setup failure, normal exhaustion, consumer cancellation and iteration failure while retaining the primary provider/consumer exception. The local `ChatService.stream` likewise preserves its primary provider/consumer failure when iterator close fails, while surfacing close errors after otherwise-normal exhaustion. V4.1 CLI generation and resume callers recheck cancellation after checkpoint publication and immediately before token-event callback dispatch. Runtime SSE delivery closes its provider iterator even if response/header setup fails, and writes SSE error payloads only after headers are sent. The codebase-run SSE route resolves run existence/ownership before it sends HTTP 200 headers; its lazy generator cannot turn a missing/foreign run into an already-committed SSE error instead of an HTTP 404. The direct hardware streaming client now bounds its local event handoff to 16 events, applying pipe-consumer backpressure; abandoning the iterator signals cancellation and releases a blocked event publisher before terminating an unfinished worker. GLM5 publisher construction and owner close now attempt decoder, expert-provider and projection-provider cleanup independently, retain failed owners for retry, and preserve the first cleanup failure. | Close caller-by-caller stream/backpressure, stop, recovery, warm-session, media and cleanup/error paths; full API/READY/route-telemetry/cache-routing/mirror parity remains unavailable or restricted. Cancellation-triggered socket close is best effort and does not establish device-side cancellation or end-to-end stream lifecycle behavior. |
+| P14 | IN PROGRESS | Colibri-specific capability status is exposed; `/v1/messages` `x-api-key` is route-scoped and works through opt-in auth scopes. Local OpenAI chat/text and Anthropic messages now support text SSE with protocol-specific terminal/error events, cancellation, and iterator cleanup; chat streaming supports `stream_options.include_usage`. The native publisher bounded FIFO queue supports opt-in queue/timeouts, pre-header 429/Retry-After, health/Prometheus counters, and `X-Queue-Wait-Ms` on JSON and SSE responses. OpenAI `stop` and Anthropic `stop_sequences` are now encoded with the active checkpoint tokenizer and passed into the native token-prefix stop path; focused provider, route and stream regressions pass. The OpenAI text-completion-only `echo` option is rejected on chat-completion requests; Anthropic stream options, tools and unwired controls remain rejected; OpenAI `user` attribution is rejected because no caller-attribution sink is connected. Escaped invalid-Unicode message/stop text returns HTTP request validation errors, and direct native publisher complete/stream/Brio scoring boundaries convert lone-surrogate UTF-8 failures into `ProviderConfigurationError` before session scoring/execution. `/v1/brio` rejects `cache_slot` at the HTTP route boundary; persistent isolated history remains unsupported and the provider also guards non-route callers. The Colibri READY/mux/priority/global queue protocol remains explicitly unavailable. Model-gateway upstream streaming threads consumer-disconnect cancellation into bounded egress reads, closes the active upstream connection if cancellation arrives while blocked in a line read, and preserves cancellation as `InterruptedError` rather than rewrapping it as a generic transport error; it stops dispatching queued lines after cancellation and closes each provider iterator on completion, failure, or consumer disconnect while preserving the primary error. The native publisher vision-stream gateway now explicitly closes its provider iterator on response setup failure, normal exhaustion, consumer cancellation and iteration failure while retaining the primary provider/consumer exception. The local `ChatService.stream` likewise preserves its primary provider/consumer failure when iterator close fails, while surfacing close errors after otherwise-normal exhaustion. V4.1 CLI generation and resume callers recheck cancellation after checkpoint publication and immediately before token-event callback dispatch. Runtime SSE delivery closes its provider iterator even if response/header setup fails, and writes SSE error payloads only after headers are sent. The codebase-run SSE route resolves run existence/ownership before it sends HTTP 200 headers; its lazy generator cannot turn a missing/foreign run into an already-committed SSE error instead of an HTTP 404. The direct hardware streaming client now bounds its local event handoff to 16 events, applying pipe-consumer backpressure; abandoning the iterator signals cancellation and releases a blocked event publisher before terminating an unfinished worker. GLM5 publisher construction and owner close now attempt decoder, expert-provider and projection-provider cleanup independently, retain failed owners for retry, and preserve the first cleanup failure. | Close caller-by-caller stream/backpressure, recovery, warm-session, media and cleanup/error paths; full API/READY/route-telemetry/cache-routing/mirror parity remains unavailable or restricted. Cancellation-triggered socket close is best effort and does not establish device-side cancellation or end-to-end stream lifecycle behavior. |
 | P15 | OPEN | Prohibitions respected; the checklist distinguishes structural catalog coverage and narrow source fixes from implemented consumer closure. | Reconcile every admitted matrix cell and remaining P04–P14 finding before completion; no percentage or completion certificate is claimed. |
 
 ### P02 OLMoE exact config architecture admission — 2026-10-15
@@ -9575,3 +10168,1188 @@ complete ABI/recovery maps, real pinned P13 runtime/cache/placement/comparison
 evidence, and final P15 reconciliation remain open. No build or test result on
 this host substitutes for actual accelerator placement or external runtime
 evidence.
+
+### P04/P14 recovered stop-prefix buffering — 2026-10-24
+
+Recovery streaming now handles the two distinct native event contracts without
+re-decoding stop boundaries as text: generic family sessions emit continuation
+token IDs, while K3 emits cumulative generation and now includes restored token
+history. The provider withholds possible stop-prefix tokens across the restore
+boundary, inherits and verifies the persisted stop policy, truncates at the
+exact matched token boundary, and only publishes decoded visible continuation
+text. A normal stop is no longer converted to cancellation on the decoder's
+next poll. The gateway now only requests recovery token callbacks for an actual
+streaming caller, so V4.1's streaming restrictions no longer reject a
+non-streaming restore. V4.1 also returns separate restored/continued IDs and
+its terminal stop boundary; conditional and family sessions expose persisted
+stop policies in their recovery envelopes.
+Added regressions for a stop split across the checkpoint boundary, contextual
+decoding whose standalone stop spelling differs, and non-streaming event
+inventory validation. `tests.test_publisher_stop_sequences` passes 10/10; the
+combined focused publisher-recovery/lifecycle slice passes 21/21; the changed
+Python modules compile and scoped `git diff --check` is clean. This closes one
+recovery-stream defect, not the
+caller-by-caller P04/P14 lifecycle review. P04/P14/P15 remain open.
+
+### P06 in-flight CPU Gloo rank-loss check — 2026-10-24
+
+Extended `tests/test_distributed_process_loss.py` with a second real two-rank
+CPU Gloo case: rank 1 exits abruptly on its first model `forward()` during a
+live `generate` request, after the coordinator has admitted and opened the
+session. The launcher returns control within the test's three-times-four-
+second timeout bound; both startup-admission and in-flight-generation cases
+pass in `.accelerator-venv` with CPU-only Torch. This verifies bounded launcher
+failure on these two rank-loss points only. It does not prove that an OS-killed
+rank rolls back its physical state, that every collective has independent
+transport-loss consensus, or that damaged groups recover without restarting.
+P06/P12/P15 remain open.
+
+### P14 serving cleanup failure reporting — 2026-10-24
+
+The public publisher and native conditional constructors/teardown previously
+called `repr()`/`str()` on secondary cleanup exceptions. A hostile exception
+formatter could replace the primary construction failure or interrupt teardown
+diagnostics. Safe reporting is now wired through those paths, native-family
+CLI cleanup, native public text/model adapters, Mixtral range construction,
+and Inkling, GLM5, Qwen3.5 and Qwen4 multimodal owners; retry callbacks remain
+attached where available. Focused multimodal, public lifecycle, media-ordering
+and cleanup coverage passed 87 tests (7 optional skips); a follow-up native
+owner/media slice passed 26 tests (9 optional skips). Provider/gateway
+diagnostics and K3/V4.1 CLI errors now preserve ordinary messages but fall back
+to bounded type-only diagnostics if exception stringification fails. The
+focused local-AI, route, chat, media and cleanup suite passes 79 tests (3
+optional skips); the narrower cleanup/public factory/text slice passes 23/23.
+This is bounded caller cleanup and error-reporting coverage; complete serving
+lifecycle coverage and P14/P15 remain open.
+
+### P11 declaration/definition ABI source signature check — 2026-10-24
+
+Extended `public_abi_audit.py` beyond symbol presence and arity: it now
+normalizes and compares exported C return/parameter type spellings against
+source definitions, while preserving nested callback declarators and ignoring
+macro-only prefix text. Regression coverage rejects both parameter-count drift
+and same-arity pointer-type drift; the repository-wide audit passes for 98
+exports and 166 ctypes names, and `tests.test_public_abi_audit` passes 5/5.
+This is still a static source check; native compilation, calling-convention
+compatibility, execution of every family export, schemas and caller wiring are
+not established. P11/P13/P15 remain open. The Phase 1 verifier remains 10/17,
+blocked by 126 missing exact-route runtime receipts across A04-A10.
+
+### P02 K3 candidate-tooling source-route admission — 2026-10-24
+
+`wholemodel_validation.K3CandidateFactory` creates `K3Execution` directly and
+thus bypassed the production service factory's exact route admission. It now
+derives backend/arithmetic from its explicit policies, invokes
+`k3_route_identity()` before `load_k3()`, and forwards the same tuple to the
+loader for an independent source-bound check. Unsupported FLA, Metal and
+BF16-device candidate tuples are rejected before payload conversion. A source
+regression checks ordering and route forwarding. This closes one tooling seam,
+not the complete K3 or family-wide P02 trace; P02/P15 remain open. No runtime
+evidence or hardware certification is implied.
+
+### P02 K3 direct loader route requirement — 2026-10-24
+
+Follow-up call-graph review found that `load_k3()` and both public checkpoint
+payload-loading APIs still accepted omitted backend/arithmetic, while
+`load_k3_projection_shard()` did not apply the exact tuple gate. Backend and
+arithmetic are now required keyword arguments on all these weight-loading
+surfaces; the shard loader checks `k3_route_identity()` before loading shard
+bytes, and the static checkpoint convenience API forwards the same identity.
+Production CLI and candidate factory callers already supply it. Regression
+coverage confirms omission fails at argument binding; P02 triage, source
+inventory and native K3 tests pass 119/119 (one optional skip). This closes
+these K3 admission bypasses only. Other family routes and P15 remain open; no
+runtime route evidence is implied.
+
+### P12 recovery checkpoint-set handoff barrier — 2026-10-24
+
+The bounded replacement-rank recovery driver now re-admits every pinned
+checkpoint after the restore set is loaded and before handing restored
+sessions to application code. Individual before/after checks left earlier
+manifests unchecked during later restores. A changed pin prevents driver
+execution and triggers reverse-order cleanup of all opened replacement
+sessions. Recovery-driver, distributed checkpoint-error and process-loss
+tests pass 21/21 (two optional skips). This closes the checkpoint-set handoff
+window only; arbitrary transport loss and cross-backend consensus remain open.
+P06/P12/P15 remain open.
+
+### P14 queue admission response regression — 2026-10-24
+
+Source review confirmed the native publisher gateway uses the bounded FIFO
+`AdmissionScheduler`; queue-disabled calls fail fast, queue-enabled calls have
+a finite wait, and both queue capacity exhaustion and admission timeout map to
+HTTP 429 with `Retry-After`. Queue wait metadata is exposed on responses and
+scheduler status feeds health/Prometheus counters. Added an explicit timeout
+mapping regression beside the overload regression. The route plus scheduler
+test slice passes 25/25. This verifies source/route semantics, not live socket
+saturation, disconnect propagation or backend cancellation. P14/P15 remain
+open.
+
+### P06/P12 root collective-loss teardown — 2026-10-24
+
+The root coordinator previously marked itself failed when a non-cancellation
+exception escaped request collectives but did not retire local owners. A broken
+collective could leave its service, sessions, snapshots and generation
+boundaries reachable behind the unusable coordinator. Root request failures now
+use the same poison-and-retire path as worker transport loss, preserving the
+primary exception and attaching cleanup diagnostics. A focused regression
+checks owner clearing and service teardown; distributed checkpoint/recovery
+tests pass 20/20. Successfully agreed cancellation remains non-poisoning. This
+does not provide recovery from a lost rank or global consensus after transport
+loss; replacement ranks remain required. P06/P12/P15 remain open.
+
+### P14 universal-session cleanup diagnostics — 2026-10-24
+
+Universal-session, Phase 1B facade and top-level runtime cleanup used
+`repr(error)` for secondary exceptions. A hostile formatter could interrupt
+receipt retirement, skip later route-profile saves, or prevent universal and
+direct runtime owners from closing. These three layers now use bounded safe
+failure details and best-effort notes for owner construction, pooled teardown,
+rollback, stream-iterator close, profile save and receipt release.
+Fault-injection tests confirm later independent cleanup continues while the
+first failure remains primary. Phase 1B lifecycle, universal-engine and
+production-path suites pass 45/45. This closes cleanup diagnostics in these
+owners only; caller-wide P14/P15 remain open.
+
+### P14 Phase 1B warm-facade identity — 2026-10-24
+
+The production runtime reused a warm Phase 1B facade without comparing its
+facade-only `hot_budget_bytes`, and silently ignored that budget when
+`phase1b=False`. It now validates facade option types/combinations before
+model admission and rejects a warm facade whose requested budget differs. The
+production-path regression covers same-budget reuse, mismatch rejection,
+disabled-facade misuse and invalid values. The universal/Phase 1B lifecycle
+slice passes 46/46. This closes one facade warm-identity boundary only;
+cross-caller serving lifecycle coverage and P14/P15 remain open.
+
+### P14 Brio shared-prefix cleanup — 2026-10-24
+
+`ClosedSetScoringMixin.scoring_prefix_tokens()` now preserves the original
+scoring error while attempting both prefix rollback and snapshot release when
+cleanup exceptions have hostile formatters. If there is no scoring error,
+rollback remains primary and release failure is retained as a safe note; if
+cleanup alone fails, that failure is raised. Fault-injection coverage exercises
+unprintable failures in both cleanup steps. The Brio route and scoring-cleanup
+slice passes 22/22. This closes shared-prefix cleanup only; end-to-end Brio
+parity and caller-wide P14/P15 remain open.
+
+### P11 selected native ABI execution evidence — 2026-10-24
+
+On this host, `tests.test_segment_abi` compiled the actual native Segment C
+bridge and exercised its callback and handle contracts. Combined with
+`tests.test_public_abi_audit`, the focused run passed 27/27. This covers the
+Segment bridge plus source declaration/reference consistency only; it does not
+execute every exported symbol, family-specific ABI, platform calling
+convention, or complete factory/CLI/service route. P11 remains partial;
+P13/P15 remain open.
+
+### P07 K3 FLA replacement cleanup boundary — 2026-10-24
+
+When a K3 state swap retired prior FLA recurrent/convolution buffers, failed
+`close()` calls were retained for retry and quarantined the executor, but an
+otherwise successful operation could still return success. The cleanup path
+also formatted secondary exceptions with arbitrary `repr()`. It now raises a
+bounded cleanup failure when there is no primary request failure, and retains
+the primary request error with a safe type-only note when unwinding. Failed
+mixers remain reachable in the executor's close-retry queue. Fault-injection
+tests exercise both paths; all K3 test modules pass 111 tests (8 optional
+skips). This closes FLA mixer retirement only; temporal/media, end-to-end
+serving, P07 and P15 remain open.
+
+### P02 exact source-reviewed route binding coverage — 2026-10-25
+
+Added `openagent/adaptive_engine/phase1_p02_route_bindings.py` to provide one
+immutable, exact-six-field source binding per unique source-admitted route.
+The provider collapses publisher variants only after the canonical resolver
+confirms their contract, carries the ordered callable-chain owners, and
+validates the binding against its canonical row. Tampered source-review IDs or
+chain ownership are rejected. Coverage is 162 unique route tuples from 171
+admitted matrix rows (nine duplicate publisher variants); the 12 hand-authored
+traces are all represented. `tests.test_phase1_a02_factories` passes 9/9, and
+`validate_phase1_source(root='.')` passes. The canonical `phase1_verify.py`
+now reports the 162-route binding coverage and requires it to validate; the
+latest run passes that source check and remains 10/17 overall.
+
+This is source-catalog binding coverage, not independent per-owner code review,
+runtime route execution, or P13 evidence. The 126 missing runtime receipts
+remain. P02 family caller/ABI/recovery/tooling closure and P13/P15 remain open.
+
+### P13 publisher-variant route selection — 2026-10-25
+
+The capture resolver previously accepted only an unambiguous six-field tuple.
+Nine admitted Mixtral tuples each map to two distinct pinned repository/revision
+artifacts. `canonical_row()` now accepts an explicit canonical `case_id` to
+select one exact publisher variant and continues to fail closed when the tuple
+is ambiguous or the supplied case ID is foreign. This prevents one publisher's
+weights from being captured under another publisher's evidence binding. The
+focused regression passes 1/1. It adds no receipts and does not add a Mixtral
+capture adapter; P13 runtime evidence remains open.
+
+### P14 universal transaction-receipt cleanup and in-flight worker ordering — 2026-10-25
+
+Universal request rollback receipts were not included in the public receipt
+registry. If their release failed during request unwinding, the owner could
+retain the physical snapshot without the universal session retaining a retry
+handle. Transaction receipt failures are now retained, quarantine the session,
+and attach a retry callback to the primary failure where possible; `close()`
+retries them. If state rollback itself fails, release is deferred until owner
+teardown so it cannot race an in-flight stream worker. Deferred receipts remain
+reachable across failed close retries, and an owner without `close()` cannot
+silently discard them. Session status reports the pending cleanup receipt
+count. The combined universal-engine, adapter, and production-path suites now
+pass 60/60, including failure injection and the running-worker quarantine case.
+This closes the shared universal-session cleanup boundary only; family caller
+coverage and end-to-end P14/P15 remain open.
+
+### P12 universal restore partial-install failure — 2026-10-25
+
+`UniversalSession.restore()` previously propagated an owner restore error
+without quarantining the session. A family owner could partially install its
+physical cache and then raise, after which later generation could continue
+from an unknown boundary. Restore failures now mark the owner closing, preserve
+the receipt for close-time release, attach retryable close cleanup to the
+primary error where possible, and block further work. The injected partial
+install regression passes 1/1. This is shared-layer protection; it does not
+replace family codec/recovery review or distributed consensus evidence.
+
+### P11/P14 universal callback reentry guard — 2026-10-25
+
+The universal session's reentrant lock previously allowed same-thread callbacks
+to invoke snapshot/restore/close or start another request while a request or
+stream still owned mutable physical state. Request, stream, and lifecycle
+boundaries now record the active thread and reject same-thread lifecycle
+reentry; cross-thread callers remain serialized by the session lock. Regression
+coverage exercises owner snapshot/restore, result publication, owner close,
+and an active stream consumer. `tests.test_universal_engine` passes 28/28.
+This closes shared-layer reentry only; family ABI callback maps and serving
+caller lifecycle closure remain open.
+
+### P14 universal stream cancellation-thread teardown — 2026-10-25
+
+The universal stream wrapper retained its `RLock` over generator yields. A
+consumer that paused iteration and cancelled from another thread caused the
+generator's cleanup to release a lock owned by the original thread, raising
+`RuntimeError` and potentially leaving physical request state unrolled back.
+The stream now uses the active-request marker to exclude lifecycle operations
+while releasing the lock during yielded intervals; a thread-neutral request
+gate serializes later callers until stream completion or rollback. Rollback and
+receipt cleanup reacquire the state lock. A backend
+iterator `close()` failure during consumer cancellation was also swallowed;
+it is now surfaced after transactional rollback while preserving any original
+backend failure as primary. Added cross-thread close and close-failure
+regressions. `tests.test_universal_engine` passes 31/31. This closes shared
+stream teardown boundaries only; individual serving callers, cancellation
+propagation and the remaining P14/P15 audit stay open.
+
+### P02 static callable-owner reference resolution — 2026-10-25
+
+The exact route bindings carried ordered owner strings but did not check that
+those references still named files or symbols in the repository. Added an
+AST-based source resolver for Python module/symbol chains and direct checks for
+native source paths. The verifier now requires every unique P02 owner reference
+to resolve; all **178/178** currently resolve. This catches stale or misspelled
+catalog links without importing owner modules or claiming call-graph reachability,
+route execution, ABI compatibility, or runtime evidence. The P02
+factory/binding suite passes 10/10, and `phase1_verify.py` reports the new
+source-reference check as passing;
+the overall gate remains 10/17 with the same 126 missing receipts.
+
+### P03 conditional MTP bank namespace recognition — 2026-10-25
+
+Conditional publisher inventory checks and direct family partitioning only
+recognized MTP tensors at a small set of top-level prefixes. A per-layer name
+such as `model.layers.0.mtp_block.*` or `mtpBlock.*` could therefore be
+mistaken for ordinary text inventory in a family with no draft consumer.
+Added one path-component classifier and applied it during initial conditional
+header admission, the later text-vs-auxiliary partition pass, GLM5 inventory
+planning, and direct publisher partitioning. Non-Inkling wrappers
+fail closed on both top-level and per-layer MTP banks; the supported Inkling
+planner receives the recognized bank and still validates its complete exact
+inventory. A GLM5 planner regression now checks the alternate per-layer
+namespace at header admission, and partition tests cover both underscore and
+camel-case forms while excluding ordinary self-attention. The
+source-inventory regression suite passes 65/65. This closes the namespace
+bypass only;
+P03 family-wide consumer closure and P05 Inkling target-verified serving remain
+open.
+
+### P11 nested Python-to-native symbol references — 2026-10-25
+
+The static public ABI audit previously matched ctypes names only when the
+native symbol was accessed from an object literally named `library` or `lib`.
+That omitted nested library owners, including native kernels reached through
+`self.kernel`, `self._lib`, and `self.native.library`. The matcher now includes
+all dotted Python attribute owners. The audited set increases from 166 to
+**190 unique Python-to-native function references**; all resolve to native
+header or C source text. A regression verifies that a stale symbol reached
+through `self.kernel` is rejected. `tests.test_public_abi_audit` passes 6/6,
+and `phase1_verify.py` reports 98 exports and 190 ctypes names. This is
+reference-presence evidence only: it does not prove every ctypes signature,
+calling convention, native compilation, or runtime compatibility. P11/P13/P15
+remain open; the verifier remains 10/17 with 126 admitted-route receipts
+missing.
+
+P11 follow-up: source review found `NativeQwen35Vision` assigned the native
+version probe's `restype` but left `argtypes` at ctypes' implicit default.
+The wrapper now explicitly binds the no-argument signature. A new fake-library
+initialization regression checks both `argtypes=[]` and the 64-bit return
+type; it passes without optional model-oracle dependencies. The numerical
+vision test class remains skipped when Torch/Transformers are unavailable.
+
+### P14 HTTP peer disconnect propagates cancellation — 2026-10-25
+
+Added a loopback server integration regression that invokes the real inference
+route dependency wiring with a fixture stream, reads its first SSE frame, and
+closes the response-owned socket. The production `_RequestDisconnectWatcher`
+then sets the cancellation signal observed by the stream's provider callback.
+The combined `tests.test_server`, `tests.test_inference_routes`, Qwen3.5 vision
+binding, and public ABI suites pass 36/36. This proves the local HTTP
+transport-to-callback seam, not actual cancellation of every model worker,
+client disconnect behavior across all callers, or warm-session lifecycle.
+P14/P15 remain open.
+
+### P14 transport cancellation reaches a suspended publisher worker — 2026-10-25
+
+The HTTP disconnect watcher previously exposed only a callable predicate.
+`NativePublisherProvider._stream_run` correctly kept arbitrary predicates on
+the consumer thread, but its backend worker observed only a local stop event
+set after the consumer resumed or closed the generator. If the consumer was
+suspended at `yield` while blocked publishing an SSE frame, peer closure could
+not promptly cancel backend work. The watcher now supplies a callable signal
+backed by a thread-safe `threading.Event`; `_stream_run` permits the worker to
+observe only that explicit event, never the user callback. A publisher test
+pauses the consumer, signals the worker event and verifies cancellation while
+checking callback thread ownership. The loopback server test verifies peer
+closure sets the same signal. Server, inference-route, and publisher
+cancellation suites pass 36/36. This closes generic transport and worker
+signal propagation, not family-specific native rollback/cancellation,
+disconnected-client socket stress, or caller-wide P14/P15.
+
+### P14 `/api/chat/stream` disconnect cancellation wiring — 2026-10-25
+
+The first-party chat SSE route now follows the transport-cancellation contract
+already present on inference-compatible routes: it starts the disconnect
+watcher after request-body consumption, passes its event-backed callable
+through `ChatRouteDependencies` and `ChatService.stream`, and forwards it
+through text/vision gateway streams to the native publisher. Gateway
+cancellation is re-raised rather than treated as provider failure eligible
+for fallback; cache/buffered chunks are checked before publication, and the
+chat generator retains deterministic provider-iterator cleanup. Added a
+pre-persistence cancellation regression and a loopback `/api/chat/stream`
+disconnect regression, plus gateway regressions proving cancellation cannot
+trigger provider fallback and the transport signal reaches native providers.
+Source compilation and `git diff --check` pass. The base Python lacked
+`numpy`; rerunning the expanded focused chat-route, chat-service, HTTP server,
+gateway and publisher-cancellation suites in the project `.venv` passes
+46/46. This closes
+the chat HTTP transport-to-provider seam only. Full caller/backend rollback,
+media lifecycle, warm-session and P14/P15 closure remain open.
+
+### P13 capture case identity is selectable end-to-end — 2026-10-25
+
+`canonical_row()` rejected ambiguous route tuples when multiple publisher
+pins shared the same six-field route, but the OLMoE capture API and CLI could
+not supply the required exact case ID. Added optional `case_id` to the capture
+API and `--case-id` to the CLI, forwarding it through native, leased and
+public-range capture branches into canonical-row resolution. Existing
+unambiguous calls remain valid; ambiguous pins still fail unless the supplied
+case ID resolves exactly. Source compilation passes; the full
+`tests.test_phase1_capture` suite passes 32/32, including CLI forwarding, real
+tiny-checkpoint route capture, and direct INT4, leased, and public-range paths.
+This fixes artifact identity selection for the existing OLMoE runner only;
+publisher-family capture adapters and the 126 missing route receipts remain
+outstanding.
+
+Current evidence recheck: `.venv\Scripts\python.exe phase1_verify.py` still
+reports 10/17, 171 admitted rows, zero candidates, and 126 missing receipts.
+The workspace has `models/qwen3.5-0.8b`, but its pinned config identifies
+`qwen3_5` / `Qwen3_5ForConditionalGeneration`, the dense identity explicitly
+out of Phase 1 scope; it cannot evidence `qwen3_5_moe`. The configured
+Hugging Face cache has OLMoE, dense OpenVINO Qwen2.5, and Whisper. No matching
+admitted non-OLMoE MoE checkpoint was found in the inspected project models
+directory or configured cache for honest publisher-family capture on this host.
+
+### P05 optional grammar/speculation state and cancellation corrections — 2026-10-25
+
+Source review found that vocabulary-mask construction called the mutating FSM
+transition for every candidate ID, draft generation advanced the same FSM used
+by target verification, and IDs missing from the tokenizer map retained
+unmasked target logits. The FSM now supports an isolated state copy and pure
+transition preview; masks initialize the full vocabulary as forbidden and
+fail closed if no configured token is valid. Draft verification is isolated
+from the committed grammar boundary, and the optional Phase 1D adapter forwards
+cancellation into draft and target callbacks when their signatures support
+it. Cancellation is rethrown, does not commit generation FSM/counters, and a
+stream retains only grammar state for tokens already yielded. Accepted draft
+prefixes stop at EOS; all-accepted drafts request and sample a target bonus row
+when the remaining output budget permits. Separate seeded draft/target RNGs are
+now owned transactionally by the decoder; cancellation rolls back uncommitted
+target RNG advancement. Rejection correction now retains and uses each full
+grammar-constrained draft distribution rather than approximating it from only
+the selected token probability; draft-distribution storage has an explicit
+per-request memory budget. The decoder serializes entire generation/stream
+requests and grammar updates so concurrent callers cannot fork and overwrite
+persistent FSM/RNG state; a regression confirms grammar updates wait for an
+active stream to close. Added fourteen focused regressions for mask purity,
+unknown IDs, empty vocabularies, draft-state isolation, cancellation, EOS,
+bonus-token behavior, exact residual correction, memory admission, seeded
+reproducibility and RNG rollback. Free-mode target and draft logits are now
+validated against the configured vocabulary and reject non-finite rows instead
+of sampling an out-of-range ID. Unknown grammar modes and invalid regexes now
+fail closed rather than silently disabling constraints. Removed the fixed 5% acceptance floor, which
+biased low-probability valid draft tokens; acceptance now uses the exact
+target/draft ratio and a regression covers a 1.1% threshold. A separate Phase
+1G wiring defect also meant
+the trained draft callback was stored as `_draft_fn` although the decoder reads
+`draft_fn`; that path now installs the right field and rejects absent verifier,
+decoder, or mismatched vocabularies instead of silently disabling requested
+speculation. Four adapter regressions cover these cases. Phase 1G now forwards
+cooperative cancellation through prefix and small-model draft adapters and
+propagates backend cancellation instead of swallowing it; two focused tests
+cover those paths. The combined focused grammar, adapter, chat and gateway
+group passes 55/55; Ruff and
+`git diff --check` pass.
+
+This closes defects in the optional Phase 1D grammar/speculation module only.
+The repository still lacks demonstrated production caller wiring for that
+optional decoder, rollback of an arbitrary stateful `main_verify_fn`, and
+route-bound target/draft/RNG receipts across admitted families. P05/P15 remain
+open; the phase verifier and runtime receipt count are unchanged.
+
+### P14 text-attachment `/api/chat/stream` cancellation reaches native completion — 2026-10-25
+
+The chat stream had a separate text-attachment branch that called synchronous
+`_complete_with_attachments()` without forwarding the HTTP disconnect signal.
+Unlike ordinary text and image streams, a native completion in this branch
+could continue after the client disconnected. The stream now passes its
+cancellation callback through the attachment helper and `ModelGateway.complete()`;
+the gateway forwards it to `NativePublisherProvider.complete()`, checks it
+around cache/provider/fallback boundaries, and never starts fallback after
+cancellation. Cancellation aborts before assistant-message persistence.
+Added a chat-service regression proving the callback crosses the attachment
+branch and a gateway regression proving native cancellation is propagated and
+does not fall back. `tests.test_chat_and_workflows` plus `tests.test_model_gateway`
+pass 28/28. This closes that text-attachment caller seam only: generic
+synchronous providers cannot be forcibly interrupted, and caller-wide P14/P15
+remain open. The canonical phase verifier remains 10/17 with 126 exact-route
+runtime receipts missing.
+
+### P14 Phase 1D/1E/1G operation and close ordering — 2026-10-25
+
+The optimized wrappers previously checked `_closed` under a short state lock,
+then released it before generation or stream iteration. A concurrent `close()`
+could therefore tear down nested session owners while an operation still used
+them. Each wrapper now holds a separate reentrant operation lease for the full
+generation call or stream lifetime, and close takes that same lease before
+teardown. A close-versus-active-stream regression verifies close waits until
+the iterator is closed and then completes through the nested owner stack. This
+also rejects grammar mutation after Phase 1D close. It closes the Phase 1D/1E/1G wrapper race only; arbitrary backend hangs still need
+cooperative cancellation/quarantine, and caller-wide P14/P15 remain open.
+
+### P02/P13 compatibility and full-suite re-audit — 2026-10-25
+
+Consolidated old import paths onto the canonical Phase 1 modules and corrected
+the selected A02/A03 route tuple identities against `source_scope`. The legacy
+A10 CPU/Arc names are compatibility re-exports, not duplicate capture
+implementations. Phase 1B lifecycle coverage now imports the retained session,
+async-I/O, and pinning modules. A full discovery run completed 2,129 tests
+(97 skipped): its sole failure was that the documented `phase1_capture`
+compatibility path did not export `_write_receipts` to child processes. The
+compatibility export is now present; the previously failing 12-process
+manifest merge test and the capture/reference-registry group pass 39/39.
+The broader focused set passes 92/92; Ruff F821 and scoped `git diff --check`
+pass. The latest canonical verifier remains 10/17: 171 admitted, 877
+restricted, 286 rejected, zero candidates, with 126 admitted rows lacking
+exact runtime receipts. The sole full-suite failure is corrected and its exact
+regression passes, but the complete suite has not yet been rerun after that
+correction. P13/A10 and P15 remain open.
+
+### P04/P05 non-media state admission correction — 2026-10-25
+
+`FamilyMediaLifecycle` had treated Inkling/V4.1 MTP draft token arrays and V4.1
+DSpark continuation bytes as media. These raw fields are speculative or
+recovery state, and no production media consumer owns them. The lifecycle now
+rejects MTP at the P05 target-verification boundary and DSpark at the P12
+owner-bound recovery boundary; `admit_processed()` also rejects `mtp` and
+`dspark` as unconsumed media types. Image/audio/video/vision paths remain
+unchanged. Added direct regressions for both raw and processed admission. The
+focused A04, multimodal, publisher media, reference-registry and capture suites
+pass 61/61. Raw lifecycle byte accounting also now includes each image in a
+sequence and counts `memoryview.nbytes` rather than view elements; an image and
+video regression verifies the exact values. This does not implement
+target-verified MTP or DSpark restore and does not close P04/P05/P12/P13/P15.
+
+### P03 Qwen4 PLE shard-header binding and P11 checkpoint identity — 2026-10-25
+
+The Qwen4 range loader substitutes provider shard names for the logical PLE
+table in its source-inventory selection. It now verifies every selected shard's
+source header shape and dtype against the provider's pinned snapshot, after
+rechecking snapshot integrity. A regression supplies an exact shard name with
+the wrong row count and confirms rejection; `tests.test_p02_candidate_triage`
+passes 33/33 in the project virtualenv. This does not compare tensor contents
+across different snapshots or reconcile all optional/shared/MTP/expert banks.
+
+The GLM/Inkling public adapter identity digest now binds the resolved admitted
+checkpoint root and verified `config_sha256`, preventing distinct checkpoint
+roots or config revisions from reusing the same public identity. Focused
+`tests.test_native_family_public_identity` passes 3/3. This does not complete
+the family ABI/callback map or prove native ABI compilation/execution.
+
+The combined A02/A04-A07/P14 selected regression set passes 89/89. The
+canonical verifier was rerun after these changes: source validation, 162 exact
+route bindings, 178 callable owner references, and 98-export/190-ctypes static
+ABI consistency pass; 1,334 routes remain 171 admitted, 0 candidate, 877
+restricted, and 286 rejected. Overall is still 10/17 because 126/171 admitted
+routes lack exact route-bound runtime receipts. P02/P03/P11/P13/P15 remain
+open; no runtime evidence was synthesized or added.
+
+### P14 compatibility SSE retryable upstream close — 2026-10-25
+
+`_compat_sse_events` previously set its terminal `source_closed` flag before
+calling the provider iterator's `close()`. If the first cleanup attempt raised,
+the `finally` path could not retry it. The wrapper now marks closure only after
+successful cleanup and permits one bounded retry. The inference-route suite
+passes 21/21, including a stream whose first close raises and second succeeds.
+This is a scoped OpenAI/Anthropic compatibility-SSE cleanup fix, not a proof of
+provider worker termination or all caller lifecycle paths. The canonical
+verifier remains 10/17 with 126 missing exact-route runtime receipts; P14/P15
+remain open.
+
+### P12 recovery replacement handle validation — 2026-10-25
+
+`_RecoveryDriver` compared replacement session handles using `is`, while the
+production coordinator returns integer handles. Distinct Python integer
+objects with the same handle value could therefore evade duplicate detection.
+Recovery now accepts only positive exact integers and compares by value; the
+regression creates two distinct `int("1000")` objects, verifies the app driver
+is not entered, and verifies the single acquired handle is closed once. The
+focused distributed-recovery-driver suite passes 8/8. Existing checkpoint
+manifest handoff re-pinning and safe formatting of worker failures remain
+intact. Process/transport loss and full recovery consensus are still open;
+P06/P12/P15 remain partial.
+
+### Consolidated targeted verification — 2026-10-25
+
+After the P03, P05, P11, P12, and P14 source corrections, the selected route-binding,
+inventory, lifecycle, format, ABI-identity, recovery, and serving regression
+set passes 153/153, including the V4.1 speculative transaction regressions.
+Ruff `F821` and scoped `git diff --check` pass. The
+canonical verifier was rerun: source validation, 162 exact P02 bindings, 178
+owner references, and static ABI consistency pass, but closure remains 10/17.
+The route matrix remains 171 admitted, 0 candidate, 877 restricted, and 286
+rejected, with 126 admitted routes missing exact runtime receipts. No route
+receipts were generated or synthesized; P02-P15 and P15 closure remain open.
+
+### P05 V4.1 DSpark speculative logical-state publication rollback — 2026-10-25
+
+The production `publisher_v41_dspark_session` path uses `SpeculativeDecoder`.
+`step()` now snapshots its prior logical history, logits, and stop flag and
+restores that boundary before physical rollback if an asynchronous exception
+interrupts logical publication. The regression injects `KeyboardInterrupt`
+between the logical field stores and verifies target and draft state, both
+RNGs, logical history/logits/stop state, and quarantine status. The focused
+`tests.test_speculative_transaction_boundaries` suite passes 22/22. This
+closes that V4.1 publication window only; other family callers, arbitrary
+sink atomicity, and route-bound P13 evidence remain open. P05/P13/P15 remain
+partial.
+
+### P09/P10 Qwen4 packed-FP8 route restriction audit — 2026-10-25
+
+The Qwen4 device packed-FP8 tuple is traced through format admission, A07
+placement, CLI provider construction, and the expert decode consumer. The CLI
+rejects the legacy packed manifest before provider construction because it
+lacks exact source dtype/P02 provenance; direct provider construction repeats
+the family/device format admission check. This is distinct from the admitted
+Qwen4 `F8_E4M3` checkpoint route. The A07 suite passes 8/8. No source change was
+warranted for this route. It closes only this enforced exclusion, not complete
+format-consumer mapping or actual device-placement evidence; P09/P10/P13/P15
+remain open.
+
+### P13 local artifact/device availability recheck — 2026-10-25
+
+The local `models/qwen3.5-0.8b` checkpoint declares
+`Qwen3_5ForConditionalGeneration` and `model_type=qwen3_5`, so it is the dense
+out-of-scope identity and cannot evidence Qwen3.5-MoE routes. No DeepSeek
+checkpoint was found under the workspace model roots. `nvidia-smi` is
+unavailable and the accelerator virtualenv's PyTorch is CPU-only
+(`cuda_available=False`, zero CUDA devices, XPU unavailable). Consequently
+the current environment cannot generate the missing family/device receipts;
+these remain blocked on matching checkpoints/backends, not source-level
+assertions. No evidence was fabricated; P13/P15 remain open.
+
+### P06 production cancellation collective setup/result agreement — 2026-10-25
+
+`DistributedExecutionService` now rank-agrees failures while allocating each
+rank's CPU cancellation flag before entering its `all_reduce`, then rank-agrees
+scalar extraction failures after the reduction. The regression asserts that
+allocation failure skips the reduction on all ranks and that result-read
+failure is exchanged after the reduction. The focused distributed
+checkpoint/consensus, recovery, launcher, and A06 set passes 42/42. This does
+not recover process loss or transport failure, nor make a collective itself
+interruptible. P06/P12/P15 remain partial.
+
+### P11 selected family source-binding and ABI-lifecycle checks — 2026-10-25
+
+Selected native family decoder, Qwen4 public lifecycle, K3 ABI ownership,
+checkpoint source-binding, and public identity suites ran 42 tests: 31 passed
+and 11 skipped because optional Transformers/oracle dependencies are absent.
+The completed cases exercise Python ownership and admission guards only; they
+do not establish native ABI compilation, calling convention, device placement,
+or execution receipts. P11/P13/P15 remain open.
+
+### Full repository Python discovery after source fixes — 2026-10-25
+
+`.venv\Scripts\python.exe -m unittest discover -s tests` completed:
+2,149 tests, 97 skipped, zero failures. Fixture egress-denial messages were
+expected, and temporary evidence files written by tests were not counted as
+P13 receipts. The canonical Phase 1 verifier still reports 10/17 with 126
+admitted routes missing exact runtime evidence; P13/P15 remain open.
+
+### P03/P14 chat media admission and inventory-boundary audit — 2026-10-25
+
+The chat service now rejects multiple image attachments before persisting a
+turn because the current vision gateway forwards only one image. This makes
+the limitation explicit and avoids recording images that were silently not
+sent; multi-image support itself remains unimplemented. The text-attachment
+stream forwards disconnect cancellation through synchronous completion and
+checks cancellation before attachment-correction retry. Chat/workflow and chat
+route tests pass 12/12; source-inventory and Inkling tests pass 65/65 with one
+optional-dependency skip. A targeted audit of resident inventory admission,
+native text checkpoint loading, conditional-loader metadata, publisher weight
+partitioning, execution factories, and public adapters found no confirmed
+inventory bypass or orphan bank in those reviewed boundaries. It is not a
+complete family-by-family proof that every admitted optional/shared/MTP/expert/
+media tensor reaches a production consumer. P03/P14/P15 remain open at the
+broader family/caller level; the canonical verifier remains 10/17 with 126
+exact-route runtime receipts missing.
+The A02/A04-A07 module regression set passes 41/41. This is source-contract
+coverage: A05's RNG manager and A06's shard/consensus model are documented
+standalone helpers, not replacements for production decoder or process-group
+integration.
+
+### P13 current local evidence-source inventory — 2026-10-25
+
+Rechecked the workspace after the verifier run. Available model directories
+are the three OLMoE variants, OpenVINO assets, and `qwen3.5-0.8b`; that Qwen
+checkpoint is the dense, out-of-scope identity. The pinned runtime receipt
+manifest contains 45 routes, all OLMoE. `nvidia-smi` is unavailable and the
+accelerator Python environment has CPU-only PyTorch with no CUDA or XPU device.
+No eligible non-OLMoE checkpoint or accelerator evidence source is present to
+capture the 126 missing route receipts. Do not synthesize receipts or relax
+the evidence gate. P13/P15 remain open pending matching checkpoints and
+runtime/device sources.
+
+### P13 audit of added Ollama certifier — 2026-10-25
+
+The new `phase1_ollama_certifier.py` probes a generic prompt through an Ollama
+model and copies its timing/token result across every `SourceReviewedRouteBinding`
+for a family. It does not execute the admitted OpenAgent route, selected
+checkpoint, persisted format, backend, ABI, cache, recovery, or placement.
+`PROXY_FAMILY_MAP` further assigns unrelated architectures and those rows are
+still written with `certified: true`. The added `phase1_ollama_receipts.json`
+contains 179 certified records, 58 marked proxy, without canonical `case_id`
+or pinned config/weight artifacts. The authoritative gate reads only
+`phase1_runtime_receipts.json`, so the new artifact contributes zero P13 route
+evidence and must not be described as certification. Preserve it only as a
+clearly labeled diagnostic unless the tool is changed to collect observations
+from the actual Phase 1 runtime owners. P13/P15 remain open.
+
+### P14 Ollama/OpenAI vision streaming cancellation — 2026-10-25
+
+Ollama and OpenAI-compatible providers now implement image streaming over
+their native streaming APIs, with cancellation propagated into the outbound
+HTTP reader so a disconnect can interrupt a blocked socket read. To preserve
+callback thread affinity, the user predicate is polled on the consumer thread
+and only a `threading.Event` is passed across the transport boundary. A
+regression covers cancellation before any chunks and checks the callback's
+thread identity. Model-gateway, inference-route, and server tests pass 55/55;
+Ruff and scoped diff checks pass. This closes the selected network-vision
+stream path only; P14/P15 remain open for other callers and native/runtime
+coverage.
+
+### P14 concurrent universal-owner cleanup retry — 2026-10-25
+
+Two concurrent opens can both construct an owner before either publishes the
+same warm-session key. If the losing duplicate owner's `close()` failed, the
+owner previously fell out of reach. `UniversalEngine.open()` now keeps that
+owner in the engine's retired-owner list so `close_model()` or `close()` can
+retry teardown. The focused injected race and close-failure regression passes,
+and Ruff plus scoped `git diff --check` pass. This closes that one cleanup edge,
+not all caller-specific P14 behavior; Phase 1 remains open with 126 exact
+admitted-route runtime receipts missing.
+
+### P14 compatibility SSE hostile-exception formatting — 2026-10-25
+
+The OpenAI/Anthropic SSE translator formatted backend failures with `str()` and
+cleanup failures with `repr()`, so an exception with a hostile formatter could
+mask the original stream failure and prevent a protocol error event. It now
+uses bounded safe failure-detail/summary helpers. The injected backend
+`__str__` regression passes; Ruff and scoped `git diff --check` pass. This fixes
+error reporting at this translator boundary only; broader compatibility and
+caller lifecycle closure and P15 remain open.
+
+Provider iterator cleanup in `ModelGateway` also used exception `repr()` when
+annotating a primary stream failure. Those diagnostic paths now use the same
+safe failure summary, preserving the original exception even for hostile
+cleanup objects. Compatibility-route JSON/SSE errors and provider fallback
+diagnostics now use safe bounded error details too. The gateway cleanup
+regression and compatibility SSE hostile-backend regression both pass, along
+with 47 inference-route/model-gateway tests; scoped Ruff and diff checks pass.
+This does not close remaining provider lifecycle behavior or P14/P15.
+
+### P04 publisher cross-modality pre-admission — 2026-10-25
+
+The shared publisher media lifecycle previously admitted a frame before
+`_run_impl` rejected mixed image/video inputs for non-K3 families. The existing
+modality-order check now runs before lifecycle creation; K3's explicit ordered
+mixture remains admitted. A focused regression verifies rejection occurs
+before lifecycle admission or model dispatch. Publisher media-lifecycle and
+ordering tests pass 10/10; scoped `git diff --check` passes. This closes one
+pre-admission edge, not the complete family/caller P04/P14 matrix. P15 remains
+open.
+
+### P05 publisher speculative snapshot cleanup ownership — 2026-10-25
+
+Fresh DSpark generation and recovery now register their `SpeculativeDecoder` with
+the owning `PublisherSession`. Request reset retries pending target/draft
+snapshot releases before resetting either warm physical owner; if release still
+fails, the session is quarantined and keeps the decoder and owners reachable
+for a later `close()` retry. Session close retries snapshot cleanup before
+closing borrowed owners. The focused `tests.test_speculative_transaction_boundaries`
+suite passes as part of the publisher cleanup and speculative transaction
+group (42/42), including transient release retry and persistent-failure owner
+retention. Full discovery ran 2,170 tests with 97 skips and two errors because
+older partial-session fixtures omit the new field; the field lookup was then
+made tolerant, and the affected 42-test group passes after that correction.
+Full discovery was not rerun. This closes one production cleanup-ownership
+edge only. The canonical verifier remains 10/17 with 126 admitted-route
+receipts missing; cross-caller P05 and P13/P15 remain open.
+
+### P05 committed speculative step survives snapshot-release failure — 2026-10-25
+
+SpeculativeDecoder.step() previously committed target/draft state and then
+raised from its finally block if release of a rollback snapshot failed. The
+caller consequently saw an error instead of the committed token tuple. It now
+retries transient cleanup once and returns the committed SpeculativeStep with
+cleanup_pending=True when release remains unavailable. A pending cleanup
+quarantines further speculative mutation until retry succeeds or reset occurs.
+Fresh and resumed V4.1 publisher handling preserves committed IDs, emits their
+cleanup status, does not publish a checkpoint from a quarantined boundary, and
+retains the failed decoder/owners for close retry. Persistent cleanup failure
+remains visible in the returned response instead of replacing it with an
+exception. Resumed generation now stages its result and resets recovered
+owners before returning. Speculative transaction plus publisher stop/recovery
+tests pass 37/37, including regressions for committed-ID retention under
+persistent cleanup failure and resumed-owner reset. This closes that V4.1 speculative
+cleanup/publication seam only; other
+speculative serving callers and arbitrary non-atomic sinks remain open. P05,
+P13 and P15 remain IN PROGRESS/OPEN; the canonical verifier still reports 126
+admitted routes without exact runtime receipts.
+
+### P07/P12 K3 packed-owner retryable teardown — 2026-10-25
+
+`K3Execution.close()` called `NativeMXFP4`'s private weakref finalizer instead
+of its public `close()` method. The finalizer marks itself dead before running
+the release callback, so a transient native-library release failure left the
+packed owner unable to retry. K3 executor teardown now calls the public close
+method and clears its reference only after success. A focused injected
+transient-failure regression exercises the executor close boundary and proves
+the owner remains reachable for a second close (`tests.test_k3_fla_cleanup`,
+3/3); Ruff passes on the changed test and scoped `git diff --check` passes.
+The pre-existing K3 executor file still has Ruff E701/E702 findings outside
+this patch. This closes one K3 resource-retry edge only; it does not close
+continuation, serving integration, or all-family recovery. P07/P12/P15 remain
+open, and the latest canonical verifier still reports 126 admitted routes
+without exact runtime receipts.
+
+### P05 grammar decoder request-boundary validation — 2026-10-25
+
+The canonical Phase 1D grammar decoder now validates context token IDs,
+nonnegative integer output budgets, stop-token bounds, and cancellation
+callbacks before either non-streaming or streaming work begins. Validation also
+runs for zero-token requests, which previously could bypass stop/context checks
+because the generation loop never executed. `tests.test_phase1d_speculative_decode`
+and `tests.test_phase1dg_wiring` pass 32/32 using the project virtualenv. This
+closes malformed request admission at that adapter boundary only; it does not
+provide rollback for a target callback that mutates physical model/KV state,
+narrow arbitrary callback atomicity, or complete caller-wide P05/P14. P05/P15
+remain open.
+
+### P14 Phase 2 batched-session stream and scheduler lifecycle — 2026-10-25
+
+`Phase2SessionHandle` now validates `max_new_tokens` against the scheduler's
+decode bound before accounting the request. Streaming uses a queue bounded by
+the output budget, transports terminal errors instead of converting them to a
+normal end-of-stream, and cancels an unfinished batch request when the iterator
+is closed or its cancellation callback raises. Synchronous generation polls on
+the caller's thread rather than creating a watcher thread; callback failures
+trigger cancellation, remain the primary error if cleanup also fails, and
+cannot strand a background watcher. In `ContinuousBatchScheduler`, queue-full rejection sets the event
+before invoking `on_error`; rejection, token, and completion callbacks execute
+outside the scheduler lock, preventing a callback that re-enters the scheduler
+from deadlocking it. The focused lifecycle, OLMoE continuous, and OLMoE service
+suites pass 37/37; scoped Ruff and `git diff --check` pass. This covers this
+batched-session caller only, not every serving entrypoint. The canonical
+`phase1_verify.py` remains 10/17: 126/171 admitted routes lack exact runtime
+receipts. P14/P15 remain open.
+
+### Full Python discovery and canonical P15 gate after P14 changes — 2026-10-25
+
+The project virtualenv command `.venv\Scripts\python.exe -m unittest discover -s
+tests` completed with 2,181 tests, 97 skips, and zero failures. Fixture egress
+denials and evidence files created under temporary test directories are expected
+and do not count as route receipts. A fresh `phase1_verify.py` run passes the
+canonical source validator, 162 exact source-route bindings, 178 callable-owner
+references, and static ABI consistency (98 exports, 190 ctypes references).
+It remains 10/17 because 126 of 171 admitted routes lack exact runtime receipts;
+P13/P15 remain open. This test run does not certify native ABI execution,
+accelerator placement, or route-specific runtime behavior.
+
+### P14 direct serving and retryable shutdown follow-up — 2026-10-25
+
+Caller tracing found that `ServingEngine._run_generate()` skipped session close
+when generation raised and swallowed close failures after success. Its stream
+path also swallowed close errors and then `stream_completion()` and
+`stream_chat_completion()` emitted an ordinary `finish_reason="stop"` after a
+backend failure. Session cleanup now runs on every terminal path, preserves a
+primary generation/stream exception while attaching cleanup diagnostics, and
+surfaces a cleanup-only failure. Stream endpoints now emit
+`finish_reason="error"` for a failed request without contaminating later
+successful requests with a previous error counter.
+
+Shutdown tracing found that a timed-out Phase 2 batch worker could be followed
+by closing shared expert/KV stores still reachable by that worker;
+`Phase2MultiSessionService.close()` also became non-retryable after marking the
+service closed. Shutdown now tracks completed stages, requires both memory and
+batch workers to stop before closing stores, retains stores on timeout, and
+allows a later `close()` to resume cleanup. Load-balancer close now propagates
+backend errors and retries incomplete backend closes. `InferenceService.stop()`
+and its telemetry stop now report timeout/close failures, avoid closing model
+owners while telemetry or health probes can still call them, and retry failed
+shutdown stages. Tracing the `InferenceService.open_session()` route also
+found that its load-balancer proxy incremented `in_flight` but was discarded
+without a matching `done()`. Backend sessions now retain that proxy lease and
+release it on close; failed session opening releases it immediately. A close
+failure retains the lease so the owning session can retry teardown. The
+load-balancer shutdown path now closes admission atomically with lease
+reservation, waits a bounded interval for active sessions, retains stores and
+backend services on timeout, and retries sessions whose cleanup previously
+failed before closing their backend. Proxy completion is idempotent so duplicate
+`done()` calls cannot decrement another caller's active lease. `InferenceService.open_session()` now
+uses that leased path rather than discarding a raw proxy. Backend removal now
+marks the backend draining before it can receive new work, waits for active
+sessions and health probes, closes it, and only then removes it from the
+registry; timeout or close failure leaves it registered but unavailable for
+new work so removal can be retried. Duplicate and post-close registration are
+rejected to prevent orphaned services.
+
+The production batching admission path also consumed global and per-session
+rate tokens before discovering that the scheduler queue was full. It now refunds
+those tokens when capacity rejects the request. Scheduler cancellation now
+removes waiting/paused requests immediately so they release capacity; if an
+already-running canceled request later hits a forward exception, failure
+retirement removes it from scheduler state without changing its cancellation
+result. The shared batch worker also previously trusted the forward callback's
+result list without checking coverage or token validity. A missing/duplicate/
+foreign result could leave a request in `_running` forever; a decode step
+returning `None` could loop indefinitely. The worker now validates a complete
+one-result-per-scheduled-request batch and requires a token for decode steps,
+failing and waking the affected requests on malformed output. Empty prompts
+previously produced a zero-length prefill chunk that was never scheduled; they
+now enter the normal decode schedule directly. Invalid scheduler geometry and
+request budget/token IDs are rejected before consuming admission tokens; a
+zero-output request completes immediately without consuming rate capacity or
+occupying the model worker. Shutdown now closes admission and waits on a bounded
+submission barrier before stopping the worker, avoiding an accepted request
+being queued after its worker has exited. The worker now catches process-level
+failures as well, fails/wakes the current batch, and then retires itself rather
+than silently dying with requests stranded in scheduler state.
+
+`Phase2MultiSessionService.__init__()` also opened the expert lease before the
+KV lease and then started a batch worker and memory manager without rollback if
+a later construction step failed. Construction now tracks each acquired owner,
+stops background workers before closing shared stores, and attaches a retryable
+cleanup callback to the original constructor exception when a stop/close stage
+fails. A fault-injection regression verifies that a failed worker stop retains
+both stores and the retry closes them after the worker becomes stoppable.
+
+`Phase2MultiSessionService.close()` previously force-detached session handles
+without closing their borrowed Phase 1 sessions. Separately,
+`Phase2SessionHandle.close()` marked itself closed and removed itself even when
+the underlying owner threw, making cleanup unrecoverable. Service shutdown now
+attempts each handle close outside the service lock, retains failed handles,
+stops manager/engine workers, but keeps shared stores open until every handle
+and worker cleanup succeeds. Handle close is retryable and blocks new work
+while its close callback is in progress. A regression injects a transient
+Phase 1 close failure, confirms the handle/stores remain reachable on the first
+close, and verifies a later service close retires them.
+
+Regressions cover generation/stream cleanup failures, per-request stream
+terminal status, batch-worker shutdown timeout with retained stores and retry,
+load-balancer backend-close retry, and inference-service shutdown retry.
+Focused command
+`.venv\Scripts\python.exe -m unittest tests.test_serving_engine_lifecycle
+tests.test_phase2_request_admission tests.test_phase2_session_stream_lifecycle
+tests.test_olmoe_continuous tests.test_olmoe_service` passes **70/70**. The
+legacy `integration_smoke_tests` harness passes **25/25** under Python UTF-8
+mode; its default Windows code page fails to print Unicode arrows, so use
+`-X utf8`. Scoped Ruff and `git diff --check` pass. Fresh `phase1_verify.py` remains
+**10/17**, with 126 of 171 admitted tuples lacking exact runtime receipts.
+This closes the identified local direct-serving cleanup boundary only: full
+caller-by-caller media, streaming, cancellation, stop, warm-session, auth and
+recovery reconciliation remains open; P13/P15 remain open.
+
+### P14 active Phase 2 operation ownership — 2026-10-25
+
+`Phase2SessionHandle.generate()` and `stream()` now hold an operation lease for
+their full execution, including prefix lookup, scheduler wait, and stream
+abandonment cleanup. `close(timeout=10.0)` rejects new work and waits a bounded
+time for active calls before closing the borrowed Phase 1 owner; timeout or
+owner-close failure leaves teardown retryable. The timeout is finite and
+bounded, and an interrupted wait resets the closing state for retry.
+Stream-cancel cleanup failures are attached to the primary
+consumer/cancellation exception and cannot leak the operation lease. Focused
+concurrency, forwarded-Phase-1-method, interrupted-wait, and error-priority
+regressions prove callbacks/methods cannot race owner close, and a later close
+succeeds after release. Serving stream method lookup is now inside the session
+cleanup guard, so a raising backend property cannot strand an opened session
+or mask its exception with a close error. The Phase 2
+serving/admission/batching group passes 75/75; scoped Ruff and
+`git diff --check` pass. The expanded serving, gateway, multimodal, publisher,
+and Phase 2 lifecycle group passes 166/166. The canonical verifier remains
+10/17 with 126/171 admitted routes missing exact runtime receipts. This closes
+one Phase 2 handle race only; cross-caller P14 and P13/P15 remain open.
+
+### P14 generic OpenAI stop handling — 2026-10-25
+
+The direct `ServingEngine` accepted `CompletionRequest.stop` but dropped it at
+the backend call, so response and SSE output could include stop text. Stop is
+now strictly encoded without special tokens by the configured tokenizer,
+matched against generated token prefixes, and withheld from completion/chat results and
+streams. Streaming stops and closes the backend iterator at the match; a
+generate-only owner is trimmed after it returns. A configured tokenizer error
+fails before session open instead of silently switching to byte IDs.
+Regressions cover completion, chat, SSE, generate-only fallback, and rejected
+stop/tokenizer inputs. Direct streaming also keeps backend method and iterator
+close-property lookup inside the cleanup guard, ensuring a raising proxy still
+closes its session without masking the primary error. The post-fix
+serving/inference/HTTP set passes 58/58. Terminal chunks now distinguish a
+matched/natural stop from max-token
+exhaustion (`length`). Integration smoke passes 25/25. The broader
+serving/gateway/inference/HTTP set passed 80/80
+before strict-encoder hardening; a 171-test cross-caller run had one Windows
+SSE socket abort, and that affected test passed 1/1 in isolation. Ruff and
+scoped `git diff --check` pass. The canonical verifier remains 10/17 with 126/171 admitted routes
+missing exact runtime receipts. This closes only generic serving stop-prefix
+handling; generate-only execution cannot stop compute early and broader caller
+and route evidence gaps remain.
+
+### P14 direct response-stream abandonment regression — 2026-10-25
+
+Direct completion and chat usage counts now come from generated token IDs
+rather than re-encoding response text. Configured-tokenizer decode failures
+return an explicit serving error and do not silently fall back to byte
+decoding. Public completion/chat stream wrappers explicitly close their inner
+`_run_stream()` source on consumer abandonment, attaching close failures to the
+primary `GeneratorExit`. OpenAI completion `echo` is parsed strictly and
+included before generated text in complete and streamed responses, while
+prompt/completion token usage remains separated; unsupported `logprobs` fail
+before session open. Review also found that direct request objects accepted
+temperature, top-p, and frequency/presence penalties that Phase 2 does not
+forward to its native session. These controls are not claimed as implemented:
+omitted values now mean backend default, while explicit controls fail before
+session allocation. The Phase 2 handle also accepted arbitrary keyword options
+but never forwarded them to its batch engine; generate/stream now reject such
+options before request admission. Regressions cover API/session rejection and
+no-allocation behavior, plus usage, decode failure, echo, both response
+generators, and cleanup failure. The combined serving/inference/admission/
+batching set passes 84/84; scoped Ruff passes and `git diff --check` is clean.
+These are selected direct-serving semantics only; caller-wide P14 remains open.
+The canonical verifier remains 10/17 with zero candidate tuples and 126/171
+admitted routes missing exact receipts; P13/P15 remain open.
+
+### P14 InferenceService SSE abandonment — 2026-10-25
+
+The top-level `InferenceService.stream_complete()` and `stream_chat()` wrappers
+now explicitly close their `ServingEngine` iterators when an SSE consumer
+abandons the response. Close failures attach to an existing cancellation/error
+instead of masking it. Regressions exercise both public wrappers;
+`tests.test_serving_engine_lifecycle` plus `tests.test_inference_routes` pass
+57/57, and scoped Ruff plus `git diff --check` pass. This closes the nested
+SSE-wrapper cleanup edge only; other caller lifecycle paths and P13/P15 remain
+open.
+
+### P11 explicit calling-convention source check — 2026-10-25
+
+The public ABI audit previously removed `OA_CALL` before comparing exported
+declarations and definitions. It now compares explicit convention tokens and
+reports mismatches; regressions verify both rejection of a declaration/definition
+mismatch and acceptance of a matching `OA_CALL` pair. The focused ABI/family
+suite passes 68 tests with 11 skips for optional exact model/oracle dependencies.
+The canonical verifier still passes source admission/binding/ABI checks at
+10/17 overall, with 126/171 admitted tuples missing exact route receipts. This
+closes a static-audit defect only: the full family ABI map, all-export native
+execution, schema/callback review, and factory/CLI/service wiring remain open;
+P11/P13/P15 are not closed.
+
+### P11 GLM/Inkling public record layout regression — 2026-10-25
+
+The production GLM/Inkling registration path's C-versus-ctypes layout check is
+now isolated in `_verify_family_abi_layouts()` and has focused regressions for
+the public model descriptor, tensor, Inkling config, and Inkling layer. The
+tests reject incorrect record size, field count, and field offset before model
+registration. `tests.test_family_source_binding` and
+`tests.test_public_abi_audit` pass 26/26. A direct ABI probe against the
+pre-existing local `build/public-range-runtime/Release/openagent_segment_runtime.dll`
+matched all four records; that library was not rebuilt in this batch. This
+closes only these four source/runtime record-layout cases. ABI symbol execution
+for every family/export, family tensor/head schemas, callback conventions and
+reentry/ownership, and factory/CLI/service call reachability remain open. The
+canonical `phase1_verify.py` was rerun after this change: source admission,
+162 route bindings, 178 owner references, and static ABI consistency pass;
+closure remains 10/17 with 126/171 admitted routes missing exact receipts. This
+adds no P13 receipts; P11/P13/P15 stay open.
+
+### 108-route capture-path update — 2026-10-25
+
+Added exact Qwen4 `qwen4_exp_text` public-range capture wiring: the CLI
+requires/pins both the compiled Qwen4 kernel and Segment/Edge runtime, the
+candidate must match the canonical execution and ABI owner chains, executed
+routing weights are collected, dispatcher-owned cache state is measured per
+layer, and the Colab runbook contains the corresponding three-format loop.
+This raises source capture-path coverage from 18/63 to 21/63 non-OLMoE target
+rows; 42 remain without a capture path. No runtime receipt is claimed. The
+publisher/multimodal rows and Inkling speculative/MM paths are still absent,
+and GLM5 publisher media/public-range is still absent. P02/P04/P05/P13/P15
+remain open pending implementation and real checkpoint-specific evidence.
+The Qwen4 public candidate source pin now includes 57 Python/C/header files,
+including every CMake source in `openagent_segment_runtime`; its focused
+capture-contract module passes 12/12 after this closure was expanded. The
+three public text rows are source-capturable, not runtime-verified.
+
+### Inkling public-range text capture path — 2026-10-25
+
+The exact `inkling_text` public-range route now has a capture path alongside
+Qwen4 public-range text. The Segment/Edge runtime exposes an additive private
+route-observation callback keyed by adapter engine; it does not change public
+Segment request/adapter records. Inkling's range session retains bounded
+per-run executed routing values, invalidates them on restore, and rejects
+stale geometry/position; Python validates each exact segment partition before
+using routing for expert selection. Capture requires both the native Inkling
+decoder and Segment/Edge runtime, checks the canonical consumer/ABI chain,
+measures dispatcher-owned cache, and pins the C observer implementation and
+headers. The Colab runbook has an F32/F16/BF16 loop. This adds at most three
+capture paths: proposed target coverage rises from 21/63 to 24/63, while 39
+target rows still lack source paths. No receipts were generated.
+
+Focused validation (25 October): the capture-contract module passes 15 tests;
+the public text lifecycle module passes 4 tests;
+changed Python files compile, notebook JSON parses, and `git diff --check`
+passes. A fresh `phase1_verify.py` run confirms 162 exact bindings, 182 owner
+references and static ABI consistency (100 exports/190 ctypes names), while
+remaining 10/17 with 126/171 admitted routes missing runtime receipts. No C
+compiler is available on this host, so the modified native observer was not
+built; no device probe or runtime capture was performed. P02, P13, and P15
+remain open.
+
+### Colab capture implementation and command reconciliation — 2026-10-25
+
+P04/P06/P12 receipt/media/rank cleanup batch (25 October): owned expired
+receipts may be disposed without relaxing stale/foreign/forged restore checks;
+failed snapshot-release property lookup now retains its receipt for retry.
+Cancelled media errors with unprintable exception messages no longer strand
+active frames. Distributed factory-error cleanup lookup is guarded so both
+groups still receive teardown attempts; safe builtin exception notes preserve
+the primary error. New fault-injection tests reproduced these defects first.
+The combined suite ran 268 tests: 266 passed, 2 platform-dependent process-loss
+checks skipped. Scoped Ruff, Python syntax and diff checks pass (existing
+compressed multimodal E701/E702 style rules excluded). All 101 public exports
+resolve in the local Segment runtime DLL; four GLM/Inkling record layouts
+match ctypes through the native probe. These are local binary checks, not
+model execution, accelerator, or all-platform ABI evidence. Canonical closure
+remains 10/17 with 126/171 receipts missing; no route receipt was generated.
+
+P12/P14 bounded-output and recovery batch (25 October): direct serving validates
+strict positive signed-32-bit max_tokens/n and boolean stream before allocation,
+rejects multi-choice streaming, bounds token consumption without one-token
+over-read, validates output token IDs, and closes iterators at the limit.
+Incomplete stop prefixes are flushed at the limit; eager backend computation
+cannot be interrupted by this bound. Error logging uses safe bounded diagnostics.
+Universal-stream cleanup now handles close-property lookup failures without
+skipping physical rollback or receipt release; completed result envelopes keep
+their existing commit semantics. Owner close-property failures remain retryable
+and context-manager cleanup preserves the original error with a retry callback.
+Failure-injection tests reproduced the rollback/error-priority defects before
+the fix. Serving/HTTP tests pass 134/134 and universal adapter/production tests
+pass 68/68; scoped Ruff, Python syntax and diff checks pass. Fresh canonical
+verification remains 10/17 with 126/171 missing receipts and passing source/ABI
+checks. No runtime route receipt was added. Whole-P12/P14 and P13/P15 remain open.
+
+P14 direct-serving lifetime follow-up (25 October): lazy generate results are
+now consumed and released before session teardown. Primary iteration errors
+survive iterator and owner cleanup errors, including close-property lookup.
+Streaming does not resolve the unused generate property, and token containers
+are not coerced to bool. Four new tests reproduced errors before the patch;
+the expanded serving/gateway/inference/Phase 2 group passes 116 tests. Scoped
+Ruff, Python syntax and diff checks pass. This is selected caller ownership
+closure, not all-family P14 runtime evidence. Fresh canonical verification
+remains 10/17 with 126/171 missing receipts and passing source/ABI checks.
+No model receipt was created; P13/P15 remain open.
+
+Publication and plan safety follow-up (25 October): fixed post-commit evidence
+deletion by retaining validated directories once receipt publication begins;
+uncertain publication can leave an orphan but cannot erase committed pins.
+Lock teardown now always attempts close and preserves primary failures.
+Malformed route entries/receipt paths produce controlled capture errors.
+Plan outputs cannot alias assets or receipts and use atomic replacement.
+Failure-injection and real concurrent-manifest tests pass (17 tests), as do
+54 related capture tests and Python syntax checks. Ruff passes for publication
+and publication/lock tests; pre-existing E701/E702 style findings remain in
+the plan runner/tests. Fresh canonical verification remains 10/17 with
+126/171 missing receipts and passing source/ABI checks. No new runtime
+receipt was produced; P13/P15 remain open.
+
+Batch reliability follow-up: the Colab runner now atomically checkpoints its
+summary per completed route, saves completed outcomes on capture interruption,
+continues after launch failures, and supports an optional finite positive
+per-route timeout. Failed report replacement retains the last summary;
+report-path guards protect plans, asset configurations and receipt manifests.
+No summary is accepted as evidence. Selected capture suites pass 70 tests;
+the expanded runner suite passes 10 tests after the final file-safety additions.
+Python syntax checks pass. Fresh canonical verification remains 10/17 with
+126/171 receipts missing. P13/P15 remain open; no model receipts were added.
+
+Follow-up verification rerun: 98 focused tests pass (23.958s); the canonical
+verifier remains 10/17 with 126/171 receipts missing and passing source checks.
+The 108-target subset still has 45 accepted and 63 missing receipts. Local
+workspace inventory has no matching Inkling, Qwen4 or GLM5 checkpoints and no
+configured Colab assets/plan; dense Qwen3.5 cannot substitute. `nvidia-smi`
+is unavailable and the current `.venv` cannot import PyTorch because it is
+not installed. This run did not execute the missing routes or create receipts.
+
+The 108-route target now has a canonical command planner and resumable runner
+in `phase1_colab.py`. It resolves 45 OLMoE, 21 Inkling, 21 Qwen4 and 21 GLM5
+commands through the shared CLI parser, checks local artifacts and exact
+checkpoint identity/storage encoding, and counts success only after the exact
+receipt passes the existing gate. The rebuilt `PHASE_1_COLAB_COMPLETE_108.ipynb`
+uses plan/preflight/run/check and requires real format-specific artifacts/media.
+
+This batch fixes Qwen4 media double encoding, prefill logit row counts,
+independent public reference loading, RoPE continuation/recovery and executed
+routing observations. A direct publisher media command now uses pinned local
+processor/image inputs. GLM5 device capture supplies its explicit null native
+text argument, reads publisher text geometry and uses the media library for
+reference experts. Public wrappers retain their native owner identities.
+Inkling capture exposes receipt paths, and MTP accepts full embedding-vocabulary
+media IDs while restricting sampled output to the effective output vocabulary.
+EOS, context and snapshot-cleanup regressions cover physical/RNG recovery.
+
+An actual Qwen4 build exposed a stale call to the shared rotary function;
+the call now supplies the position-bank signature. Media, Inkling, Qwen4 and
+GLM5 kernels build with discovered MSVC. The 98-test focused capture suite
+passes. Touched Python syntax, notebook JSON/code-cell syntax and scoped diff
+checks pass. Canonical source validation passes (162 bindings, 187 owners,
+101 exports/190 ctypes names); closure remains 10/17 with 126/171 admitted
+routes missing accepted receipts. No model capture, accelerator comparison
+or new route receipt was produced. All 63 non-OLMoE rows of this 108 target
+still need real execution evidence; this source batch does not close P13/P15.

@@ -36,13 +36,47 @@ test('Advanced integration guide matches the approved local demo workflow and ex
   expect(apiRequests).toEqual([]);
 });
 
+test('Advanced integration guide is truthful and available in Live without demo export or fixtures', async ({ page }) => {
+  const fixtureRequests: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/demo/')) fixtureRequests.push(request.url());
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'live'));
+  await page.route('**/*', route => {
+    if (new URL(route.request().url()).pathname.startsWith('/api/')) {
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Offline Live test fixture' }),
+      });
+    }
+    return route.continue();
+  });
+  await page.goto('/?view=voice');
+  await expect(page.locator('.p-workspace--voice')).toBeVisible({ timeout: 15_000 });
+  const trigger = page.getByRole('button', { name: 'Integration guide' });
+  await trigger.click();
+  const guide = page.getByRole('dialog', { name: 'Demo and integration guide' });
+  await expect(guide).toBeVisible();
+  await expect(guide).toContainText('Backend permissions apply');
+  await expect(guide).toContainText('Live export is unavailable here. No backend export route is configured for this guide.');
+  await expect(guide).not.toContainText('Only example data');
+  await expect(guide.getByRole('button', { name: 'Export sample data' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(guide).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(fixtureRequests).toEqual([]);
+});
+
 test('Developer connections demo searches and saves locally without API calls', async ({ page }) => {
   const apiRequests: string[] = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url()); });
   await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'demo'));
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?view=developer');
-  await expect(page.getByRole('heading', { name: 'Connect your tools safely' })).toBeVisible();
+  await expect(page.locator('.p-workspace--developer')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: 'Connect your tools safely' })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('GitHub', { exact: true })).toBeVisible();
   await expect(page.getByText('MCP filesystem', { exact: true })).toBeVisible();
   await expect(page.getByText('Slack', { exact: true })).toBeVisible();
@@ -56,9 +90,10 @@ test('Developer connections demo searches and saves locally without API calls', 
 
 test('Security overview shows canonical demo counts, clearly labeled as simulated', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'demo'));
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?view=security');
-  await expect(page.getByRole('heading', { name: 'Clear visibility and control' })).toBeVisible();
+  await expect(page.locator('.p-workspace--security')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: 'Clear visibility and control' })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('heading', { name: 'Security summary' })).toBeVisible();
   const stats = page.locator('.demo-stats-grid');
   await expect(stats.getByText('Active policies', { exact: true })).toBeVisible();
@@ -71,7 +106,7 @@ test('Personal context demo uses local preferences and supports add, search, and
   const apiRequests: string[] = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url()); });
   await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'demo'));
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?view=twin');
   await expect(page.getByRole('heading', { name: 'Your context, your choice' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Context profile' })).toBeVisible();
@@ -93,7 +128,7 @@ test('Vault demo shows synthetic masked credentials and filters locally', async 
   const apiRequests: string[] = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url()); });
   await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'demo'));
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?view=vault');
   await expect(page.getByRole('heading', { name: 'Security without friction' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Masked credentials' })).toBeVisible();
@@ -128,7 +163,7 @@ test('Personal Assistant demo renders approved tasks and supports local planning
   const apiRequests: string[] = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url()); });
   await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'demo'));
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?view=assistant');
   await expect(page.getByRole('heading', { name: 'Stay on top of your work' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Make progress on the important things.' })).toBeVisible();
@@ -232,12 +267,28 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
   }
 }
 
+test('Live Security Audit displays the backend denial when the token lacks security:admin', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'live'));
+  await page.route(url => new URL(url).pathname.startsWith('/api/'), async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/audit') {
+      await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'This account does not have permission for this action.' }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
+  });
+  await page.goto('/?view=security');
+  await page.getByRole('tab', { name: 'Audit' }).click();
+  await expect(page.getByRole('heading', { name: 'Security service unavailable' })).toBeVisible();
+  await expect(page.getByText('This account does not have permission for this action.')).toBeVisible();
+});
+
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
   for (const theme of ['light', 'dark'] as const) {
-    test(`Live Personal Assistant does not reuse the unscoped audit feed (${viewport.width}x${viewport.height}, ${theme})`, async ({ page }) => {
-      const auditRequests: string[] = [];
+    test(`Live Personal Assistant loads only its scoped activity feed (${viewport.width}x${viewport.height}, ${theme})`, async ({ page }) => {
+      const activityRequests: string[] = [];
       page.on('request', request => {
-        if (new URL(request.url()).pathname === '/api/audit') auditRequests.push(request.url());
+        if (new URL(request.url()).pathname === '/api/assistant/activity') activityRequests.push(request.url());
       });
       await page.setViewportSize(viewport);
       await page.addInitScript(({ selectedTheme }) => {
@@ -245,26 +296,36 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
         localStorage.setItem('oa-second-theme', selectedTheme);
       }, { selectedTheme: theme });
       await page.route(url => new URL(url).pathname.startsWith('/api/'), async route => {
+        const url = new URL(route.request().url());
+        if (url.pathname === '/api/assistant/activity') {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [{ id: 'assistant-event-1', actor: 'owner', action: 'assistant.task.completed', project: 'default', created_at: '2026-10-25T10:00:00Z' }] }) });
+          return;
+        }
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
       });
 
       await page.goto('/?view=assistant');
       await expect(page.getByRole('heading', { name: 'Personal assistant', exact: true })).toBeVisible();
-      await expect(page.getByRole('region', { name: 'Personal assistant recent activity' })).toHaveCount(0);
-      await expect(page.getByText(/actions completed in this browser|saved locally · demo/i)).toHaveCount(0);
-      expect(auditRequests).toEqual([]);
+      await expect(page.getByText('assistant.task.completed')).toBeVisible();
+      await expect(page.getByText('must-not-render')).toHaveCount(0);
+      expect(activityRequests.length).toBeGreaterThan(0);
+      for (const request of activityRequests) {
+        const url = new URL(request);
+        expect(url.searchParams.get('project')).toBe('default');
+        expect(url.searchParams.get('limit')).toBe('20');
+      }
     });
   }
 }
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
   for (const theme of ['light', 'dark'] as const) {
-    test(`Live Security Audit withholds the unscoped event list (${viewport.width}x${viewport.height}, ${theme})`, async ({ page }) => {
-      const auditListRequests: string[] = [];
+    test(`Live Security Audit loads only the explicitly scoped event list (${viewport.width}x${viewport.height}, ${theme})`, async ({ page }) => {
+      const auditListRequests: Array<{ project: string | null; limit: string | null }> = [];
       const chainVerifyRequests: string[] = [];
       page.on('request', request => {
         const url = new URL(request.url());
-        if (url.pathname === '/api/audit') auditListRequests.push(request.url());
+        if (url.pathname === '/api/audit') auditListRequests.push({ project: url.searchParams.get('project'), limit: url.searchParams.get('limit') });
         if (url.pathname === '/api/security/audit-chain/verify') chainVerifyRequests.push(request.url());
       });
       await page.setViewportSize(viewport);
@@ -278,19 +339,28 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
           await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, sealed: 12, issues: [] }) });
           return;
         }
+        if (url.pathname === '/api/audit') {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [{ id: 'scoped-audit-1', actor: 'owner', action: 'file.updated', resource: 'readme.md', project: 'default', status: 'success', created_at: '2026-10-24T20:00:00Z', metadata: { private_marker: 'must-not-render' } }] }) });
+          return;
+        }
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
       });
 
       await page.goto('/?view=security');
       await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
       await page.getByRole('tab', { name: 'Audit' }).click();
-      await expect(page.getByText(/existing audit endpoint requires the security:admin permission and can return events across projects when no project filter is supplied/i)).toBeVisible();
-      expect(auditListRequests).toEqual([]);
+      await expect(page.getByText('file.updated')).toBeVisible();
+      await expect(page.getByText('must-not-render')).toHaveCount(0);
+      await expect(page.getByText(/read-only events for project/i)).toBeVisible();
+      expect(auditListRequests).toEqual([{ project: 'default', limit: '100' }]);
 
       await page.getByRole('button', { name: 'Verify chain' }).click();
       await expect(page.getByText('Audit-chain verification completed.')).toBeVisible();
       expect(chainVerifyRequests).toHaveLength(1);
-      expect(auditListRequests).toEqual([]);
+      expect(auditListRequests).toEqual([
+        { project: 'default', limit: '100' },
+        { project: 'default', limit: '100' },
+      ]);
     });
   }
 }

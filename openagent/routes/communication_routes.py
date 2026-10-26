@@ -40,6 +40,7 @@ ROUTES = (
     ("POST", "/api/communication/connectors/configure"),
     ("POST", "/api/communication/contacts"),
     ("POST", "/api/communication/messages/import"),
+    ("POST", "/api/communication/messages/update"),
     ("POST", "/api/communication/drafts/reply"),
     ("POST", "/api/communication/drafts"),
     ("POST", "/api/communication/send/request-approval"),
@@ -54,8 +55,10 @@ ROUTES = (
     ("POST", "/api/communication/oauth/refresh"),
     ("POST", "/api/communication/attachments"),
     ("POST", "/api/communication/messages/state"),
+    ("POST", "/api/communication/messages/{id}/send"),
     ("POST", "/api/communication/scheduled"),
     ("POST", "/api/communication/scheduled/process"),
+    ("DELETE", "/api/communication/messages/{message_id}"),
 )
 
 
@@ -209,15 +212,37 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
     owner_for = lambda default="local": deps.payload_owner(payload, default)
 
     try:
+        if path == "/api/communication/messages/update":
+            return JsonRouteResult({"message": communication.update_message(
+                str(payload.get("message_id", "")),
+                project=project,
+                owner=owner_for(""),
+                subject=str(payload.get("subject", "")),
+                sender=str(payload.get("sender", "")),
+                body=str(payload.get("body", "")),
+            )})
         if path == "/api/communication/messages/state":
             return JsonRouteResult({"message": communication.mutate_message(
-                str(payload.get("message_id", "")), owner=owner_for(""),
+                str(payload.get("message_id", "")), project=project, owner=owner_for(""),
                 folder=str(payload["folder"]) if "folder" in payload else None,
                 read=bool(payload["read"]) if "read" in payload else None,
                 answered=bool(payload["answered"]) if "answered" in payload else None,
                 spam=bool(payload["spam"]) if "spam" in payload else None,
                 archived=bool(payload["archived"]) if "archived" in payload else None,
             )})
+        if path.startswith("/api/communication/messages/") and path.endswith("/send"):
+            from urllib.parse import unquote
+            message_id = unquote(path.removeprefix("/api/communication/messages/").removesuffix("/send")).strip()
+            if not message_id or "/" in message_id:
+                return JsonRouteResult({"error": "message_id is required."}, HTTPStatus.BAD_REQUEST)
+            return JsonRouteResult({"message": communication.send_message(
+                message_id,
+                project=project,
+                owner=owner_for(""),
+                recipients=[str(item) for item in payload.get("recipients", [])] if isinstance(payload.get("recipients"), list) else None,
+                subject=str(payload.get("subject", "")) or None,
+                body=str(payload.get("body", "")) or None,
+            )}, HTTPStatus.CREATED)
         if path == "/api/communication/scheduled":
             return JsonRouteResult({"scheduled": communication.schedule_draft(
                 str(payload.get("draft_id", "")), send_at=str(payload.get("send_at", "")),
@@ -274,6 +299,7 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
                 body=str(payload.get("body", "")),
                 project=str(payload.get("project", "default")).strip() or "default",
                 owner=owner_for(),
+                message_id=str(payload.get("message_id", "")).strip(),
             )
             return JsonRouteResult({"draft": draft}, HTTPStatus.CREATED)
         if path == "/api/communication/send/request-approval":
@@ -382,5 +408,29 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             )
             return JsonRouteResult({"attachment": attachment}, HTTPStatus.CREATED)
     except Exception as exc:  # noqa: BLE001 - route module maps domain failures to JSON errors
+        from ..communication import CommunicationMessageNotFoundError
+        if isinstance(exc, CommunicationMessageNotFoundError):
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
     return None
+
+
+def handle_delete(path: str, query: str, deps: CommunicationRouteDependencies) -> JsonRouteResult | None:
+    from urllib.parse import unquote, parse_qs
+    prefix = "/api/communication/messages/"
+    if not path.startswith(prefix):
+        return None
+    message_id = unquote(path.removeprefix(prefix).strip("/"))
+    if not message_id or "/" in message_id:
+        return JsonRouteResult({"error": "message_id is required."}, HTTPStatus.BAD_REQUEST)
+    params = parse_qs(query, keep_blank_values=True)
+    project = (deps.first(params, "project") or "").strip() or None
+    owner = deps.query_owner(params)
+    try:
+        result = deps.communication.delete_message(message_id, project=project, owner=owner)
+    except Exception as exc:  # noqa: BLE001
+        from ..communication import CommunicationMessageNotFoundError
+        if isinstance(exc, CommunicationMessageNotFoundError):
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+    return JsonRouteResult(result)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any, Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from . import JsonRouteResult
 from ._contracts import route_contract
@@ -15,6 +15,7 @@ ROUTE_GROUP = "scraper"
 ROUTES = (
     ("GET", "/api/scraper/status"),
     ("GET", "/api/scraper/jobs"),
+    ("POST", "/api/scraper/jobs/{job_id}/cancel"),
     ("GET", "/api/scraper/history"),
     ("POST", "/api/scraper/scrape"),
     ("POST", "/api/scraper/schedule"),
@@ -55,9 +56,20 @@ def handle_get(path: str, query: str, deps: ScraperRouteDependencies) -> JsonRou
 
 
 def handle_post(path: str, deps: ScraperRouteDependencies) -> JsonRouteResult | None:
-    if path not in {"/api/scraper/scrape", "/api/scraper/schedule", "/api/scraper/run-due"}:
+    cancel_prefix = "/api/scraper/jobs/"
+    is_cancel_route = path.startswith(cancel_prefix) and path.endswith("/cancel")
+    if path not in {"/api/scraper/scrape", "/api/scraper/schedule", "/api/scraper/run-due"} and not is_cancel_route:
         return None
     payload = deps.read_json()
+    if is_cancel_route:
+        job_id = unquote(path[len(cancel_prefix):-len("/cancel")].strip("/"))
+        if not job_id or "/" in job_id:
+            return JsonRouteResult({"error": "Scheduled job not found."}, HTTPStatus.NOT_FOUND)
+        project = str(payload.get("project", "default")).strip() or "default"
+        job = deps.scraper.cancel_scheduled(job_id, project=project)
+        if job is None:
+            return JsonRouteResult({"error": "Scheduled job not found."}, HTTPStatus.NOT_FOUND)
+        return JsonRouteResult({"job": job, "cancelled": job.get("status") == "cancelled"})
     if path == "/api/scraper/run-due":
         project = str(payload.get("project", "default")).strip() or "default"
         return JsonRouteResult(deps.scraper.run_due_jobs(project=project))

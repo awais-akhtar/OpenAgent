@@ -13,6 +13,27 @@ from openagent.vector_store import VectorStore
 
 
 class MigrationTests(unittest.TestCase):
+    def test_migration_runner_executes_multistatement_blocks_atomically(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        migrations = (
+            Migration(1, "multi-statement-schema", (
+                "CREATE TABLE first_table (value TEXT); CREATE INDEX idx_first_value ON first_table(value);",
+            )),
+        )
+        try:
+            self.assertEqual(MigrationRunner(connection, migrations).run(), [1])
+            objects = {
+                (str(row["type"]), str(row["name"]))
+                for row in connection.execute(
+                    "SELECT type, name FROM sqlite_master WHERE name IN ('first_table', 'idx_first_value')"
+                )
+            }
+            self.assertEqual(objects, {("table", "first_table"), ("index", "idx_first_value")})
+            self.assertEqual(MigrationRunner(connection, migrations).run(), [])
+        finally:
+            connection.close()
+
     def test_new_database_records_ordered_checksummed_migrations(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)
@@ -957,6 +978,11 @@ class ResearchMigrationTests(unittest.TestCase):
             self.assertEqual(record["report"], "Preserved report")
             self.assertEqual(record["checkpoints"][0]["message"], "Preserved checkpoint")
             self.assertEqual(record["sources"][0]["id"], "paper-1")
+            self.assertIsNone(lifecycle.get("legacy", owner="authenticated-owner"))
+            with store.session() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT owner FROM research_sessions WHERE id = 'legacy'"
+                ).fetchone()["owner"], "")
             lifecycle.initialize()
             self.assertEqual(lifecycle.get("legacy"), record)
             with store.session() as connection:

@@ -523,6 +523,18 @@ def load_native_text_decoder(directory, *, model_type, library,
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError('max_bytes must be a positive integer')
     decoder_owner(model_type)
+    if model_type == 'kimi_linear':
+        if source_backend != 'native':
+            raise ValueError('standalone Kimi Linear admits only its exact native CPU route')
+        if context_tokens is None:
+            raise ValueError('standalone Kimi Linear requires explicit context_tokens')
+        if any(value is not None for value in
+               (expert_provider, max_snapshots, retain_diagnostics, read_limits, cancel)):
+            raise ValueError('standalone Kimi Linear has no streamed-provider, custom read-limit, or diagnostic route')
+        from .native_kimi import NativeKimiLinearDecoder
+        return NativeKimiLinearDecoder.from_checkpoint(
+            directory, library=library, capacity=context_tokens,
+            max_bytes=min(max_bytes, max_weight_bytes))
     from .resident_family_inventory import FAMILIES
     if model_type not in FAMILIES:
         raise ValueError(
@@ -530,17 +542,22 @@ def load_native_text_decoder(directory, *, model_type, library,
             'resident inventory planner: '+model_type)
     options = {}
     if max_snapshots is not None:
-        if model_type not in ('glm_moe_dsa','qwen3_5_moe_text'):
-            raise ValueError('explicit snapshot admission requires the DSA or Qwen3.5 owner')
+        if model_type not in ('glm_moe_dsa','glm5_next_text','qwen3_5_moe_text','inkling_text'):
+            raise ValueError('explicit snapshot admission requires a reviewed snapshot-capable family owner')
+        if model_type == 'glm5_next_text' and (type(max_snapshots) is not int or not 1 <= max_snapshots <= 64):
+            raise ValueError('bounded GLM5 retained snapshot inventory required')
         if model_type=='qwen3_5_moe_text' and (type(max_snapshots) is not int or not 1<=max_snapshots<=64):
             raise ValueError('bounded Qwen3.5 retained snapshot inventory required')
+        if model_type=='inkling_text' and (type(max_snapshots) is not int or not 1<=max_snapshots<=64):
+            raise ValueError('bounded native Inkling retained snapshot inventory required')
         options['max_snapshots']=max_snapshots
     if retain_diagnostics is not None:
         if model_type != 'glm_moe_dsa':
             raise ValueError('native diagnostics policy requires the DSA owner')
         options['retain_diagnostics']=retain_diagnostics
     context_options = {'glm5_next_text': 'max_tokens', 'deepseek_v4': 'max_context',
-                       'kimi_linear':'capacity','mixtral':'max_context','qwen3_5_moe_text':'context_tokens'}
+                       'kimi_linear':'capacity','mixtral':'max_context',
+                       'qwen3_5_moe_text':'context_tokens','inkling_text':'context_tokens'}
     if context_tokens is not None:
         if type(context_tokens) is not int or context_tokens <= 0:
             raise ValueError('context_tokens must be a positive integer')

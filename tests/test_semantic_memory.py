@@ -9,6 +9,29 @@ from openagent.storage import OpenAgentStore
 
 
 class SemanticMemoryManagerTests(unittest.TestCase):
+    def test_collection_rename_and_delete_preserve_project_boundaries_and_records(self) -> None:
+        with TemporaryDirectory() as tmp:
+            semantic = SemanticMemoryManager(OpenAgentStore(tmp))
+            collection = semantic.create_collection("research", project="core")
+            other_project = semantic.create_collection("research", project="other")
+            record = semantic.upsert_vector_record(collection["id"], content="Persisted vector", project="core")
+
+            renamed = semantic.rename_collection("research", new_name="research-v2", project="core")
+            self.assertEqual(renamed["id"], collection["id"])
+            self.assertEqual(renamed["name"], "research-v2")
+            self.assertEqual(semantic.get_vector_record(record["id"])["content"], "Persisted vector")
+            self.assertEqual(semantic.collections(project="other")[0]["id"], other_project["id"])
+            with self.assertRaises(ValueError):
+                semantic.rename_collection("research-v2", new_name="research-v2", project="core")
+            with self.assertRaises(KeyError):
+                semantic.rename_collection("research-v2", new_name="forged", project="other")
+
+            removed = semantic.delete_collection("research-v2", project="core")
+            self.assertEqual(removed["records_removed"], 1)
+            self.assertIsNone(semantic.get_vector_record(record["id"]))
+            self.assertEqual(semantic.collections(project="core"), [])
+            self.assertEqual(len(semantic.collections(project="other")), 1)
+
     def test_repeated_writes_get_distinct_record_ids(self) -> None:
         with TemporaryDirectory() as tmp:
             semantic = SemanticMemoryManager(OpenAgentStore(tmp))
@@ -21,6 +44,24 @@ class SemanticMemoryManagerTests(unittest.TestCase):
             first_graph = semantic.graph_analytics(project="core")
             second_graph = semantic.graph_analytics(project="core")
             self.assertNotEqual(first_graph["id"], second_graph["id"])
+
+    def test_collection_archive_restore_preserves_vector_records_and_project_scope(self) -> None:
+        with TemporaryDirectory() as tmp:
+            semantic = SemanticMemoryManager(OpenAgentStore(tmp))
+            collection = semantic.create_collection("research", project="core")
+            other = semantic.create_collection("research", project="other")
+            vector = semantic.upsert_vector_record(collection["id"], content="Keep this vector", project="core")
+            archived = semantic.set_collection_archived("research", archived=True, project="core")
+            self.assertTrue(archived["archived"])
+            self.assertEqual(semantic.collections(project="core"), [])
+            self.assertEqual(semantic.collections(project="core", include_archived=True)[0]["id"], collection["id"])
+            with self.assertRaises(KeyError):
+                semantic.set_collection_archived("research", archived=False, project="other-missing")
+            restored = semantic.set_collection_archived("research", archived=False, project="core")
+            self.assertFalse(restored["archived"])
+            self.assertEqual(restored["id"], collection["id"])
+            self.assertEqual(semantic.get_vector_record(vector["id"])["content"], "Keep this vector")
+            self.assertEqual(semantic.collections(project="other")[0]["id"], other["id"])
 
     def test_memory_vector_rerank_consolidation_and_graph_analytics(self) -> None:
         with TemporaryDirectory() as tmp:

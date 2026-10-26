@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 
 from openagent.adaptive_engine.multimodal_session import MultimodalSessionExecutor
+from openagent.adaptive_engine.qwen4_multimodal import Qwen4MultimodalDecoder
 
 
 class MultimodalSessionLifecycleTests(unittest.TestCase):
@@ -91,6 +92,78 @@ class MultimodalSessionLifecycleTests(unittest.TestCase):
                     ValueError,'nonfinite processor media values'):
                 wrapper.forward_media([1],{'pixel_values':value},None)
         self.assertEqual(decoder.calls,0)
+
+    @staticmethod
+    def production_wrapper(forward):
+        decoder=object.__new__(Qwen4MultimodalDecoder)
+        decoder.forward=forward
+        decoder.close=lambda:None
+        return MultimodalSessionExecutor(decoder,max_media_bytes=1024)
+
+    def test_production_media_call_tracks_and_releases_successful_frame(self):
+        wrapper=self.production_wrapper(
+            lambda token_ids,**_kwargs: np.zeros((1,len(token_ids),2),dtype=np.float32))
+
+        result=wrapper.forward_media([1],{'pixel_values':np.ones((2,),dtype=np.float32)},None)
+
+        self.assertEqual(result.shape,(1,2))
+        self.assertEqual(wrapper._media_lifecycle.active_count(),0)
+        self.assertEqual(wrapper._media_lifecycle._frames,{})
+
+    def test_production_media_failure_releases_error_frame(self):
+        def fail(*_args,**_kwargs):
+            raise RuntimeError('injected vision failure')
+        wrapper=self.production_wrapper(fail)
+
+        with self.assertRaisesRegex(RuntimeError,'injected vision failure'):
+            wrapper.forward_media([1],{'pixel_values':np.ones((2,),dtype=np.float32)},None)
+
+        self.assertEqual(wrapper._media_lifecycle.active_count(),0)
+        self.assertEqual(wrapper._media_lifecycle._frames,{})
+
+    def test_cancellation_observer_failure_does_not_leak_media_frame(self):
+        class Cancellation:
+            def __init__(self):
+                self.fail_on_observation = False
+
+            def is_set(self):
+                if self.fail_on_observation:
+                    raise LookupError('injected cancellation observer failure')
+                return False
+
+        cancellation=Cancellation()
+
+        def fail(*_args,**_kwargs):
+            cancellation.fail_on_observation=True
+            raise RuntimeError('injected decoder failure')
+
+        wrapper=self.production_wrapper(fail)
+        with self.assertRaisesRegex(RuntimeError,'injected decoder failure') as raised:
+            wrapper.forward_media([1],{'pixel_values':np.ones((2,),dtype=np.float32)},cancellation)
+
+        self.assertTrue(any('media cancellation observer failed' in note
+                            for note in getattr(raised.exception,'__notes__',())))
+        self.assertEqual(wrapper._media_lifecycle.active_count(),0)
+        self.assertEqual(wrapper._media_lifecycle._frames,{})
+
+    def test_unprintable_cancelled_decoder_error_does_not_leave_active_frame(self):
+        class UnprintableError(RuntimeError):
+            def __str__(self):
+                raise RuntimeError('exception formatting failed')
+
+        cancellation = Event()
+        primary = UnprintableError()
+
+        def fail(*_args, **_kwargs):
+            cancellation.set()
+            raise primary
+
+        wrapper = self.production_wrapper(fail)
+        with self.assertRaises(UnprintableError) as caught:
+            wrapper.forward_media([1], {'pixel_values': np.ones((2,), dtype=np.float32)}, cancellation)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(wrapper._media_lifecycle.active_count(), 0)
+        self.assertEqual(wrapper._media_lifecycle._frames, {})
 
 
 if __name__=='__main__':

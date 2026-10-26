@@ -41,11 +41,16 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
       const details = page.getByRole('dialog', { name: 'Local planning block' });
       await expect(details).toBeVisible();
       await expect(details).toContainText('This event is a visual fixture; real events must come from the calendar API.');
-      await expect(details.getByRole('button', { name: 'Cancel' })).toBeVisible();
+      await expect(details.getByRole('button', { name: 'Edit' })).toBeVisible();
+      await expect(details.getByRole('button', { name: 'Delete' })).toBeVisible();
       await expect(details.getByRole('button', { name: 'Close', exact: true })).toBeVisible();
-      await details.getByRole('button', { name: 'Close', exact: true }).click();
-      await expect(details).toBeHidden();
-      await expect(page.locator('#toast-region')).toContainText('Visual preview only. No backend changes were saved.');
+      await details.getByRole('button', { name: 'Edit' }).click();
+      const editDialog = page.getByRole('dialog', { name: 'Edit calendar event' });
+      await expect(editDialog).toBeVisible();
+      await editDialog.getByLabel('Title').fill('Local planning block revised');
+      await editDialog.getByRole('button', { name: 'Save changes' }).click();
+      await expect(editDialog).toBeHidden();
+      await expect(page.locator('#toast-region')).toContainText('Demo event updated locally.');
       const upcomingEventButton = page.locator('.calendar-upcoming').getByRole('button', { name: /Team stand-up/ });
       await upcomingEventButton.click();
       const upcomingDetails = page.getByRole('dialog', { name: 'Team stand-up' });
@@ -56,12 +61,49 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
 
       const storageKey = 'oa-second-isolated-demo-v1';
       const persistedBeforeReload = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null') as { data?: { workspaceDemo?: { state?: { calendarEvents?: Array<{ title?: string }> } } } } | null, storageKey);
-      expect(persistedBeforeReload?.data?.workspaceDemo?.state?.calendarEvents?.map(event => event.title)).toContain('Local planning block');
+      expect(persistedBeforeReload?.data?.workspaceDemo?.state?.calendarEvents?.map(event => event.title)).toContain('Local planning block revised');
       await page.reload();
       const persistedAfterReload = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null') as { data?: { workspaceDemo?: { state?: { calendarEvents?: Array<{ title?: string }> } } } } | null, storageKey);
-      expect(persistedAfterReload?.data?.workspaceDemo?.state?.calendarEvents?.map(event => event.title), JSON.stringify(persistedAfterReload)).toContain('Local planning block');
-      await expect(page.locator('.calendar-upcoming-row').filter({ hasText: 'Local planning block' })).toBeVisible();
+      expect(persistedAfterReload?.data?.workspaceDemo?.state?.calendarEvents?.map(event => event.title), JSON.stringify(persistedAfterReload)).toContain('Local planning block revised');
+      const revisedEventButton = page.locator('.calendar-upcoming-row').filter({ hasText: 'Local planning block revised' });
+      await expect(revisedEventButton).toBeVisible();
+      await revisedEventButton.click();
+      page.once('dialog', dialog => dialog.accept());
+      await page.getByRole('dialog', { name: 'Local planning block revised' }).getByRole('button', { name: 'Delete' }).click();
+      await expect(page.locator('.calendar-upcoming-row').filter({ hasText: 'Local planning block revised' })).toHaveCount(0);
+      const deletedState = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null') as { data?: { workspaceDemo?: { state?: { calendarEvents?: Array<{ title?: string }> } } } } | null, storageKey);
+      expect(deletedState?.data?.workspaceDemo?.state?.calendarEvents?.map(event => event.title)).not.toContain('Local planning block revised');
       expect(apiRequests).toEqual([]);
+    });
+
+    test(`Calendar demo shows recurring series occurrences as separate dates (${viewport.width}x${viewport.height}, ${theme})`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.addInitScript(({ selectedTheme }) => {
+        localStorage.setItem('oa-second-data-mode', 'demo');
+        localStorage.setItem('oa-second-theme', selectedTheme);
+      }, { selectedTheme: theme });
+      await page.goto('/?view=calendar');
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      const form = page.getByRole('dialog', { name: 'New calendar event' });
+      const startValue = await form.getByLabel('Starts').inputValue();
+      const endDate = new Date(`${startValue}:00`);
+      endDate.setHours(endDate.getHours() + 1);
+      await form.getByLabel('Title').fill('Daily local series');
+      await form.getByLabel('Ends').fill(`${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}T${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`);
+      await form.getByLabel('Repeat').selectOption('FREQ=DAILY');
+      await form.getByRole('button', { name: 'Create event' }).click();
+      await expect(form).toBeHidden();
+      await page.getByRole('button', { name: 'Next period' }).click();
+      await expect(page.locator('.calendar-event[title="Daily local series"]')).toHaveCount(7);
+      await page.locator('.calendar-event[title="Daily local series"]').first().click();
+      const details = page.getByRole('dialog', { name: 'Daily local series' });
+      await expect(details).toContainText('Recurring series occurrence');
+      await expect(details.getByRole('button', { name: 'Edit series' })).toBeVisible();
+      await expect(details.getByRole('button', { name: 'Delete series' })).toBeVisible();
+      await details.getByRole('button', { name: 'Edit series' }).click();
+      const edit = page.getByRole('dialog', { name: 'Edit calendar event' });
+      await expect(edit.getByLabel('Repeat')).toHaveValue('FREQ=DAILY');
+      await expect(edit.getByLabel('Starts')).toHaveValue(startValue);
     });
   }
 }
@@ -76,6 +118,9 @@ test('Live Calendar detail stays truthful and does not show the Demo preview toa
   await page.route('**/api/calendar/events**', async route => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [{ id: 'live-event-1', title: 'Live backend review', starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString() }] }) });
   });
+  await page.route('**/api/calendar/free-slots**', async route => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ slots: [{ starts_at: '2026-10-26T09:00:00Z', ends_at: '2026-10-26T10:00:00Z', duration_minutes: 60 }] }) });
+  });
   await page.goto('/?view=calendar');
   await expect(page.getByRole('heading', { name: 'Calendar', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Data mode: demo. Click to switch to live' }).click();
@@ -87,4 +132,7 @@ test('Live Calendar detail stays truthful and does not show the Demo preview toa
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByText('Visual preview only. No backend changes were saved.')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Find time for a team sync' }).click();
+  await expect(page.locator('#toast-region')).toContainText('Calendar backend found 1 available time');
+  await expect(page.locator('#toast-region')).toContainText('No event was changed.');
 });

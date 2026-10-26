@@ -115,7 +115,16 @@ export const apiPut = <T extends JsonRecord = JsonRecord>(path: string, body: un
 export const apiPatch = <T extends JsonRecord = JsonRecord>(path: string, body: unknown, signal?: AbortSignal) => apiRequest<T>(path, { method: 'PATCH', body, signal });
 export const apiDelete = <T extends JsonRecord = JsonRecord>(path: string, signal?: AbortSignal) => apiRequest<T>(path, { method: 'DELETE', signal });
 
-export type AdvancedRoute = 'voice' | 'assistant' | 'communications' | 'security' | 'developer' | 'engine' | 'science' | 'twin' | 'vault' | 'scraper' | 'finetune';
+export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  assertLiveRequestsAllowed('GET');
+  const headers = requestHeaders();
+  headers.set('Accept', '*/*');
+  const response = await fetch(apiUrl(path), { method: 'GET', signal, headers, credentials: 'same-origin' });
+  if (!response.ok) { await readJson(response); throw new ApiError(`Request failed (${response.status}).`, response.status); }
+  return response.blob();
+}
+
+export type AdvancedRoute = 'voice' | 'assistant' | 'communications' | 'security' | 'developer' | 'engine' | 'science' | 'twin' | 'vault' | 'scraper' | 'finetune' | 'gallery' | 'cookbook' | 'ultramodel' | 'personalos';
 export type AdvancedTab = string;
 
 /**
@@ -131,14 +140,14 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
       'Voice settings': { status: '/api/voice/status', personas: '/api/voice/personas' },
     },
     assistant: {
-      Today: { tasks: '/api/assistant/tasks', brief: '/api/assistant/daily-brief' },
+      Today: { tasks: '/api/assistant/tasks', brief: '/api/assistant/daily-brief', activity: '/api/assistant/activity?project=default&limit=20' },
       Tasks: { tasks: '/api/assistant/tasks', goals: '/api/assistant/goals' },
       Goals: { goals: '/api/assistant/goals' },
       'Daily brief': { brief: '/api/assistant/daily-brief' },
     },
     communications: {
       Inbox: { messages: '/api/communication/inbox', connectors: '/api/communication/connectors' },
-      Contacts: { contacts: '/api/communication/contacts?project=default' },
+      Contacts: { contacts: '/api/communication/contacts?project=default', crm_contacts: '/api/contacts' },
       Calendar: { events: '/api/communication/calendar?project=default' },
       Sent: { sent: '/api/communication/sent?project=default&limit=100' },
       Drafts: { drafts: '/api/communication/drafts?project=default&limit=100', approvals: '/api/communication/approvals?project=default&limit=100' },
@@ -149,10 +158,9 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
       Overview: { status: '/api/security/status' },
       Access: { status: '/api/security/status', grants: '/api/security/shares', egress: '/api/security/egress' },
       Sessions: { sessions: '/api/auth/sessions' },
-      // GET /api/audit requires security:admin but can return cross-project
-      // events when the project filter is omitted. Keep the list unavailable
-      // until this UI verifies the intended project scope and authorization.
-      Audit: null,
+      // The endpoint requires security:admin. Always constrain the UI query
+      // to its explicit local project; never issue an unscoped audit request.
+      Audit: { events: '/api/audit?project=default&limit=100' },
     },
     developer: {
       Connections: { status: '/api/developer/status', plugins: '/api/developer/plugins', extensions: '/api/developer/extensions' },
@@ -171,7 +179,7 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
       Projects: null,
       Experiments: { experiments: '/api/science/experiments?project=default' },
       Data: { datasets: '/api/science/materials/datasets', memory: '/api/science/memory' },
-      Reports: null,
+      Reports: { executions: '/api/science/executions?project=default' },
     },
     twin: {
       Profile: { status: '/api/twin/status', profile: '/api/twin/profile' },
@@ -192,12 +200,38 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
     },
     finetune: {
       Datasets: { datasets: '/api/finetune/datasets', status: '/api/finetune/status' },
-      Jobs: { jobs: '/api/finetune/jobs', status: '/api/finetune/status' },
-      Checkpoints: null,
+      Jobs: { jobs: '/api/finetune/jobs', status: '/api/finetune/status', templates: '/api/finetune/templates', localModels: '/api/local-ai/models?project=default', localJobs: '/api/local-ai/jobs?project=default' },
+      Checkpoints: { checkpoints: '/api/finetune/checkpoints?project=default&limit=100' },
       Results: { adapters: '/api/finetune/adapters', status: '/api/finetune/status' },
     },
+    gallery: {
+      Library: { images: '/api/gallery/library?project=default', albums: '/api/gallery/albums?project=default' },
+      Albums: { albums: '/api/gallery/albums?project=default' },
+      Upload: null,
+      Operations: null,
+    },
+    cookbook: {
+      Hosts: { hosts: '/api/model-cookbook/hosts', sessions: '/api/model-cookbook/sessions?project=default', hardware: '/api/model-cookbook/hardware-fit' },
+      Cached: { cached: '/api/model-cookbook/cached' },
+      Certifications: { certifications: '/api/model-cookbook/certifications' },
+      Logs: null,
+    },
+    ultramodel: {
+      Status: { status: '/api/ultra-model/status', sessions: '/api/ultra-model/sessions' },
+      Manifests: { manifests: '/api/ultra-model/manifests' },
+      Plans: { plans: '/api/ultra-model/plans' },
+      Sessions: { sessions: '/api/ultra-model/sessions' },
+    },
+    personalos: {
+      Status: { status: '/api/personal-os/status', presets: '/api/personal-os/presets' },
+      Presets: { presets: '/api/personal-os/presets' },
+      Notes: { notes: '/api/personal-os/notes' },
+      Gallery: { gallery: '/api/personal-os/gallery' },
+      Signatures: { signatures: '/api/personal-os/signatures' },
+      Drafts: { drafts: '/api/personal-os/drafts' },
+    },
   };
-  return routes[route][tab] ?? null;
+  return routes[route]?.[tab] ?? null;
 }
 
 export async function fetchAdvancedScreenData(
@@ -292,6 +326,47 @@ export async function apiStreamPost(
     reader.releaseLock();
   }
 }
+
+// ── Communication permanent delete ─────────────────────────────────────────
+export const deleteMessage = (messageId: string, project = 'default') =>
+  apiDelete(`/api/communication/messages/${encodeURIComponent(messageId)}?project=${encodeURIComponent(project)}`);
+
+// ── Calendar provider lifecycle ────────────────────────────────────────────
+export const deleteCalendarProvider = (providerId: string) =>
+  apiDelete(`/api/calendar/providers/${encodeURIComponent(providerId)}`);
+
+export const reauthCalendarProvider = (
+  providerId: string,
+  body: { account_ref?: string; config?: Record<string, unknown> },
+) => apiPost(`/api/calendar/providers/${encodeURIComponent(providerId)}/reauth`, body);
+
+// ── Agent job events ───────────────────────────────────────────────────────
+export const getAgentJobEvents = (jobId: string, after = '', limit = 100) =>
+  apiGet(
+    `/api/agents/jobs/${encodeURIComponent(jobId)}/events?limit=${limit}${after ? `&after=${encodeURIComponent(after)}` : ''}`,
+  );
+
+// ── Browser voice streaming ────────────────────────────────────────────────
+export const startVoiceStream = (body: {
+  project?: string;
+  voice_session_id?: string;
+  audio_format?: string;
+  language?: string;
+  stt_engine?: string;
+}) => apiPost('/api/voice/stream/start', body);
+
+export const pushVoiceStreamChunk = (body: {
+  stream_id: string;
+  audio_base64: string;
+  sequence: number;
+}) => apiPost('/api/voice/stream/chunk', body);
+
+export const finishVoiceStream = (body: {
+  stream_id: string;
+  speaker?: string;
+  transcript_hint?: string;
+  allow_fallback_stt?: boolean;
+}) => apiPost('/api/voice/stream/finish', body);
 
 export function apiConnectionMessage(error: unknown): string {
   if (error instanceof ApiError) {

@@ -1,0 +1,265 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install static checker
+        run: python -m pip install ruff==0.12.12
+
+      - name: Reject Python syntax and undefined-name defects
+        run: ruff check openagent tests --select E9,F63,F7,F82
+
+      - name: Compile Python sources
+        run: python -m compileall -q openagent tests
+
+  test:
+    needs: static-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install OpenAgent test dependencies
+        run: python -m pip install -e ".[full]" build
+
+      - name: Full test suite (umbrella gate)
+        run: python -m unittest discover -s tests
+
+      - name: Security regression gate (auth, scopes, enforcement, privacy)
+        run: python -m unittest tests.test_auth tests.test_auth_enforcement tests.test_security_privacy -v
+
+      - name: Route contract gate (server + web UI compatibility)
+        run: python -m unittest tests.test_server tests.test_web_ui -v
+
+      - name: New-subsystem regression gate (docs, calendar sync, comms resilience, model lifecycle)
+        run: python -m unittest tests.test_documents tests.test_calendar_sync tests.test_communication_resilience tests.test_local_ai_lifecycle -v
+
+      - name: Production proof gate
+        run: openagent-production-proof --queue-jobs 200
+
+  security-contracts:
+    needs: static-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install OpenAgent and coverage tooling
+        run: python -m pip install -e ".[security]" coverage==7.10.6
+
+      - name: Security, route, and migration coverage gate
+        run: |
+          coverage run --branch --source=openagent.auth,openagent.config,openagent.crypto,openagent.http_security,openagent.migrations,openagent.routes.chat_routes -m unittest \
+            tests.test_commercial_security \
+            tests.test_migrations \
+            tests.test_route_contracts \
+            tests.test_route_handler_registry \
+            tests.test_chat_routes
+          coverage report --show-missing --fail-under=55
+
+  browser-e2e:
+    needs: static-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install OpenAgent browser dependencies
+        run: |
+          python -m pip install -e ".[media,security]"
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Type-check and verify shipped frontend bundle
+        run: |
+          npm run check:web
+          npm run test:web
+          npm run build:web
+          git diff --exit-code -- web/app.js
+
+      - name: Browser E2E and accessibility smoke
+        run: npm run test:e2e
+
+      - name: Store browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-evidence
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  package:
+    needs: [test, security-contracts, browser-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install build==1.3.0 twine==6.2.0
+          python -m build
+          twine check dist/*
+          sha256sum dist/* > SHA256SUMS
+
+      - name: Smoke install the clean wheel
+        run: |
+          python -m venv /tmp/openagent-wheel-smoke
+          /tmp/openagent-wheel-smoke/bin/python -m pip install --no-cache-dir dist/*.whl
+          /tmp/openagent-wheel-smoke/bin/openagent --help
+          /tmp/openagent-wheel-smoke/bin/python -c "import openagent; print(openagent.__file__)"
+
+      - name: Store verified package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-python-distributions
+          path: |
+            dist/
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  deployment:
+    needs: [test, security-contracts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate deployment policy contracts
+        run: |
+          python -m pip install PyYAML==6.0.2
+          python -m unittest tests.test_deployment_config -v
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.4
+
+      - name: Render Kubernetes base and overlays
+        run: |
+          mkdir -p /tmp/openagent-manifests
+          kubectl kustomize deploy/kubernetes > /tmp/openagent-manifests/base.yaml
+          kubectl kustomize deploy/kubernetes/overlays/development > /tmp/openagent-manifests/development.yaml
+          kubectl kustomize deploy/kubernetes/overlays/production > /tmp/openagent-manifests/production.yaml
+
+      - name: Validate Kubernetes schemas
+        run: |
+          for manifest in /tmp/openagent-manifests/*.yaml; do
+            docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 \
+              -strict -summary -ignore-missing-schemas < "$manifest"
+          done
+
+      - name: Build production container
+        run: |
+          docker build \
+            --build-arg OPENAGENT_VERSION=0.13.0 \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag openagent-ci:${GITHUB_SHA} .
+
+      - name: Verify non-root authenticated runtime
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect openagent-ci:${GITHUB_SHA} --format '{{.Config.User}}')" = "10001:10001"
+          docker volume create openagent-ci-data >/dev/null
+          cleanup() {
+            docker rm -f openagent-ci >/dev/null 2>&1 || true
+            docker volume rm openagent-ci-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name openagent-ci \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v openagent-ci-data:/data \
+            -e OPENAGENT_DEPLOYMENT_MODE=team \
+            -e OPENAGENT_AUTH_ENFORCED=1 \
+            -e OPENAGENT_BOOTSTRAP_TOKEN=ci-bootstrap-token-with-at-least-32-characters \
+            -p 127.0.0.1:8765:8765 openagent-ci:${GITHUB_SHA}
+          for attempt in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8765/api/health >/tmp/openagent-health.json && break
+            sleep 2
+          done
+          grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/openagent-health.json
+          test "$(curl -sS -o /tmp/openagent-auth.json -w '%{http_code}' http://127.0.0.1:8765/api/auth/me)" = "401"
+          test "$(docker exec openagent-ci id -u)" = "10001"
+
+      - name: Scan container for fixable high-severity vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: openagent-ci:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Generate container SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: openagent-ci:${{ github.sha }}
+          artifact-name: openagent-container.spdx.json
+          format: spdx-json

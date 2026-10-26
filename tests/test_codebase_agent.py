@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -465,6 +467,51 @@ class SandboxAndPolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, "inline source code"):
                 tools.execute("run_shell", {"command": "import inspect; print(inspect.getsourcefile())"})
 
+    def test_preview_readiness_probe_is_loopback_only_bounded_and_read_only(self) -> None:
+        class ReadyHandler(BaseHTTPRequestHandler):
+            def do_HEAD(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ReadyHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                source = base / "source"
+                source.mkdir()
+                manager = SandboxManager(base / "sandboxes")
+                manager.create("workspace-1", source=source)
+                tools = CodebaseTools(manager, "workspace-1")
+                url = f"http://127.0.0.1:{server.server_port}/health"
+                process = manager.start_process("workspace-1", [sys.executable, "-c", f"import time; print({url!r}, flush=True); time.sleep(30)"])
+                deadline = time.monotonic() + 5
+                logs = manager.process_logs("workspace-1", process["id"])
+                while url not in logs["stdout"] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    logs = manager.process_logs("workspace-1", process["id"])
+                self.assertIn(url, logs["stdout"])
+                try:
+                    self.assertEqual(0, ToolPolicy().classify("probe_local_url", {"url": url, "process_id": process["id"]})["risk"])
+                    self.assertEqual({"url": url, "reachable": True, "http_status": 200, "content_type": "text/html", "redirect": False}, tools.execute("probe_local_url", {"url": url, "process_id": process["id"]}))
+                    with self.assertRaisesRegex(PermissionError, "reported by this running preview"):
+                        tools.execute("probe_local_url", {"url": f"http://127.0.0.1:{server.server_port + 1}/", "process_id": process["id"]})
+                    with self.assertRaisesRegex(ValueError, "loopback"):
+                        tools.execute("probe_local_url", {"url": "http://example.com/", "process_id": process["id"]})
+                    with self.assertRaisesRegex(ValueError, "loopback"):
+                        tools.execute("probe_local_url", {"url": "http://user@localhost/", "process_id": process["id"]})
+                finally:
+                    manager.stop_process("workspace-1", process["id"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_local_model_argument_aliases_are_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -510,6 +557,77 @@ class SandboxAndPolicyTests(unittest.TestCase):
             self.assertIn("ready", logs["stdout"])
             stopped = manager.stop_process("workspace-1", process["id"])
             self.assertEqual("exited", stopped["status"])
+
+    def test_managed_preview_process_is_recovered_and_stopped_after_manager_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            root = base / "sandboxes"
+            first_manager = SandboxManager(root)
+            first_manager.create("workspace-1", source=source)
+            process = first_manager.start_process(
+                "workspace-1",
+                [
+                    sys.executable,
+                    "-c",
+                    "import subprocess,sys,time; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)); print(f'recovered-preview-ready child={child.pid}',flush=True); time.sleep(60)",
+                ],
+            )
+            original_record = first_manager._managed_process("workspace-1", process["id"])
+            try:
+                deadline = time.monotonic() + 8
+                logs = first_manager.process_logs("workspace-1", process["id"])
+                while "recovered-preview-ready" not in logs["stdout"] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    logs = first_manager.process_logs("workspace-1", process["id"])
+                self.assertIn("recovered-preview-ready", logs["stdout"])
+                child_pid = int(logs["stdout"].strip().split("child=")[-1])
+                self.assertIsNotNone(SandboxManager._process_identity(child_pid))
+
+                restarted_manager = SandboxManager(root)
+                self.assertEqual("running", restarted_manager.process_status("workspace-1", process["id"])["status"])
+                recovered_logs = restarted_manager.process_logs("workspace-1", process["id"])
+                self.assertIn("recovered-preview-ready", recovered_logs["stdout"])
+
+                stopped = restarted_manager.stop_process("workspace-1", process["id"])
+                self.assertEqual("exited", stopped["status"])
+                self.assertIsNone(SandboxManager._process_identity(child_pid))
+                deadline = time.monotonic() + 8
+                while first_manager.process_status("workspace-1", process["id"])["status"] != "exited" and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual("exited", first_manager.process_status("workspace-1", process["id"])["status"])
+            finally:
+                if original_record["process"].poll() is None:
+                    first_manager.stop_process("workspace-1", process["id"])
+                first_manager._close_process_logs(original_record)
+                original_record["process"].wait(timeout=8)
+
+    def test_recovered_process_identity_mismatch_never_stops_a_reused_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            root = base / "sandboxes"
+            first_manager = SandboxManager(root)
+            first_manager.create("workspace-1", source=source)
+            process = first_manager.start_process(
+                "workspace-1",
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+            )
+            original_record = first_manager._managed_process("workspace-1", process["id"])
+            try:
+                restarted_manager = SandboxManager(root)
+                recovered = restarted_manager._managed_process("workspace-1", process["id"])
+                recovered["identity"] = {**recovered["identity"], "created": "different-process"}
+                self.assertEqual("exited", restarted_manager.process_status("workspace-1", process["id"])["status"])
+                self.assertEqual("exited", restarted_manager.stop_process("workspace-1", process["id"])["status"])
+                self.assertIsNone(original_record["process"].poll())
+            finally:
+                if original_record["process"].poll() is None:
+                    first_manager.stop_process("workspace-1", process["id"])
+                first_manager._close_process_logs(original_record)
+                original_record["process"].wait(timeout=8)
 
     def test_configured_hosted_adapter_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

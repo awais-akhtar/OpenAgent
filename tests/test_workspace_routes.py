@@ -1,57 +1,72 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
+from unittest import TestCase
 
-from openagent.routes.workspace_routes import WorkspaceRouteDependencies, contract, handle_get, handle_post
+from openagent.routes.workspace_routes import WorkspaceRouteDependencies, contract, handle_delete, handle_post
 from openagent.storage import OpenAgentStore
 from openagent.workspace import WorkspaceManager
 
 
-class WorkspaceRouteTests(unittest.TestCase):
-    def test_declared_workspace_routes_preserve_payloads_and_status_codes(self) -> None:
+class WorkspaceDeleteRouteTests(TestCase):
+    def test_delete_contract_and_project_scoped_leaf_deletion(self) -> None:
         with TemporaryDirectory() as tmp:
             workspace = WorkspaceManager(OpenAgentStore(tmp))
-            template = workspace.create_item(
-                kind="template", title="Letter", content="Dear {{name}}", project="core",
-            )
-            payload: dict[str, object] = {"project": "core", "kind": "note", "title": "Route note"}
+            parent = workspace.create_item(kind="note", title="Parent", project="core")
+            child = workspace.create_item(kind="note", title="Child", project="core", parent_id=parent["id"])
             deps = WorkspaceRouteDependencies(
                 workspace=workspace,
                 first=lambda params, key: params.get(key, [None])[0],
-                parse_int=lambda value, default=0: default if value is None else int(value),
+                parse_int=lambda value, default=100: int(value) if value else default,
+                read_json=lambda: {},
+            )
+
+            routes = {(route["method"], route["path"]) for route in contract()["routes"]}
+            self.assertIn(("DELETE", "/api/workspace/items/{item_id}"), routes)
+            blocked = handle_delete(f"/api/workspace/items/{parent['id']}", "project=core", deps)
+            self.assertEqual(blocked.status, HTTPStatus.CONFLICT)
+            missing = handle_delete(f"/api/workspace/items/{child['id']}", "project=other", deps)
+            self.assertEqual(missing.status, HTTPStatus.NOT_FOUND)
+            deleted = handle_delete(f"/api/workspace/items/{child['id']}", "project=core", deps)
+            self.assertEqual(deleted.status, HTTPStatus.OK)
+            self.assertTrue(deleted.payload["deleted"])
+            self.assertIsNone(handle_delete("/api/workspace/items/", "project=core", deps))
+
+
+class WorkspaceUpdateScopeTests(TestCase):
+    def test_update_is_limited_to_explicit_project_and_replaces_search_context(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = WorkspaceManager(OpenAgentStore(tmp))
+            item = workspace.create_item(kind="note", title="Original", project="alpha", content="old searchable text")
+            payload: dict[str, object] = {"item_id": item["id"], "project": "beta", "title": "Changed", "content": "new"}
+            deps = WorkspaceRouteDependencies(
+                workspace=workspace,
+                first=lambda params, key: params.get(key, [None])[0],
+                parse_int=lambda value, default=100: int(value) if value else default,
                 read_json=lambda: payload,
             )
-            created = handle_post("/api/workspace/items", deps)
-            self.assertEqual(created.status, HTTPStatus.CREATED)
-            item_id = created.payload["item"]["id"]
-            payload = {"item_id": item_id, "content": "Updated content"}
+
+            denied = handle_post("/api/workspace/items/update", deps)
+            self.assertEqual(denied.status, HTTPStatus.NOT_FOUND)
+            self.assertEqual(workspace.get_item(item["id"])["title"], "Original")
+
+            payload["project"] = "alpha"
             updated = handle_post("/api/workspace/items/update", deps)
             self.assertEqual(updated.status, HTTPStatus.OK)
-            self.assertEqual(updated.payload["item"]["content"], "Updated content")
-            payload = {"project": "core", "template_id": template["id"], "title": "Copy", "variables": {"name": "Ada"}}
-            instantiated = handle_post("/api/workspace/templates/instantiate", deps)
-            self.assertEqual(instantiated.status, HTTPStatus.CREATED)
-            self.assertEqual(instantiated.payload["item"]["content"], "Dear Ada")
-            for route in contract()["routes"]:
-                with self.subTest(route=route):
-                    result = (
-                        handle_get(route["path"], "project=core", deps)
-                        if route["method"] == "GET"
-                        else handle_post(route["path"], deps)
-                    )
-                    self.assertIsNotNone(result)
-            self.assertEqual(len(handle_get("/api/workspace/items", "project=core&q=Updated", deps).payload["items"]), 1)
-            self.assertEqual(handle_get("/api/workspace/dashboard", "project=core", deps).payload["project"], "core")
-            self.assertIsNone(handle_get("/api/chat", "", deps))
-            self.assertIsNone(handle_post("/api/chat", deps))
+            self.assertEqual(updated.payload["item"]["content"], "new")
+            self.assertEqual(workspace.search("old searchable text", project="alpha"), [])
+            self.assertEqual(len(workspace.search("new", project="alpha")), 1)
 
-    def test_runtime_has_no_inline_workspace_dispatch(self) -> None:
-        runtime = (Path(__file__).resolve().parents[1] / "openagent" / "routes" / "runtime.py").read_text(encoding="utf-8")
-        self.assertNotIn('if parsed.path == "/api/workspace/', runtime)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_update_unknown_item_is_not_found(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = WorkspaceManager(OpenAgentStore(tmp))
+            payload: dict[str, object] = {"item_id": "missing", "project": "default", "title": "Changed"}
+            deps = WorkspaceRouteDependencies(
+                workspace=workspace,
+                first=lambda params, key: params.get(key, [None])[0],
+                parse_int=lambda value, default=100: int(value) if value else default,
+                read_json=lambda: payload,
+            )
+            result = handle_post("/api/workspace/items/update", deps)
+            self.assertEqual(result.status, HTTPStatus.NOT_FOUND)

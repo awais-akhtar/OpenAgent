@@ -81,12 +81,14 @@ _FAMILIES = {
         'configuration': ('olmoe.OlmoeConfig', 'olmoe.validate_olmoe_tensors'),
         'inventory': ('olmoe.OlmoeModel._tensor', 'native_checkpoint'),
         'loading': ('native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine',),
-        'native': ('native_olmoe_segments.NativeOlmoeSegmentEngine',),
+        'native': ('native_olmoe_segments.NativeOlmoeSegmentEngine',
+                   'olmoe.OlmoeModel', 'expert_runtime.SparseExpertRuntime'),
         'device': (),
         'streaming': ('native_leased_olmoe_segments', 'expert_runtime.SparseExpertManifest'),
         'position': 'Contiguous token positions with explicit bounded segment ranges',
         'media': (),
-        'native_abi': ('segment_edge_adapters.NativeOlmoePublicAdapters', 'segment_edge_runtime'),
+        'native_abi': ('segment_edge_adapters.NativeOlmoePublicAdapters', 'segment_edge_runtime',
+                       'model_gateway.OlmoeDirectProvider'),
         'cache': ('native_olmoe_segments.NativeOlmoeSegmentSession',),
         'cli': ('native_olmoe_cli',),
         'comparison': ('wholemodel_validation.adapters', 'wholemodel_validation.cache_readers'),
@@ -181,9 +183,12 @@ _FAMILIES = {
         'identities': ('kimi_k3', 'kimi_linear'),
         'publisher_contract': 'publisher_checkpoint.contracts.K3_REVISION',
         'configuration': ('publisher_checkpoint.contracts.build_contracts', 'k3_execution.executor.K3Config'),
-        'inventory': ('publisher_checkpoint.service.PublisherCheckpoint', 'publisher_checkpoint.k3_adapter'),
-        'loading': ('publisher_checkpoint.k3_adapter',),
-        'native': ('k3_execution.executor.K3Execution',),
+        'inventory': ('publisher_checkpoint.service.PublisherCheckpoint', 'publisher_checkpoint.k3_adapter',
+                      'source_scope.require_checkpoint_inventory_admission'),
+        'loading': ('publisher_checkpoint.k3_adapter',
+                    'native_kimi.NativeKimiLinearDecoder.from_checkpoint'),
+        'native': ('k3_execution.executor.K3Execution',
+                   'native_kimi.NativeKimiLinearDecoder'),
         'device': ('k3_execution.bf16_arithmetic.K3BF16Arithmetic', 'k3_execution.fla_mixer', 'k3_execution.metal_mixer'),
         'streaming': ('k3_execution.packed', 'k3_execution.publisher_projections', 'k3_execution.device_projections'),
         'position': 'Occupied token positions, compressed MLA, complete KDA/convolution state and independent batch slots',
@@ -193,7 +198,8 @@ _FAMILIES = {
                        'native/segment_edge_compat.c', 'k3_execution/attention.c',
                        'native_kimi.c'),
         'cache': ('k3_execution.checkpoints', 'scalable_execution.k3_compressed'),
-        'cli': ('publisher_k3_cli.PublisherSession', 'publisher_public_cli.PublisherSession'),
+        'cli': ('publisher_k3_cli.PublisherSession', 'publisher_public_cli.PublisherSession',
+                'native_family_cli.PublisherSession'),
         'comparison': ('wholemodel_validation.k3', 'wholemodel_validation.k3_media'),
     },
     'deepseek-v41': {
@@ -218,6 +224,16 @@ _FAMILIES = {
 }
 
 
+# Checkpoint identities that were reviewed and deliberately kept outside the
+# Phase 1 catalog.  They fail with their recorded reason instead of a generic
+# "absent" error, and they are never aliased to a neighbouring identity.
+PHASE1_OUT_OF_SCOPE_IDENTITIES = {
+    'qwen3_5': ('dense Qwen3.5 has no routed experts and is outside the Phase 1 MoE '
+                'expert-streaming scope; it is not an alias of qwen3_5_moe or '
+                'qwen3_5_moe_text, and a dense checkpoint cannot evidence those rows'),
+}
+
+
 def source_family_for_identity(model_type):
     """Resolve one exact checkpoint identity through the canonical source catalog.
 
@@ -228,6 +244,9 @@ def source_family_for_identity(model_type):
     """
     if type(model_type) is not str or not model_type:
         raise ValueError('exact checkpoint model identity required for source-family admission')
+    reason = PHASE1_OUT_OF_SCOPE_IDENTITIES.get(model_type)
+    if reason is not None:
+        raise ValueError('checkpoint identity is outside Phase 1 scope: ' + model_type + ' (' + reason + ')')
     matches = tuple(family for family, contract in _FAMILIES.items()
                     if model_type in contract.get('identities', ()))
     if len(matches) != 1:
@@ -252,7 +271,8 @@ _FAMILY_CLOSURE = {
     'olmoe': {
         'cache_tp': ('native_olmoe_segments.NativeOlmoeSegmentSession', 'tensor_parallel'),
         'factory': ('execution_factories', 'native_olmoe_cli'),
-        'gateway': ('execution_service.NativeExecutionService', 'segment_edge_runtime'),
+        'gateway': ('execution_service.NativeExecutionService', 'segment_edge_runtime',
+                    'model_gateway.OlmoeDirectProvider'),
         'recovery': ('native_olmoe_segments', 'service_generation_checkpoint'),
         'tooling': ('wholemodel_validation.runner', 'wholemodel_validation.olmoe_native',
                     'native_olmoe_cli', 'platform_certification.decoder_matrix'),
@@ -293,14 +313,23 @@ _FAMILY_CLOSURE = {
         'tooling': ('wholemodel_validation.glm_dsa_caches', 'platform_certification.decoder_matrix', 'native_family_cli'),
     },
     'kimi-k3': {
-        'cache_tp': ('k3_execution.checkpoints', 'scalable_execution.k3_compressed', 'k3_execution.publisher_projections'),
+        'cache_tp': ('k3_execution.checkpoints', 'scalable_execution.k3_compressed',
+                     'k3_execution.publisher_projections',
+                     'independent_kimi.IndependentKimiLinearDecoder.snapshot',
+                     'independent_kimi.IndependentKimiLinearDecoder.restore'),
         'factory': ('execution_factories', 'execution_factories.create_public_k3_execution_service',
-                    'publisher_k3_cli.PublisherSession', 'publisher_public_cli.PublisherSession'),
+                    'execution_factories.open_native_kimi_linear_directory_service',
+                    'publisher_k3_cli.PublisherSession', 'publisher_public_cli.PublisherSession',
+                    'native_family_cli.PublisherSession'),
         'gateway': ('publisher_k3_cli.PublisherSession', 'publisher_public_cli.PublisherSession',
-                    'execution_factories'),
-        'recovery': ('k3_execution.checkpoints', 'service_generation_checkpoint', 'distributed_recovery'),
+                    'native_family_cli.PublisherSession', 'execution_service.NativeExecutionService'),
+        'recovery': ('k3_execution.checkpoints', 'service_generation_checkpoint',
+                     'execution_service.NativeExecutionService',
+                     'independent_kimi.IndependentKimiLinearDecoder.restore',
+                     'distributed_recovery'),
         'tooling': ('wholemodel_validation.k3', 'wholemodel_validation.k3_media',
-                    'k3_execution.exact_evidence_files', 'publisher_public_adapters'),
+                    'k3_execution.exact_evidence_files', 'publisher_public_adapters',
+                    'native_checkpoint.load_native_text_decoder'),
     },
     'deepseek-v41': {
         'cache_tp': ('v41_execution.publisher_checkpoints', 'distributed_generation_checkpoint', 'tensor_parallel'),
@@ -481,7 +510,8 @@ _CONTRACT_CASES = {
 
 _SERVING_ENTRYPOINTS = {
     'mixtral': ('native_family_cli.PublisherSession', 'execution_factories'),
-    'olmoe': ('native_olmoe_cli', 'segment_edge_adapters.NativeOlmoePublicAdapters'),
+    'olmoe': ('native_olmoe_cli', 'segment_edge_adapters.NativeOlmoePublicAdapters',
+              'model_gateway.OlmoeDirectProvider'),
     'qwen35': ('native_family_cli.PublisherSession', 'publisher_conditional_loader.load_publisher_conditional_decoder'),
     'qwen4': ('native_family_cli.PublisherSession', 'publisher_conditional_loader.load_publisher_conditional_decoder'),
     'glm5-next': ('native_family_cli.PublisherSession', 'publisher_conditional_loader.load_publisher_conditional_decoder'),
@@ -554,6 +584,32 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
         'p02-mixtral-local-dense-fp32-chain-2026-10-18'
     for backend in ('native', 'device', 'public-range')
     for source_format in ('F32', 'F16', 'BF16')
+})
+# The standalone Kimi Linear subset has one concrete CPU route: its bounded
+# SafeTensors loader admits original F32/BF16 sources, converts both to FP32,
+# and the native CLI's execution factory owns independent physical cache
+# snapshots/restores for each session. This binds only the exact tensors the
+# loader decodes; it does not certify vendor parity or K3 support.
+_SOURCE_VERIFIED_ROUTE_BINDINGS.update({
+    ('kimi-k3', 'kimi_linear', 'native', 'fp32-approximate', source_format, 'float32'):
+        'p02-kimi-linear-native-cpu-service-chain-2026-10-23'
+    for source_format in ('F32', 'BF16')
+})
+# K3's publisher adapter records the exact homogeneous source bank and the
+# resident-FP32 or packed-MXFP4 executor representation before loading tensor
+# payloads. Both native and public-range factories re-check that six-field
+# tuple. Device/FLA rows stay candidates until the hybrid recurrent caller is
+# source-bound end to end. Dense checkpoints are never relabelled as packed.
+_SOURCE_VERIFIED_ROUTE_BINDINGS.update({
+    ('kimi-k3', 'kimi_k3', backend, arithmetic, source_format, persisted_format):
+        'p02-k3-publisher-adapter-exact-format-factory-chain-2026-10-23'
+    for backend, arithmetic, source_formats in (
+        ('native', 'fp32-approximate', ('F32', 'BF16', 'MXFP4')),
+        ('public-range', 'fp32-approximate', ('F32', 'BF16', 'MXFP4')),
+    )
+    for source_format in source_formats
+    for persisted_format in (('float32', 'mxfp4-e2m1-g32-ue8m0')
+                             if source_format == 'MXFP4' else ('float32',))
 })
 
 # GLM-DSA's exact original-text readers share one complete header planner and
@@ -638,6 +694,34 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
         ('glm5-next', 'glm5_next_text'), ('inkling', 'inkling_text'))
     for source_format in ('F32', 'F16', 'BF16')
 })
+# The ordinary native Qwen3.5/Qwen4 text route registers
+# Native{Qwen35,Qwen4}PublicAdapters from native_family_cli.PublisherSession.
+# Their range/edge loaders read the checkpoint with source_backend='public-range'
+# and execution_factories.create_segment_edge_execution_service gates the
+# public-range row, exactly like the admitted Mixtral and GLM-DSA routes.  The
+# admitted native text rows are unreachable unless these rows are admitted too.
+# No other entrypoint is widened: native_family_cli and
+# open_native_family_public_directory_service still reject an explicit public
+# runtime for these identities.
+_SOURCE_VERIFIED_ROUTE_BINDINGS.update({
+    (family, identity, 'public-range', 'fp32', source_format, 'float32'):
+        'p02-'+family+'-native-segment-text-chain-2026-10-20'
+    for family, identity in (('qwen35', 'qwen3_5_moe_text'), ('qwen4', 'qwen4_exp_text'))
+    for source_format in ('F32', 'F16', 'BF16')
+})
+# The conditional GLM5/Qwen4 wrappers have their own public Segment route.
+# native_conditional_cli selects it only when the Segment runtime and its
+# bounded work budget are supplied; publisher_conditional_loader binds the
+# source headers before materialization, and the wrapper delegates text ranges
+# through the public ABI while retaining family-owned media ordering/state.
+_SOURCE_VERIFIED_ROUTE_BINDINGS.update({
+    (family, identity, 'public-range', 'fp32', source_format, persisted_format):
+        'p02-'+family+'-local-public-conditional-chain-2026-10-23'
+    for family, identity in (('glm5-next', 'glm5_next'), ('qwen4', 'qwen4_exp'))
+    for source_format, persisted_format in (
+        ('F32', 'float32'), ('F16', 'float32'), ('BF16', 'float32'),
+        ('F8_E4M3', 'fp8-e4m3-b128-f32'))
+})
 _OLMOE_NATIVE_FORMATS = ('int8-row','q4_0','q4_1','q5_0','q5_1','q8_0','q8_1')
 _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
     ('olmoe','olmoe',backend,'fp32',source_format,persisted_format):
@@ -655,24 +739,20 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
         'p02-olmoe-native-edge-dense-fp32-chain-2026-10-18'
     for source_format in ('F32','F16','BF16')
 })
-
-# K3 Metal ABI now complete (A08: metal_logits_dispatch.MetalK3LogitsDispatcher).
-# Admits K3 Metal backend with BF16 arithmetic on float32/mxfp4 formats only.
-# Snapshot-based KDA recurrence on Metal device (mps) with complete token-to-logit dispatch.
+# The direct local OLMoE gateway uses OlmoeModel and SparseExpertRuntime,
+# whose admitted expert manifest dtypes include these additional audited
+# formats. Their source dtype is still the separately validated dense
+# SafeTensors inventory; the manifest format is the persisted expert bank.
+_OLMOE_DIRECT_FORMATS = (
+    'int8-row', 'int2-row', 'int3-grouped-g64', 'int4-row',
+    'int4-grouped-g64', 'mxfp4-e2m1-g32-ue8m0', 'q4_0', 'q4_1',
+    'q5_0', 'q5_1', 'q8_0', 'q8_1', 'fp8-e4m3-b128-f32')
 _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
-    ('kimi-k3','kimi_k3','metal','bf16',source_format,persisted_format):
-        'p02-k3-metal-kda-bf16-chain-2026-10-19'
-    for source_format in ('BF16','MXFP4')
-    for persisted_format in ('float32','mxfp4-e2m1-g32-ue8m0')
+    ('olmoe','olmoe','native','fp32',source_format,persisted_format):
+        'p02-olmoe-direct-gateway-manifest-consumer-chain-2026-10-23'
+    for source_format in ('F32','F16','BF16')
+    for persisted_format in _OLMOE_DIRECT_FORMATS
 })
-
-# A01 TRIAGE CLOSURE: Generated A01 modules (NEW_VERIFIED_ROUTES, etc.) removed
-# per P0-03 defect resolution (Oct 19, 2026).
-# Reason: root-level A01_*.py files are not installed with the package;
-# admission decisions must come from canonical source_scope_matrix() only,
-# not from generated helpers that break on deployed wheels.
-# Any route admission is validated through require_source_route_admission()
-# against the authoritative P02 catalog.
 
 # A declared backend must not become an admitted execution route merely
 # because a helper module exists.  K3's Metal mixer is an intentionally
@@ -680,45 +760,12 @@ _SOURCE_VERIFIED_ROUTE_BINDINGS.update({
 # indexer dispatch required by the Phase 1 matrix.  Keep the row visible for
 # tooling, but reject it until that complete consumer exists.
 _BACKEND_RESTRICTIONS = {
-    # A01 TRIAGE DECISIONS (2026-10-19)
-    # Decision rule: Route restricted if backend unavailable OR format unsupported by family
-    # All 920 restricted routes have explicit reasons below
-
-    # DeepSeek-V41: Source formats strictly limited to BF16, FP8, FP4
-    ('deepseek-v41', 'device'): 'DeepSeek-V41 device backend requires GPU (not available on this host)',
-    ('deepseek-v41', 'public-range'): 'DeepSeek-V41 public-range not implemented (candidate-only)',
-
-    # GLM-DSA: No device backend; int4-grouped-g64 not supported
-    ('glm-dsa', 'device'): 'GLM-DSA device backend requires GPU (not available on this host)',
-    ('glm-dsa', 'public-range'): 'GLM-DSA public-range not implemented',
-
-    # GLM5-Next: No device backend; int4-grouped-g64 not supported
-    ('glm5-next', 'device'): 'GLM5-Next device backend requires GPU (not available)',
-    ('glm5-next', 'public-range'): 'GLM5-Next public-range not implemented',
-
-    # Inkling: No device backend; int4-grouped-g64 not supported
-    ('inkling', 'device'): 'Inkling device backend requires GPU (not available)',
-    ('inkling', 'public-range'): 'Inkling public-range not implemented',
-
-    # Kimi-K3: Metal/FLA have format restrictions; device/public-range not available
-    ('kimi-k3', 'device'): 'K3 device backend requires GPU (not available)',
-    ('kimi-k3', 'fla'): 'K3 FLA continuation not yet bound as P02 complete row',
-    ('kimi-k3', 'public-range'): 'K3 public-range not implemented',
-
-    # Mixtral: No device backend; q5_0/q8_0/q8_1 formats not supported
-    ('mixtral', 'device'): 'Mixtral device backend requires GPU (not available)',
-    ('mixtral', 'public-range'): 'Mixtral public-range not implemented',
-
-    # OLMoE: int2-row and other exotic formats not supported; no public-range
-    ('olmoe', 'public-range'): 'OLMoE public-range not implemented',
-
-    # Qwen3.5: No device backend; int4-grouped-g64 not supported
-    ('qwen35', 'device'): 'Qwen3.5 device backend requires GPU (not available)',
-    ('qwen35', 'public-range'): 'Qwen3.5 public-range not implemented',
-
-    # Qwen4: No device backend; int4-grouped-g64 not supported
-    ('qwen4', 'device'): 'Qwen4 device backend requires GPU (not available)',
-    ('qwen4', 'public-range'): 'Qwen4 public-range not implemented',
+    ('kimi-k3', 'metal'):
+        'K3 Metal mixer is not a complete admitted token-to-logit dispatch',
+    ('kimi-k3', 'fla'):
+        'K3 FLA tuples remain candidate-unverified until the source format, BF16 arithmetic policy, FLA continuation, and serving/tooling chain are bound as one exact P02 row',
+    ('deepseek-v41', 'distributed'):
+        'V4.1 distributed bank execution remains restricted until process-loss cancellation and recovery consensus are proven across all peers',
 }
 
 # Some backend names are not aliases for the generic native/device decoder.
@@ -727,10 +774,8 @@ _BACKEND_RESTRICTIONS = {
 # has a native or device consumer.  These references improve traceability only;
 # they do not promote the row from candidate-unverified.
 _BACKEND_EXECUTION_OWNERS = {
-    # K3 Metal now includes complete token-to-logit dispatch (A08)
     ('kimi-k3', 'metal'): ('k3_execution.executor.K3Execution',
-                           'k3_execution.metal_mixer.MetalK3Mixer',
-                           'k3_execution.metal_logits_dispatch.MetalK3LogitsDispatcher'),
+                           'k3_execution.metal_mixer.MetalK3Mixer'),
     ('kimi-k3', 'fla'): ('k3_execution.executor.K3Execution',
                          'k3_execution.fla_mixer.FLAK3Mixer'),
     ('deepseek-v41', 'distributed'): (
@@ -744,6 +789,133 @@ _BACKEND_EXECUTION_OWNERS = {
 _V41_BANK_FORMATS = {
     ('BF16', 'bf16'), ('FP8', 'fp8'), ('FP4', 'fp4'),
 }
+
+# Exact-tuple restrictions found by tracing each candidate row to the code that
+# would have to consume it.  Every reason names the owner that rejects the
+# tuple before any tensor payload is used; tests/test_p02_candidate_triage.py
+# drives those owners directly.  A row is restricted here only when that
+# rejection is unconditional, never because evidence or hardware is missing.
+_V41_TUPLE_REASON = (
+    'DeepSeek V4.1 admits only its exact BF16/bf16, '
+    'FP8/fp8, and FP4/fp4 publisher-bank consumers')
+_OLMOE_PUBLIC_REASON = (
+    'public-range OLMoE is owned by segment_edge_adapters.NativeOlmoePublicAdapters, '
+    'which rejects every expert manifest layer that is not int8-row before '
+    'loading either native library')
+_NESTED_IDENTITY_REASON = {
+    ('deepseek-v41', 'deepseek_v41_text'): (
+        'deepseek_v41_text is only the nested text_config identity of the '
+        'deepseek_v41 publisher wrapper; publisher_checkpoint.contracts.build_contracts '
+        'and require_checkpoint_inventory_admission open only the top-level '
+        'deepseek_v41 identity'),
+}
+_TEXT_READER_IDENTITIES = frozenset((
+    'qwen3_5_moe_text', 'qwen4_exp_text', 'glm5_next_text', 'inkling_text'))
+_TEXT_READER_FP8_REASON = (
+    'independent text readers decode only F32/F16/BF16 SafeTensors headers '
+    '(native_checkpoint._read_native_checkpoint rejects F8_E4M3 as unsupported '
+    'weight metadata); block-FP8 conversion exists only on the publisher '
+    'wrapper path')
+_FP8_SOURCE_FLOAT32_REASON = (
+    'F8_E4M3 source tensors bind only to the fp8-e4m3-b128-f32 block route: '
+    'publisher_conditional_loader, publisher_glm5_loader and '
+    'require_checkpoint_inventory_admission all admit FP8 headers with that '
+    'persisted format, and no loader dequantizes FP8 sources to persisted float32')
+_CONDITIONAL_SEGMENT_REASON = {
+    ('qwen35', 'qwen3_5_moe', 'public-range'): (
+        'publisher_conditional_loader.load_publisher_conditional_decoder implements '
+        'public Segment execution only for inkling_mm_model, glm5_next and qwen4_exp; '
+        'qwen3_5_moe raises "conditional public Segment execution requires an '
+        'implemented publisher wrapper"'),
+}
+_KIMI_LINEAR_BACKEND_REASON = (
+    'the standalone kimi_linear text identity is supported only by its exact native '
+    'CPU checkpoint/service route; no device or public-range factory opens kimi_linear')
+_KIMI_LINEAR_FORMAT_REASON = (
+    'native_kimi.NativeKimiLinearDecoder.from_checkpoint reads only unquantized '
+    'F32/F16/BF16 SafeTensors headers (native_checkpoint._header) and converts '
+    'them to resident float32; it has no MXFP4 decoder')
+_K3_DEVICE_HYBRID_REASON = (
+    'K3 BF16 device execution is restricted for these source/persisted pairs '
+    'until the mixed BF16/FLA state owner has a complete exact-route '
+    'continuation and recovery contract; k3_route_identity rejects them before '
+    'k3_config or projection/expert payload materialization')
+_PUBLISHER_PACKED_FAMILIES = frozenset((
+    'mixtral', 'qwen35', 'qwen4', 'glm5-next', 'inkling', 'glm-dsa'))
+_PUBLISHER_PACKED_REASON = (
+    'packed expert manifests carry no source-dtype or exact P02 tuple '
+    'provenance; native_family_cli.PublisherSession and the '
+    'execution_factories packed-provider guards reject them before payload '
+    'use, and native_conditional_cli accepts no packed manifest')
+
+
+def _tuple_restriction(family, identity, backend, source_format, persisted_format):
+    """Return the code-enforced reason an exact candidate tuple cannot run.
+
+    Returns ``None`` when no consumer unconditionally rejects the tuple; such a
+    row stays candidate-unverified until a reviewed chain admits it.
+    """
+    if family == 'deepseek-v41':
+        nested = _NESTED_IDENTITY_REASON.get((family, identity))
+        if nested is not None:
+            return nested
+        if (source_format, persisted_format) not in _V41_BANK_FORMATS:
+            return _V41_TUPLE_REASON
+        return None
+    if family == 'olmoe':
+        if backend == 'public-range' and persisted_format != 'int8-row':
+            return _OLMOE_PUBLIC_REASON
+        if backend == 'native' and persisted_format == 'float16':
+            return ('OlmoeModel, NativeLeasedOlmoeSegmentEngine and the native edge '
+                    'admit no float16 expert-manifest consumer; the persisted format '
+                    'has no OLMoE routed-expert execution owner')
+        return None
+    if family == 'kimi-k3' and identity == 'kimi_k3':
+        if persisted_format == 'mxfp4-e2m1-g32-ue8m0' and source_format != 'MXFP4':
+            return ('K3 packed expert representation requires the checkpoint\'s exact '
+                    'compressed MXFP4 group_0 source; dense F32/BF16 checkpoints cannot '
+                    'be converted to packed experts by k3_adapter.load_k3')
+        if backend == 'device' and source_format == 'F32':
+            return 'K3 BF16 device arithmetic does not admit an F32 source checkpoint tuple'
+        if (backend == 'device' and source_format == 'BF16' and
+                persisted_format == 'float32'):
+            return _K3_DEVICE_HYBRID_REASON
+        if (backend == 'device' and source_format == 'MXFP4' and
+                persisted_format in ('float32', 'mxfp4-e2m1-g32-ue8m0')):
+            return _K3_DEVICE_HYBRID_REASON
+        return None
+    if family == 'kimi-k3' and identity == 'kimi_linear':
+        if backend != 'native':
+            return _KIMI_LINEAR_BACKEND_REASON
+        if source_format == 'MXFP4' or persisted_format != 'float32':
+            return _KIMI_LINEAR_FORMAT_REASON
+        return None
+    if identity in _TEXT_READER_IDENTITIES and source_format == 'F8_E4M3':
+        return _TEXT_READER_FP8_REASON
+    if source_format == 'F8_E4M3' and persisted_format == 'float32':
+        return _FP8_SOURCE_FLOAT32_REASON
+    if (family, identity, backend) in _CONDITIONAL_SEGMENT_REASON:
+        return _CONDITIONAL_SEGMENT_REASON[(family, identity, backend)]
+    if family in _PUBLISHER_PACKED_FAMILIES and persisted_format != 'float32' and not (
+            source_format == 'F8_E4M3' and persisted_format == 'fp8-e4m3-b128-f32'):
+        return _PUBLISHER_PACKED_REASON
+    return None
+
+
+def _case_format_reason(family, identity, backend, source_format, persisted_format,
+                        route_admitted, source_verified):
+    """Restriction recorded on one generated row.
+
+    The V4.1 bank contract applies to every non-bank pair, as before. Other
+    tuple restrictions only reclassify rows that would otherwise remain
+    candidates: a reviewed exact route binding wins, and a globally
+    unadmitted persisted format stays rejected under its catalog reason.
+    """
+    if family == 'deepseek-v41' and (source_format, persisted_format) not in _V41_BANK_FORMATS:
+        return _V41_TUPLE_REASON
+    if source_verified or not route_admitted:
+        return None
+    return _tuple_restriction(family, identity, backend, source_format, persisted_format)
 
 # Public Segment/Edge composition is deliberately text-only for the two
 # publisher families.  The CLI rejects media and DSpark before construction,
@@ -861,12 +1033,9 @@ def _source_execution_cases_snapshot():
                             (family,identity,backend,arithmetic,source_format,persisted_format))
                         source_verified=source_review is not None
                         backend_reason = _BACKEND_RESTRICTIONS.get((family, backend))
-                        format_reason = None
-                        if (family == 'deepseek-v41' and
-                                (source_format, persisted_format) not in _V41_BANK_FORMATS):
-                            format_reason = (
-                                'DeepSeek V4.1 admits only its exact BF16/bf16, '
-                                'FP8/fp8, and FP4/fp4 publisher-bank consumers')
+                        format_reason = _case_format_reason(
+                            family, identity, backend, source_format,
+                            persisted_format, route_admitted, source_verified)
                         cells['persisted_formats'] = dict(
                             classification=('contract-restriction' if format_reason is not None else
                                             'candidate-unverified' if route_admitted
@@ -961,6 +1130,92 @@ def _source_execution_cases_snapshot():
                                     'native_glm5_next.c'
                                     if family == 'glm5-next' else
                                     'native_inkling.c')))
+                        if (backend == 'public-range' and family == 'qwen4' and
+                                identity == 'qwen4_exp_text'):
+                            cells['execution']['references'] = tuple(dict.fromkeys((
+                                *cells['execution']['references'],
+                                'native_qwen4_public_text.NativeQwen4PublicTextDecoder')))
+                            cells['native_abi']['references'] = tuple(dict.fromkeys((
+                                *cells['native_abi']['references'],
+                                'native_qwen4_public_text.NativeQwen4PublicTextDecoder')))
+                        if (backend == 'public-range' and
+                                (family, identity) in (('inkling', 'inkling_text'),
+                                                       ('glm5-next', 'glm5_next_text'))):
+                            cells['execution']['references'] = tuple(dict.fromkeys((
+                                *cells['execution']['references'],
+                                'native_family_public_text.NativeFamilyPublicTextDecoder')))
+                            cells['native_abi']['references'] = tuple(dict.fromkeys((
+                                *cells['native_abi']['references'],
+                                'native_family_public_text.NativeFamilyPublicTextDecoder')))
+                        # These resident text routes execute the private family
+                        # decoder ABI directly. Keep that binding backend- and
+                        # identity-specific: the multimodal/device wrappers
+                        # have different owners and must not inherit a false
+                        # native ABI claim.
+                        if (backend == 'native' and
+                                (family, identity) in (
+                                    ('glm5-next', 'glm5_next_text'),
+                                    ('qwen4', 'qwen4_exp_text'),
+                                    ('qwen35', 'qwen3_5_moe_text'))):
+                            native_decoder, native_source = {
+                                'glm5-next': ('native_glm5_next.NativeGlm5NextTextDecoder',
+                                              'native_glm5_next.c'),
+                                'qwen4': ('native_qwen4.NativeQwen4TextDecoder',
+                                          'native_qwen4.c'),
+                                'qwen35': ('native_qwen35.NativeQwen35TextDecoder',
+                                           'native_qwen35.c'),
+                            }[family]
+                            cells['native_abi']['references'] = tuple(dict.fromkeys((
+                                *cells['native_abi']['references'], native_decoder,
+                                native_source)))
+                        if (backend == 'device' and
+                                (family, identity) in (
+                                    ('qwen4', 'qwen4_exp_text'),
+                                    ('inkling', 'inkling_text'),
+                                    ('glm5-next', 'glm5_next_text'))):
+                            # The accelerator decoder is the exact execution/
+                            # ABI owner for this row; do not leave P02 pointing
+                            # only at an unrelated public-range C adapter.
+                            device_decoder = {
+                                'qwen4': 'torch_qwen4_decoder.TorchQwen4Decoder',
+                                'inkling': 'torch_inkling_decoder.TorchInklingDecoder',
+                                'glm5-next': 'torch_glm5_decoder.TorchGlm5NextDecoder',
+                            }[family]
+                            cells['native_abi']['references'] = tuple(dict.fromkeys((
+                                *cells['native_abi']['references'],
+                                device_decoder)))
+                        if backend == 'native' and family == 'inkling' and identity == 'inkling_text':
+                            cells['native_abi']['references'] = tuple(dict.fromkeys((
+                                *cells['native_abi']['references'],
+                                'native_inkling.NativeInklingDecoder', 'native_inkling.c')))
+                        if ((family, identity) in (('qwen4', 'qwen4_exp'),
+                                                   ('glm5-next', 'glm5_next'),
+                                                   ('inkling', 'inkling_mm_model')) and
+                                backend in ('native', 'device', 'public-range')):
+                            media_owner = {
+                                'qwen4': 'qwen4_multimodal.Qwen4MultimodalDecoder',
+                                'glm5-next': 'glm5_multimodal.Glm5MultimodalDecoder',
+                                'inkling': 'inkling_multimodal.InklingMultimodalDecoder',
+                            }[family]
+                            text_owner = {
+                                'native': {
+                                    'qwen4': 'native_qwen4.NativeQwen4TextDecoder',
+                                    'glm5-next': 'native_glm5_next.NativeGlm5NextTextDecoder',
+                                    'inkling': 'native_inkling.NativeInklingDecoder'},
+                                'device': {
+                                    'qwen4': 'torch_qwen4_decoder.TorchQwen4Decoder',
+                                    'glm5-next': 'torch_glm5_decoder.TorchGlm5NextDecoder',
+                                    'inkling': 'torch_inkling_decoder.TorchInklingDecoder'},
+                                'public-range': {
+                                    'qwen4': 'native_qwen4_public_text.NativeQwen4PublicTextDecoder',
+                                    'glm5-next': 'native_family_public_text.NativeFamilyPublicTextDecoder',
+                                    'inkling': 'native_family_public_text.NativeFamilyPublicTextDecoder'},
+                            }[backend][family]
+                            cells['execution']['references'] = tuple(dict.fromkeys((
+                                *cells['execution']['references'], media_owner, text_owner)))
+                            cells['native_abi']['references'] = tuple(dict.fromkeys((
+                                *cells['native_abi']['references'], text_owner,
+                                'native_media_ops.NativeMediaOps', 'native_media_ops.c')))
                         if source_verified:
                             for cell in cells.values():
                                 if cell.get('classification')=='candidate-unverified':
@@ -1191,18 +1446,48 @@ def require_format_execution_consumer(*, family, backend, persisted_format):
     if family == 'kimi-k3' and persisted_format not in (
             'float32', 'mxfp4-e2m1-g32-ue8m0'):
         raise ValueError('K3 checkpoint formats require its exact publisher projection route')
+    # A packed manifest names no source dtype or identity, so apply the
+    # identity-free part of the reviewed tuple restrictions here as well.
+    tuple_reason = (None if family == 'deepseek-v41' else
+                    _tuple_restriction(family, None, backend, None, persisted_format))
+    if tuple_reason is not None:
+        raise ValueError('selected family/backend format is restricted: '+tuple_reason)
     specialized = _BACKEND_EXECUTION_OWNERS.get((family, backend), ())
     if specialized:
         owner = specialized
+    elif family == 'olmoe' and backend == 'public-range' and persisted_format == 'int8-row':
+        owner = ('segment_edge_adapters.NativeOlmoePublicAdapters',)
+    elif family == 'kimi-k3' and backend == 'public-range':
+        owner = ('publisher_public_adapters.NativePublisherPublicAdapters',)
     else:
         owner = (route['native_consumer'] if backend in ('native', 'public-range')
                  else route['device_consumer'])
     if owner is None:
         raise ValueError('selected backend has no execution consumer for format')
+    # The family matrix answers whether this exact tuple is admitted; the
+    # format registry independently guards persisted geometry and physical
+    # placement.  Both boundaries must agree before a loader or executor is
+    # constructed.  K3 FLA/Metal are accelerator placements, not new format
+    # classes, and therefore share the device format contract.
+    from .phase1_a07_format_loader_placement import require_format_placement
+    placement = 'device' if backend in ('fla', 'metal') else backend
+    format_spec = require_format_placement(persisted_format, placement)
+    placement_contract = dict(
+        loader_module=format_spec.loader_module,
+        loader_class=format_spec.loader_class,
+        placement_loader=format_spec.loader_for(placement),
+        admitted_placements=tuple(sorted(format_spec.admitted_placements)),
+        rejected_placements=tuple(sorted(format_spec.rejected_placements)),
+        block_size=format_spec.block_size,
+        scale_dtype=format_spec.scale_dtype,
+        rotation_required=format_spec.rotation_required,
+        lattice_codes=format_spec.lattice_codes,
+    )
     return dict(family=family, backend=backend, persisted_format=persisted_format,
                 format_owner=tuple(route['format_owner']), consumer=owner,
                 geometry=route['geometry'], scales=route['scales'],
-                auxiliary=route['auxiliary'], contract_required=route['contract_required'])
+                auxiliary=route['auxiliary'], contract_required=route['contract_required'],
+                placement_contract=placement_contract)
 
 
 def source_contract_summary(family):
@@ -1453,6 +1738,15 @@ def require_source_matrix_admission(*, family, model_type, backend, arithmetic,
     if (not isinstance(chain, dict) or not isinstance(order, (tuple, list))
             or not order or any(not chain.get(dimension) for dimension in order)):
         raise ValueError('P02 admitted tuple is missing a complete callable chain')
+    # Exact tuple bindings are admission-time guards, not merely a separate
+    # report. Reconcile their immutable chain to this canonical row before a
+    # caller can construct any route-specific runtime owner.
+    from .phase1_p02_route_bindings import require_route_binding
+    require_route_binding(
+        family=family, model_type=model_type, backend=backend,
+        arithmetic=arithmetic, source_format=source_format,
+        persisted_format=persisted_format,
+    ).validate()
     return deepcopy(case)
 
 
@@ -1864,6 +2158,9 @@ def validate_source_scope(scope=None):
                     not isinstance(expected_consumer, str) or
                     expected_consumer not in tuple(chain['execution'])):
                 raise ValueError('candidate source row lacks its backend-selected format consumer reference: '+case_id)
+            if _tuple_restriction(case['family'], case['model_type'], case['backend'],
+                                  case['source_format'], case['persisted_format']) is not None:
+                raise ValueError('candidate source row hides a code-enforced restriction: '+case_id)
         if case['combination_status'] == 'verified-admitted':
             binding=tuple(case[name] for name in (
                 'family','model_type','backend','arithmetic','source_format','persisted_format'))
@@ -1885,11 +2182,11 @@ def validate_source_scope(scope=None):
                 raise ValueError('rejected source case retains an executable consumer: '+case_id)
         if case['combination_status'] == 'restricted':
             backend_reason = _BACKEND_RESTRICTIONS.get((case['family'], case['backend']))
-            format_reason = ("DeepSeek V4.1 admits only its exact BF16/bf16, "
-                             "FP8/fp8, and FP4/fp4 publisher-bank consumers"
-                             if case['family'] == 'deepseek-v41' and
-                             (case['source_format'], case['persisted_format']) not in _V41_BANK_FORMATS
-                             else None)
+            format_reason = _case_format_reason(
+                case['family'], case['model_type'], case['backend'],
+                case['source_format'], case['persisted_format'],
+                route_admitted=declared_route.get('classification') == 'implemented-source',
+                source_verified=False)
             reason = '; '.join(value for value in (backend_reason, format_reason)
                                if value is not None)
             restricted_owners = (tuple(_BACKEND_EXECUTION_OWNERS.get(
@@ -2183,6 +2480,25 @@ def validate_source_references(root=None, scope=None):
                 module_file = package_candidate
                 symbol = '.'.join(parts[module_end:]) or None
                 break
+        # The application gateway is a top-level module next to the
+        # ``openagent`` package, rather than inside adaptive_engine. Resolve
+        # this one explicit project module from the repository root so the
+        # family source catalog can bind the real production provider without
+        # copying or wrapping its implementation.
+        if module_file is None and parts[0] == 'model_gateway':
+            application_package_root = base.parent
+            for module_end in range(len(parts), 0, -1):
+                module_name = Path(*parts[:module_end])
+                candidate = application_package_root / (str(module_name) + '.py')
+                package_candidate = application_package_root / module_name / '__init__.py'
+                if candidate.is_file():
+                    module_file = candidate
+                    symbol = '.'.join(parts[module_end:]) or None
+                    break
+                if package_candidate.is_file():
+                    module_file = package_candidate
+                    symbol = '.'.join(parts[module_end:]) or None
+                    break
         if module_file is None:
             missing.append(reference)
             continue
@@ -2228,7 +2544,7 @@ def validate_phase1_source(root=None, scope=None):
     return True
 
 
-__all__=['source_scope_matrix', 'validate_source_scope', 'validate_source_references',
+__all__=['PHASE1_OUT_OF_SCOPE_IDENTITIES', 'source_scope_matrix', 'validate_source_scope', 'validate_source_references',
          'validate_phase1_source',
          'source_execution_cases', 'source_format_routes', 'source_contract_summary',
          'source_callable_chain', 'source_matrix_rows', 'source_matrix_row',

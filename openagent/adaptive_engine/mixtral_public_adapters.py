@@ -229,10 +229,9 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
                     orphan=-id(owner)
                     self.objects[orphan]=(kind,owner)
                     self.pending[orphan]=cleanup
-                try:
-                    primary.add_note('checkpoint-bound owner cleanup retained: '+repr(cleanup))
-                except BaseException:
-                    pass
+                from .failure_reporting import add_failure_note, failure_summary
+                add_failure_note(primary,'checkpoint-bound owner cleanup retained: '+
+                    failure_summary(cleanup))
             raise
         return owner
 
@@ -307,7 +306,9 @@ class NativeMixtralPublicAdapters(NativeOlmoePublicAdapters):
                         orphan = -id(engine)
                         self.objects[orphan] = ('engine',engine)
                         self.pending[orphan] = cleanup
-                    error.add_note('Mixtral range construction cleanup pending: '+str(cleanup))
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(error,'Mixtral range construction cleanup pending: '+
+                        failure_summary(cleanup))
                 raise
             self._publish(engine,'engine',output)
 

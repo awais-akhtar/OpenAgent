@@ -1,0 +1,1 @@
+{"case_id": "olmoe/olmoe/native/fp32/BF16/int2-row/olmoe/caller-pin", "config_sha256": "272998dd7ba4846dcc682f0b5a46144f4bcd9dde8e94d2f17bd8e5cf2f23d6ce", "continuation_ids": [47477], "kind": "recovery", "replay_ids": [47477], "restored_position": 1, "schema": "openagent.phase1-observation.v1", "snapshot_position": 1}

@@ -24,6 +24,19 @@ class AssistantManager:
     def initialize(self) -> None:
         self.store.initialize()
 
+    def activity_events(self, *, project: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Return only task/goal activity for the explicitly selected project."""
+        project = str(project or "").strip()
+        if not project:
+            raise ValueError("Project is required.")
+        bounded_limit = max(1, min(int(limit), 100))
+        candidates = self.store.list_audit_events(project=project, limit=500)
+        allowed_actions = {
+            "assistant.goal.create", "assistant.goal.update", "assistant.goal.delete",
+            "assistant.task.create", "assistant.task.update", "assistant.task.delete", "assistant.task.complete",
+        }
+        return [event for event in candidates if event.get("action") in allowed_actions][:bounded_limit]
+
     def upsert_profile(
         self,
         *,
@@ -108,6 +121,61 @@ class AssistantManager:
             row = connection.execute("SELECT * FROM assistant_goals WHERE id = ?", (goal_id,)).fetchone()
         return goal_row(row) if row else None
 
+    def update_goal(self, goal_id: str, *, project: str, updates: dict[str, Any]) -> dict[str, Any]:
+        project = project.strip()
+        allowed = {"title", "description", "horizon", "status", "metadata"}
+        if not project:
+            raise ValueError("Project is required to update a goal.")
+        if not updates or set(updates) - allowed:
+            raise ValueError("Goal updates must contain supported fields.")
+        with self.store.session() as connection:
+            row = connection.execute("SELECT * FROM assistant_goals WHERE id=? AND project=?", (goal_id, project)).fetchone()
+        if row is None:
+            raise KeyError("Goal not found.")
+        current = goal_row(row)
+        values = dict(updates)
+        if "title" in values:
+            values["title"] = str(values["title"]).strip()
+            if not values["title"]:
+                raise ValueError("Goal title is required.")
+        if "horizon" in values and str(values["horizon"]) not in {"short", "medium", "long"}:
+            raise ValueError("Goal horizon must be short, medium, or long.")
+        if "status" in values and str(values["status"]) not in {"active", "paused", "completed", "cancelled"}:
+            raise ValueError("Goal status is invalid.")
+        if "metadata" in values and not isinstance(values["metadata"], dict):
+            raise ValueError("Goal metadata must be an object.")
+        now = utc_now()
+        with self.store.session() as connection:
+            for field, value in values.items():
+                column = "metadata_json" if field == "metadata" else field
+                if field == "metadata":
+                    value = json.dumps(value, sort_keys=True)
+                connection.execute(f"UPDATE assistant_goals SET {column}=?, updated_at=? WHERE id=? AND project=?", (value, now, goal_id, project))
+        updated = self.get_goal(goal_id) or {}
+        self._audit("assistant.goal.update", goal_id, project=project, metadata={"fields": sorted(values), "previous_title": current["title"]})
+        return updated
+
+    def delete_goal(self, goal_id: str, *, project: str) -> bool:
+        project = project.strip()
+        if not project:
+            raise ValueError("Project is required to delete a goal.")
+        current = self.get_goal_for_project(goal_id, project)
+        if current is None:
+            return False
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute("UPDATE assistant_tasks SET goal_id='', updated_at=? WHERE goal_id=? AND project=?", (now, goal_id, project))
+            cursor = connection.execute("DELETE FROM assistant_goals WHERE id=? AND project=?", (goal_id, project))
+        if cursor.rowcount:
+            self._audit("assistant.goal.delete", goal_id, project=project, metadata={"title": current["title"]})
+            return True
+        return False
+
+    def get_goal_for_project(self, goal_id: str, project: str) -> dict[str, Any] | None:
+        with self.store.session() as connection:
+            row = connection.execute("SELECT * FROM assistant_goals WHERE id=? AND project=?", (goal_id, project)).fetchone()
+        return goal_row(row) if row else None
+
     def goals(self, *, project: str = "default", status: str = "") -> list[dict[str, Any]]:
         clauses = ["project = ?"]
         params: list[Any] = [project]
@@ -136,11 +204,12 @@ class AssistantManager:
         if not title:
             raise ValueError("Task title is required.")
         project = project.strip() or "default"
-        # BUG-08 FIX: Validate goal_id exists before creating task.
+        # A task may only reference a goal in its own project. Checking existence
+        # without the project would let callers create cross-project associations.
         if goal_id:
-            goal = self.get_goal(goal_id)
+            goal = self.get_goal_for_project(goal_id, project)
             if goal is None:
-                raise ValueError(f"goal_id '{goal_id}' does not exist")
+                raise ValueError("The selected goal does not exist in this project.")
         task_id = unique_id("task", project, title)
         now = utc_now()
         with self.store.session() as connection:
@@ -173,6 +242,55 @@ class AssistantManager:
         with self.store.session() as connection:
             row = connection.execute("SELECT * FROM assistant_tasks WHERE id = ?", (task_id,)).fetchone()
         return task_row(row) if row else None
+
+    def update_task(self, task_id: str, *, project: str, updates: dict[str, Any]) -> dict[str, Any]:
+        project = project.strip()
+        allowed = {"title", "priority", "due_at", "goal_id", "contact_id", "status", "metadata"}
+        if not project:
+            raise ValueError("Project is required to update a task.")
+        if not updates or set(updates) - allowed:
+            raise ValueError("Task updates must contain supported fields.")
+        current = self.get_task_for_project(task_id, project)
+        if current is None:
+            raise KeyError("Task not found.")
+        values = dict(updates)
+        if "title" in values:
+            values["title"] = str(values["title"]).strip()
+            if not values["title"]:
+                raise ValueError("Task title is required.")
+        if "priority" in values and str(values["priority"]) not in {"low", "normal", "high", "urgent"}:
+            raise ValueError("Task priority is invalid.")
+        if "status" in values and str(values["status"]) not in {"open", "completed", "cancelled"}:
+            raise ValueError("Task status is invalid.")
+        if "goal_id" in values and values["goal_id"]:
+            if self.get_goal_for_project(str(values["goal_id"]), project) is None:
+                raise ValueError("The selected goal does not exist in this project.")
+        if "metadata" in values and not isinstance(values["metadata"], dict):
+            raise ValueError("Task metadata must be an object.")
+        now = utc_now()
+        with self.store.session() as connection:
+            for field, value in values.items():
+                column = "metadata_json" if field == "metadata" else field
+                if field == "metadata":
+                    value = json.dumps(value, sort_keys=True)
+                connection.execute(f"UPDATE assistant_tasks SET {column}=?, updated_at=? WHERE id=? AND project=?", (value, now, task_id, project))
+        updated = self.get_task_for_project(task_id, project) or {}
+        self._audit("assistant.task.update", task_id, project=project, metadata={"fields": sorted(values), "previous_title": current["title"]})
+        return updated
+
+    def delete_task(self, task_id: str, *, project: str) -> bool:
+        project = project.strip()
+        if not project:
+            raise ValueError("Project is required to delete a task.")
+        current = self.get_task_for_project(task_id, project)
+        if current is None:
+            return False
+        with self.store.session() as connection:
+            cursor = connection.execute("DELETE FROM assistant_tasks WHERE id=? AND project=?", (task_id, project))
+        if cursor.rowcount:
+            self._audit("assistant.task.delete", task_id, project=project, metadata={"title": current["title"]})
+            return True
+        return False
 
     def tasks(self, *, project: str = "default", status: str = "", limit: int = 100) -> list[dict[str, Any]]:
         clauses = ["project = ?"]

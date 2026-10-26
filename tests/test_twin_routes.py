@@ -41,6 +41,8 @@ class TwinRouteTests(unittest.TestCase):
             sources = handle_get("/api/twin/sources", "project=core", deps).payload["sources"]
             self.assertEqual(len(sources), 3)
             self.assertEqual(sources[0]["kind"], "chat")
+            self.assertTrue(sources[0]["preference_signals"])
+            self.assertTrue(all(signal["relationship"] == "topic signal supplied to the preference learner" for signal in sources[0]["preference_signals"]))
             self.assertNotIn("content", sources[0])
             self.assertNotIn("context", sources[0])
             self.assertEqual(handle_get("/api/twin/status", "project=core", deps).payload["project"], "core")

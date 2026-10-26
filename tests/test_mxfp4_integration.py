@@ -1,6 +1,7 @@
 """Owned MXFP4 bytes: partial rows, compiled execution and mmap cleanup."""
 
 from pathlib import Path
+import math
 import os
 import subprocess
 import sys
@@ -18,6 +19,32 @@ from tests.test_extended_packed_olmoe import mxfp_oracle
 from tests.test_q8_1_expert import ObservedSource
 
 
+def legacy_pack_matrix(matrix):
+    weights = np.asarray(matrix)
+    rows, cols = weights.shape
+    result = bytearray(scalar.matrix_payload_size(rows, cols))
+    offset = 0
+    levels = scalar._LEVELS
+    for row in weights:
+        for start in range(0, cols, 32):
+            values = row[start:start + 32].astype(np.float32)
+            maximum = float(np.max(np.abs(values)))
+            exponent = max(-127, min(127, math.ceil(math.log2(maximum / 6)))) if maximum else 0
+            scale = np.ldexp(1.0, exponent)
+            magnitude = np.abs(values.astype(np.float64)) / scale
+            high = np.minimum(np.searchsorted(levels, magnitude), 7)
+            low = np.maximum(high - 1, 0)
+            dl, dh = magnitude - levels[low], levels[high] - magnitude
+            codes = np.where((dl < dh) | ((dl == dh) & ((low & 1) == 0)), low, high).astype(np.uint8)
+            codes |= np.signbit(values).astype(np.uint8) * 8
+            padded = np.zeros(32, np.uint8)
+            padded[:len(codes)] = codes
+            result[offset] = exponent + 127
+            result[offset + 1:offset + 17] = (padded[::2] | (padded[1::2] << 4)).tobytes()
+            offset += 17
+    return bytes(result)
+
+
 def backends():
     result = [scalar.MXFP4ExpertBackend()]
     if native._compiled_loop is not None:
@@ -26,6 +53,19 @@ def backends():
 
 
 class MXFP4IntegrationTests(unittest.TestCase):
+    def test_tiled_packer_matches_legacy_bytes(self):
+        rng = np.random.default_rng(405)
+        matrices = [rng.normal(0, .1, (7, 67)).astype(np.float32),
+                    np.zeros((3, 33), np.float32),
+                    np.array([[6. * np.ldexp(1., exponent), -3. * np.ldexp(1., exponent), 0.]
+                              for exponent in (-120, -3, 0, 100)], np.float32),
+                    np.full((2, 31), np.nextafter(np.float32(0), np.float32(1)))]
+        for row_count in (1, 3, 64):
+            for matrix in matrices:
+                with self.subTest(shape=matrix.shape, row_count=row_count):
+                    self.assertEqual(scalar.pack_matrix(matrix, row_count=row_count),
+                                     legacy_pack_matrix(matrix))
+
     def test_disabled_jit_native_refuses_execution(self):
         code = """
 from openagent.adaptive_engine.native_mxfp4_expert import NativeMXFP4ExpertBackend

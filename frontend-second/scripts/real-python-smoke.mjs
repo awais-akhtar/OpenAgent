@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { access, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium, expect } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +21,19 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function syntheticSilenceWav() {
+  const sampleRate = 8_000;
+  const sampleCount = 800;
+  const dataBytes = sampleCount * 2;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write('RIFF', 0); wav.writeUInt32LE(36 + dataBytes, 4); wav.write('WAVE', 8);
+  wav.write('fmt ', 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22); wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36); wav.writeUInt32LE(dataBytes, 40);
+  return wav;
+}
+
 async function waitFor(predicate, label, timeoutMs = 30_000, intervalMs = 250) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -27,6 +41,22 @@ async function waitFor(predicate, label, timeoutMs = 30_000, intervalMs = 250) {
     await delay(intervalMs);
   }
   throw new Error(`Timed out waiting for ${label}`);
+}
+
+async function reserveLocalPort() {
+  const server = createNetServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await new Promise(resolve => server.close(resolve));
+    throw new Error('Could not reserve an isolated local port for the React smoke server');
+  }
+  const port = address.port;
+  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  return port;
 }
 
 function startBackend() {
@@ -86,6 +116,26 @@ async function requestJson(base, route, token, { method = 'GET', body, bootstrap
   return { response, payload };
 }
 
+async function requestBytes(base, route, token) {
+  const url = new URL(route, base);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      protocol: url.protocol, hostname: url.hostname, port: url.port, method: 'GET',
+      path: `${url.pathname}${url.search}`,
+      headers: { Host: 'remote.test', 'X-Forwarded-Proto': 'https', Authorization: `Bearer ${token}` },
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => resolve({
+        status: response.statusCode ?? 0, headers: response.headers,
+        body: Buffer.concat(chunks),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 function finishResults(metadata = {}) {
   const blockers = results.filter(entry => entry.result !== 'PASS');
   console.log(JSON.stringify({
@@ -94,6 +144,7 @@ function finishResults(metadata = {}) {
     blockedWorkflows: blockers.map(entry => entry.workflow),
     authEnforced: true,
     externalProvidersEnabled: false,
+    workflowCount: results.length,
     ...metadata,
     results,
   }, null, 2));
@@ -106,6 +157,10 @@ async function run() {
   const fixture = await startBackend();
   console.log('isolated Python server ready');
   await waitFor(async () => (await requestJson(fixture.baseUrl, '/api/health', '')).response.ok, 'Python health route');
+  const directOwnerLogin = await requestJson(fixture.baseUrl, '/api/auth/login', '', {
+    method: 'POST', body: { username_or_email: fixture.ownerUsername, password: fixture.ownerPassword },
+  });
+  assert(directOwnerLogin.response.status === 200, `Isolated Python owner login returned ${directOwnerLogin.response.status}: ${await directOwnerLogin.response.text()}`);
   const secondRegistration = await requestJson(fixture.baseUrl, '/api/auth/register', fixture.tokens.agents, {
     method: 'POST',
     bootstrapToken: 'batch2b-integration-bootstrap-secret-32-chars',
@@ -123,13 +178,17 @@ async function run() {
   const codeProjectId = fixtureRepo.payload.project?.id;
   assert(codeProjectId, 'CodeQ fixture project did not return an ID');
 
-  vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5180', '--strictPort'], {
+  const vitePort = await reserveLocalPort();
+  vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'], {
     cwd: frontendRoot,
     env: { ...process.env, OPENAGENT_API_TARGET: fixture.baseUrl, OPENAGENT_TEST_PERSONAL_REMOTE_PROXY: '1' },
     stdio: 'ignore', windowsHide: true,
   });
-  const origin = 'http://127.0.0.1:5180';
-  await waitFor(async () => (await fetch(origin)).ok, 'React Vite app');
+  const origin = `http://127.0.0.1:${vitePort}`;
+  await waitFor(async () => {
+    if (vite.exitCode !== null) throw new Error(`Isolated Vite exited with ${vite.exitCode}`);
+    return (await fetch(origin)).ok;
+  }, 'isolated React Vite app');
 
   browser = await chromium.launch({ headless: true, executablePath: chrome });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -137,9 +196,17 @@ async function run() {
   const apiResponses = [];
   const apiRequests = [];
   const onlyAgents = process.env.OPENAGENT_SMOKE_ONLY === 'agents';
+  const onlyCalendar = process.env.OPENAGENT_SMOKE_ONLY === 'calendar';
+  const onlyAssistant = process.env.OPENAGENT_SMOKE_ONLY === 'assistant';
+  const onlyCommunications = process.env.OPENAGENT_SMOKE_ONLY === 'communications';
+  const onlyKnowledge = process.env.OPENAGENT_SMOKE_ONLY === 'knowledge';
+  page.on('pageerror', error => console.error(`React page error: ${error.stack ?? error.message}`));
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request); });
   page.on('response', response => {
-    if (new URL(response.url()).pathname.startsWith('/api/')) apiResponses.push({ path: new URL(response.url()).pathname, status: response.status() });
+    if (new URL(response.url()).pathname.startsWith('/api/')) {
+      apiResponses.push({ path: new URL(response.url()).pathname, status: response.status() });
+      if (new URL(response.url()).pathname === '/api/integrations/preferences') console.log(`notification preference API ${response.request().method()} ${response.status()}`);
+    }
   });
 
   async function open(view, token) {
@@ -166,7 +233,7 @@ async function run() {
   const loginResponsePromise = authPage.waitForResponse(response => response.url().endsWith('/api/auth/login') && response.request().method() === 'POST');
   await authPage.getByRole('button', { name: 'Sign in', exact: true }).click();
   const loginResponse = await loginResponsePromise;
-  assert(loginResponse.status() === 200, `React owner sign-in returned HTTP ${loginResponse.status()}`);
+  assert(loginResponse.status() === 200, `React owner sign-in returned HTTP ${loginResponse.status()}: ${await loginResponse.text()}`);
   await expect(authPage.locator('[aria-label="Owner session"]')).toContainText('Authenticated owner session');
   const refreshResponsePromise = authPage.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
   await authPage.getByRole('button', { name: 'Renew session' }).click();
@@ -182,7 +249,124 @@ async function run() {
   results.push({ workflow: 'Personal remote owner sign-in/out', result: 'PASS', evidence: 'React signed in with owner credentials, renewed the authenticated session, signed out, cleared tab storage, and the private identity endpoint returned 401 without credentials.' });
   await authPage.close();
 
-  if (!onlyAgents) {
+  if (!onlyAgents && !onlyCalendar && !onlyAssistant && !onlyCommunications && !onlyKnowledge) {
+  // Fine-tuning job records: create a disposable queued record through the
+  // real Python API, then cancel it from React and verify persisted status.
+  const fineTuneDataset = await requestJson(fixture.baseUrl, '/api/finetune/datasets', fixture.tokens.finetune, {
+    method: 'POST', body: { project: 'default', name: 'Disposable fine-tuning smoke dataset' },
+  });
+  assert(fineTuneDataset.response.status === 201, `Fine-tuning dataset creation returned ${fineTuneDataset.response.status}`);
+  const fineTuneJob = await requestJson(fixture.baseUrl, '/api/finetune/jobs', fixture.tokens.finetune, {
+    method: 'POST', body: { project: 'default', dataset_id: fineTuneDataset.payload.dataset.id, base_model: 'local-smoke-model', method: 'lora' },
+  });
+  assert(fineTuneJob.response.status === 201 && fineTuneJob.payload.job?.status === 'queued', 'Fine-tuning did not return a persisted queued job record');
+  await open('finetune', fixture.tokens.finetune);
+  await page.getByRole('tab', { name: 'Jobs' }).click();
+  const fineTuneJobCard = page.locator('#content article.p-record-section').filter({ hasText: 'local-smoke-model' });
+  await expect(fineTuneJobCard).toContainText('queued', { timeout: 15_000 });
+  const cancelFineTuneResponse = page.waitForResponse(response =>
+    new URL(response.url()).pathname.endsWith(`/api/finetune/jobs/${fineTuneJob.payload.job.id}/cancel`) &&
+    response.request().method() === 'POST', { timeout: 15_000 });
+  page.once('dialog', dialog => dialog.accept());
+  await fineTuneJobCard.getByRole('button', { name: 'Cancel queued job' }).click();
+  const fineTuneCancelResponse = await cancelFineTuneResponse;
+  assert(fineTuneCancelResponse.status() === 200, `Fine-tuning queued cancellation returned ${fineTuneCancelResponse.status()}`);
+  await expect(page.locator('#content')).toContainText('cancelled', { timeout: 15_000 });
+  const persistedFineTuneJobs = await requestJson(fixture.baseUrl, '/api/finetune/jobs?project=default', fixture.tokens.finetune);
+  assert(persistedFineTuneJobs.response.ok && persistedFineTuneJobs.payload.jobs?.some(job => job.id === fineTuneJob.payload.job.id && job.status === 'cancelled'), 'Cancelled Fine-tuning status did not persist in Python');
+  results.push({ workflow: 'Fine-tuning queued job cancellation', result: 'PASS', evidence: 'A disposable job was persisted by the isolated Python server, then cancelled through the authenticated React UI. The project-scoped job list returned cancelled; no training process or checkpoint was claimed.' });
+
+  // Image Studio uploads a disposable local image and exercises the existing
+  // project-scoped upscale API through the real React controls.
+  await open('gallery', fixture.tokens.documents);
+  await page.getByRole('tab', { name: 'Upload' }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'smoke-gallery.png', mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/G7sAAAAASUVORK5CYII=', 'base64'),
+  });
+  const galleryUploadPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/gallery/upload' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Upload', exact: true }).click();
+  const galleryUpload = await galleryUploadPromise;
+  assert(galleryUpload.status() === 201, `Image Studio upload returned HTTP ${galleryUpload.status()}: ${await galleryUpload.text()}`);
+  const galleryUploadPayload = await galleryUpload.json();
+  const galleryAssetId = galleryUploadPayload.asset?.id;
+  assert(galleryAssetId, 'Image Studio upload did not return a persisted asset id');
+  await page.getByRole('tab', { name: 'Library' }).click();
+  await page.getByRole('button', { name: /smoke-gallery\.png/ }).waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: /smoke-gallery\.png/ }).click();
+  await page.getByRole('tab', { name: 'Operations' }).click();
+  const galleryUpscalePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/gallery/upscale' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Upscale' }).click();
+  const galleryUpscale = await galleryUpscalePromise;
+  assert(galleryUpscale.ok, `Image Studio upscale returned HTTP ${galleryUpscale.status()}: ${await galleryUpscale.text()}`);
+  const galleryUpscalePayload = await galleryUpscale.json();
+  assert(galleryUpscalePayload.asset?.id, 'Image Studio upscale did not return the resulting backend asset');
+  results.push({ workflow: 'Image Studio upload and upscale', result: 'PASS', evidence: `React uploaded a synthetic 1×1 PNG as asset ${galleryAssetId}, selected it in Library and called the real global upscale contract with the selected asset ID. Python returned the persisted derivative ${galleryUpscalePayload.asset.id}; no external image service was used.` });
+
+  // Personal OS uses the backend's title/body schema and renders persisted
+  // notes from the service response rather than a client-only example.
+  await open('personalos', fixture.tokens.personalOS);
+  await page.getByRole('tab', { name: 'Notes' }).click();
+  await page.getByPlaceholder('Write a note…').fill('Synthetic Personal OS integration note.');
+  const personalNotePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/personal-os/notes' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Save note' }).click();
+  const personalNoteResponse = await personalNotePromise;
+  assert(personalNoteResponse.status() === 201, `Personal OS note save returned HTTP ${personalNoteResponse.status()}`);
+  const personalNotePayload = await personalNoteResponse.json();
+  assert(personalNotePayload.note?.body === 'Synthetic Personal OS integration note.', 'Personal OS did not persist the note body');
+  await expect(page.getByText('Synthetic Personal OS integration note.', { exact: true })).toBeVisible();
+  const persistedPersonalNotes = await requestJson(fixture.baseUrl, '/api/personal-os/notes?project=default', fixture.tokens.personalOS);
+  assert(persistedPersonalNotes.response.ok && persistedPersonalNotes.payload.notes?.some(note => note.id === personalNotePayload.note.id && note.body === 'Synthetic Personal OS integration note.'), 'Personal OS note was not returned from a fresh Python read');
+  results.push({ workflow: 'Personal OS note persistence', result: 'PASS', evidence: 'React submitted the backend title/body note contract, rendered the returned record, and a fresh authenticated Python read returned the same persisted note.' });
+
+  // Model Cookbook serves are explicitly plans in the current UI. The test
+  // proves persisted host/session/log/stop behavior without launching a child.
+  await open('cookbook', fixture.tokens.models);
+  await page.getByPlaceholder('Host name').fill('Disposable cookbook host');
+  await page.getByPlaceholder('Host address').fill('127.0.0.1');
+  const hostCreatePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/model-cookbook/hosts' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  const hostCreateResponse = await hostCreatePromise;
+  assert(hostCreateResponse.status() === 201, `Model Cookbook host create returned HTTP ${hostCreateResponse.status()}`);
+  const hostPayload = await hostCreateResponse.json();
+  assert(hostPayload.host?.label === 'Disposable cookbook host', 'Model Cookbook did not store the submitted host label');
+  await page.getByRole('textbox', { name: 'Model reference to serve' }).fill('local-smoke-model');
+  const servePlanPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/model-cookbook/serve' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create serve plan' }).click();
+  const servePlanResponse = await servePlanPromise;
+  assert(servePlanResponse.status() === 201, `Model Cookbook serve plan returned HTTP ${servePlanResponse.status()}`);
+  const servePlanPayload = await servePlanResponse.json();
+  const serveSession = servePlanPayload.session;
+  assert(serveSession?.status === 'planned' && serveSession?.mode === 'plan' && serveSession?.pid === 0, 'Model Cookbook started a process instead of saving a plan');
+  const persistedCookbookSessions = await requestJson(fixture.baseUrl, '/api/model-cookbook/sessions?project=default', fixture.tokens.models);
+  assert(persistedCookbookSessions.response.ok && persistedCookbookSessions.payload.sessions?.some(session => session.id === serveSession.id), 'Model Cookbook session history did not persist');
+  await page.getByRole('tab', { name: 'Logs' }).click();
+  await expect(page.getByText(/Serve session planned/)).toBeVisible();
+  const closePlanPromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/model-cookbook/stop/${serveSession.id}` && response.request().method() === 'POST');
+  await page.getByRole('tab', { name: 'Hosts' }).click();
+  await page.getByRole('button', { name: 'Close plan' }).click();
+  const closePlanResponse = await closePlanPromise;
+  assert(closePlanResponse.ok, `Model Cookbook plan close returned HTTP ${closePlanResponse.status()}`);
+  const closedSessionRead = await requestJson(fixture.baseUrl, '/api/model-cookbook/sessions?project=default', fixture.tokens.models);
+  assert(closedSessionRead.payload.sessions?.some(session => session.id === serveSession.id && session.status === 'stopped'), 'Model Cookbook plan stop state did not persist');
+  results.push({ workflow: 'Model Cookbook host, serve plan, logs and stop', result: 'PASS', evidence: `React persisted host ${hostPayload.host.id}, created planned session ${serveSession.id}, displayed its backend log, then closed the plan. The session list confirmed stopped status; allow_process=false and pid=0 prove no process was launched.` });
+
+  // Scientific AI Reports: execute only the owner-approved bounded fixture
+  // source through the existing local runner, then verify history persistence.
+  await open('science', fixture.tokens.knowledge);
+  await page.getByRole('tab', { name: 'Reports' }).click();
+  await page.getByRole('textbox', { name: 'Python source' }).fill("print('isolated science verification')");
+  await page.getByRole('checkbox', { name: /I reviewed this Python source/ }).check();
+  const scienceRunResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/science/execute') && response.request().method() === 'POST', { timeout: 20_000 });
+  await page.getByRole('button', { name: 'Run approved code' }).click();
+  const scienceRunResponse = await scienceRunResponsePromise;
+  assert(scienceRunResponse.status() === 201, `Scientific code run returned ${scienceRunResponse.status()}: ${await scienceRunResponse.text()}`);
+  const persistedScienceExecutions = await requestJson(fixture.baseUrl, '/api/science/executions?project=default', fixture.tokens.knowledge);
+  const scienceExecutionRecord = persistedScienceExecutions.payload.executions?.[0];
+  assert(persistedScienceExecutions.response.ok && scienceExecutionRecord?.stdout?.includes('isolated science verification'), 'Scientific execution output was not persisted in the project report history');
+  assert(!Object.hasOwn(scienceExecutionRecord, 'final_code'), 'Scientific report stored executable source code instead of only a source hash');
+  results.push({ workflow: 'Scientific AI bounded execution report', result: 'PASS', evidence: 'React required explicit approval, submitted a deterministic local-only script to the policy-checked bounded Python runner, and the project-scoped history returned the actual output and source hash without storing source code.' });
+
   // Chat: the actual React composer submits over authenticated Python SSE and
   // the resulting conversation/messages must persist in the isolated SQLite DB.
   const beforeChat = apiResponses.length;
@@ -210,8 +394,41 @@ async function run() {
     `Chat messages were not persisted (HTTP ${messages.response.status}: ${JSON.stringify(messages.payload)})`);
   results.push({ workflow: 'Chat', result: 'PASS', evidence: 'React POST /api/chat/stream returned 200; Python persisted conversation and user/assistant messages.' });
 
-  await chatInput.fill('Trigger the controlled local provider failure [integration-fail].');
+  // Home's quick composer uploads a synthetic file through the real media
+  // contract, then hands the persisted descriptor to the Chat composer.
+  await open('home', fixture.tokens.chatMedia);
+  await page.getByRole('textbox', { name: 'Ask OpenAgent' }).waitFor({ state: 'visible' });
+  const homeUploadResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/media/ingest' && response.request().method() === 'POST', { timeout: 20_000 });
+  await page.getByLabel('Choose files for chat').setInputFiles({
+    name: 'home-chat-context.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic local context for Chat attachment verification.'),
+  });
+  const homeUploadResponse = await homeUploadResponsePromise;
+  assert(homeUploadResponse.status() === 201, `Home Chat attachment upload returned HTTP ${homeUploadResponse.status()}`);
+  const homeUploadedAsset = (await homeUploadResponse.json()).asset;
+  assert(homeUploadedAsset?.id, 'Home Chat upload response omitted the stored asset ID');
+  await page.getByRole('textbox', { name: 'Ask OpenAgent' }).fill('Summarise this local attachment.');
+  await page.getByRole('button', { name: 'Open prompt in chat' }).click();
+  await expect(page.getByTestId('chat-attachment')).toContainText(String(homeUploadedAsset.title ?? 'home-chat-context'));
+  const homeChatStreamPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chat/stream' && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Send message' }).click();
+  const homeChatStream = await homeChatStreamPromise;
+  assert(homeChatStream.status() === 200, `Home attachment Chat SSE returned HTTP ${homeChatStream.status()}`);
+  const homeChatPayload = homeChatStream.request().postDataJSON();
+  assert(homeChatPayload.attachments?.some(item => String(item.id) === String(homeUploadedAsset.id)), 'Home Chat request omitted the uploaded asset descriptor');
+  await expect(page.getByText('Local integration response.')).toBeVisible({ timeout: 20_000 });
+  results.push({ workflow: 'Home Chat attachment handoff', result: 'PASS', evidence: `The React Home composer uploaded a synthetic text file through authenticated POST /api/media/ingest, then submitted its returned asset ID in the real authenticated POST /api/chat/stream. Python returned SSE 200; the fixture provider remained local and no external services were called.` });
+
+  await chatInput.fill('Trigger the controlled local provider failure [integration-fail].');
+  const chatFailureResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/chat/stream' &&
+    response.request().method() === 'POST' &&
+    String(response.request().postData() ?? '').includes('[integration-fail]'),
+    { timeout: 15_000 },
+  );
+  await page.getByRole('button', { name: 'Send message' }).click();
+  const chatFailureResponse = await chatFailureResponsePromise;
+  const chatFailureBody = await chatFailureResponse.text().catch(error => `[unreadable stream: ${error.message}]`);
+  console.log(`Chat controlled failure HTTP ${chatFailureResponse.status()} SSE: ${chatFailureBody.slice(-1200)}`);
   await expect(page.locator('#content [role="alert"]').filter({ hasText: 'Synthetic local integration provider failure.' })).toBeVisible({ timeout: 15_000 });
   results.push({ workflow: 'Chat failure', result: 'PASS', evidence: 'React displayed the actual Python SSE provider error; no assistant success message was fabricated.' });
 
@@ -223,14 +440,75 @@ async function run() {
   await expect(page.getByRole('status').filter({ hasText: 'Response cancelled.' })).toBeVisible({ timeout: 10_000 });
   results.push({ workflow: 'Chat cancellation', result: 'PASS', evidence: 'React aborted the authenticated SSE request and showed its cancelled state; the fixture gateway is local and has no external side effects.' });
 
+  // Delete only the disposable conversation created by this smoke run, using
+  // the user's existing confirmation path and the existing scoped Live route.
+  await page.getByRole('button', { name: 'Conversation actions' }).click();
+  await page.getByRole('button', { name: 'Conversation history', exact: true }).click();
+  const organizedChatHistory = await requestJson(fixture.baseUrl, '/api/conversations/organized?project=default&limit=100', fixture.tokens.chat);
+  assert(organizedChatHistory.response.ok && organizedChatHistory.payload.conversations?.some(item => String(item.id) === String(conversationId)), 'Disposable Chat conversation was not present in organized history before delete');
+  const disposableConversation = organizedChatHistory.payload.conversations.find(item => String(item.id) === String(conversationId));
+  const conversationTitle = String(disposableConversation.title || conversationId);
+  await page.getByRole('button', { name: conversationTitle, exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+  page.once('dialog', dialog => dialog.accept());
+  const deleteConversationPromise = page.waitForResponse(response => response.url().endsWith(`/api/conversations/${encodeURIComponent(conversationId)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: `Delete ${conversationTitle}`, exact: true }).click();
+  const deleteConversationResponse = await deleteConversationPromise;
+  assert(deleteConversationResponse.ok(), `React conversation delete returned HTTP ${deleteConversationResponse.status()}`);
+  const remainingConversations = await requestJson(fixture.baseUrl, '/api/conversations?project=default&limit=100', fixture.tokens.chat);
+  assert(remainingConversations.response.ok && !remainingConversations.payload.conversations?.some(item => String(item.id) === String(conversationId)), 'Deleted Chat conversation remained in Python history');
+  results.push({ workflow: 'Chat conversation deletion', result: 'PASS', evidence: 'React confirmed and deleted the disposable persisted conversation through authenticated DELETE /api/conversations/{id}; a subsequent Python history read no longer returned the conversation.' });
+
   // CodeQ: actual React project discovery and run lifecycle against a copied
   // disposable workspace. External providers remain disabled.
   await open('codeq', fixture.tokens.codeq);
   await page.getByLabel('CodeQ project').waitFor({ state: 'visible' });
   await page.getByLabel('CodeQ project').selectOption(String(codeProjectId));
+  const smokeFilePath = `openagent-smoke-${Date.now()}.txt`;
+  const renamedSmokeFilePath = smokeFilePath.replace('.txt', '-renamed.txt');
+  page.once('dialog', dialog => dialog.accept(smokeFilePath));
+  const createCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'create_file', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Create file' }).click();
+  const createCodeQFileResponse = await createCodeQFilePromise;
+  assert(createCodeQFileResponse.ok(), `React CodeQ create-file returned HTTP ${createCodeQFileResponse.status()}`);
+  await expect(page.locator('.monaco-editor')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.monaco-editor .view-lines').click({ position: { x: 16, y: 10 } });
+  await page.keyboard.insertText('OpenAgent CodeQ persisted file smoke.');
+  await expect(page.locator('.monaco-editor .view-lines')).toContainText('OpenAgent CodeQ persisted file smoke.');
+  await expect(page.getByRole('button', { name: 'Save file' })).toBeEnabled();
+  const saveCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/file`) && response.request().method() === 'POST', { timeout: 10_000 }).catch(async cause => {
+    const calls = apiRequests.filter(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/file`)).map(request => `${request.method()} ${request.url()}`);
+    throw new Error(`CodeQ Save file produced no matching response; editor=${JSON.stringify((await page.locator('.monaco-editor .view-lines').innerText()).slice(0, 120))}; toolbar=${JSON.stringify(await page.locator('.codeq-tabbar').innerText())}; requests=${JSON.stringify(calls)}; cause=${String(cause)}`);
+  });
+  await page.getByRole('button', { name: 'Save file' }).click();
+  const saveCodeQFileResponse = await saveCodeQFilePromise;
+  assert(saveCodeQFileResponse.ok(), `React CodeQ save-file returned HTTP ${saveCodeQFileResponse.status()}`);
+  const saveCodeQFilePayload = await saveCodeQFileResponse.json();
+  const savedCodeQFile = await requestJson(fixture.baseUrl, `/api/codebase/projects/${encodeURIComponent(codeProjectId)}/file?path=${encodeURIComponent(smokeFilePath)}`, fixture.tokens.codeq);
+  assert(savedCodeQFile.response.ok && String(savedCodeQFile.payload.file?.content ?? '').includes('OpenAgent CodeQ persisted file smoke.'), `CodeQ file content did not persist through the Python backend: UI response=${JSON.stringify(saveCodeQFilePayload)}; fresh read status=${savedCodeQFile.response.status}, payload=${JSON.stringify(savedCodeQFile.payload)}`);
+  const renameDialogHandler = async dialog => {
+    if (dialog.type() === 'confirm') await dialog.accept();
+    else await dialog.accept(renamedSmokeFilePath);
+  };
+  page.on('dialog', renameDialogHandler);
+  const renameCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'rename', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Rename selected path' }).click();
+  const renameCodeQFileResponse = await renameCodeQFilePromise;
+  page.off('dialog', renameDialogHandler);
+  assert(renameCodeQFileResponse.ok(), `React CodeQ rename returned HTTP ${renameCodeQFileResponse.status()}`);
+  const renamedCodeQFile = await requestJson(fixture.baseUrl, `/api/codebase/projects/${encodeURIComponent(codeProjectId)}/file?path=${encodeURIComponent(renamedSmokeFilePath)}`, fixture.tokens.codeq);
+  assert(renamedCodeQFile.response.ok && String(renamedCodeQFile.payload.file?.content ?? '').includes('OpenAgent CodeQ persisted file smoke.'), 'CodeQ rename did not preserve the saved file content');
+  page.once('dialog', dialog => dialog.accept());
+  const deleteCodeQFilePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/paths`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').action === 'delete', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Delete selected path' }).click();
+  const deleteCodeQFileResponse = await deleteCodeQFilePromise;
+  assert(deleteCodeQFileResponse.ok(), `React CodeQ delete returned HTTP ${deleteCodeQFileResponse.status()}`);
+  const deletedCodeQFile = await requestJson(fixture.baseUrl, `/api/codebase/projects/${encodeURIComponent(codeProjectId)}/file?path=${encodeURIComponent(renamedSmokeFilePath)}`, fixture.tokens.codeq);
+  assert(deletedCodeQFile.response.status === 404, `Deleted CodeQ file remained readable (HTTP ${deletedCodeQFile.response.status})`);
+  results.push({ workflow: 'CodeQ file lifecycle', result: 'PASS', evidence: 'The actual React/Monaco editor created a file in the disposable repository, saved editor content through the authenticated CodeQ file operation, verified the content from a fresh Python read, renamed it without losing content, then deleted it and confirmed a fresh read returned 404.' });
   await page.getByRole('textbox', { name: 'Preview command' }).fill('node preview-server.mjs');
   await page.getByRole('checkbox', { name: /I reviewed this command/ }).check();
   page.once('dialog', dialog => dialog.accept());
+  const previewProbePromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'probe_local_url', { timeout: 15_000 });
   const previewStartPromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'start_process', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Start preview' }).click();
   const previewStartResponse = await previewStartPromise;
@@ -248,7 +526,17 @@ async function run() {
   const previewResponse = await fetch(previewUrl);
   assert(previewResponse.ok && (await previewResponse.text()).includes('Disposable CodeQ preview is ready.'), 'CodeQ preview URL did not serve the disposable fixture response');
   await expect(page.getByRole('link', { name: previewUrl })).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole('region', { name: 'Live CodeQ preview session' })).toContainText(`Preview URL reported by the process: ${previewUrl}`, { timeout: 15_000 });
+  const previewProbeResponse = await previewProbePromise;
+  assert(previewProbeResponse.ok(), `CodeQ preview readiness probe returned HTTP ${previewProbeResponse.status()}`);
+  const previewProbePayload = await previewProbeResponse.json();
+  assert(previewProbePayload.result?.reachable === true && previewProbePayload.result?.http_status === 200, `CodeQ preview readiness probe did not verify HTTP 200: ${JSON.stringify(previewProbePayload)}`);
+  await expect(page.getByRole('region', { name: 'Live CodeQ preview session' })).toContainText(`Preview is ready · ${previewUrl}`, { timeout: 15_000 });
+  const previewStartCountBeforeReload = apiRequests.filter(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && JSON.parse(request.postData() ?? '{}').tool === 'start_process').length;
+  const restoredPreviewStatus = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'process_status', { timeout: 15_000 });
+  await page.reload();
+  await expect(page.getByRole('link', { name: previewUrl })).toBeVisible({ timeout: 15_000 });
+  assert((await restoredPreviewStatus).ok(), 'CodeQ preview process status could not be restored after a page reload');
+  assert(apiRequests.filter(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && JSON.parse(request.postData() ?? '{}').tool === 'start_process').length === previewStartCountBeforeReload, 'Reloading CodeQ started a duplicate preview process');
   await page.getByRole('button', { name: 'Refresh preview status' }).click();
   await waitFor(async () => apiRequests.some(request => request.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && JSON.parse(request.postData() ?? '{}').tool === 'process_status'), 'CodeQ preview status refresh', 10_000);
   const previewStopPromise = page.waitForResponse(response => response.url().includes(`/api/codebase/projects/${codeProjectId}/tools`) && response.request().method() === 'POST' && JSON.parse(response.request().postData() ?? '{}').tool === 'stop_process', { timeout: 15_000 });
@@ -256,7 +544,27 @@ async function run() {
   const previewStopResponse = await previewStopPromise;
   assert(previewStopResponse.ok(), `CodeQ preview stop returned HTTP ${previewStopResponse.status()}`);
   assert(String((await previewStopResponse.json()).result?.status ?? '') === 'exited', 'CodeQ preview process did not report its stopped state');
-  results.push({ workflow: 'CodeQ preview lifecycle', result: 'PASS', evidence: `React used the authenticated project tools contract to start process ${previewProcessId}; Python output reported ${previewUrl}, the URL served the disposable fixture response, and status refresh and stop were accepted by the backend.` });
+  results.push({ workflow: 'CodeQ preview lifecycle', result: 'PASS', evidence: `React used the authenticated project tools contract to start process ${previewProcessId}; the loopback-only readiness tool verified HTTP 200 at ${previewUrl}. After page reload React restored that same process without starting a duplicate, and status refresh and stop were accepted by the backend.` });
+  await page.getByRole('tab', { name: /Terminal/ }).click();
+  await page.getByRole('textbox', { name: 'Terminal command' }).fill('python --version');
+  const terminalStartPromise = page.waitForResponse(response => response.url().endsWith('/api/terminal/runs') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run command' }).click();
+  const terminalStartResponse = await terminalStartPromise;
+  assert(terminalStartResponse.status() === 202, `CodeQ terminal start returned HTTP ${terminalStartResponse.status()}`);
+  const terminalStarted = await terminalStartResponse.json();
+  const terminalRunId = String(terminalStarted.run?.id ?? '');
+  assert(terminalRunId, 'CodeQ terminal start did not return a persisted run ID');
+  await expect(page.getByRole('log', { name: 'Terminal run output' })).toContainText(/Python \d+\.\d+/, { timeout: 10_000 });
+  const terminalStartRequest = apiRequests.find(request => request.url().endsWith('/api/terminal/runs') && request.method() === 'POST');
+  assert(Boolean(terminalStartRequest && (await terminalStartRequest.allHeaders()).authorization), 'CodeQ terminal start omitted the API bearer token');
+  results.push({ workflow: 'CodeQ incremental terminal', result: 'PASS', evidence: `React started authenticated run ${terminalRunId}, displayed output from the local Python executable through persisted status polling, and retained the existing safe-command policy.` });
+  const terminalReadDenied = await requestJson(fixture.baseUrl, '/api/terminal/runs?project=default&limit=1', fixture.tokens.readonly);
+  const terminalWriteDenied = await requestJson(fixture.baseUrl, '/api/terminal/runs', fixture.tokens.readonly, {
+    method: 'POST', body: { project: 'default', command: ['python', '--version'], cwd: fixture.repoPath, approved: false },
+  });
+  assert(terminalReadDenied.response.status === 403 && terminalWriteDenied.response.status === 403,
+    `terminal scopes were not enforced (read ${terminalReadDenied.response.status}, write ${terminalWriteDenied.response.status})`);
+  results.push({ workflow: 'CodeQ terminal least-privilege scopes', result: 'PASS', evidence: 'The existing media/workspace read-only credential was denied terminal history and command execution with HTTP 403; no command was started.' });
   await page.getByLabel('Ask CodeQ').fill('Inspect the fixture and report one safe observation [integration-delay].');
   const codeRunResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/codebase/runs') && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: /^Run$/ }).first().click();
@@ -307,7 +615,8 @@ async function run() {
       const cancelButton = page.getByRole('button', { name: 'Cancel run' });
       await cancelButton.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
       if (await cancelButton.isVisible().catch(() => false)) {
-        const cancelResponse = page.waitForResponse(response => response.url().endsWith(`/api/codebase/runs/${reconnectRun.id}/cancel`) && response.request().method() === 'POST');
+        const cancelPath = `/api/codebase/runs/${encodeURIComponent(reconnectRun.id)}/cancel`;
+        const cancelResponse = page.waitForResponse(response => new URL(response.url()).pathname === cancelPath && response.request().method() === 'POST');
         await cancelButton.click();
         const cancelled = await cancelResponse;
         assert(cancelled.ok(), `CodeQ cancellation failed through React control (${cancelled.status()})`);
@@ -332,7 +641,8 @@ async function run() {
     await expect(page.getByRole('button', { name: 'Resume run' })).toBeVisible({ timeout: 30_000 });
     const failedState = await requestJson(fixture.baseUrl, `/api/codebase/runs/${encodeURIComponent(failedRun.id)}`, fixture.tokens.codeq);
     assert(String(failedState.payload.run?.status).toLowerCase() === 'failed', 'CodeQ controlled run did not reach a persisted failed state');
-    const resumeResponsePromise = page.waitForResponse(response => response.url().endsWith(`/api/codebase/runs/${failedRun.id}/resume`) && response.request().method() === 'POST', { timeout: 15_000 });
+    const resumePath = `/api/codebase/runs/${encodeURIComponent(failedRun.id)}/resume`;
+    const resumeResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === resumePath && response.request().method() === 'POST', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Resume run' }).click();
     const resumeResponse = await resumeResponsePromise;
     assert(resumeResponse.status() === 202, `React CodeQ resume returned ${resumeResponse.status()}`);
@@ -348,10 +658,10 @@ async function run() {
   }
 
   // Research: create an isolated, external-network-disabled session through
-  // the React form, then verify its real persisted record, report and events.
+  // the React form, then verify its report, source review note and events.
   await open('research', fixture.tokens.research);
   await page.getByText('New research', { exact: true }).click();
-  await page.getByLabel('Research question').fill('Summarize the disposable local integration fixture.');
+  await page.getByLabel('Research question').fill('Review the Research source-note smoke fixture.');
   const researchCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/research/sessions') && response.request().method() === 'POST', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Run research' }).click();
   const researchResponse = await researchCreatePromise;
@@ -372,6 +682,20 @@ async function run() {
   await expect(page.locator('.research-summary')).toContainText(expectedReportText.slice(0, Math.min(expectedReportText.length, 80)), { timeout: 30_000 });
   if (Array.isArray(completedResearch.sources) && completedResearch.sources.length) {
     await expect(page.locator('.research-side')).toContainText(String(completedResearch.sources[0].title ?? completedResearch.sources[0].url ?? ''));
+    const sourceTitle = String(completedResearch.sources[0].title ?? completedResearch.sources[0].url ?? '');
+    const sourceButton = page.locator('.research-side button.timeline-row').filter({ hasText: sourceTitle }).first();
+    await sourceButton.click();
+    await page.getByLabel('Local source note').fill('Verified against the temporary local integration source.');
+    const researchNoteSave = page.waitForResponse(response => response.url().includes(`/api/research/sessions/${researchId}/source-notes/`) && response.request().method() === 'POST', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Save source note' }).click();
+    const researchNoteResponse = await researchNoteSave;
+    assert(researchNoteResponse.status() === 200, `Research source-note save returned ${researchNoteResponse.status()}`);
+    const researchNotePayload = await researchNoteResponse.json();
+    assert(researchNotePayload.note?.content === 'Verified against the temporary local integration source.', 'Research source-note response omitted the saved note');
+    const persistedNotes = await requestJson(fixture.baseUrl, `/api/research/sessions/${encodeURIComponent(researchId)}/source-notes?project=default`, fixture.tokens.research);
+    assert(persistedNotes.response.ok && persistedNotes.payload.notes?.some(note => note.source_key === researchNotePayload.note.source_key && note.content === researchNotePayload.note.content), 'Research source note did not persist in Python storage');
+  } else {
+    throw new Error('Synthetic local Research context source was not returned; source-note React-to-Python workflow could not be exercised.');
   }
   const crossOwnerResearch = await requestJson(fixture.baseUrl, `/api/research/sessions/${encodeURIComponent(researchId)}/report`, fixture.tokens.otherResearchRead);
   if (crossOwnerResearch.response.status === 200 && crossOwnerResearch.payload.session_id === researchId) {
@@ -432,9 +756,11 @@ async function run() {
   assert(cancelledCheckpoints.response.ok && cancelledCheckpoints.payload.checkpoints.some(checkpoint => checkpoint.stage === 'cancel-requested' || checkpoint.stage === 'cancelled'), 'Research cancellation checkpoint was not persisted');
   await expect(page.locator('.research-side [role="log"]')).toContainText(/cancel-requested|cancelled/i, { timeout: 10_000 });
   results.push({ workflow: 'Research cancellation terminal state', result: 'PASS', evidence: 'React Cancel run persisted cancel_requested=true and the cancel-requested checkpoint; the test waited for the Python worker to finish its controlled local provider call, then verified the session reached cancelled status.' });
-  results.push({ workflow: 'Research owner session workflow', result: crossOwnerResearch.response.status === 200 ? 'BLOCKED' : 'PASS', evidence: 'React created an external-network-disabled session; the local worker completed it; its persisted report text rendered in the React Summary and returned sources were checked when present; authenticated events/checkpoints were visible in Activity. Foreign-installation credentials were rejected by the personal_remote boundary.' });
+  results.push({ workflow: 'Research owner session workflow', result: crossOwnerResearch.response.status === 200 ? 'BLOCKED' : 'PASS', evidence: 'React created an external-network-disabled session; the local worker completed it; the report rendered in React; a seeded temporary context source was selected and its note was saved through React, then read back from the Python session-scoped persistence route; authenticated events/checkpoints were visible in Activity. Foreign-installation credentials were rejected by the personal_remote boundary.' });
   }
 
+  if (!onlyCalendar) {
+  if (!onlyAssistant && !onlyCommunications && !onlyKnowledge) {
   // Exercise the exact Agents workspace control and its /run-checked contract,
   // then prove that its response is owner-bound and visible after reload.
   const forbiddenAgent = await requestJson(fixture.baseUrl, '/api/agent-runs?project=default', fixture.tokens.readonly);
@@ -516,7 +842,17 @@ async function run() {
   const cancelledJob = await waitFor(async () => {
     const snapshot = await requestJson(fixture.baseUrl, `/api/agents/jobs/${cancelJob.id}`, fixture.tokens.agentsReadOnly);
     return snapshot.payload.job?.status === 'cancelled' ? snapshot.payload.job : null;
-  }, 'agent lifecycle cancellation to settle', 15_000);
+  }, 'agent lifecycle cancellation to settle', 15_000).catch(async error => {
+    const [snapshot, eventSnapshot] = await Promise.all([
+      requestJson(fixture.baseUrl, `/api/agents/jobs/${cancelJob.id}`, fixture.tokens.agentsReadOnly),
+      requestJson(fixture.baseUrl, `/api/agents/jobs/${cancelJob.id}/events?project=default`, fixture.tokens.agentsReadOnly),
+    ]);
+    console.error('Agent cancellation diagnostic:', JSON.stringify({
+      status: snapshot.response.status, job: snapshot.payload.job,
+      events: eventSnapshot.payload.events,
+    }));
+    throw error;
+  });
   assert(cancelledJob.cancel_requested === true && Object.keys(cancelledJob.result ?? {}).length === 0, 'Cancelled agent job exposed a late successful result');
   const retryRequest = page.waitForResponse(response => response.url().endsWith(`/api/agents/jobs/${cancelJob.id}/retry`) && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Retry run', exact: true }).click();
@@ -547,11 +883,111 @@ async function run() {
   const rejectedPayload = await rejectedApproval.json();
   assert(rejectedPayload.approval?.status === 'rejected', 'Agents approval denial did not return its real rejected status');
   results.push({ workflow: 'Agents', result: 'PASS', evidence: 'React start/completion/history reload passed. A second React job was cancelled, its late result remained empty, and React retry completed with attempt/retry lineage. Run-only, read-only and unscoped permissions were checked; a foreign-installation credential returned 401. The approval flow created and rejected a request.' });
+  }
 
   if (onlyAgents) {
     finishResults({ selectedWorkflows: ['Agents'] });
     return;
   }
+
+  if (!onlyCommunications && !onlyKnowledge) {
+  // Personal Assistant task and goal lifecycle uses the dedicated assistant
+  // records and authenticated assistant:write permission.
+  await open('assistant', fixture.tokens.assistant);
+  await page.getByRole('tab', { name: 'Tasks', exact: true }).click();
+  const assistantTaskTitle = 'Batch 2B synthetic assistant task';
+  await page.getByLabel('Task', { exact: true }).fill(assistantTaskTitle);
+  const assistantTaskCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/assistant/tasks') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Add task', exact: true }).click();
+  const assistantTaskCreate = await assistantTaskCreatePromise;
+  assert(assistantTaskCreate.status() === 201, `Assistant task create returned ${assistantTaskCreate.status()}`);
+  const assistantTask = (await assistantTaskCreate.json()).task;
+  assert(assistantTask?.id, 'Assistant task create returned no ID');
+  const assistantTaskRow = page.locator('.p-record-section').filter({ hasText: assistantTaskTitle });
+  await assistantTaskRow.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByLabel('Edit task', { exact: true }).fill(`${assistantTaskTitle} updated`);
+  const assistantTaskPatchPromise = page.waitForResponse(response => response.url().includes(`/api/assistant/tasks/${encodeURIComponent(assistantTask.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  const assistantTaskPatch = await assistantTaskPatchPromise;
+  assert(assistantTaskPatch.status() === 200, `Assistant task update returned ${assistantTaskPatch.status()}`);
+  await page.locator('.p-record-section').filter({ hasText: `${assistantTaskTitle} updated` }).getByRole('button', { name: 'Mark complete', exact: true }).click();
+  await page.getByText(/Backend task status: completed/).waitFor({ state: 'visible', timeout: 10_000 });
+  page.once('dialog', dialog => dialog.accept());
+  const assistantTaskDeletePromise = page.waitForResponse(response => response.url().includes(`/api/assistant/tasks/${encodeURIComponent(assistantTask.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.locator('.p-record-section').filter({ hasText: `${assistantTaskTitle} updated` }).getByRole('button', { name: 'Delete', exact: true }).click();
+  assert((await assistantTaskDeletePromise).status() === 200, 'Assistant task delete failed');
+  const remainingTasks = await requestJson(fixture.baseUrl, '/api/assistant/tasks?project=default', fixture.tokens.assistant);
+  assert(remainingTasks.response.ok && !remainingTasks.payload.tasks?.some(task => String(task.id) === String(assistantTask.id)), 'Assistant task deletion did not persist');
+
+  const assistantActivityResponse = page.waitForResponse(response => response.url().includes('/api/assistant/activity?project=default&limit=20') && response.request().method() === 'GET', { timeout: 15_000 });
+  await page.getByRole('tab', { name: 'Today', exact: true }).click();
+  const assistantActivity = await assistantActivityResponse;
+  assert(assistantActivity.status() === 200, `Assistant activity returned ${assistantActivity.status()}: ${await assistantActivity.text()}`);
+  const assistantActivityPayload = await assistantActivity.json();
+  const assistantActions = (assistantActivityPayload.events ?? []).map(event => String(event.action ?? ''));
+  assert(assistantActions.includes('assistant.task.create') && assistantActions.includes('assistant.task.update') && assistantActions.includes('assistant.task.complete') && assistantActions.includes('assistant.task.delete'), `Assistant activity omitted task lifecycle events: ${JSON.stringify(assistantActions)}`);
+  assert(!assistantActions.some(action => action.startsWith('security.')), `Assistant activity exposed unrelated security events: ${JSON.stringify(assistantActions)}`);
+  await expect(page.getByText('assistant.task.create', { exact: true })).toBeVisible({ timeout: 10_000 });
+
+  await page.getByRole('tab', { name: 'Goals', exact: true }).click();
+  // A separate disabled backend-action sample shares the accessible label.
+  // Target the enabled workspace control inside the Goals card.
+  await page.locator('.p-primary > .p-record-sections > .p-card .p-card-heading').getByRole('button', { name: 'Add goal', exact: true }).click();
+  const goalDialog = page.getByRole('dialog', { name: 'New goal' });
+  const assistantGoalTitle = 'Batch 2B synthetic assistant goal';
+  await goalDialog.getByLabel('Name').fill(assistantGoalTitle);
+  const assistantGoalCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/assistant/goals') && response.request().method() === 'POST', { timeout: 15_000 });
+  await goalDialog.getByRole('button', { name: 'Create goal' }).click();
+  const assistantGoalCreate = await assistantGoalCreatePromise;
+  assert(assistantGoalCreate.status() === 201, `Assistant goal create returned ${assistantGoalCreate.status()}`);
+  const assistantGoal = (await assistantGoalCreate.json()).goal;
+  assert(assistantGoal?.id, 'Assistant goal create returned no ID');
+  const assistantGoalRow = page.locator('.p-record-section').filter({ hasText: assistantGoalTitle });
+  await assistantGoalRow.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editGoalDialog = page.getByRole('dialog', { name: 'Edit goal' });
+  await editGoalDialog.getByLabel('Name').fill(`${assistantGoalTitle} updated`);
+  const assistantGoalPatchPromise = page.waitForResponse(response => response.url().includes(`/api/assistant/goals/${encodeURIComponent(assistantGoal.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  await editGoalDialog.getByRole('button', { name: 'Save changes' }).click();
+  assert((await assistantGoalPatchPromise).status() === 200, 'Assistant goal update failed');
+  page.once('dialog', dialog => dialog.accept());
+  const assistantGoalDeletePromise = page.waitForResponse(response => response.url().includes(`/api/assistant/goals/${encodeURIComponent(assistantGoal.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.locator('.p-record-section').filter({ hasText: `${assistantGoalTitle} updated` }).getByRole('button', { name: 'Delete', exact: true }).click();
+  assert((await assistantGoalDeletePromise).status() === 200, 'Assistant goal delete failed');
+  const remainingGoals = await requestJson(fixture.baseUrl, '/api/assistant/goals?project=default', fixture.tokens.assistant);
+  assert(remainingGoals.response.ok && !remainingGoals.payload.goals?.some(goal => String(goal.id) === String(assistantGoal.id)), 'Assistant goal deletion did not persist');
+  results.push({ workflow: 'Personal Assistant task, goal and activity lifecycle', result: 'PASS', evidence: 'Actual React created, edited, completed and deleted an assistant task, read only its project-scoped task/goal audit events through GET /api/assistant/activity using assistant:read, confirmed unrelated security events were excluded, then created, edited and deleted a goal through authenticated assistant:write routes; fresh GET queries confirmed persistence.' });
+
+  if (onlyAssistant) {
+    finishResults({ selectedWorkflows: ['Personal Assistant'] });
+    return;
+  }
+  }
+
+  if (!onlyCommunications) {
+  if (!onlyKnowledge) {
+  // Personal Context source attribution is restricted to extracted topic
+  // signals. Seed one synthetic interaction through the real Python route,
+  // then verify React renders its attributed preference signals without
+  // exposing the captured interaction text or context.
+  const twinSourceBody = {
+    project: 'default', kind: 'research',
+    content: 'Synthetic provenance materials review from the integration smoke.',
+    context: { private_marker: 'must-not-be-rendered' },
+  };
+  const twinSourceWrite = await requestJson(fixture.baseUrl, '/api/twin/interaction', fixture.tokens.twin, { method: 'POST', body: twinSourceBody });
+  assert(twinSourceWrite.response.status === 201, `Personal Context source seed returned HTTP ${twinSourceWrite.response.status}`);
+  const twinSourceId = String(twinSourceWrite.payload.id ?? '');
+  const twinSourceRead = await requestJson(fixture.baseUrl, '/api/twin/sources?project=default&limit=100', fixture.tokens.twin);
+  const attributedSource = twinSourceRead.payload.sources?.find(source => String(source.id) === twinSourceId);
+  assert(twinSourceRead.response.ok && attributedSource?.preference_signals?.some(signal => signal.key === 'materials'), 'Python did not return the recorded topic-to-preference signal association');
+  await open('twin', fixture.tokens.twin);
+  await page.getByRole('tab', { name: 'Sources' }).click();
+  const attributedRow = page.locator(`.p-record-section[data-source-id="${twinSourceId}"]`);
+  await expect(attributedRow).toContainText('Inferred preference signals:');
+  await expect(attributedRow).toContainText('materials');
+  await expect(attributedRow).not.toContainText('Synthetic provenance materials review');
+  await expect(attributedRow).not.toContainText('must-not-be-rendered');
+  results.push({ workflow: 'Personal Context preference-signal attribution', result: 'PASS', evidence: 'An authenticated synthetic interaction persisted in the isolated Python store; the existing source endpoint mapped extracted materials topic signals to the project preference learner, and React displayed that attribution without original content or context.' });
 
   // Basic read-only workspace integrations are loaded by the real React screens.
   const readonlyChecks = [
@@ -565,10 +1001,169 @@ async function run() {
     results.push({ workflow: check.view, result: 'PASS', evidence: `React loaded ${check.route} from the isolated Python server with a limited read token.` });
   }
 
+  // Security Audit uses its existing admin-only route, explicitly filtered to
+  // the local workspace project. Only safe summary fields are rendered.
+  await open('security', fixture.tokens.securityAdmin);
+  const scopedAuditResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/audit' && url.searchParams.get('project') === 'default';
+  }, { timeout: 15_000 });
+  await page.getByRole('tab', { name: 'Audit' }).click();
+  const scopedAudit = await scopedAuditResponse;
+  assert(scopedAudit.status() === 200, `React scoped Security Audit returned HTTP ${scopedAudit.status()}: ${await scopedAudit.text()}`);
+  const scopedAuditPayload = await scopedAudit.json();
+  assert(Array.isArray(scopedAuditPayload.events) && scopedAuditPayload.events.every(event => event.project === 'default'), 'React Security Audit returned events outside the explicitly selected project');
+  await expect(page.locator('[data-audit-event-id="integration-audit-smoke"]')).toContainText('security.audit.smoke');
+  await expect(page.getByText('must-not-be-rendered')).toHaveCount(0);
+  results.push({ workflow: 'Security project-scoped audit list', result: 'PASS', evidence: 'The actual React Audit tab loaded GET /api/audit?project=default&limit=100 using security:admin, rendered the synthetic same-project event, and did not render its private metadata marker.' });
+
+  await open('security', fixture.tokens.securityRead);
+  const deniedAuditResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/audit', { timeout: 15_000 });
+  await page.getByRole('tab', { name: 'Audit' }).click();
+  const deniedAudit = await deniedAuditResponse;
+  assert(deniedAudit.status() === 403, `A security:read token unexpectedly received HTTP ${deniedAudit.status()} from the Security Audit route`);
+  await expect(page.getByText('This account does not have permission for this action.')).toBeVisible();
+  results.push({ workflow: 'Security audit permission boundary', result: 'PASS', evidence: 'The actual React Audit tab received HTTP 403 with a security:read token and displayed the permission denial; it did not substitute demo records.' });
+
+  // Settings notification preferences use the existing project-scoped
+  // integration preferences contract. Verify the UI write survives a fresh
+  // React load against the temporary Python database.
+  await open('settings', fixture.tokens.integrations);
+  await page.getByRole('tab', { name: 'Notifications' }).click();
+  const taskCompletionPreference = page.getByRole('checkbox', { name: 'Task completion' });
+  await expect(taskCompletionPreference).toBeVisible({ timeout: 15_000 });
+  const preferenceWritePromise = page.waitForResponse(response => response.url().endsWith('/api/integrations/preferences') && response.request().method() === 'POST', { timeout: 15_000 });
+  await taskCompletionPreference.click();
+  const preferenceWrite = await preferenceWritePromise;
+  assert(preferenceWrite.status() === 201, `React notification preference was not persisted by Python: HTTP ${preferenceWrite.status()} ${await preferenceWrite.text()}`);
+  await expect(taskCompletionPreference).not.toBeChecked();
+  const storedPreferences = await requestJson(fixture.baseUrl, '/api/integrations/preferences?project=default&scope=notifications', fixture.tokens.integrations);
+  assert(storedPreferences.response.ok && storedPreferences.payload.preferences?.some(preference => preference.key === 'task_completion' && preference.value === false), 'Notification preference did not persist in the backend');
+  await open('settings', fixture.tokens.integrations);
+  await page.getByRole('tab', { name: 'Notifications' }).click();
+  await expect(page.getByRole('tab', { name: 'Notifications' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('checkbox', { name: 'Task completion' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('checkbox', { name: 'Task completion' })).not.toBeChecked();
+  results.push({ workflow: 'Settings notification preference persistence', result: 'PASS', evidence: 'React loaded the project-scoped preference, saved a change through authenticated POST /api/integrations/preferences, and a fresh React load plus Python GET confirmed the persisted value.' });
+
+  // Models: register metadata through the workspace's actual Live form. This
+  // is metadata-only and must not fetch a source URL or create model files.
+  await open('models', fixture.tokens.models);
+  await page.locator('.models-advanced-tools > summary').click();
+  await page.getByRole('tab', { name: 'Marketplace & runtime' }).click();
+  const registeredModelName = 'Batch 2A local metadata fixture';
+  await page.getByLabel('Model name').fill(registeredModelName);
+  const registerModelPromise = page.waitForResponse(response => response.url().endsWith('/api/local-ai/models/register') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Register model', exact: true }).click();
+  const registerModelResponse = await registerModelPromise;
+  assert(registerModelResponse.status() === 201, `React local model metadata registration returned ${registerModelResponse.status()}: ${await registerModelResponse.text()}`);
+  const registeredModel = (await registerModelResponse.json()).model;
+  assert(registeredModel?.id && registeredModel.name === registeredModelName, 'Registered model response omitted expected metadata');
+  assert(!registeredModel.local_path && !registeredModel.source_url, 'Metadata-only registration unexpectedly configured a model file or external source');
+  const modelsAfterRegister = await requestJson(fixture.baseUrl, '/api/local-ai/models', fixture.tokens.models);
+  assert(modelsAfterRegister.response.ok && modelsAfterRegister.payload.models?.some(model => String(model.id) === String(registeredModel.id)), 'Local model metadata did not persist after the React form submission');
+  assert(!apiRequests.some(request => request.url().includes('/api/local-ai/models/download') || request.url().includes('/api/local-ai/ollama/pull')), 'Metadata-only model registration unexpectedly started a download');
+  await page.getByRole('tab', { name: 'Setup activity' }).click();
+  await expect(page.getByRole('heading', { name: 'No benchmark history' })).toBeVisible({ timeout: 15_000 });
+  const benchmarkHistoryRead = apiRequests.find(request => request.url().includes('/api/local-ai/benchmarks?limit=50') && request.method() === 'GET');
+  assert(benchmarkHistoryRead, 'React did not load benchmark history from the authenticated Python API');
+  const benchmarkHistoryResponse = await requestJson(fixture.baseUrl, '/api/local-ai/benchmarks?limit=50', fixture.tokens.readonly);
+  assert(benchmarkHistoryResponse.response.ok && Array.isArray(benchmarkHistoryResponse.payload.benchmarks), 'Read-only local_ai:read credential could not read the benchmark history contract');
+  results.push({ workflow: 'Models metadata and benchmark history', result: 'PASS', evidence: 'React registered metadata and read the truthful empty benchmark history from Python; a least-privilege local_ai:read credential also read the history route. No benchmark was run, no model downloaded, and no provider pull was requested.' });
+
+  // Automations: exercise definition CRUD only. The workflow contains an
+  // add_event step but is never run, so no event or external action is created.
+  await open('automations', fixture.tokens.workflows);
+  const automationName = 'Batch 2A disposable workflow';
+  await page.getByRole('button', { name: 'New', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill(automationName);
+  await page.getByLabel('New step 1 Title').fill('Synthetic event title');
+  await page.getByLabel('New step 1 Content').fill('Definition-only fixture; this workflow will not be run.');
+  const workflowCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/workflows') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Save automation' }).click();
+  const workflowCreate = await workflowCreatePromise;
+  assert(workflowCreate.status() === 201, `React automation creation returned ${workflowCreate.status()}: ${await workflowCreate.text()}`);
+  const createdWorkflow = (await workflowCreate.json()).workflow;
+  assert(createdWorkflow?.id && createdWorkflow.name === automationName, 'Automation create response omitted the saved workflow');
+  const workflowPreviewPromise = page.waitForResponse(response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}/run`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Preview run' }).click();
+  const workflowPreviewResponse = await workflowPreviewPromise;
+  assert(workflowPreviewResponse.status() === 201, `React automation preview returned ${workflowPreviewResponse.status()}: ${await workflowPreviewResponse.text()}`);
+  const workflowPreview = (await workflowPreviewResponse.json()).run;
+  assert(workflowPreview?.dry_run === true || workflowPreview?.result?.dry_run === true, 'Automation preview response did not identify itself as a dry run');
+  const workflowRunHistory = await requestJson(fixture.baseUrl, '/api/workflow-runs?project=default&limit=100', fixture.tokens.workflows);
+  assert(workflowRunHistory.response.ok && workflowRunHistory.payload.runs?.some(run => String(run.id) === String(workflowPreview.id) && (run.dry_run === true || run.result?.dry_run === true)), 'Automation dry-run was not recorded as a preview run');
+  const workflowEditName = `${automationName} edited`;
+  await page.getByRole('tab', { name: 'Configuration' }).click();
+  await page.getByLabel('Name', { exact: true }).fill(workflowEditName);
+  const workflowUpdatePromise = page.waitForResponse(response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}`) && response.request().method() === 'PUT', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  const workflowUpdate = await workflowUpdatePromise;
+  assert(workflowUpdate.status() === 200, `React automation update returned ${workflowUpdate.status()}: ${await workflowUpdate.text()}`);
+  const updatedWorkflow = (await workflowUpdate.json()).workflow;
+  assert(updatedWorkflow?.name === workflowEditName, 'Automation update response did not include the revised name');
+  const workflowsAfterUpdate = await requestJson(fixture.baseUrl, '/api/workflows?project=default&limit=100', fixture.tokens.workflows);
+  assert(workflowsAfterUpdate.response.ok && workflowsAfterUpdate.payload.workflows?.some(workflow => String(workflow.id) === String(createdWorkflow.id) && workflow.name === workflowEditName), 'Automation update did not persist in the backend');
+  await page.getByRole('button', { name: 'Automation options' }).click();
+  page.once('dialog', dialog => dialog.accept());
+  const workflowDeletePromise = page.waitForResponse(response => response.url().endsWith(`/api/workflows/${createdWorkflow.id}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Delete automation' }).click();
+  const workflowDelete = await workflowDeletePromise;
+  assert(workflowDelete.ok(), `React automation delete returned ${workflowDelete.status()}: ${await workflowDelete.text()}`);
+  const workflowsAfterDelete = await requestJson(fixture.baseUrl, '/api/workflows?project=default&limit=100', fixture.tokens.workflows);
+  assert(workflowsAfterDelete.response.ok && !workflowsAfterDelete.payload.workflows?.some(workflow => String(workflow.id) === String(createdWorkflow.id)), 'Automation delete did not persist in the backend');
+  const executedWorkflowRequests = apiRequests.filter(request => request.url().includes(`/api/workflows/${createdWorkflow.id}/run`));
+  assert(executedWorkflowRequests.length === 1, `Expected exactly one explicit dry-run preview, got ${executedWorkflowRequests.length} workflow run requests`);
+  results.push({ workflow: 'Automations definition and preview lifecycle', result: 'PASS', evidence: 'React created, previewed in backend dry-run mode, edited and deleted a disposable project workflow through authenticated APIs; Python reads confirmed definition and preview persistence, and no live workflow execution was requested.' });
+
+  // Web Scraper: save a recurring job without approving outbound access.
+  // Scheduling validates locally; it must not resolve DNS or start a fetch.
+  await open('scraper', fixture.tokens.scraper);
+  await page.getByRole('tab', { name: 'Jobs', exact: true }).click();
+  const scraperJobLabel = 'Disposable offline scheduling smoke';
+  await page.getByLabel('Website URL').fill('https://example.org/offline-scheduling-smoke');
+  await page.getByLabel('Job label').fill(scraperJobLabel);
+  await page.getByLabel('Repeat interval (hours)').fill('24');
+  await expect(page.getByRole('checkbox', { name: /I approve recurring external network requests/ })).not.toBeChecked();
+  page.once('dialog', dialog => dialog.accept());
+  const scraperSchedulePromise = page.waitForResponse(response => response.url().endsWith('/api/scraper/schedule') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Schedule extraction' }).click();
+  const scraperSchedule = await scraperSchedulePromise;
+  assert(scraperSchedule.status() === 201, `React offline scraper scheduling returned ${scraperSchedule.status()}: ${await scraperSchedule.text()}`);
+  const scheduledScraperJob = (await scraperSchedule.json()).job;
+  assert(scheduledScraperJob?.job_id && scheduledScraperJob.status === 'awaiting_approval', 'Scraper schedule response omitted the job identity or incorrectly implied outbound approval');
+  const scheduledScraperJobs = await requestJson(fixture.baseUrl, '/api/scraper/jobs?project=default', fixture.tokens.scraper);
+  const persistedScraperJob = scheduledScraperJobs.payload.jobs?.find(job => String(job.id) === String(scheduledScraperJob.job_id));
+  assert(scheduledScraperJobs.response.ok && persistedScraperJob?.metadata?.label === scraperJobLabel && persistedScraperJob.status === 'awaiting_approval', 'Scheduled scraper job was not persisted in the isolated Python database with its label and approval state');
+  assert(!apiRequests.some(request => request.url().includes('/api/scraper/scrape')), 'Scheduling a scraper job unexpectedly started a fetch');
+  await page.getByRole('tab', { name: 'Jobs' }).click();
+  const cancelScraperJob = page.getByRole('button', { name: `Cancel scheduled extraction for ${scraperJobLabel}` });
+  await expect(cancelScraperJob).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  const scraperCancelPromise = page.waitForResponse(response => response.url().endsWith(`/api/scraper/jobs/${scheduledScraperJob.job_id}/cancel`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await cancelScraperJob.click();
+  const scraperCancel = await scraperCancelPromise;
+  assert(scraperCancel.status() === 200, `React scraper cancellation returned ${scraperCancel.status()}: ${await scraperCancel.text()}`);
+  assert((await scraperCancel.json()).cancelled === true, 'Scraper cancellation response did not confirm a pending job cancellation');
+  const scraperCancellationMessage = page.getByRole('status').getByText('Schedule cancelled. The saved job history has been retained.');
+  await expect(scraperCancellationMessage).toBeVisible();
+  const scraperJobsAfterCancel = await requestJson(fixture.baseUrl, '/api/scraper/jobs?project=default', fixture.tokens.scraper);
+  const retainedCancelledScraperJob = scraperJobsAfterCancel.payload.jobs?.find(job => String(job.id) === String(scheduledScraperJob.job_id));
+  assert(scraperJobsAfterCancel.response.ok && retainedCancelledScraperJob?.status === 'cancelled', 'Scraper cancellation was not persisted while retaining the job history row');
+  assert(!apiRequests.some(request => request.url().includes('/api/scraper/scrape')), 'Schedule creation or cancellation unexpectedly started a scraper fetch');
+  results.push({ workflow: 'Web Scraper schedule, cancellation and history', result: 'PASS', evidence: 'React created a disposable schedule with external access approval unchecked, Python confirmed its awaiting-approval state, React cancelled it through the authenticated project-scoped route, and a fresh Python GET returned the retained row with status cancelled. No fetch route was called.' });
+
   // Files: import a deterministic text file through the actual React file
   // picker, then verify the authenticated document response and local download.
   await open('files', fixture.tokens.documents);
   await page.getByRole('button', { name: 'Document filters and actions' }).click();
+  const requestsBeforeLegacyOffice = apiRequests.length;
+  await page.getByLabel('Choose document to import').setInputFiles({
+    name: 'unsupported-legacy.doc', mimeType: 'application/msword', buffer: Buffer.from([0, 1, 255, 0]),
+  });
+  await expect(page.getByRole('alert').getByText(/Legacy Office files cannot be safely extracted/)).toBeVisible();
+  assert(!apiRequests.slice(requestsBeforeLegacyOffice).some(request => /\/api\/documents\/import(?:\?|$)/.test(new URL(request.url()).pathname + new URL(request.url()).search)), 'React sent an unsupported legacy Office binary to the document importer');
+  results.push({ workflow: 'Files unsupported legacy Office input', result: 'PASS', evidence: 'React rejected a synthetic binary .doc with a clear conversion message and made no document-import request; the Python processing service separately rejects legacy .doc/.ppt/.xls before creating a record.' });
   const importedText = 'Batch 2A synthetic document content for import and download verification.';
   const importResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/documents/import') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByLabel('Choose document to import').setInputFiles({
@@ -606,8 +1201,81 @@ async function run() {
     assert([401, 403].includes(crossOwnerMedia.response.status), `Foreign installation media read returned unexpected ${crossOwnerMedia.response.status}`);
     results.push({ workflow: 'Media installation isolation', result: 'PASS', evidence: `A credential issued by a separate installation could not list the owner media asset (HTTP ${crossOwnerMedia.response.status}).` });
   }
-  results.push({ workflow: 'Files', result: 'PASS', evidence: `React imported a deterministic Markdown file through /api/documents/import, read the persisted text, and triggered the text download; a foreign installation credential was denied with HTTP ${crossOwnerDocument.response.status}.` });
+  const deniedMediaDelete = await requestJson(fixture.baseUrl, `/api/media/assets/${encodeURIComponent(uploadedAsset.id)}?project=default`, fixture.tokens.readonly, { method: 'DELETE' });
+  assert(deniedMediaDelete.response.status === 403, `media:read token deleted stored media (HTTP ${deniedMediaDelete.response.status})`);
+  await page.once('dialog', dialog => dialog.accept());
+  const mediaDeletePromise = page.waitForResponse(response => response.url().includes(`/api/media/assets/${encodeURIComponent(uploadedAsset.id)}?project=default`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: `Delete ${uploadedAsset.title}` }).click();
+  const mediaDeleteResponse = await mediaDeletePromise;
+  assert(mediaDeleteResponse.status() === 200, `React stored media deletion returned ${mediaDeleteResponse.status()}: ${await mediaDeleteResponse.text()}`);
+  const mediaDeleteResult = await mediaDeleteResponse.json();
+  assert(mediaDeleteResult.deleted === true && mediaDeleteResult.stored_bytes_removed === true, 'Media delete did not confirm removal of its stored copy');
+  const mediaAssetsAfterDelete = await requestJson(fixture.baseUrl, '/api/media/assets?project=default&limit=100', fixture.tokens.documents);
+  assert(mediaAssetsAfterDelete.response.ok && !mediaAssetsAfterDelete.payload.assets?.some(asset => String(asset.id) === String(uploadedAsset.id)), 'Deleted media remains in the persisted Files list');
+  let uploadedBytesRemain = false;
+  try { await access(uploadedAsset.stored_path); uploadedBytesRemain = true; } catch { /* deleted in the isolated media store */ }
+  assert(!uploadedBytesRemain, 'Deleted media bytes remain in the temporary data directory');
+  results.push({ workflow: 'Files', result: 'PASS', evidence: `React imported and downloaded a deterministic Markdown document, uploaded a synthetic media file, and deleted its stored copy through project-scoped DELETE. A media:read-only credential received 403; the deleted asset and stored bytes were absent on fresh Python reads. Foreign installation document/media reads were denied (document HTTP ${crossOwnerDocument.response.status}, media HTTP ${crossOwnerMedia.response.status}).` });
 
+  // Workspace Notes are separate from the document library. Create one via
+  // the actual React form, then confirm and delete it through its project-scoped
+  // lifecycle route; no user documents outside this disposable fixture are used.
+  const workspaceNoteTitle = 'Batch 2A disposable workspace note';
+  const documentsTokenWorkspaceRead = await requestJson(fixture.baseUrl, '/api/workspace/items?project=default&kind=note&limit=100', fixture.tokens.documents);
+  assert([401, 403].includes(documentsTokenWorkspaceRead.response.status), `Document-only token unexpectedly read workspace items (HTTP ${documentsTokenWorkspaceRead.response.status})`);
+  await open('files', fixture.tokens.workspace);
+  await page.getByRole('tab', { name: 'Notes', exact: true }).click();
+  await page.getByRole('button', { name: 'Add note', exact: true }).click();
+  const workspaceNoteDialog = page.getByRole('dialog', { name: 'New workspace note' });
+  await workspaceNoteDialog.getByLabel('Note title', { exact: true }).fill(workspaceNoteTitle);
+  await workspaceNoteDialog.getByLabel('Note', { exact: true }).fill('Disposable note used to verify authenticated workspace item deletion.');
+  const workspaceCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/workspace/items') && response.request().method() === 'POST', { timeout: 15_000 });
+  await workspaceNoteDialog.getByRole('button', { name: 'Create note', exact: true }).click();
+  const workspaceCreate = await workspaceCreatePromise;
+  assert(workspaceCreate.status() === 201, `Workspace note create returned ${workspaceCreate.status()}`);
+  const workspaceItem = (await workspaceCreate.json()).item;
+  assert(workspaceItem?.id, 'Workspace note create omitted the item id');
+  await expect(page.getByRole('button', { name: new RegExp(workspaceNoteTitle) })).toBeVisible();
+  const updatedWorkspaceTitle = `${workspaceNoteTitle} edited`;
+  await page.getByLabel('Note title', { exact: true }).fill(updatedWorkspaceTitle);
+  await page.getByLabel('Note content', { exact: true }).fill('Updated disposable note content for project-scope and persistence verification.');
+  const workspaceUpdatePromise = page.waitForResponse(response => response.url().endsWith('/api/workspace/items/update') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Save note', exact: true }).click();
+  const workspaceUpdate = await workspaceUpdatePromise;
+  assert(workspaceUpdate.status() === 200, `Workspace note update returned ${workspaceUpdate.status()}`);
+  const workspaceUpdatedItem = (await workspaceUpdate.json()).item;
+  assert(String(workspaceUpdatedItem?.title) === updatedWorkspaceTitle && workspaceUpdatedItem?.project === 'default', 'Workspace note update did not persist under the requested project');
+  const updatedWorkspaceList = await requestJson(fixture.baseUrl, '/api/workspace/items?project=default&kind=note&limit=100', fixture.tokens.workspace);
+  assert(updatedWorkspaceList.response.ok && updatedWorkspaceList.payload.items?.some(item => String(item.id) === String(workspaceItem.id) && String(item.title) === updatedWorkspaceTitle), 'Updated workspace note was not persisted in Python project history');
+  await expect(page.getByRole('button', { name: new RegExp(updatedWorkspaceTitle) })).toBeVisible();
+  const workspaceArchivePromise = page.waitForResponse(response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Archive note' }).click();
+  const workspaceArchive = await workspaceArchivePromise;
+  assert(workspaceArchive.ok(), `Workspace archive returned ${workspaceArchive.status()}: ${await workspaceArchive.text()}`);
+  await expect(page.getByRole('list', { name: 'Workspace notes' }).getByRole('button', { name: new RegExp(updatedWorkspaceTitle) })).toHaveCount(0);
+  const archivedWorkspaceList = await requestJson(fixture.baseUrl, '/api/workspace/items?project=default&kind=note&limit=100&include_archived=true', fixture.tokens.workspace);
+  assert(archivedWorkspaceList.response.ok && archivedWorkspaceList.payload.items?.some(item => String(item.id) === String(workspaceItem.id) && Boolean(item.archived)), 'Workspace archive state was not persisted or excluded correctly');
+  await page.getByLabel('Show archived').check();
+  const archivedWorkspaceRow = page.getByRole('list', { name: 'Workspace notes' }).getByRole('button', { name: new RegExp(updatedWorkspaceTitle) });
+  await expect(archivedWorkspaceRow).toContainText('Archived');
+  await archivedWorkspaceRow.click();
+  const workspaceRestorePromise = page.waitForResponse(response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}/restore`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Restore note' }).click();
+  const workspaceRestore = await workspaceRestorePromise;
+  assert(workspaceRestore.ok(), `Workspace restore returned ${workspaceRestore.status()}: ${await workspaceRestore.text()}`);
+  const restoredWorkspaceList = await requestJson(fixture.baseUrl, '/api/workspace/items?project=default&kind=note&limit=100', fixture.tokens.workspace);
+  assert(restoredWorkspaceList.response.ok && restoredWorkspaceList.payload.items?.some(item => String(item.id) === String(workspaceItem.id) && !item.archived), 'Workspace restore did not persist in the normal item list');
+  await page.getByLabel('Show archived').uncheck();
+  page.once('dialog', dialog => dialog.accept());
+  const workspaceDeletePromise = page.waitForResponse(response => response.url().includes(`/api/workspace/items/${encodeURIComponent(workspaceItem.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Delete note', exact: true }).click();
+  const workspaceDelete = await workspaceDeletePromise;
+  assert(workspaceDelete.status() === 200, `Workspace note delete returned ${workspaceDelete.status()}`);
+  const remainingWorkspaceNotes = await requestJson(fixture.baseUrl, '/api/workspace/items?project=default&kind=note&limit=100', fixture.tokens.workspace);
+  assert(remainingWorkspaceNotes.response.ok && !remainingWorkspaceNotes.payload.items?.some(item => String(item.id) === String(workspaceItem.id)), 'Deleted workspace note remained in the project item list');
+  results.push({ workflow: 'Files workspace notes', result: 'PASS', evidence: 'Actual React created and edited a disposable note, archived it and verified it disappeared from the default list, loaded it through include_archived=true, restored it and verified it returned to the active list, then deleted it and confirmed absence on a fresh Python read. All operations used the explicit project scope.' });
+
+  }
   // Knowledge: submit a local-only text source from the approved Ingestion
   // panel and verify that the existing backend indexed the source.
   await open('knowledge', fixture.tokens.knowledge);
@@ -621,7 +1289,25 @@ async function run() {
   const knowledgeIngest = await knowledgeIngestPromise;
   assert(knowledgeIngest.status() === 201, `Knowledge source ingestion returned ${knowledgeIngest.status()}`);
   const persistedKnowledge = await requestJson(fixture.baseUrl, '/api/knowledge/documents?project=default&limit=100', fixture.tokens.knowledge);
-  assert(persistedKnowledge.response.ok && persistedKnowledge.payload.documents?.some(document => document.title === knowledgeTitle), 'Knowledge source was not persisted in the project index');
+  const indexedKnowledge = persistedKnowledge.payload.documents?.find(document => document.title === knowledgeTitle);
+  assert(persistedKnowledge.response.ok && indexedKnowledge, 'Knowledge source was not persisted in the project index');
+  const knowledgeDetail = await requestJson(fixture.baseUrl, `/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}?project=default`, fixture.tokens.knowledge);
+  assert(knowledgeDetail.response.ok && knowledgeDetail.payload.document?.content.includes('Local fixture evidence only.'), 'Knowledge detail route did not return the persisted source content');
+  const knowledgeUpdatedTitle = 'Batch 2A revised synthetic knowledge source';
+  await page.getByRole('tab', { name: 'Ingestion', exact: true }).click();
+  await page.getByRole('button', { name: `Open ${knowledgeTitle}`, exact: true }).click();
+  await page.getByRole('dialog').getByText('Local fixture evidence only.', { exact: false }).waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByRole('button', { name: 'Edit source', exact: true }).click();
+  const knowledgeEditDialog = page.getByRole('dialog', { name: 'Edit knowledge source' });
+  await knowledgeEditDialog.getByRole('textbox', { name: 'Knowledge source title' }).fill(knowledgeUpdatedTitle);
+  await knowledgeEditDialog.getByRole('textbox', { name: 'Knowledge source text' }).fill('Updated local fixture evidence only. No external research or network provider is used.');
+  const knowledgeUpdatePromise = page.waitForResponse(response => response.url().endsWith(`/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}`) && response.request().method() === 'PUT', { timeout: 15_000 });
+  await knowledgeEditDialog.getByRole('button', { name: 'Save source', exact: true }).click();
+  const knowledgeUpdate = await knowledgeUpdatePromise;
+  assert(knowledgeUpdate.status() === 200, `Knowledge source update returned ${knowledgeUpdate.status()}`);
+  const updatedKnowledgeDetail = await requestJson(fixture.baseUrl, `/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}?project=default`, fixture.tokens.knowledge);
+  assert(updatedKnowledgeDetail.response.ok && updatedKnowledgeDetail.payload.document?.title === knowledgeUpdatedTitle && updatedKnowledgeDetail.payload.document?.content.includes('Updated local fixture evidence only.'), 'Knowledge update did not preserve the source ID and persist its revised title/content');
+  await page.getByRole('dialog', { name: knowledgeUpdatedTitle }).getByRole('button', { name: 'Close source details' }).click();
   await page.getByRole('tab', { name: 'Search', exact: true }).click();
   const knowledgeUploadText = 'Batch 2A Knowledge upload: deterministic text extracted locally.';
   const knowledgeUploadPromise = page.waitForResponse(response => response.url().endsWith('/api/knowledge/upload') && response.request().method() === 'POST', { timeout: 15_000 });
@@ -634,6 +1320,56 @@ async function run() {
   assert(Number(knowledgeUploadPayload.chars_extracted) > 0, 'Knowledge upload did not extract deterministic text locally');
   const listedUploadedKnowledge = await requestJson(fixture.baseUrl, '/api/knowledge/documents?project=default&limit=100', fixture.tokens.knowledge);
   assert(listedUploadedKnowledge.response.ok && listedUploadedKnowledge.payload.documents?.some(document => document.title === 'batch2a-knowledge-upload.txt'), 'Uploaded Knowledge file was not indexed in the project list');
+  const richTextBuffer = Buffer.from('{\\rtf1\\ansi Local rich text extraction\\par persisted from RTF upload.}');
+  const rtfUploadPromise = page.waitForResponse(response => response.url().endsWith('/api/knowledge/upload') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByLabel('Upload knowledge document').setInputFiles({ name: 'batch2a-knowledge-upload.rtf', mimeType: 'application/rtf', buffer: richTextBuffer });
+  const rtfUpload = await rtfUploadPromise;
+  const rtfUploadPayload = await rtfUpload.json();
+  assert(rtfUpload.status() === 201 && String(rtfUploadPayload.attachment?.extracted_text ?? '').includes('Local rich text extraction'), `Knowledge RTF upload did not extract readable text: ${JSON.stringify(rtfUploadPayload)}`);
+  const knowledgeCollectionName = 'Batch 2A semantic collection';
+  const knowledgeCollectionRenamed = `${knowledgeCollectionName} · revised`;
+  await page.getByRole('tab', { name: 'Collections', exact: true }).click();
+  await page.getByLabel('Collection name').fill(knowledgeCollectionName);
+  const knowledgeCollectionCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/semantic/collections') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Create collection', exact: true }).click();
+  const knowledgeCollectionCreate = await knowledgeCollectionCreatePromise;
+  assert(knowledgeCollectionCreate.status() === 201, `Knowledge collection create returned ${knowledgeCollectionCreate.status()}`);
+  const createdCollection = (await knowledgeCollectionCreate.json()).collection;
+  assert(createdCollection?.id && createdCollection.name === knowledgeCollectionName, 'Knowledge collection response omitted its deterministic name or ID');
+  await page.getByRole('button', { name: `Open collection ${knowledgeCollectionName}`, exact: true }).click();
+  const collectionDetailDialog = page.getByRole('dialog', { name: knowledgeCollectionName });
+  await collectionDetailDialog.getByRole('button', { name: 'Rename', exact: true }).click();
+  const collectionRenameDialog = page.getByRole('dialog', { name: 'Rename collection' });
+  await collectionRenameDialog.getByRole('textbox', { name: 'New collection name' }).fill(knowledgeCollectionRenamed);
+  const knowledgeCollectionRenamePromise = page.waitForResponse(response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionName)}/rename`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await collectionRenameDialog.getByRole('button', { name: 'Rename', exact: true }).click();
+  const knowledgeCollectionRename = await knowledgeCollectionRenamePromise;
+  assert(knowledgeCollectionRename.status() === 200, `Knowledge collection rename returned ${knowledgeCollectionRename.status()}`);
+  const renamedCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default', fixture.tokens.knowledge);
+  assert(renamedCollectionRead.response.ok && renamedCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id && collection.name === knowledgeCollectionRenamed), 'Knowledge collection rename did not persist with the same collection ID');
+  const collectionArchivePromise = page.waitForResponse(response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await collectionDetailDialog.getByRole('button', { name: 'Archive', exact: true }).click();
+  const collectionArchive = await collectionArchivePromise;
+  assert(collectionArchive.status() === 200, `Knowledge collection archive returned ${collectionArchive.status()}`);
+  const archivedCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default&include_archived=true', fixture.tokens.knowledge);
+  const activeCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default', fixture.tokens.knowledge);
+  assert(archivedCollectionRead.response.ok && archivedCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id && collection.archived), 'Archived Knowledge collection was not available in the archived listing');
+  assert(activeCollectionRead.response.ok && !activeCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id), 'Archived Knowledge collection remained in the active listing');
+  const collectionRestorePromise = page.waitForResponse(response => response.url().endsWith(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}/archive`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await collectionDetailDialog.getByRole('button', { name: 'Restore', exact: true }).click();
+  const collectionRestore = await collectionRestorePromise;
+  assert(collectionRestore.status() === 200, `Knowledge collection restore returned ${collectionRestore.status()}`);
+  const restoredCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default', fixture.tokens.knowledge);
+  assert(restoredCollectionRead.response.ok && restoredCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id && !collection.archived), 'Knowledge collection restore did not persist with its original ID');
+  await page.getByRole('dialog').getByRole('button', { name: 'Close collection details' }).click();
+  await page.getByRole('button', { name: `Open collection ${knowledgeCollectionRenamed}`, exact: true }).click();
+  page.once('dialog', dialog => dialog.accept());
+  const knowledgeCollectionDeletePromise = page.waitForResponse(response => response.url().includes(`/api/semantic/collections/${encodeURIComponent(knowledgeCollectionRenamed)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+  const knowledgeCollectionDelete = await knowledgeCollectionDeletePromise;
+  assert(knowledgeCollectionDelete.status() === 200, `Knowledge collection delete returned ${knowledgeCollectionDelete.status()}`);
+  const deletedCollectionRead = await requestJson(fixture.baseUrl, '/api/semantic/collections?project=default', fixture.tokens.knowledge);
+  assert(deletedCollectionRead.response.ok && !deletedCollectionRead.payload.collections?.some(collection => collection.id === createdCollection.id), 'Deleted Knowledge collection remained in its project list');
   const crossOwnerKnowledge = await requestJson(fixture.baseUrl, '/api/knowledge/documents?project=default&limit=100', fixture.tokens.otherKnowledgeRead);
   if (crossOwnerKnowledge.response.ok && crossOwnerKnowledge.payload.documents?.some(document => document.title === knowledgeTitle)) {
     results.push({ workflow: 'Knowledge installation isolation', result: 'BLOCKED', evidence: 'A foreign installation credential listed owner Knowledge data (HTTP 200); personal_remote isolation failed.' });
@@ -641,10 +1377,25 @@ async function run() {
     assert([401, 403].includes(crossOwnerKnowledge.response.status), `Foreign installation Knowledge list returned unexpected ${crossOwnerKnowledge.response.status}`);
     results.push({ workflow: 'Knowledge installation isolation', result: 'PASS', evidence: `A credential issued by a separate installation could not list owner Knowledge data (HTTP ${crossOwnerKnowledge.response.status}).` });
   }
-  results.push({ workflow: 'Knowledge', result: 'PASS', evidence: 'React Ingestion POSTed /api/knowledge/ingest and the Documents form multipart-POSTed /api/knowledge/upload; the real local server returned extracted text and both records appeared in the project list.' });
+  await page.getByRole('tab', { name: 'Ingestion', exact: true }).click();
+  await page.getByRole('button', { name: `Open ${knowledgeUpdatedTitle}`, exact: true }).click();
+  await page.getByRole('dialog').getByText('Updated local fixture evidence only.', { exact: false }).waitFor({ state: 'visible', timeout: 15_000 });
+  page.once('dialog', dialog => dialog.accept());
+  const knowledgeDeletePromise = page.waitForResponse(response => response.url().includes(`/api/knowledge/documents/${encodeURIComponent(indexedKnowledge.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Delete source', exact: true }).click();
+  const knowledgeDelete = await knowledgeDeletePromise;
+  assert(knowledgeDelete.status() === 200, `Knowledge source delete returned ${knowledgeDelete.status()}`);
+  const afterKnowledgeDelete = await requestJson(fixture.baseUrl, '/api/knowledge/documents?project=default&limit=100', fixture.tokens.knowledge);
+  assert(afterKnowledgeDelete.response.ok && !afterKnowledgeDelete.payload.documents?.some(document => String(document.id) === String(indexedKnowledge.id)), 'Deleted Knowledge source remained in project index');
+  results.push({ workflow: 'Knowledge', result: 'PASS', evidence: 'React indexed, opened, edited and deleted a deterministic source; uploaded local text and RTF fixtures; and created, renamed, archived, restored and deleted a semantic collection through the actual semantic collection contracts. Fresh authenticated Python reads verified persistence, active/archived filtering, and preservation of collection ID on rename/archive/restore.' });
+  }
+  if (onlyKnowledge) {
+    finishResults({ selectedWorkflows: ['Knowledge'] });
+    return;
+  }
 
-  // Communications: seed one synthetic inbox row, draft a reply through the
-  // React control and archive it. This does not send mail or contact a provider.
+  // Communications: seed synthetic inbox rows, create a reply draft, archive
+  // one message, and move another to trash. No mail is sent or provider contacted.
   const importedMessageResponse = await requestJson(fixture.baseUrl, '/api/communication/messages/import', fixture.tokens.communication, {
     method: 'POST', body: {
       platform: 'email', sender: 'batch2a@example.test', recipients: ['local-user@example.test'],
@@ -653,6 +1404,14 @@ async function run() {
   });
   assert(importedMessageResponse.response.status === 201, `Synthetic inbox fixture import returned ${importedMessageResponse.response.status}`);
   const importedMessage = importedMessageResponse.payload.message;
+  const trashMessageResponse = await requestJson(fixture.baseUrl, '/api/communication/messages/import', fixture.tokens.communication, {
+    method: 'POST', body: {
+      platform: 'email', sender: 'batch2a@example.test', recipients: ['local-user@example.test'],
+      subject: 'Batch 2A synthetic trash message', body: 'Local-only message fixture for reversible trash checks.', project: 'default',
+    },
+  });
+  assert(trashMessageResponse.response.status === 201, `Synthetic trash fixture import returned ${trashMessageResponse.response.status}`);
+  const trashMessage = trashMessageResponse.payload.message;
   await open('communications', fixture.tokens.communication);
   await page.getByRole('button', { name: /Batch 2A synthetic inbox message/ }).click();
   const replyDraftPromise = page.waitForResponse(response => response.url().endsWith('/api/communication/drafts/reply') && response.request().method() === 'POST', { timeout: 15_000 });
@@ -663,35 +1422,369 @@ async function run() {
   assert(replyDraft?.id, 'Reply draft response omitted its identifier');
   const draftsAfterReply = await requestJson(fixture.baseUrl, '/api/communication/drafts?project=default&limit=100', fixture.tokens.communication);
   assert(draftsAfterReply.response.ok && draftsAfterReply.payload.drafts?.some(draft => String(draft.id) === String(replyDraft.id)), 'Reply draft did not persist in communication drafts');
+  const copiedDraftPromise = page.waitForResponse(response => response.url().endsWith('/api/communication/drafts') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Copy to drafts', exact: true }).click();
+  const copiedDraftResponse = await copiedDraftPromise;
+  assert(copiedDraftResponse.status() === 201, `React inbox draft copy returned ${copiedDraftResponse.status()}: ${await copiedDraftResponse.text()}`);
+  const copiedDraft = (await copiedDraftResponse.json()).draft;
+  assert(copiedDraft?.id && String(copiedDraft.message_id) === String(importedMessage.id), 'Inbox copy draft did not retain its source-message reference');
+  assert(copiedDraft.subject === importedMessage.subject && copiedDraft.body === importedMessage.body, 'Inbox copy draft did not preserve the message subject and body');
+  const draftsAfterCopy = await requestJson(fixture.baseUrl, '/api/communication/drafts?project=default&limit=100', fixture.tokens.communication);
+  assert(draftsAfterCopy.response.ok && draftsAfterCopy.payload.drafts?.some(draft => String(draft.id) === String(copiedDraft.id)), 'Copied inbox draft did not persist');
+  await page.getByRole('button', { name: 'Edit message', exact: true }).click();
+  const editMessageDialog = page.getByRole('dialog', { name: 'Edit inbox message' });
+  await editMessageDialog.getByLabel('Subject').fill('Batch 2A synthetic inbox message · revised');
+  await editMessageDialog.getByLabel('Sender').fill('batch2a-updated@example.test');
+  await editMessageDialog.getByRole('textbox', { name: 'Message' }).fill('Local-only revised message fixture for draft and archive checks.');
+  const editMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/update') && response.request().method() === 'POST', { timeout: 15_000 });
+  await editMessageDialog.getByRole('button', { name: 'Save changes' }).click();
+  const editMessageResponse = await editMessagePromise;
+  assert(editMessageResponse.status() === 200, `React inbox edit returned ${editMessageResponse.status()}: ${await editMessageResponse.text()}`);
+  const editedInboxMessage = (await editMessageResponse.json()).message;
+  assert(editedInboxMessage?.subject === 'Batch 2A synthetic inbox message · revised' && editedInboxMessage.body === 'Local-only revised message fixture for draft and archive checks.', 'React inbox edit response did not return the updated record');
+  const inboxAfterEdit = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
+  assert(inboxAfterEdit.response.ok && inboxAfterEdit.payload.messages?.some(message => String(message.id) === String(importedMessage.id) && message.subject === editedInboxMessage.subject && message.sender === editedInboxMessage.sender && message.body === editedInboxMessage.body), 'Communication message edit did not persist');
   const archiveMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
   await page.getByRole('button', { name: 'Archive', exact: true }).click();
   const archiveMessage = await archiveMessagePromise;
   assert(archiveMessage.ok(), `React message archive returned ${archiveMessage.status()}`);
   const inboxAfterArchive = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
   assert(inboxAfterArchive.response.ok && inboxAfterArchive.payload.messages?.some(message => String(message.id) === String(importedMessage.id) && (message.archived === true || Number(message.archived) === 1 || message.folder === 'archive')), 'Communication archive state was not persisted');
+  await page.getByRole('button', { name: /Batch 2A synthetic trash message/ }).click();
+  const trashMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Move to trash', exact: true }).click();
+  const trashResponse = await trashMessagePromise;
+  assert(trashResponse.ok(), `React message move-to-trash returned ${trashResponse.status()}`);
+  const inboxAfterTrash = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
+  assert(inboxAfterTrash.response.ok && inboxAfterTrash.payload.messages?.some(message => String(message.id) === String(trashMessage.id) && message.folder === 'trash'), 'Communication trash state was not persisted');
+  const restoreMessagePromise = page.waitForResponse(response => response.url().endsWith('/api/communication/messages/state') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  const restoreMessage = await restoreMessagePromise;
+  assert(restoreMessage.ok(), `React message restore returned ${restoreMessage.status()}`);
+  const inboxAfterRestore = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
+  assert(inboxAfterRestore.response.ok && inboxAfterRestore.payload.messages?.some(message => String(message.id) === String(trashMessage.id) && message.folder === 'inbox'), 'Restored message was not persisted in the inbox');
+  await page.getByRole('button', { name: /Batch 2A synthetic trash message/ }).click();
+  page.once('dialog', dialog => dialog.accept());
+  const permanentDeletePromise = page.waitForResponse(response => response.url().includes(`/api/communication/messages/${encodeURIComponent(trashMessage.id)}?project=default`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Delete message permanently', exact: true }).click();
+  const permanentDelete = await permanentDeletePromise;
+  assert(permanentDelete.status() === 200, `React permanent message delete returned ${permanentDelete.status()}: ${await permanentDelete.text()}`);
+  const inboxAfterPermanentDelete = await requestJson(fixture.baseUrl, '/api/communication/inbox?project=default', fixture.tokens.communication);
+  assert(inboxAfterPermanentDelete.response.ok && !inboxAfterPermanentDelete.payload.messages?.some(message => String(message.id) === String(trashMessage.id)), 'Permanently deleted message remained in a fresh Python inbox read');
   assert(!apiRequests.some(request => request.url().includes('/api/communication/send')), 'The local communications smoke unexpectedly invoked a send operation');
-  results.push({ workflow: 'Communications', result: 'PASS', evidence: 'The actual React Inbox created a reply draft through the existing API, persisted it, archived the synthetic imported message, and issued no send request.' });
+  results.push({ workflow: 'Communications', result: 'PASS', evidence: 'The actual React Inbox created reply and source-linked copy drafts, edited the synthetic message and refreshed its contextual text, archived it, moved a second message to trash, restored it, then permanently deleted it through the authenticated project-scoped DELETE route and verified absence on a fresh Python read. No message was sent.' });
+
+  if (onlyCommunications) {
+    finishResults({ selectedWorkflows: ['Communications'] });
+    return;
+  }
+
+  // Contacts CRM uses the standalone /api/contacts contract. Exercise the UI
+  // field adapters against the backend's handles object and verify each write
+  // through a fresh Python list/export response.
+  await open('communications', fixture.tokens.communication);
+  await page.getByRole('tab', { name: 'Contacts' }).click();
+  await page.getByText('Add CRM contact', { exact: true }).click();
+  await page.getByLabel('Name').fill('Batch 2 CRM smoke contact');
+  await page.getByLabel('Email').fill('crm-smoke@example.test');
+  await page.getByLabel('Notes').fill('Disposable local CRM lifecycle record');
+  const crmCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/contacts') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Save contact' }).click();
+  const crmCreateResponse = await crmCreatePromise;
+  assert(crmCreateResponse.status() === 201, `React CRM contact creation returned HTTP ${crmCreateResponse.status()}`);
+  const createdCrmContact = (await crmCreateResponse.json()).contact;
+  assert(createdCrmContact?.id && createdCrmContact.handles?.email === 'crm-smoke@example.test', 'CRM create did not persist email under handles.email');
+  let crmRead = await requestJson(fixture.baseUrl, '/api/contacts?project=default', fixture.tokens.communication);
+  assert(crmRead.response.ok && crmRead.payload.contacts?.some(contact => String(contact.id) === String(createdCrmContact.id)), 'Fresh CRM read did not return the new contact');
+  const crmRow = page.locator('.p-record-section').filter({ hasText: 'Batch 2 CRM smoke contact' });
+  await crmRow.getByRole('button', { name: 'Edit' }).click();
+  await page.getByPlaceholder('Email').fill('crm-smoke-updated@example.test');
+  // Editing replaces the contact heading with inputs, so the original
+  // name-based row locator no longer matches after the edit transition.
+  const editingCrmRow = page.locator('.p-record-section').filter({ has: page.getByPlaceholder('Email') });
+  const crmPatchPromise = page.waitForResponse(response => response.url().includes(`/api/contacts/${encodeURIComponent(createdCrmContact.id)}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  await editingCrmRow.getByRole('button', { name: 'Save', exact: true }).click();
+  const crmPatchResponse = await crmPatchPromise;
+  assert(crmPatchResponse.ok(), `React CRM contact update returned HTTP ${crmPatchResponse.status()}`);
+  crmRead = await requestJson(fixture.baseUrl, '/api/contacts?project=default', fixture.tokens.communication);
+  assert(crmRead.response.ok && crmRead.payload.contacts?.some(contact => String(contact.id) === String(createdCrmContact.id) && contact.handles?.email === 'crm-smoke-updated@example.test'), 'Fresh CRM read did not return the updated handle');
+  const crmExportPromise = page.waitForResponse(response => response.url().includes('/api/contacts/export') && response.request().method() === 'GET', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Export CRM' }).click();
+  const crmExportResponse = await crmExportPromise;
+  const crmExport = await crmExportResponse.json();
+  assert(crmExportResponse.ok() && crmExport.contacts?.some(contact => String(contact.id) === String(createdCrmContact.id)), 'CRM export omitted the persisted contact');
+  page.once('dialog', dialog => dialog.accept());
+  const crmDeletePromise = page.waitForResponse(response => response.url().includes(`/api/contacts/${encodeURIComponent(createdCrmContact.id)}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await crmRow.getByRole('button', { name: 'Delete' }).click();
+  assert((await crmDeletePromise).ok(), 'React CRM contact deletion failed');
+  crmRead = await requestJson(fixture.baseUrl, '/api/contacts?project=default', fixture.tokens.communication);
+  assert(crmRead.response.ok && !crmRead.payload.contacts?.some(contact => String(contact.id) === String(createdCrmContact.id)), 'CRM deletion did not persist');
+  results.push({ workflow: 'Contacts CRM', result: 'PASS', evidence: 'React created a disposable contact with handles.email, edited its email while preserving the backend handles shape, exported the persisted contact, deleted it after confirmation and verified each state through fresh Python reads.' });
+
+  // Voice: create a real local transcription session from React, then upload a
+  // short synthetic WAV through the existing STT contract. The fixture is
+  // silent and does not claim that speech recognition produced a transcript.
+  await open('voice', fixture.tokens.voice);
+  const voiceSessionPromise = page.waitForResponse(response => response.url().includes('/api/voice/sessions') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'New session', exact: true }).click();
+  const voiceSessionResponse = await voiceSessionPromise;
+  assert(voiceSessionResponse.status() === 201, `React Voice session creation returned ${voiceSessionResponse.status()}`);
+  const voiceSession = (await voiceSessionResponse.json()).session;
+  assert(voiceSession?.id && voiceSession.status === 'active', 'Voice session was not returned as an active persisted session');
+  await page.getByRole('tab', { name: 'Transcripts' }).click();
+  await page.locator('input[aria-label="Choose audio file"]').setInputFiles({
+    name: 'openagent-smoke-silence.wav', mimeType: 'audio/wav', buffer: syntheticSilenceWav(),
+  });
+  const voiceSttPromise = page.waitForResponse(response => response.url().endsWith('/api/voice/stt') && response.request().method() === 'POST', { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Upload and transcribe' }).click();
+  const voiceSttResponse = await voiceSttPromise;
+  assert(voiceSttResponse.status() === 201, `React Voice upload returned ${voiceSttResponse.status()}: ${await voiceSttResponse.text()}`);
+  const voiceStt = (await voiceSttResponse.json()).transcription;
+  assert(voiceStt?.session_id === voiceSession.id && voiceStt.turn?.id && voiceStt.audio_asset?.id, 'Voice STT response omitted its session, persisted turn or local audio asset');
+  assert(typeof voiceStt.display_text === 'string' && voiceStt.display_text.length > 0, 'Voice STT did not provide its truthful status or transcript text');
+  const persistedVoiceTurns = await requestJson(fixture.baseUrl, `/api/voice/turns?project=default&session_id=${encodeURIComponent(voiceSession.id)}`, fixture.tokens.voice);
+  assert(persistedVoiceTurns.response.ok && persistedVoiceTurns.payload.turns?.some(turn => String(turn.id) === String(voiceStt.turn.id) && String(turn.audio_asset_id) === String(voiceStt.audio_asset.id)), 'Voice audio/transcript record did not persist in the session history');
+  results.push({ workflow: 'Voice local session and buffered audio', result: 'PASS', evidence: `React created session ${voiceSession.id}, uploaded a generated 0.1-second silent WAV to the existing local STT route, and verified persisted turn ${voiceStt.turn.id} and audio asset ${voiceStt.audio_asset.id}. This validates transport and persistence only; it does not claim speech recognition.` });
+  await page.getByRole('tab', { name: 'Voice settings' }).click();
+  await page.getByRole('textbox', { name: 'Text to synthesize' }).fill('Local playback integration fixture.');
+  const voicePlaybackPath = `/api/voice/assets/`;
+  const audioPlaybackPromise = page.waitForResponse(response => new URL(response.url()).pathname.startsWith(voicePlaybackPath) && new URL(response.url()).pathname.endsWith('/content') && response.request().method() === 'GET', { timeout: 15_000 });
+  const ttsCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/voice/tts') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Generate local speech artifact' }).click();
+  const ttsResponse = await ttsCreatePromise;
+  assert(ttsResponse.status() === 201, `React local TTS returned ${ttsResponse.status()}: ${await ttsResponse.text()}`);
+  const ttsArtifact = (await ttsResponse.json()).script;
+  assert(ttsArtifact?.audio_asset_id, 'Local TTS response did not identify its stored audio asset');
+  const voiceAudioUrl = `/api/voice/assets/${encodeURIComponent(ttsArtifact.audio_asset_id)}/content?project=default`;
+  assert((await requestJson(fixture.baseUrl, voiceAudioUrl, '')).response.status === 401, 'Voice audio content was readable without authentication');
+  assert((await requestJson(fixture.baseUrl, voiceAudioUrl, fixture.tokens.neitherAgentScope)).response.status === 403, 'Voice audio content was readable without the voice read scope');
+  assert((await requestJson(fixture.baseUrl, `/api/voice/assets/${encodeURIComponent(ttsArtifact.audio_asset_id)}/content?project=other`, fixture.tokens.voice)).response.status === 404, 'Voice audio content crossed the requested project scope');
+  const directAudio = await requestBytes(fixture.baseUrl, voiceAudioUrl, fixture.tokens.voice);
+  assert(directAudio.status === 200 && directAudio.body.subarray(0, 4).toString('ascii') === 'RIFF', `The local HTTP route did not return WAV bytes (status=${directAudio.status}, bytes=${directAudio.body.length}, contentLength=${directAudio.headers['content-length']})`);
+  const audioPlayback = await audioPlaybackPromise;
+  assert(audioPlayback.status() === 200 && audioPlayback.headers()['content-type']?.startsWith('audio/wav'), `Authenticated Voice asset read returned ${audioPlayback.status()} ${audioPlayback.headers()['content-type']}`);
+  assert(String(audioPlayback.request().headers()['authorization'] ?? '').startsWith('Bearer '), 'Voice asset playback request omitted its authenticated token');
+  await expect(page.getByLabel('Generated local voice audio')).toHaveAttribute('data-audio-bytes', /^(?:[5-9]\d|\d{3,})$/, { timeout: 15_000 });
+  assert(Number(await page.getByLabel('Generated local voice audio').getAttribute('data-audio-bytes')) === directAudio.body.length, 'The React playback blob size did not match the bytes returned by the Python route');
+  await expect(page.getByLabel('Generated local voice audio')).toHaveAttribute('src', /^blob:/, { timeout: 15_000 });
+  results.push({ workflow: 'Voice TTS playback', result: 'PASS', evidence: `React requested the existing local TTS service, then fetched ${directAudio.body.length} stored WAV bytes (RIFF header verified) through authenticated project-scoped GET /api/voice/assets/{id}/content. The React playback blob matched the real HTTP response and exposed a native audio player and download link; no external provider was called.` });
+
+  }
 
   // Calendar: create a local event in the selected React calendar and verify
   // persistence through the read contract; no sync provider is involved.
   await open('calendar', fixture.tokens.calendar);
+  await page.getByText('Calendar tools', { exact: true }).click();
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
+  const providerAccountBefore = 'Batch 2B local calendar provider';
+  await page.getByLabel('Account reference (optional)').fill(providerAccountBefore);
+  const providerRegisterPromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calendar/providers/register' && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Register provider', exact: true }).click();
+  const providerRegister = await providerRegisterPromise;
+  assert(providerRegister.status() === 201, `React manual calendar provider registration returned ${providerRegister.status()}`);
+  const registeredProviderPayload = await providerRegister.json();
+  const registeredProvider = typeof registeredProviderPayload.provider === 'object' && registeredProviderPayload.provider !== null ? registeredProviderPayload.provider : registeredProviderPayload;
+  assert(registeredProvider?.provider_id && registeredProvider.account_ref === providerAccountBefore, `Manual provider registration did not return its persisted account reference: ${JSON.stringify(registeredProviderPayload)}`);
+  const providerRead = await requestJson(fixture.baseUrl, '/api/calendar/providers?project=default', fixture.tokens.calendar);
+  assert(providerRead.response.ok && providerRead.payload.providers?.some(provider => provider.provider_id === registeredProvider.provider_id), 'Registered provider was missing from a fresh authenticated read');
+  const providerAccountAfter = 'Batch 2B local calendar provider refreshed';
+  await page.getByLabel('Account reference (optional)').fill(providerAccountAfter);
+  page.once('dialog', dialog => dialog.accept());
+  const providerReauthPromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/calendar/providers/${registeredProvider.provider_id}/reauth` && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Re-authenticate provider manual', exact: true }).click();
+  const providerReauth = await providerReauthPromise;
+  assert(providerReauth.status() === 200, `React calendar provider re-auth returned ${providerReauth.status()}`);
+  const providerReauthRead = await requestJson(fixture.baseUrl, '/api/calendar/providers?project=default', fixture.tokens.calendar);
+  assert(providerReauthRead.response.ok && providerReauthRead.payload.providers?.some(provider => provider.provider_id === registeredProvider.provider_id && provider.account_ref === providerAccountAfter), 'Provider re-authentication did not persist the updated account reference');
+  page.once('dialog', dialog => dialog.accept());
+  const providerDeletePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/calendar/providers/${registeredProvider.provider_id}` && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Remove provider manual', exact: true }).click();
+  const providerDelete = await providerDeletePromise;
+  assert(providerDelete.status() === 200, `React calendar provider removal returned ${providerDelete.status()}`);
+  const providersAfterDelete = await requestJson(fixture.baseUrl, '/api/calendar/providers?project=default', fixture.tokens.calendar);
+  assert(providersAfterDelete.response.ok && !providersAfterDelete.payload.providers?.some(provider => provider.provider_id === registeredProvider.provider_id), 'Removed provider remained in the authenticated provider list');
+  results.push({ workflow: 'Calendar provider lifecycle', result: 'PASS', evidence: 'React registered a manual iCalendar provider without contacting an external service, re-authenticated it with synthetic account metadata, and removed it after confirmation. Authenticated fresh reads verified registration, updated metadata and final removal.' });
+  const scheduleAnalysisResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calendar/free-slots', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Find time for a team sync' }).click();
+  const scheduleAnalysis = await scheduleAnalysisResponse;
+  assert(scheduleAnalysis.ok(), `Calendar assistant availability request returned ${scheduleAnalysis.status()}`);
+  await expect(page.locator('#toast-region')).toContainText('Calendar backend found', { timeout: 10_000 });
+  const scheduleSummaryResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/calendar/optimize' && url.searchParams.has('from');
+  }, { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Summarise my week' }).click();
+  const scheduleSummary = await scheduleSummaryResponse;
+  const scheduleSummaryData = await scheduleSummary.json();
+  assert(scheduleSummary.ok() && Number.isFinite(Number(scheduleSummaryData.total_events)), `Calendar summary request did not return backend counts: ${JSON.stringify(scheduleSummaryData)}`);
+  await expect(page.locator('#toast-region')).toContainText('Calendar backend reviewed', { timeout: 10_000 });
   await page.getByRole('button', { name: 'New', exact: true }).click();
   const calendarTitle = 'Batch 2A local calendar fixture';
   await page.locator('[aria-labelledby="calendar-create-title"] input').first().fill(calendarTitle);
   const calendarStart = page.getByLabel('Starts', { exact: true });
   const calendarEnd = page.getByLabel('Ends', { exact: true });
-  const existingStart = await calendarStart.inputValue();
-  const existingEnd = await calendarEnd.inputValue();
-  assert(existingStart && existingEnd, 'Calendar event form did not initialise its start and end fields');
-  const calendarCreatePromise = page.waitForResponse(response => response.url().endsWith('/api/calendar/events') && response.request().method() === 'POST', { timeout: 15_000 });
-  await page.getByRole('button', { name: 'Create event', exact: true }).click();
+  // Put the event in the visible daytime portion of the weekly grid and keep
+  // it outside the repeated 01:00 hour on DST transition days.
+  const futureStart = new Date();
+  futureStart.setDate(futureStart.getDate() + 1);
+  futureStart.setHours(10, 0, 0, 0);
+  const futureEnd = new Date(futureStart.getTime() + 60 * 60_000);
+  const toLocalInput = date => { const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60_000); return shifted.toISOString().slice(0, 16); };
+  await calendarStart.fill(toLocalInput(futureStart));
+  await calendarEnd.fill(toLocalInput(futureEnd));
+  await page.locator('[aria-labelledby="calendar-create-title"] select').selectOption('FREQ=DAILY');
+  assert(await calendarStart.inputValue() && await calendarEnd.inputValue(), 'Calendar event form did not retain its start and end fields');
+  const calendarCreateButton = page.getByRole('button', { name: 'Create event', exact: true });
+  await expect(calendarCreateButton).toBeEnabled();
+  const calendarFormState = await page.locator('[aria-labelledby="calendar-create-title"] form').evaluate(form => ({
+    valid: form.checkValidity(),
+    fields: [...form.querySelectorAll('input')].map(input => ({ name: input.getAttribute('aria-label') || input.type, value: input.value, valid: input.checkValidity() })),
+  }));
+  assert(calendarFormState.valid, `Calendar create form is invalid before submit: ${JSON.stringify(calendarFormState)}`);
+  const calendarCreatePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calendar/events' && response.request().method() === 'POST', { timeout: 15_000 }).catch(async error => {
+    const recent = apiRequests.slice(-12).map(request => `${request.method()} ${new URL(request.url()).pathname}`).join(', ');
+    throw new Error(`${error.message}; calendar form=${JSON.stringify(calendarFormState)}; recent API requests=${recent}; visible form errors=${await page.locator('[aria-labelledby="calendar-create-title"] [role="alert"]').allTextContents().catch(() => [])}`);
+  });
+  await calendarCreateButton.click();
   const calendarCreate = await calendarCreatePromise;
   assert(calendarCreate.status() === 201, `React calendar create returned ${calendarCreate.status()}`);
   const createdCalendarEvent = (await calendarCreate.json()).event;
   assert(createdCalendarEvent?.id, 'Calendar create response omitted its event ID');
   const calendarRead = await requestJson(fixture.baseUrl, '/api/calendar/events?project=default', fixture.tokens.calendar);
   assert(calendarRead.response.ok && calendarRead.payload.events?.some(event => String(event.id) === String(createdCalendarEvent.id)), 'Calendar event did not persist through its read endpoint');
-  results.push({ workflow: 'Calendar', result: 'PASS', evidence: 'React created a local calendar event using the existing POST contract and the record was returned by the authenticated calendar read endpoint.' });
+  const nextOccurrenceStart = new Date(createdCalendarEvent.starts_at);
+  nextOccurrenceStart.setUTCDate(nextOccurrenceStart.getUTCDate() + 1);
+  const nextOccurrenceEnd = new Date(nextOccurrenceStart.getTime() + 60 * 60_000);
+  const recurrenceRead = await requestJson(fixture.baseUrl, `/api/calendar/events?${new URLSearchParams({ project: 'default', from: nextOccurrenceStart.toISOString(), to: nextOccurrenceEnd.toISOString() })}`, fixture.tokens.calendar);
+  const recurringRead = recurrenceRead.payload.events?.find(event => String(event.id) === String(createdCalendarEvent.id));
+  assert(recurrenceRead.response.ok && recurringRead?.occurrences?.some(occurrence => new Date(String(occurrence.starts_at)).getTime() === nextOccurrenceStart.getTime()), `Recurring event occurrence was not returned in its future date range: ${JSON.stringify({ status: recurrenceRead.response.status, expected: nextOccurrenceStart.toISOString(), events: recurrenceRead.payload.events })}`);
+  await page.getByRole('button', { name: 'Next period' }).click();
+  await page.locator('.calendar-event').filter({ has: page.getByText(calendarTitle) }).first().waitFor({ state: 'visible', timeout: 15_000 });
+  const calendarList = await requestJson(fixture.baseUrl, '/api/calendar/calendars?project=default', fixture.tokens.calendar);
+  const otherCalendar = calendarList.payload.calendars?.find(calendar => String(calendar.id) !== String(createdCalendarEvent.calendar_id));
+  assert(calendarList.response.ok && otherCalendar?.id, 'Calendar fixture needs at least two calendars to verify availability filtering');
+  const busyStarts = new Date(createdCalendarEvent.ends_at);
+  const busyEnds = new Date(busyStarts.getTime() + 60 * 60_000);
+  const otherBusy = await requestJson(fixture.baseUrl, '/api/calendar/events', fixture.tokens.calendar, {
+    method: 'POST', body: {
+      project: 'default', calendar_id: String(otherCalendar.id), title: 'Batch 2B second-calendar busy block',
+      starts_at: busyStarts.toISOString(), ends_at: busyEnds.toISOString(), reminders: [],
+    },
+  });
+  assert(otherBusy.response.status === 201, `Could not seed second-calendar availability fixture: ${otherBusy.response.status}`);
+  const searchStart = new Date(createdCalendarEvent.starts_at);
+  const searchEnd = new Date(searchStart.getTime() + 2 * 60 * 60_000);
+  const availabilityQuery = (calendarId = '') => {
+    const query = new URLSearchParams({ project: 'default', from: searchStart.toISOString(), to: searchEnd.toISOString(), duration: '30' });
+    if (calendarId) query.set('calendar_id', calendarId);
+    return `/api/calendar/free-slots?${query}`;
+  };
+  const allCalendarSlots = await requestJson(fixture.baseUrl, availabilityQuery(), fixture.tokens.calendar);
+  const selectedCalendarSlots = await requestJson(fixture.baseUrl, availabilityQuery(String(createdCalendarEvent.calendar_id)), fixture.tokens.calendar);
+  assert(allCalendarSlots.response.ok && allCalendarSlots.payload.slots?.length === 0, 'Unfiltered availability should account for both calendars busy blocks');
+  assert(selectedCalendarSlots.response.ok && selectedCalendarSlots.payload.slots?.length > 0, 'Selected-calendar availability did not exclude the other calendar busy block');
+  results.push({ workflow: 'Calendar availability scope', result: 'PASS', evidence: 'Actual authenticated Python free-slot responses account for events across all calendars by default and ignore another calendar’s busy time when a specific calendar_id is selected.' });
+  const calendarRow = page.locator('.calendar-upcoming-row').filter({ hasText: calendarTitle }).first();
+  await calendarRow.waitFor({ state: 'visible', timeout: 15_000 });
+  await calendarRow.click();
+  const calendarDetails = page.getByRole('dialog', { name: calendarTitle });
+  await calendarDetails.waitFor({ state: 'visible', timeout: 10_000 });
+  await expect(calendarDetails).toContainText('Recurring series occurrence');
+  await calendarDetails.getByRole('button', { name: 'Edit series' }).click();
+  const calendarEdit = page.getByRole('dialog', { name: 'Edit calendar event' });
+  await calendarEdit.getByLabel('Title').fill(`${calendarTitle} updated`);
+  const calendarPatchPromise = page.waitForResponse(response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}`) && response.request().method() === 'PATCH', { timeout: 15_000 });
+  await calendarEdit.getByRole('button', { name: 'Save changes' }).click();
+  const calendarPatch = await calendarPatchPromise;
+  assert(calendarPatch.status() === 200, `React calendar update returned ${calendarPatch.status()}: ${await calendarPatch.text()}`);
+  const updatedCalendarEvent = (await calendarPatch.json()).event;
+  assert(updatedCalendarEvent?.title === `${calendarTitle} updated`, 'Calendar update response did not contain the edited title');
+  const calendarAfterPatch = await requestJson(fixture.baseUrl, '/api/calendar/events?project=default', fixture.tokens.calendar);
+  assert(calendarAfterPatch.response.ok && calendarAfterPatch.payload.events?.some(event => String(event.id) === String(createdCalendarEvent.id) && event.title === `${calendarTitle} updated`), 'Calendar update did not persist through the authenticated read endpoint');
+  await page.locator('.calendar-upcoming-row').filter({ hasText: `${calendarTitle} updated` }).first().click();
+  const occurrenceDetails = page.getByRole('dialog', { name: `${calendarTitle} updated` });
+  await occurrenceDetails.getByRole('button', { name: 'Edit this occurrence' }).click();
+  const occurrenceTitle = `${calendarTitle} occurrence only`;
+  const occurrenceEdit = page.getByRole('dialog', { name: 'Edit event occurrence' });
+  await occurrenceEdit.getByLabel('Title').fill(occurrenceTitle);
+  await occurrenceEdit.getByLabel('Location').fill('Integration test room');
+  const occurrenceStart = occurrenceEdit.getByLabel('Starts', { exact: true });
+  const occurrenceEnd = occurrenceEdit.getByLabel('Ends', { exact: true });
+  const movedStartDate = new Date(await occurrenceStart.inputValue());
+  const movedEndDate = new Date(await occurrenceEnd.inputValue());
+  movedStartDate.setHours(movedStartDate.getHours() + 1);
+  movedEndDate.setHours(movedEndDate.getHours() + 1);
+  await occurrenceStart.fill(toLocalInput(movedStartDate));
+  await occurrenceEnd.fill(toLocalInput(movedEndDate));
+  const occurrenceOverridePromise = page.waitForResponse(response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}/override`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await occurrenceEdit.getByRole('button', { name: 'Save changes' }).click();
+  const occurrenceOverrideResponse = await occurrenceOverridePromise;
+  assert(occurrenceOverrideResponse.status() === 201, `React calendar occurrence edit returned ${occurrenceOverrideResponse.status()}: ${await occurrenceOverrideResponse.text()}`);
+  const occurrenceOverride = (await occurrenceOverrideResponse.json()).override;
+  assert(occurrenceOverride?.title === occurrenceTitle && occurrenceOverride?.metadata?.recurrence_id, `Occurrence override response omitted its title or recurrence identity: ${JSON.stringify(occurrenceOverride)}`);
+  const recurrenceId = String(occurrenceOverride.metadata.recurrence_id);
+  const recurrenceStart = new Date(recurrenceId);
+  const recurrenceEnd = new Date(recurrenceStart.getTime() + 24 * 60 * 60_000);
+  const occurrenceRead = await requestJson(fixture.baseUrl, `/api/calendar/events?${new URLSearchParams({ project: 'default', from: recurrenceStart.toISOString(), to: recurrenceEnd.toISOString() })}`, fixture.tokens.calendar);
+  const persistedSeries = occurrenceRead.payload.events?.find(event => String(event.id) === String(createdCalendarEvent.id));
+  const persistedOccurrence = persistedSeries?.occurrences?.find(occurrence => String(occurrence.recurrence_id) === recurrenceId);
+  assert(occurrenceRead.response.ok && persistedSeries?.title === `${calendarTitle} updated` && persistedOccurrence?.is_override === true && persistedOccurrence?.title === occurrenceTitle && persistedOccurrence?.location === 'Integration test room', `Calendar occurrence override was not merged into its persisted series: ${JSON.stringify({ status: occurrenceRead.response.status, series: persistedSeries })}`);
+  await page.locator('.calendar-upcoming-row').filter({ hasText: occurrenceTitle }).first().click();
+  page.once('dialog', dialog => dialog.accept());
+  const calendarDeletePromise = page.waitForResponse(response => response.url().includes(`/api/calendar/events/${createdCalendarEvent.id}`) && response.request().method() === 'DELETE', { timeout: 15_000 });
+  await page.getByRole('dialog', { name: occurrenceTitle }).getByRole('button', { name: 'Delete series' }).click();
+  const calendarDelete = await calendarDeletePromise;
+  assert(calendarDelete.status() === 200, `React calendar delete returned ${calendarDelete.status()}`);
+  const calendarAfterDelete = await requestJson(fixture.baseUrl, '/api/calendar/events?project=default', fixture.tokens.calendar);
+  assert(calendarAfterDelete.response.ok && !calendarAfterDelete.payload.events?.some(event => String(event.id) === String(createdCalendarEvent.id)), 'Calendar delete did not persist through the authenticated read endpoint');
+  await page.getByRole('tab', { name: 'Reminders' }).click();
+  const reminderRow = page.locator('.timeline-row').filter({ hasText: 'Batch 2B due reminder fixture' });
+  await reminderRow.waitFor({ state: 'visible', timeout: 15_000 });
+  const dueBeforeAck = await requestJson(fixture.baseUrl, '/api/calendar/reminders?project=default', fixture.tokens.calendar);
+  assert(dueBeforeAck.response.ok && dueBeforeAck.payload.reminders?.some(reminder => String(reminder.title ?? reminder.event_title) === 'Batch 2B due reminder fixture'), 'Synthetic due reminder was not available from the real Python API');
+  const reminderId = String(dueBeforeAck.payload.reminders.find(reminder => String(reminder.title ?? reminder.event_title) === 'Batch 2B due reminder fixture').reminder_id);
+  const acknowledgePromise = page.waitForResponse(response => response.url().includes(`/api/calendar/reminders/${reminderId}/acknowledge`) && response.request().method() === 'POST', { timeout: 15_000 });
+  await reminderRow.getByRole('button', { name: 'Acknowledge' }).click();
+  const acknowledgeResponse = await acknowledgePromise;
+  assert(acknowledgeResponse.status() === 200, `React reminder acknowledgement returned ${acknowledgeResponse.status()}: ${await acknowledgeResponse.text()}`);
+  const dueAfterAck = await requestJson(fixture.baseUrl, '/api/calendar/reminders?project=default', fixture.tokens.calendar);
+  assert(dueAfterAck.response.ok && !dueAfterAck.payload.reminders?.some(reminder => String(reminder.reminder_id) === reminderId), 'Acknowledged reminder remained due in the persistent Python store');
+  const reminderStarts = new Date(Date.now() - 5 * 60_000).toISOString();
+  const deliverySeed = await requestJson(fixture.baseUrl, '/api/calendar/events', fixture.tokens.calendar, {
+    method: 'POST', body: { project: 'default', title: 'Batch 2B manual delivery fixture', starts_at: reminderStarts, ends_at: new Date(Date.now() - 4 * 60_000).toISOString(), reminders: [0] },
+  });
+  assert(deliverySeed.response.status === 201, `Could not seed a second due reminder: ${deliverySeed.response.status}`);
+  const deliveryReminderList = await requestJson(fixture.baseUrl, '/api/calendar/reminders?project=default', fixture.tokens.calendar);
+  const deliveryReminder = deliveryReminderList.payload.reminders?.find(reminder => String(reminder.title ?? reminder.event_title) === 'Batch 2B manual delivery fixture');
+  assert(deliveryReminderList.response.ok && deliveryReminder?.reminder_id, 'Second synthetic delivery reminder is not due');
+  const notificationsDisabled = await requestJson(fixture.baseUrl, '/api/integrations/preferences', fixture.tokens.integrations, {
+    method: 'POST', body: { project: 'default', scope: 'notifications', key: 'enabled', value: false },
+  });
+  assert(notificationsDisabled.response.status === 201, `Could not set isolated notification preference off: ${notificationsDisabled.response.status}`);
+  await page.getByRole('button', { name: 'Refresh reminders' }).click();
+  await page.locator('.timeline-row').filter({ hasText: 'Batch 2B manual delivery fixture' }).waitFor({ state: 'visible' });
+  const blockedDeliveryPromise = page.waitForResponse(response => response.url().endsWith('/api/calendar/reminders/deliver') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Deliver', exact: true }).click();
+  const blockedDelivery = await blockedDeliveryPromise;
+  const blockedDeliveryBody = await blockedDelivery.json();
+  assert(blockedDelivery.status() === 200 && blockedDeliveryBody.notifications_enabled === false && blockedDeliveryBody.skipped?.includes(String(deliveryReminder.reminder_id)), `Disabled preference did not suppress UI-triggered notification delivery: ${JSON.stringify(blockedDeliveryBody)}`);
+  const notificationsEnabled = await requestJson(fixture.baseUrl, '/api/integrations/preferences', fixture.tokens.integrations, {
+    method: 'POST', body: { project: 'default', scope: 'notifications', key: 'enabled', value: true },
+  });
+  assert(notificationsEnabled.response.status === 201, `Could not enable isolated notification preference: ${notificationsEnabled.response.status}`);
+  const allowedDeliveryPromise = page.waitForResponse(response => response.url().endsWith('/api/calendar/reminders/deliver') && response.request().method() === 'POST', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Deliver', exact: true }).click();
+  const allowedDelivery = await allowedDeliveryPromise;
+  const allowedDeliveryBody = await allowedDelivery.json();
+  assert(allowedDelivery.status() === 200 && allowedDeliveryBody.notifications_enabled === true && allowedDeliveryBody.delivered?.includes(String(deliveryReminder.reminder_id)), 'Enabled preference did not deliver the due notification through the React control');
+  const dueAfterDelivery = await requestJson(fixture.baseUrl, '/api/calendar/reminders?project=default', fixture.tokens.calendar);
+  assert(dueAfterDelivery.response.ok && !dueAfterDelivery.payload.reminders?.some(reminder => String(reminder.reminder_id) === String(deliveryReminder.reminder_id)), 'UI-delivered reminder remained due after fresh read');
+  results.push({ workflow: 'Calendar', result: 'PASS', evidence: 'React used authenticated availability and schedule summary, created/edited a recurring series and one occurrence, deleted the series, and acknowledged a seeded due reminder. A second due reminder was retained when notification preferences were disabled; after enabling the preference, the React Deliver control called the backend route and a fresh read confirmed delivery. No external notification provider was contacted.' });
+  if (onlyCalendar) {
+    finishResults({ selectedWorkflows: ['Calendar'] });
+    return;
+  }
 
   const demoArtifactCalls = apiRequests.filter(request => request.url().includes('/demo/'));
   assert(demoArtifactCalls.length === 0, 'Live integration unexpectedly requested Demo fixture assets');

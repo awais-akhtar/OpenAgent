@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import ExitStack
 from pathlib import Path
 import tempfile
@@ -113,6 +114,57 @@ class OlmoeBatchTests(unittest.TestCase):
                                                    atol=2e-6, rtol=2e-5)
                         snapshots[1]["keys"][0].fill(999)
                         self.assertFalse(np.any(sessions[1]._k[0] == 999))
+
+    def test_float32_expert_container_round_trips_through_exact_native_consumer(self):
+        from openagent.adaptive_engine.expert_kernels import ExpertKernelRegistry
+        from openagent.adaptive_engine.native_expert import NativeExpertBackend
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint(root, True)
+            manifest = pack_olmoe_experts(root, root / "experts.f32", dtype="float32")
+            manifest_path = root / "manifest.f32.json"
+            manifest.write(manifest_path)
+            backend = NativeExpertBackend()
+            if not backend.info().available:
+                self.skipTest("NativeExpertBackend is unavailable")
+            with OlmoeModel(root, manifest_path, expert_cache_bytes=4096,
+                            kernels=ExpertKernelRegistry([backend]),
+                            preferred_kernel=backend.NAME) as model:
+                logits = model.forward([1, 2])
+                self.assertEqual(logits.shape, (13,))
+                self.assertTrue(np.isfinite(logits).all())
+                self.assertEqual(model.experts.preferred_kernel, backend.NAME)
+
+    def test_gateway_defaults_float32_manifest_to_its_exact_native_consumer(self):
+        from openagent.model_gateway import OlmoeDirectProvider
+        from openagent.adaptive_engine.native_expert import NativeExpertBackend
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint(root, True)
+            manifest = pack_olmoe_experts(root, root / "experts.f32", dtype="float32")
+            manifest_path = root / "manifest.f32.json"
+            manifest.write(manifest_path)
+            environment = {
+                "OPENAGENT_OLMOE_MODEL_DIR": str(root),
+                "OPENAGENT_OLMOE_MANIFEST": str(manifest_path),
+                "OPENAGENT_OLMOE_KERNEL": "",
+                "OPENAGENT_OLMOE_CONTEXT": "8",
+                "OPENAGENT_OLMOE_EXPERT_CACHE_GB": "0.001",
+                "OPENAGENT_OLMOE_IO_MODE": "mmap",
+                "OPENAGENT_OLMOE_STORAGE_ROOTS": "",
+            }
+            with patch.dict(os.environ, environment):
+                provider = OlmoeDirectProvider()
+                try:
+                    runtime = provider._load()
+                    self.assertEqual(provider.preferred_kernel, NativeExpertBackend.NAME)
+                    self.assertEqual(runtime.experts.preferred_kernel, NativeExpertBackend.NAME)
+                    self.assertEqual(runtime.forward([1]).shape, (13,))
+                finally:
+                    if provider._runtime is not None:
+                        provider._runtime.close()
 
     def test_invalid_batches_and_execution_failure_are_transactional(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:

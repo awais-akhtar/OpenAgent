@@ -327,6 +327,7 @@ class IndependentKimiLinearDecoder:
             owners[name] = np.frombuffer(a.tobytes(), dtype=np.float32).reshape(shape)
         self.weights = MappingProxyType(owners)
         self._lock = threading.RLock()
+        self._closed = False
         self.reset()
 
     def _admit(self, size):
@@ -335,6 +336,8 @@ class IndependentKimiLinearDecoder:
 
     def reset(self):
         with self._lock:
+            if self._closed:
+                raise RuntimeError('Kimi Linear decoder is closed')
             c,la = self.config,self.config.linear_attn_config
             cache = []
             for i in range(c.num_hidden_layers):
@@ -353,7 +356,59 @@ class IndependentKimiLinearDecoder:
 
     def snapshot(self):
         with self._lock:
+            if self._closed:
+                raise RuntimeError('Kimi Linear decoder is closed')
             return self._position,tuple(tuple(a.copy() for a in layer) for layer in self._cache)
+
+    def restore(self, snapshot):
+        """Atomically restore a detached physical cache snapshot.
+
+        ExecutionService uses this boundary for cancellation and replay
+        recovery. Validate and copy every array before replacing any live
+        state, so malformed/foreign snapshots leave the decoder unchanged.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('Kimi Linear decoder is closed')
+            if type(snapshot) is not tuple or len(snapshot) != 2:
+                raise ValueError('Kimi Linear physical snapshot schema required')
+            position, layers = snapshot
+            if (type(position) is not int or not 0 <= position <= self.capacity or
+                    type(layers) is not tuple or len(layers) != self.config.num_hidden_layers):
+                raise ValueError('Kimi Linear physical snapshot geometry differs')
+            c, la = self.config, self.config.linear_attn_config
+            staged = []
+            for index, layer in enumerate(layers):
+                if type(layer) is not tuple:
+                    raise ValueError('Kimi Linear snapshot layer tuple required')
+                if index + 1 in la['kda_layers']:
+                    heads, dim = la['num_heads'], la['head_dim']
+                    width = la['short_conv_kernel_size']
+                    shapes = ((heads, dim, dim),) + ((width-1, heads, dim),) * 3
+                else:
+                    shapes = ((self.capacity, c.num_attention_heads,
+                               c.qk_nope_head_dim+c.qk_rope_head_dim),
+                              (self.capacity, c.num_attention_heads, c.v_head_dim))
+                if len(layer) != len(shapes):
+                    raise ValueError('Kimi Linear snapshot state count differs')
+                copied = []
+                for value, shape in zip(layer, shapes):
+                    if type(value) is not np.ndarray or value.dtype != np.float32 or value.shape != shape:
+                        raise ValueError('Kimi Linear snapshot tensor schema differs')
+                    array = np.array(value, dtype=np.float32, order='C', copy=True)
+                    if not np.isfinite(array).all():
+                        raise ValueError('Kimi Linear snapshot contains nonfinite state')
+                    copied.append(array)
+                staged.append(tuple(copied))
+            self._cache, self._position = staged, position
+
+    def close(self):
+        """Release per-session state while preserving idempotent cleanup."""
+        with self._lock:
+            if self._closed:
+                return
+            self._cache = []
+            self._closed = True
 
     def _mat(self,w,x):
         return (w.astype(np.float64) @ x.astype(np.float64)).astype(np.float32)
@@ -482,6 +537,8 @@ class IndependentKimiLinearDecoder:
 
     def forward(self, token_ids):
         with self._lock:
+            if self._closed:
+                raise RuntimeError('Kimi Linear decoder is closed')
             ids = np.asarray(token_ids)
             if ids.ndim != 1 or ids.dtype.kind not in 'iu' or not 0 < ids.size <= 4096:
                 raise ValueError('batch-one nonempty integer token IDs required')

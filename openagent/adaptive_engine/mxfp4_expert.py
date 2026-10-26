@@ -74,37 +74,46 @@ def decode_scale(code):
 _LEVELS = np.array([0,.5,1,1.5,2,3,4,6],np.float64)
 
 
-def pack_matrix(matrix, *, scale_encoding=SCALE_ENCODING):
-    """Group-bounded conversion; power-of-two ceiling scale and RNE codes."""
+def pack_matrix(matrix, *, scale_encoding=SCALE_ENCODING, row_count=64):
+    """Bounded row-tile conversion; power-of-two ceiling scale and RNE codes."""
     _encoding(scale_encoding)
+    _positive(row_count, "row_count")
     a = np.asarray(matrix)
     if a.ndim != 2 or a.dtype.kind not in "iuf":
         raise ValueError("weights must be a real matrix")
     rows, cols = a.shape
-    result = bytearray(matrix_payload_size(rows,cols))
-    offset = 0
-    for row in a:
-        for start in range(0,cols,32):
-            with np.errstate(over="ignore",invalid="ignore"):
-                values = row[start:start+32].astype(np.float32)
-            if not np.isfinite(values).all():
-                raise ValueError("weights must be finite float32")
-            maximum = float(np.max(np.abs(values)))
-            exponent = max(-127, min(127, math.ceil(math.log2(maximum/6)))) if maximum else 0
-            scale = math.ldexp(1.,exponent)
-            magnitude = np.abs(values.astype(np.float64)) / scale
-            high = np.minimum(np.searchsorted(_LEVELS,magnitude),7)
-            low = np.maximum(high-1,0)
-            dl, dh = magnitude-_LEVELS[low], _LEVELS[high]-magnitude
-            codes = np.where((dl < dh) | ((dl == dh) & ((low & 1) == 0)),low,high).astype(np.uint8)
-            if np.any(_LEVELS[codes] * scale > float(np.finfo(np.float32).max)):
-                raise ValueError("MXFP4 quantized weight exceeds float32 range")
-            codes |= np.signbit(values).astype(np.uint8)*8
-            padded = np.zeros(32,np.uint8)
-            padded[:len(codes)] = codes
-            result[offset] = exponent+127
-            result[offset+1:offset+17] = (padded[::2] | (padded[1::2] << 4)).tobytes()
-            offset += 17
+    groups = (cols + 31) // 32
+    result = bytearray(matrix_payload_size(rows, cols))
+    padded_columns = groups * 32
+    for first in range(0, rows, row_count):
+        stop = min(rows, first + row_count)
+        with np.errstate(over="ignore", invalid="ignore"):
+            tile = a[first:stop].astype(np.float32)
+        if not np.isfinite(tile).all():
+            raise ValueError("weights must be finite float32")
+        padded = np.zeros((stop-first, padded_columns), np.float32)
+        padded[:, :cols] = tile
+        grouped = padded.reshape(stop-first, groups, 32)
+        maxima = np.max(np.abs(grouped), axis=2).astype(np.float64)
+        exponents = np.zeros(maxima.shape, np.int32)
+        nonzero = maxima != 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            exponents[nonzero] = np.clip(np.ceil(np.log2(maxima[nonzero] / 6.0)), -127, 127).astype(np.int32)
+        scales = np.ldexp(np.ones(exponents.shape, np.float64), exponents)
+        magnitude = np.abs(grouped.astype(np.float64)) / scales[:, :, None]
+        high = np.minimum(np.searchsorted(_LEVELS, magnitude.reshape(-1)), 7).reshape(magnitude.shape)
+        low = np.maximum(high - 1, 0)
+        distance_low, distance_high = magnitude - _LEVELS[low], _LEVELS[high] - magnitude
+        codes = np.where((distance_low < distance_high) |
+                         ((distance_low == distance_high) & ((low & 1) == 0)), low, high).astype(np.uint8)
+        if np.any(_LEVELS[codes] * scales[:, :, None] > float(np.finfo(np.float32).max)):
+            raise ValueError("MXFP4 quantized weight exceeds float32 range")
+        codes |= np.signbit(grouped).astype(np.uint8) * np.uint8(8)
+        records = np.empty((stop-first, groups, BLOCK_BYTES), np.uint8)
+        records[:, :, 0] = (exponents + 127).astype(np.uint8)
+        records[:, :, 1:] = codes[:, :, 0::2] | (codes[:, :, 1::2] << np.uint8(4))
+        start = first * groups * BLOCK_BYTES
+        result[start:start + records.nbytes] = records.tobytes()
     return bytes(result)
 
 

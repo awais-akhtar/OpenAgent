@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { handleTabListKeyDown, tabIndex } from '../components/tabKeyboard';
-import { apiConnectionMessage, apiGet, apiPatch, apiPost, apiStreamPost, type StreamEvent } from '../api/client';
+import { apiConnectionMessage, apiDelete, apiGet, apiPatch, apiPost, apiStreamPost, type StreamEvent } from '../api/client';
 import { useWorkspaceState } from '../state';
 import { demoQuery } from '../demo/api';
 import { demoProvider } from '../demo/provider';
 import {
-  Activity, ArrowRight, Archive, Bot, BookOpen, Box, CalendarDays, Check, CheckCircle2, ChevronRight,
-  Clock3, Code2, Folder, Globe2, Layers3, MessageCircle, MoreHorizontal, Pin,
-  FileCheck2, GitPullRequest, Home, Info, Maximize2, Monitor, Network, Paperclip, PanelRight, Plus, Search, Send, Shield, Sparkles, Sun, Terminal, X,
+  Activity, ArrowRight, Archive, Bot, BookOpen, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight,
+  Clock3, Code2, Copy, FileCode2, Folder, Globe2, Layers3, MessageCircle, MoreHorizontal, Pin, ThumbsUp,
+  FileCheck2, GitPullRequest, Home, Info, Maximize2, Monitor, Network, Paperclip, PanelRight, Plus, Search, Send, Shield, Sparkles, Sun, Terminal, Trash2, X,
   Zap, type LucideIcon,
 } from 'lucide-react';
 
@@ -32,6 +32,8 @@ const homeActivityIcons: Record<string, LucideIcon> = {
 const homeAgentIcons: Record<string, LucideIcon> = { sparkles: Sparkles, search: Search, code: Code2, 'book-open': BookOpen, bot: Bot };
 let stagedPrompt = '';
 const stagedPromptStorageKey = 'openagent.chat.stagedPrompt';
+let stagedAttachments: ChatAttachment[] = [];
+const stagedAttachmentsStorageKey = 'openagent.chat.stagedAttachments';
 
 function ActionButton({ children, onClick, className = '', title, nav }: { children: ReactNode; onClick?: () => void; className?: string; title?: string; nav?: string }) {
   return <button type="button" title={title} data-nav={nav} onClick={onClick} className={className}>{children}</button>;
@@ -52,6 +54,10 @@ function HomeStateCard({ icon, title, text, className = '', error = false, onRet
 export function HomeScreen({ go = noNavigation }: ScreenProps = {}) {
   const dataMode = useWorkspaceState(state => state.dataMode);
   const [prompt, setPrompt] = useState('');
+  const [homeAttachments, setHomeAttachments] = useState<ChatAttachment[]>([]);
+  const [homeUploading, setHomeUploading] = useState(false);
+  const [homeUploadError, setHomeUploadError] = useState('');
+  const homeFileInputRef = useRef<HTMLInputElement | null>(null);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -175,7 +181,52 @@ export function HomeScreen({ go = noNavigation }: ScreenProps = {}) {
   const allActivityUnavailable = dataMode === 'live'
     ? eventsQuery.isError && conversationsQuery.isError
     : runsQuery.isError && eventsQuery.isError && conversationsQuery.isError;
-  const submit = (event?: FormEvent) => { event?.preventDefault(); if (prompt.trim()) { stagedPrompt = prompt.trim(); try { sessionStorage.setItem(stagedPromptStorageKey, stagedPrompt); } catch { /* in-memory handoff remains available */ } go('chat'); } };
+  const uploadHomeFiles = async (files: FileList | File[]) => {
+    const selected = Array.from(files);
+    const remaining = Math.max(0, 12 - homeAttachments.length);
+    if (selected.length > remaining) setHomeUploadError('A chat can include up to 12 attachments.');
+    const accepted = selected.slice(0, remaining);
+    if (!accepted.length) return;
+    setHomeUploadError('');
+    setHomeUploading(true);
+    for (const file of accepted) {
+      try {
+        const response = await apiPost<{ asset?: Record<string, unknown> }>('/api/media/ingest', {
+          filename: file.name,
+          data_base64: await fileToBase64(file),
+          project: 'default',
+          source: 'chat',
+        });
+        const asset = response.asset;
+        if (!asset || typeof asset.id !== 'string' || !asset.id) throw new Error('The backend did not return an uploaded asset ID.');
+        setHomeAttachments(current => [...current, {
+          id: asset.id as string,
+          name: String(asset.title || file.name),
+          media_type: String(asset.media_type ?? 'binary'),
+          mime_type: String(asset.mime_type ?? file.type ?? 'application/octet-stream'),
+          ...(typeof asset.size_bytes === 'number' ? { size_bytes: asset.size_bytes } : {}),
+        }]);
+      } catch (error) {
+        setHomeUploadError(`${file.name}: ${apiConnectionMessage(error)}`);
+      }
+    }
+    setHomeUploading(false);
+  };
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
+    if (homeUploading) return;
+    if (prompt.trim()) {
+      stagedPrompt = prompt.trim();
+      stagedAttachments = homeAttachments;
+      try {
+        sessionStorage.setItem(stagedPromptStorageKey, stagedPrompt);
+        if (homeAttachments.length) sessionStorage.setItem(stagedAttachmentsStorageKey, JSON.stringify(homeAttachments));
+        else sessionStorage.removeItem(stagedAttachmentsStorageKey);
+      } catch { /* The in-memory handoff remains available. */ }
+      setHomeAttachments([]);
+      go('chat');
+    }
+  };
   const enter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) submit(); };
   const selectDemoProject = (name: string) => {
     if (dataMode !== 'demo') return;
@@ -198,12 +249,13 @@ export function HomeScreen({ go = noNavigation }: ScreenProps = {}) {
         <div className="home-intro"><IconSquare tone="orange"><Sun size={19}/></IconSquare><div><h1>Welcome to OpenAgent</h1><p>What would you like to work on?</p></div></div>
         <form className="home-composer" onSubmit={submit}>
           <textarea value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={enter} aria-label="Ask OpenAgent" placeholder="Ask OpenAgent anything..." />
-          <div className="composer-tools"><button type="button" className="btn sm icon-only" title={dataMode === 'demo' ? 'File attachment is a design-only control' : 'File attachment is unavailable until a workspace service is connected'} aria-label={dataMode === 'demo' ? 'Attach a file' : 'Attach a file unavailable'} disabled={dataMode !== 'demo'} onClick={() => setHomeNotice('File attachment is a design-only control. Connect upload APIs during migration.')}><Plus size={16}/></button>
+          {(homeAttachments.length > 0 || homeUploading || homeUploadError) && <div className="row gap6" style={{ flexWrap: 'wrap', padding: '0 12px 8px' }}>{homeAttachments.map(attachment => <span className="tag" key={attachment.id} data-testid="home-chat-attachment"><Paperclip size={13}/>{attachment.name}<button type="button" className="icon-button" aria-label={`Remove ${attachment.name}`} onClick={() => setHomeAttachments(current => current.filter(item => item.id !== attachment.id))}><span aria-hidden="true">×</span></button></span>)}{homeUploading && <span className="caption" role="status">Uploading attachment…</span>}{homeUploadError && <span className="caption" role="alert">{homeUploadError}</span>}</div>}
+          <div className="composer-tools"><input ref={homeFileInputRef} type="file" multiple aria-label="Choose files for chat" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }} onChange={event => { if (event.currentTarget.files) void uploadHomeFiles(event.currentTarget.files); event.currentTarget.value = ''; }} /><button type="button" className="btn sm icon-only" title={dataMode === 'live' ? 'Upload files to attach in Chat' : 'Attachments require Live mode; Demo never uploads files'} aria-label={dataMode === 'live' ? 'Attach a file' : 'Attachments require Live mode'} disabled={dataMode !== 'live' || homeUploading || homeAttachments.length >= 12} onClick={() => homeFileInputRef.current?.click()}><Plus size={16}/></button>
             {['Agents', 'Web', 'Files', 'Research', 'CodeQ'].map((label, i) => {
               const icons = [Network, Globe2, Folder, Search, Code2]; const Icon = icons[i]; const target = ['agents', 'research', 'files', 'research', 'codeq'][i];
               return <ActionButton key={label} className="btn sm" nav={target} onClick={() => go(target)}><Icon size={14}/>{label}</ActionButton>;
             })}
-            <button className="send-button" type="submit" aria-label="Open prompt in chat"><Send size={16}/></button>
+            <button className="send-button" type="submit" aria-label="Open prompt in chat" disabled={homeUploading || (!prompt.trim() && homeAttachments.length === 0)}><Send size={16}/></button>
           </div>
         </form>
         <div className="grid-4 section-space">{quickLinks.map(({ title, detail, id, Icon, tone }) => <button type="button" data-nav={id} key={id} onClick={() => go(id)} className="card shortcut-card hover-card"><IconSquare tone={tone}><Icon size={18}/></IconSquare><h3>{title}</h3><p>{detail}</p></button>)}</div>
@@ -317,12 +369,21 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
   useEffect(() => {
     let prompt = stagedPrompt;
     stagedPrompt = '';
+    let pendingAttachments = stagedAttachments;
+    stagedAttachments = [];
     try {
       prompt ||= sessionStorage.getItem(stagedPromptStorageKey) ?? '';
       sessionStorage.removeItem(stagedPromptStorageKey);
+      const savedAttachments = sessionStorage.getItem(stagedAttachmentsStorageKey);
+      sessionStorage.removeItem(stagedAttachmentsStorageKey);
+      if (savedAttachments) {
+        const parsed: unknown = JSON.parse(savedAttachments);
+        if (Array.isArray(parsed)) pendingAttachments = parsed.filter((item): item is ChatAttachment => Boolean(item) && typeof item === 'object' && typeof (item as ChatAttachment).id === 'string' && typeof (item as ChatAttachment).name === 'string' && typeof (item as ChatAttachment).media_type === 'string' && typeof (item as ChatAttachment).mime_type === 'string').slice(0, 12);
+      }
     } catch { /* use the in-memory handoff when storage is unavailable */ }
     if (prompt.trim()) setDraft(current => current || prompt);
-  }, []);
+    if (dataMode === 'live' && pendingAttachments.length) setAttachments(current => current.length ? current : pendingAttachments);
+  }, [dataMode]);
   const conversationsQuery = useQuery({ queryKey: ['chat', 'conversations', dataMode], queryFn: ({ signal }) => dataMode === 'demo' ? Promise.resolve({ conversations: [] }) : apiGet<{ conversations?: unknown[] }>('/api/conversations?project=default&limit=100', signal), retry: false });
   const historyQuery = useQuery({
     queryKey: ['chat', 'organized-history', dataMode, historySearch, showArchived],
@@ -417,6 +478,22 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
         queryClient.invalidateQueries({ queryKey: ['chat', 'conversations'] }),
       ]);
       if (patch.archived === true && item.id === conversationId) selectConversation('');
+    } catch (error) {
+      setHistoryError(apiConnectionMessage(error));
+    } finally { setHistoryBusyId(''); }
+  };
+  const deleteConversation = async (item: Conversation) => {
+    if (!item.id || !window.confirm(`Delete “${item.title || 'conversation'}”? This permanently removes the conversation and its messages.`)) return;
+    setHistoryBusyId(item.id); setHistoryError(''); setConversationActionError(''); setConversationActionMessage('');
+    try {
+      await apiDelete(`/api/conversations/${encodeURIComponent(item.id)}`);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['chat', 'organized-history'] }),
+        queryClient.invalidateQueries({ queryKey: ['chat', 'conversations'] }),
+        queryClient.removeQueries({ queryKey: ['chat', 'messages', item.id] }),
+      ]);
+      if (item.id === conversationId) selectConversation('');
+      setConversationActionMessage('Conversation deleted.');
     } catch (error) {
       setHistoryError(apiConnectionMessage(error));
     } finally { setHistoryBusyId(''); }
@@ -636,12 +713,13 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
           <button type="button" className="icon-button" aria-label={`${item.pinned ? 'Unpin' : 'Pin'} ${item.title || 'conversation'}`} title={item.pinned ? 'Unpin conversation' : 'Pin conversation'} disabled={historyBusyId === item.id} onClick={() => void updateConversation(item, { pinned: !item.pinned })}><Pin size={14}/></button>
           <button type="button" className="icon-button" aria-label={`Rename ${item.title || 'conversation'}`} title="Rename conversation" disabled={historyBusyId === item.id} onClick={() => void renameConversation(item)}><MoreHorizontal size={15}/></button>
           <button type="button" className="icon-button" aria-label={`${item.archived ? 'Restore' : 'Archive'} ${item.title || 'conversation'}`} title={item.archived ? 'Restore conversation' : 'Archive conversation'} disabled={historyBusyId === item.id} onClick={() => void updateConversation(item, { archived: !item.archived })}><Archive size={14}/></button>
+          <button type="button" className="icon-button" aria-label={`Delete ${item.title || 'conversation'}`} title="Delete conversation" disabled={historyBusyId === item.id} onClick={() => void deleteConversation(item)}><Trash2 size={14}/></button>
         </div>)}</div> : <p className="caption" role="status">{historySearch.trim() ? 'No conversations match this search.' : showArchived ? 'No archived conversations.' : 'No saved conversations yet.'}</p>}
       </section>}
       <div className="split-scroll" ref={chatScrollRef}><div className="chat-thread">
         {messagesQuery.isLoading && <div className="caption" role="status">Loading conversation…</div>}
         {messagesQuery.isError && <div className="card padded small" role="alert">{apiConnectionMessage(messagesQuery.error)}</div>}
-        {!visibleLines.length && !messagesQuery.isLoading ? <div className="empty"><IconSquare><Sparkles size={20}/></IconSquare><h2>Start a conversation</h2><p>{dataMode === 'demo' ? 'Chat is not simulated in offline Demo mode. Switch to Live to use the connected chat service.' : 'Send a message to begin.'}</p></div> : visibleLines.map((line, i) => <article className="chat-message" key={line.id ?? `${conversationId}-${i}-${line.role}`}><span className={`avatar ${line.role === 'assistant' ? 'blue' : ''}`}>{line.role === 'user' ? 'Y' : '◉'}</span><div className="flex1"><div className="message-head"><strong>{line.role === 'user' ? 'You' : 'OpenAgent'}</strong><small>{line.role}</small><button type="button" className="icon-button" aria-label={`Actions for ${line.role} message ${i + 1}`} aria-expanded={actionMessageId === line.id} disabled={!line.serverId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={15}/></button></div><div className="message-body">{line.text && <p>{line.text}</p>}{waitingForContent && streaming && line.role === 'assistant' && i === visibleLines.length - 1 && <div className="chat-generation-indicator" role="status"><span aria-hidden="true"/>Working…</div>}</div>{actionMessageId === line.id && <div className="row" style={{ gap: 6, marginTop: 6 }}>{line.serverId && <button type="button" className="btn sm" onClick={() => void branchFromMessage(line)}>Branch from here</button>}{line.role === 'assistant' && <button type="button" className="btn sm" onClick={() => void saveReplyAsMarkdown(line)}>Save as Markdown</button>}</div>}</div></article>)}
+        {!visibleLines.length && !messagesQuery.isLoading ? <div className="empty"><IconSquare><Sparkles size={20}/></IconSquare><h2>Start a conversation</h2><p>{dataMode === 'demo' ? 'Chat is not simulated in offline Demo mode. Switch to Live to use the connected chat service.' : 'Send a message to begin.'}</p></div> : visibleLines.map((line, i) => <article className="chat-message" key={line.id ?? `${conversationId}-${i}-${line.role}`}><span className={`avatar ${line.role === 'assistant' ? 'blue' : ''}`}>{line.role === 'user' ? 'Y' : '◉'}</span><div className="flex1"><div className="message-head"><strong>{line.role === 'user' ? 'You' : 'OpenAgent'}</strong><small>{line.role}</small><button type="button" className="icon-button" aria-label={`Actions for ${line.role} message ${i + 1}`} aria-expanded={actionMessageId === line.id} disabled={!line.serverId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={15}/></button></div><div className="message-body">{line.text && <p>{line.text}</p>}{waitingForContent && streaming && line.role === 'assistant' && i === visibleLines.length - 1 && <div className="chat-generation-indicator" role="status"><span aria-hidden="true"/>Working…</div>}</div>{line.role === 'assistant' && <div className="message-actions"><button type="button" className="icon-button" aria-label="Copy message" title="Copy message" onClick={() => line.text && void navigator.clipboard.writeText(line.text)}><Copy size={14}/></button><button type="button" className="icon-button" aria-label="Useful response" title="Useful response"><ThumbsUp size={14}/></button><button type="button" className="icon-button" aria-label="More actions" aria-expanded={actionMessageId === line.id} disabled={!line.serverId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={14}/></button></div>}{actionMessageId === line.id && <div className="row" style={{ gap: 6, marginTop: 6 }}>{line.serverId && <button type="button" className="btn sm" onClick={() => void branchFromMessage(line)}>Branch from here</button>}{line.role === 'assistant' && <button type="button" className="btn sm" onClick={() => void saveReplyAsMarkdown(line)}>Save as Markdown</button>}</div>}</div></article>)}
         {streamError && <div className="card padded small" role="alert">{streamError}</div>}
         {completionNotice && !streaming && <div className="caption" role="status">{completionNotice}</div>}
       </div></div>
@@ -677,7 +755,7 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
       </form>
     </section>
     {inspector && <aside className="inspector"><div className="inspector-tabs"><div className="tabs" role="tablist" aria-label="Conversation details" onKeyDown={handleTabListKeyDown}>{(['Files', 'Preview', 'Context'] as const).map(name => <button key={name} type="button" role="tab" aria-selected={tab === name} tabIndex={tabIndex(tab === name)} className={`tab ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}>{name}</button>)}</div></div><div className="inspector-content">
-      {tab === 'Files' && <><div className="section-head"><h3>Project files</h3><button type="button" className="icon-button" aria-label="Add files unavailable" title="Adding files requires a connected workspace" disabled><Plus size={15}/></button></div><div className="empty"><Folder size={20}/><strong>No workspace connected</strong><p>Connect a workspace to browse its files.</p></div></>}
+      {tab === 'Files' && <><div className="section-head"><h3>Project files</h3><button type="button" className="icon-button" aria-label="Add files" title={dataMode === 'demo' ? 'Add files (demo)' : 'Adding files requires a connected workspace'} disabled={dataMode !== 'demo'}><Plus size={15}/></button></div>{dataMode === 'demo' ? <div className="file-tree"><div className="tree-row"><ChevronDown size={12}/><Folder size={14}/> <strong>ecommerce-platform</strong></div>{(['src', 'components', 'ProductCard.tsx', 'hooks', 'useCart.ts', 'pages', 'page.tsx', 'styles', 'package.json', 'README.md'] as const).map((name, i) => <div key={name} className={`tree-row ${[0, 5, 7].includes(i) ? 'level1' : 'level2'}${name === 'ProductCard.tsx' ? ' active' : ''}`}>{name.includes('.') ? <FileCode2 size={13}/> : <Folder size={13}/>}{name}</div>)}</div> : <div className="empty"><Folder size={20}/><strong>No workspace connected</strong><p>Connect a workspace to browse its files.</p></div>}</>}
       {tab === 'Preview' && <><div className="row between chat-preview-toolbar" style={{ marginBottom: 12 }}><span className="tag"><Globe2 size={13}/> Web preview</span><div className="row gap4"><button type="button" className="icon-button" aria-label={dataMode === 'demo' ? `${previewViewport === 'desktop' ? 'Desktop' : 'Mobile'} preview` : 'Desktop preview unavailable'} title={dataMode === 'demo' ? 'Toggle preview viewport' : 'Desktop preview unavailable'} disabled={dataMode !== 'demo'} aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport(value => value === 'desktop' ? 'mobile' : 'desktop')}><Monitor size={16}/></button><button type="button" className="icon-button" aria-label={dataMode === 'demo' ? `${previewExpanded ? 'Collapse' : 'Expand'} preview` : 'Expand preview unavailable'} title={dataMode === 'demo' ? 'Toggle expanded preview' : 'Expand preview unavailable'} disabled={dataMode !== 'demo'} aria-pressed={previewExpanded} onClick={() => setPreviewExpanded(value => !value)}><Maximize2 size={16}/></button></div></div>{dataMode === 'demo' ? <><div className={`browser-preview ${previewViewport === 'mobile' ? 'chat-preview-mobile' : ''} ${previewExpanded ? 'chat-preview-expanded' : ''}`}><div className="mock-nav"><strong>◉ OpenAgent</strong><span>Product · Docs · Start</span></div><h2>Build better work with AI</h2><p>One workspace for research, planning and development.</p><button type="button" className="btn primary sm" onClick={() => go('home')}>Explore workspace →</button><div style={{ height: 86, borderRadius: 9, marginTop: 32, background: 'var(--blue-soft)', display: 'grid', placeItems: 'center', color: 'var(--blue)' }}><Layers3 size={32}/></div></div><div className="card padded section-space"><h3>Design notes</h3><p className="small muted" style={{ marginTop: 8 }}>Use a consistent navigation pattern, sensible content widths, and purposeful detail panels.</p></div></> : <div className="browser-preview chat-preview-unavailable"><div className="mock-nav"><strong>◉ Workspace preview</strong><span>Unavailable</span></div><div className="empty"><Layers3 size={28}/><h2>No live preview</h2><p>Connect a running workspace preview to view this panel.</p></div></div>}</>}
       {tab === 'Context' && <div className="card padded"><h3>Conversation context</h3><p className="muted small" style={{ margin: '9px 0 16px' }}>Project scope · default</p><div className="list-row"><Folder size={16}/><span className="flex1">Project file browser</span><span className="badge">No project file endpoint in chat contract</span></div><div className="list-row"><Bot size={16}/><span className="flex1">Provider / model</span><span className="badge">{selectedProvider?.label ?? providerId}{modelId || selectedProvider?.selected_model || selectedProvider?.default_model ? ` · ${modelId || selectedProvider?.selected_model || selectedProvider?.default_model}` : ''}</span></div><div className="list-row"><Shield size={16}/><span className="flex1">External routing</span><span className="badge">{allowExternal ? 'Allowed by request' : 'Blocked by request'}</span></div><div className="list-row"><CheckCircle2 size={16}/><span className="flex1">Backend connection</span><span className="badge">{conversationsQuery.isLoading || providersQuery.isLoading ? 'Checking' : conversationsQuery.isError || providersQuery.isError ? 'Unavailable' : 'Connected'}</span></div></div>}
     </div></aside>}

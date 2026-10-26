@@ -15,13 +15,14 @@ struct family_model {
     int32_t *schedule;oa_family_inkling_layer *inkling;
     oa_family_inkling_range inkling_range;
     oa_family_glm_range glm_range;
+    oa_family_glm_range_observed glm_observed;
     oa_original_experts *expert_bank;
     oa_family_glm_range_streamed glm_range_streamed;
     oa_family_inkling_streamed inkling_streamed;
     oa_family_inkling_range_streamed inkling_range_streamed;
 };
 typedef struct {family_model *model;uint32_t begin,end;uint64_t state_words,charge;} family_range;
-typedef struct {family_model *model;float *state;uint64_t position,charge,state_words;uint32_t begin,end;char identity[65];} family_session;
+typedef struct {family_model *model;float *state,*last_routes;uint64_t position,charge,state_words,route_capacity,last_route_count,last_route_position;uint32_t begin,end,last_route_rows,last_route_begin,last_route_end,last_route_experts;char identity[65];} family_session;
 typedef struct {family_model *model;uint64_t charge;} family_edge;
 static family_model *models;static uint64_t next_model=1;static unsigned model_count,registered;
 static atomic_flag family_guard=ATOMIC_FLAG_INIT;
@@ -121,17 +122,40 @@ static void segment_destroy(void *owner) {
     if(range) {release(range->model,range->charge);free(range);}
 }
 static int session_create(void *owner,void **out,const oa_se_session_options *options,char *error,size_t bytes) {
-    family_range *range=(family_range *)owner;family_model *m;family_session *s;uint64_t charge;
+    family_range *range=(family_range *)owner;family_model *m;family_session *s;uint64_t charge,route_words=0,route_bytes=0,state_bytes;
     if(out)*out=NULL;
     if(!range||!out||!options) return fail(error,bytes,"native family session arguments required");
     m=range->model;
     if(options->context!=m->context) return fail(error,bytes,"native family session context differs");
-    charge=range->state_words*4+m->work+sizeof(*s);
+    if(range->state_words>UINT64_MAX/4)return fail(error,bytes,"native family session state extent overflows");
+    state_bytes=range->state_words*4;
+    if(m->family==2 || m->glm_observed) {
+        uint64_t layers=range->end-range->begin,width=m->family==2?
+            m->d.inkling_config.experts+m->d.inkling_config.shared:(uint64_t)m->d.glm_config[7];
+        if(layers&&m->rows>UINT64_MAX/layers)return fail(error,bytes,"Inkling route observation geometry overflows");
+        route_words=(uint64_t)m->rows*layers;
+        if(width&&route_words>UINT64_MAX/width)return fail(error,bytes,"Inkling route observation geometry overflows");
+        route_words*=width;
+        if(route_words>SIZE_MAX/sizeof(float)||route_words>UINT64_MAX/sizeof(float))
+            return fail(error,bytes,"Inkling route observation allocation exceeds address space");
+        route_bytes=route_words*sizeof(float);
+    }
+    if(state_bytes>UINT64_MAX-m->work||state_bytes+m->work>UINT64_MAX-sizeof(*s)||
+       state_bytes+m->work+sizeof(*s)>UINT64_MAX-route_bytes)
+        return fail(error,bytes,"native family session aggregate extent overflows");
+    charge=state_bytes+m->work+sizeof(*s)+route_bytes;
     if(options->memory<charge||!acquire(m,charge)) return fail(error,bytes,"native family aggregate session admission exhausted");
     s=(family_session *)calloc(1,sizeof(*s));
-    if(s) s->state=(float *)calloc((size_t)range->state_words,sizeof(float));
-    if(!s||!s->state) {if(s)free(s->state);free(s);release(m,charge);return fail(error,bytes,"native range session allocation failed");}
+    if(s) {
+        s->state=(float *)calloc((size_t)range->state_words,sizeof(float));
+        if(route_words)s->last_routes=(float *)malloc((size_t)route_bytes);
+    }
+    if(!s||!s->state||(route_words&&!s->last_routes)) {
+        if(s){free(s->last_routes);free(s->state);}free(s);release(m,charge);
+        return fail(error,bytes,"native range session allocation failed");
+    }
     s->model=m;s->charge=charge;s->state_words=range->state_words;s->begin=range->begin;s->end=range->end;
+    s->route_capacity=route_words;
     memcpy(s->identity,m->identity,65);
     if(s->begin || s->end!=m->layers) {
         oa_sha256 hash;unsigned char digest[32],bounds[16];unsigned i;
@@ -141,10 +165,10 @@ static int session_create(void *owner,void **out,const oa_se_session_options *op
     }
     *out=s;return 0;
 }
-static void session_destroy(void *owner){family_session *s=(family_session *)owner;if(!s)return;release(s->model,s->charge);free(s->state);free(s);}
+static void session_destroy(void *owner){family_session *s=(family_session *)owner;if(!s)return;release(s->model,s->charge);free(s->last_routes);free(s->state);free(s);}
 static int session_run(void *owner,const oa_se_run *request,char *error,size_t bytes) {
     family_session *s=(family_session *)owner;family_model *m;
-    float *pending=NULL,*hidden=NULL,*logits=NULL,*routing=NULL;int64_t *ids=NULL;
+    float *pending=NULL,*hidden=NULL,*logits=NULL,*routing=NULL,*glm_routes=NULL;int64_t *ids=NULL;
     uint64_t offset=0,i,temporary,routes=0;uint32_t width;int status=0;
     family_expert_request expert_request;
     if(!s||!request)return fail(error,bytes,"native family run arguments required");
@@ -166,6 +190,10 @@ static int session_run(void *owner,const oa_se_run *request,char *error,size_t b
         temporary+=routes*4;
         if(!m->inkling_range)temporary+=(uint64_t)request->rows*m->vocab*4;
     }
+    else if(m->glm_observed) {
+        routes=(uint64_t)request->rows*(s->end-s->begin)*(uint64_t)m->d.glm_config[7];
+        temporary+=(routes+2*(uint64_t)m->layers*m->d.glm_config[7])*4;
+    }
     if(temporary>m->work||m->scratch>m->work-temporary)
         return fail(error,bytes,"native family range transaction exceeds work admission");
     pending=(float *)malloc((size_t)s->state_words*4);
@@ -176,6 +204,12 @@ static int session_run(void *owner,const oa_se_run *request,char *error,size_t b
     for(i=0;i<request->rows;i++)ids[i]=request->tokens[i];
     if(m->family==1) {
         oa_family_tensor cache[256],empty={NULL,0};unsigned layer,slot;memset(cache,0,sizeof(cache));
+        uint64_t route_extent=(uint64_t)m->layers*m->d.glm_config[7];
+        if(m->glm_observed) {
+            routing=(float *)malloc((size_t)routes*sizeof(float));
+            glm_routes=(float *)malloc((size_t)(2*route_extent)*sizeof(float));
+            if(!routing||!glm_routes){status=1;goto done;}
+        }
         for(layer=s->begin;layer<s->end;layer++)for(slot=0;slot<2;slot++) {
             cache[2*layer+slot].data=pending+offset;
             cache[2*layer+slot].count=glm_state(m,layer,slot);offset+=cache[2*layer+slot].count;
@@ -183,7 +217,19 @@ static int session_run(void *owner,const oa_se_run *request,char *error,size_t b
         for(i=0;i<request->rows;i++) {
             oa_family_tensor input={(float *)request->input+i*width,width},output={hidden+i*width,width};
             if(cancelled(request->cancel,request->cancel_data)){status=2;goto done;}
-            if(m->glm_range && m->expert_bank)status=m->glm_range_streamed(m->d.glm_config,m->d.glm_floats,m->schedule,m->weights,
+            if(m->glm_observed) {
+                oa_family_tensor observed_logits={glm_routes,route_extent},
+                    observed_weights={glm_routes+route_extent,route_extent};
+                uint64_t local_extent=(uint64_t)(s->end-s->begin)*m->d.glm_config[7];
+                status=m->glm_observed(m->d.glm_config,m->d.glm_floats,m->schedule,m->weights,
+                    m->d.globals[0],m->d.globals[2],cache,(int32_t)(s->position+i),ids[i],
+                    (int32_t)s->begin,(int32_t)s->end,input,output,
+                    m->expert_bank?family_glm_expert:NULL,&expert_request,observed_logits,observed_weights);
+                if(!status)memcpy(routing+i*local_extent,
+                    observed_weights.data+(uint64_t)s->begin*m->d.glm_config[7],
+                    (size_t)local_extent*sizeof(float));
+            }
+            else if(m->glm_range && m->expert_bank)status=m->glm_range_streamed(m->d.glm_config,m->d.glm_floats,m->schedule,m->weights,
                 m->d.globals[0],m->d.globals[2],cache,(int32_t)(s->position+i),ids[i],
                 (int32_t)s->begin,(int32_t)s->end,input,output,family_glm_expert,&expert_request);
             else if(m->glm_range)status=m->glm_range(m->d.glm_config,m->d.glm_floats,m->schedule,m->weights,
@@ -233,16 +279,24 @@ static int session_run(void *owner,const oa_se_run *request,char *error,size_t b
         if(status)goto done;
     }
     if(cancelled(request->cancel,request->cancel_data)){status=2;goto done;}
-    if(!finite_values(hidden,(uint64_t)request->rows*width)||!finite_values(pending,s->state_words)) {status=3;goto done;}
+    if(!finite_values(hidden,(uint64_t)request->rows*width)||!finite_values(pending,s->state_words)||
+       ((m->family==2||m->glm_observed)&&(!routing||routes>s->route_capacity||!finite_values(routing,routes)))) {status=3;goto done;}
     memcpy(request->output,hidden,(size_t)request->rows*width*4);
+    if(m->family==2||m->glm_observed) {
+        memcpy(s->last_routes,routing,(size_t)routes*sizeof(float));
+        s->last_route_count=routes;s->last_route_rows=request->rows;
+        s->last_route_position=request->position;s->last_route_begin=s->begin;s->last_route_end=s->end;
+        s->last_route_experts=m->family==2?(uint32_t)(m->d.inkling_config.experts+m->d.inkling_config.shared):
+            (uint32_t)m->d.glm_config[7];
+    }
     memcpy(s->state,pending,(size_t)s->state_words*4);s->position+=request->rows;
  done:
     if(status&&cancelled(request->cancel,request->cancel_data))status=2;
-    free(pending);free(hidden);free(ids);free(logits);free(routing);
+    free(pending);free(hidden);free(ids);free(logits);free(routing);free(glm_routes);
     return status?fail(error,bytes,status==2?"native family request cancelled":"native family staged range decoder failed"):0;
 }
 static int snapshot(void *owner,oa_se_write writer,void *data,char *error,size_t bytes){family_session *s=(family_session *)owner;unsigned char header[96],digest[32];oa_sha256 hash;uint64_t offset,total;if(!s||!writer)return fail(error,bytes,"native snapshot writer required");memset(header,0,sizeof(header));memcpy(header,"OACFAM01",8);put64(header+8,s->position);put64(header+16,s->state_words);put64(header+24,s->model->family);memcpy(header+32,s->identity,64);oa_sha_init(&hash);oa_sha_update(&hash,header,sizeof(header));if(writer(data,header,sizeof(header)))return fail(error,bytes,"native snapshot header write failed");total=s->state_words*4;for(offset=0;offset<total;){size_t count=(size_t)(total-offset);if(count>1048576)count=1048576;oa_sha_update(&hash,(unsigned char *)s->state+offset,count);if(writer(data,(unsigned char *)s->state+offset,count))return fail(error,bytes,"native snapshot payload write failed");offset+=count;}oa_sha_finish(&hash,digest);return writer(data,digest,sizeof(digest))?fail(error,bytes,"native snapshot digest write failed"):0;}
-static int restore(void *owner,oa_se_read reader,void *data,char *error,size_t bytes){family_session *s=(family_session *)owner;unsigned char header[96],actual[32],expected[32];oa_sha256 hash;float *pending;uint64_t position,total,offset;unsigned difference=0,i;if(!s||!reader||reader(data,header,sizeof(header)))return fail(error,bytes,"native snapshot header read failed");position=get64(header+8);if(memcmp(header,"OACFAM01",8)||get64(header+16)!=s->state_words||get64(header+24)!=s->model->family||memcmp(header+32,s->identity,64)||position>s->model->context)return fail(error,bytes,"native snapshot identity/geometry differs");total=s->state_words*4;if(total>s->model->work)return fail(error,bytes,"native restore work admission exhausted");pending=(float *)malloc((size_t)total);if(!pending)return fail(error,bytes,"native restore allocation failed");oa_sha_init(&hash);oa_sha_update(&hash,header,sizeof(header));for(offset=0;offset<total;){size_t count=(size_t)(total-offset);if(count>1048576)count=1048576;if(reader(data,(unsigned char *)pending+offset,count)){free(pending);return fail(error,bytes,"native snapshot payload read failed");}oa_sha_update(&hash,(unsigned char *)pending+offset,count);offset+=count;}oa_sha_finish(&hash,expected);if(reader(data,actual,sizeof(actual))){free(pending);return fail(error,bytes,"native snapshot digest read failed");}for(i=0;i<32;i++)difference|=actual[i]^expected[i];if(difference||!finite_values(pending,s->state_words)){free(pending);return fail(error,bytes,"native snapshot digest/finite state differs");}memcpy(s->state,pending,(size_t)total);s->position=position;free(pending);return 0;}
+static int restore(void *owner,oa_se_read reader,void *data,char *error,size_t bytes){family_session *s=(family_session *)owner;unsigned char header[96],actual[32],expected[32];oa_sha256 hash;float *pending;uint64_t position,total,offset;unsigned difference=0,i;if(!s||!reader||reader(data,header,sizeof(header)))return fail(error,bytes,"native snapshot header read failed");position=get64(header+8);if(memcmp(header,"OACFAM01",8)||get64(header+16)!=s->state_words||get64(header+24)!=s->model->family||memcmp(header+32,s->identity,64)||position>s->model->context)return fail(error,bytes,"native snapshot identity/geometry differs");total=s->state_words*4;if(total>s->model->work)return fail(error,bytes,"native restore work admission exhausted");pending=(float *)malloc((size_t)total);if(!pending)return fail(error,bytes,"native restore allocation failed");oa_sha_init(&hash);oa_sha_update(&hash,header,sizeof(header));for(offset=0;offset<total;){size_t count=(size_t)(total-offset);if(count>1048576)count=1048576;if(reader(data,(unsigned char *)pending+offset,count)){free(pending);return fail(error,bytes,"native snapshot payload read failed");}oa_sha_update(&hash,(unsigned char *)pending+offset,count);offset+=count;}oa_sha_finish(&hash,expected);if(reader(data,actual,sizeof(actual))){free(pending);return fail(error,bytes,"native snapshot digest read failed");}for(i=0;i<32;i++)difference|=actual[i]^expected[i];if(difference||!finite_values(pending,s->state_words)){free(pending);return fail(error,bytes,"native snapshot digest/finite state differs");}memcpy(s->state,pending,(size_t)total);s->position=position;s->last_route_count=0;s->last_route_rows=0;free(pending);return 0;}
 static int edge_open(unsigned family,void **out,oa_se_edge_caps *caps,const oa_se_edge_options *options,char *error,size_t bytes){
     family_model *m;family_edge *edge;uint64_t charge;
     if(out)*out=NULL;
@@ -356,6 +410,23 @@ static int select_tokens(void *owner,const oa_se_select *request,char *error,siz
     if(!status){for(row=0;row<request->rows;row++){chosen[row]=0;score[row]=candidate[row*m->vocab];for(token=1;token<m->vocab;token++)if(candidate[row*m->vocab+token]>score[row]){score[row]=candidate[row*m->vocab+token];chosen[row]=(int32_t)token;}}if(cancelled(request->cancel,request->cancel_data))status=1;else{memcpy(request->tokens,chosen,(size_t)request->rows*4);memcpy(request->scores,score,(size_t)request->rows*4);}}
     free(candidate);return status?fail(error,bytes,"native greedy selection failed/cancelled"):0;
 }
+static int observe_inkling_routes(void *owner,uint32_t rows,uint64_t position,float *output,
+    size_t capacity,size_t *written,uint32_t *begin,uint32_t *end,uint32_t *experts,
+    char *error,size_t bytes) {
+    family_session *s=(family_session *)owner;
+    if(!s||!s->model||(s->model->family!=2&&!s->model->glm_observed)||!written||!begin||!end||!experts||
+       !s->last_route_count||s->last_route_rows!=rows||s->last_route_position!=position||
+       s->last_route_begin!=s->begin||s->last_route_end!=s->end||
+       s->last_route_count>SIZE_MAX||!finite_values(s->last_routes,s->last_route_count))
+        return fail(error,bytes,"executed family route observation is unavailable or stale");
+    *written=(size_t)s->last_route_count;*begin=s->last_route_begin;
+    *end=s->last_route_end;*experts=s->last_route_experts;
+    if(!output&&!capacity)return 0;
+    if(!output||capacity<s->last_route_count)
+        return fail(error,bytes,"Inkling route observation output capacity is too small");
+    memcpy(output,s->last_routes,(size_t)s->last_route_count*sizeof(float));
+    return 0;
+}
 static int register_adapters(void) {
     oa_se_segment_adapter segment;
     oa_se_edge_adapter edge;
@@ -408,7 +479,7 @@ size_t oa_segment_family_layout(uint32_t record,uint64_t *output,size_t capacity
     const uint64_t *values=NULL;size_t count=0;if(record==1){values=descriptor;count=sizeof(descriptor)/8;}else if(record==2){values=tensor;count=sizeof(tensor)/8;}else if(record==3){values=config;count=sizeof(config)/8;}else if(record==4){values=layer;count=sizeof(layer)/8;}if(!values||!output||capacity<count)return 0;memcpy(output,values,count*8);return count;
 #undef FIELD
 }
-int oa_segment_family_initialize(void){int status=0;lock_models();if(registered!=15u && !register_adapters())status=-1;unlock_models();return status;}
+int oa_segment_family_initialize(void){int status=0;lock_models();if(registered!=15u && !register_adapters())status=-1;if(!status&&coli_segment_route_observer_register("openagent-inkling-native-model",observe_inkling_routes))status=-1;if(!status&&coli_segment_route_observer_register("openagent-glm5-native-model",observe_inkling_routes))status=-1;unlock_models();return status;}
 int oa_segment_family_register(const oa_family_model_descriptor *descriptor,uint64_t *id,char *error,size_t bytes){family_model *m;unsigned i,j;size_t length;uint16_t endian=1;if(id)*id=0;if(!descriptor||descriptor->size!=sizeof(*descriptor)||descriptor->version!=1||!id||descriptor->family<1||descriptor->family>2||!descriptor->model||!descriptor->identity||strlen(descriptor->identity)!=64||!descriptor->rows||descriptor->rows>4096||!descriptor->max_resource_bytes||!descriptor->max_work_bytes||sizeof(float)!=4||FLT_RADIX!=2||FLT_MANT_DIG!=24||FLT_MAX_EXP!=128||*(unsigned char *)&endian!=1)return fail(error,bytes,"explicit native family descriptor required");length=strlen(descriptor->model);if(!length||length>32768)return fail(error,bytes,"native family model root extent differs");m=(family_model *)calloc(1,sizeof(*m));if(!m)return fail(error,bytes,"native family model allocation failed");m->d=*descriptor;memset(m->d.globals,0,sizeof(m->d.globals));m->limit=descriptor->max_resource_bytes;m->work=descriptor->max_work_bytes;m->family=descriptor->family;m->rows=descriptor->rows;memcpy(m->identity,descriptor->identity,65);m->resident=sizeof(*m)+length+1;if(m->resident>m->limit)goto invalid;m->root=(char *)malloc(length+1);if(!m->root)goto invalid;memcpy(m->root,descriptor->model,length+1);if(m->family==1){const int32_t *c=descriptor->glm_config;if(!glm_geometry(c,descriptor->glm_floats)||!descriptor->glm_step||!descriptor->glm_weights||!descriptor->glm_schedule||c[0]<1||c[0]>16384||c[1]<1||c[1]>1048576||c[2]<1||c[2]>128||c[22]<1||c[22]>65536)goto invalid;for(i=0;i<26;i++)if(c[i]<0||c[i]>1048576)goto invalid;m->width=c[0];m->vocab=c[1];m->layers=c[2];m->context=c[22];m->scratch=glm_scratch(c);m->resident+=(uint64_t)m->layers*(42*sizeof(oa_family_tensor)+3*sizeof(int32_t));if(m->resident>m->limit)goto invalid;m->weights=(oa_family_tensor *)calloc((size_t)m->layers*42,sizeof(*m->weights));m->schedule=(int32_t *)malloc((size_t)m->layers*3*sizeof(int32_t));if(!m->weights||!m->schedule)goto invalid;memcpy(m->schedule,descriptor->glm_schedule,(size_t)m->layers*3*sizeof(int32_t));for(i=0;i<m->layers*3;i++)if(m->schedule[i]<0||m->schedule[i]>1)goto invalid;for(i=0;i<m->layers*42;i++)if(!clone_tensor(m,descriptor->glm_weights[i],m->weights+i))goto invalid;for(i=0;i<m->layers;i++)m->state_words+=glm_state(m,i,0)+glm_state(m,i,1);}else{const oa_family_inkling_config *c=&descriptor->inkling_config;if(!descriptor->inkling_run||!descriptor->inkling_layers||!ink_geometry(c,descriptor->inkling_layers)||!c->hidden||c->hidden>1048576||!c->output_vocab||c->output_vocab>1048576||!c->layers||c->layers>128||!c->capacity||c->capacity>65536||!c->kernel||c->kernel>64||!c->experts||c->experts>65536||!c->shared||c->shared>65536||!isfinite(c->epsilon)||c->epsilon<=0||!isfinite(c->multiplier)||c->multiplier<=0)goto invalid;m->width=(uint32_t)c->hidden;m->vocab=(uint32_t)c->output_vocab;m->layers=(uint32_t)c->layers;m->context=(uint32_t)c->capacity;m->resident+=(uint64_t)m->layers*sizeof(oa_family_inkling_layer);if(m->resident>m->limit)goto invalid;m->inkling=(oa_family_inkling_layer *)calloc(m->layers,sizeof(*m->inkling));if(!m->inkling)goto invalid;for(i=0;i<m->layers;i++){m->inkling[i]=descriptor->inkling_layers[i];memset(m->inkling[i].weights,0,sizeof(m->inkling[i].weights));m->inkling[i].state.data=NULL;m->inkling[i].state.count=0;if(!ink_geometry(c,&m->inkling[i]))goto invalid;for(j=0;j<26;j++)if(!clone_tensor(m,descriptor->inkling_layers[i].weights[j],&m->inkling[i].weights[j]))goto invalid;m->state_words+=ink_state(m,&m->inkling[i]);}}if(m->family==2)m->scratch=ink_scratch(m);if(m->state_words>SIZE_MAX/4||m->work<m->state_words*4||m->resident>=m->limit||m->work>m->limit-m->resident)goto invalid;for(i=0;i<4;i++)if(!clone_tensor(m,descriptor->globals[i],&m->d.globals[i]))goto invalid;if(m->d.globals[0].count!=(m->family==2?m->d.inkling_config.vocab:(uint64_t)m->vocab)*m->width||m->d.globals[2].count!=m->width||m->d.globals[3].count!=(m->family==2?m->d.inkling_config.vocab:(uint64_t)m->vocab)*m->width||(m->family==2&&m->d.globals[1].count!=m->width)||m->work>m->limit-m->resident)goto invalid;m->used=m->resident;lock_models();if(model_count>=128||next_model==UINT64_MAX||find_model(m->root,m->family)){unlock_models();goto invalid;}if(registered!=15u && !register_adapters()){unlock_models();goto invalid;}m->id=next_model++;m->next=models;models=m;model_count++;*id=m->id;unlock_models();return 0;
 invalid:free_model(m);return fail(error,bytes,"native family model inventory/resource admission failed");}
 int oa_segment_family_release(uint64_t id,char *error,size_t bytes) {
@@ -437,6 +508,14 @@ int oa_segment_family_enable_glm_ranges(uint64_t id,oa_family_glm_range run,char
     if(m&&m->family==1&&!m->refs&&!m->glm_range&&(!m->expert_bank||m->glm_range_streamed)) {m->glm_range=run;ok=1;}
     unlock_models();
     return ok?0:fail(error,bytes,"idle registered GLM model required for range extension");
+}
+int oa_segment_family_enable_glm_route_observer(uint64_t id,oa_family_glm_range_observed run,char *error,size_t bytes) {
+    family_model *m;int ok=0;
+    if(!run)return fail(error,bytes,"native GLM range observer required");
+    lock_models();for(m=models;m&&m->id!=id;m=m->next){}
+    if(m&&m->family==1&&!m->refs&&m->glm_range&&!m->glm_observed){m->glm_observed=run;ok=1;}
+    unlock_models();
+    return ok?0:fail(error,bytes,"idle GLM range model required for route observer");
 }
 int oa_segment_family_glm_final_hidden(uint64_t id,const float *input,uint32_t rows,
     uint64_t input_count,float *output,uint64_t output_count,char *error,size_t bytes) {

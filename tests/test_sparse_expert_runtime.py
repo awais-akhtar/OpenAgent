@@ -142,6 +142,40 @@ class SparseExpertRuntimeTests(unittest.TestCase):
         np.testing.assert_allclose(actual[1], self.reference(batch[1], routes[1]), rtol=1e-5, atol=1e-6)
         self.assertEqual(status["store"]["bytes_read"], size)
         self.assertEqual(status["compute"]["tokens"], 2)
+        self.assertEqual(status["compute"]["expert_calls"], 2)
+        self.assertEqual(status["compute"]["unique_expert_loads"], 1)
+        self.assertEqual(status["compute"]["batched_expert_calls"], 2)
+        self.assertEqual(status["compute"]["batched_unique_expert_loads"], 1)
+
+    def test_external_routes_feed_counters_learning_and_read_ahead(self) -> None:
+        size = self.weights[0].nbytes
+        with SparseExpertRuntime(self.root, self.manifest, capacity_bytes=4 * size) as runtime:
+            runtime.record_external_routes("block.0", [["0"]], prefetch=False)
+            runtime.record_external_routes("block.0", [["1"]], prefetch=False)
+            self.assertEqual(runtime.store.status()["prefetch_submitted"], 0)
+            runtime.record_external_routes("block.0", [["0", "2"], ["0"]], elapsed=0.25)
+            for job in list(runtime.store._pending.values()):
+                job.result()
+            status = runtime.status()
+            with self.assertRaises(KeyError):
+                runtime.record_external_routes("block.0", [["9"]])
+            with self.assertRaises(KeyError):
+                runtime.record_external_routes("block.9", [["0"]])
+            with self.assertRaisesRegex(ValueError, "more experts"):
+                runtime.record_external_routes("block.0", [["0", "1", "2"]])
+            with self.assertRaisesRegex(ValueError, "at least one"):
+                runtime.record_external_routes("block.0", [])
+        compute, store = status["compute"], status["store"]
+        self.assertEqual(compute["expert_calls"], 5)
+        self.assertEqual(compute["unique_expert_loads"], 4)
+        self.assertEqual(compute["batched_expert_calls"], 3)
+        self.assertEqual(compute["batched_unique_expert_loads"], 2)
+        self.assertEqual(compute["tokens"], 4)
+        self.assertAlmostEqual(compute["compute_seconds"], 0.25)
+        self.assertEqual(sum(layer["observations"] for layer in status["routes"].values()), 5)
+        self.assertGreater(store["prefetch_submitted"], 0)
+        self.assertEqual(store["misses"], 0)
+        self.assertGreater(store["bytes_read"], 0)
 
     def test_hot_experts_can_be_pinned_without_silent_eviction(self) -> None:
         size = self.weights[0].nbytes

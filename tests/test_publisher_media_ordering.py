@@ -9,9 +9,26 @@ from unittest.mock import patch
 from openagent.adaptive_engine.publisher_provider import (
     NativePublisherProvider, ProviderConfigurationError,
 )
+from openagent.adaptive_engine.publisher_media_inputs import PublisherVideoInput
+import numpy as np
 
 
 class PublisherMediaOrderingTests(unittest.TestCase):
+    def test_cross_modality_order_is_rejected_before_processor_dispatch(self):
+        video = PublisherVideoInput(
+            (np.zeros((1, 1, 3), dtype=np.uint8),), (0,), 1, 1.0)
+        still = np.zeros((1, 1, 3), dtype=np.uint8)
+
+        with self.assertRaisesRegex(ProviderConfigurationError,
+                'one media modality per request'):
+            NativePublisherProvider._validate_media_modality_order(
+                'qwen4_exp', (still, video))
+
+        # K3's typed media path preserves one shared input order, so its
+        # image/video mixture remains eligible for its own processor.
+        NativePublisherProvider._validate_media_modality_order(
+            'kimi_k3', (still, video))
+
     def test_configured_video_placeholder_is_rejected_without_video_attachment(self):
         provider = NativePublisherProvider()
         config = {

@@ -1,16 +1,16 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+﻿import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { motion } from "motion/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { handleTabListKeyDown, tabIndex } from "../components/tabKeyboard";
 import {
-  Activity, AlertCircle, ArrowRight, AudioLines, BookOpen, Braces,
+  Activity, AlertCircle, ArrowRight, AudioLines, BookOpen, BookMarked, Braces,
   BarChart3, CalendarClock, CalendarDays, Check, CheckCircle2, CircleHelp, CloudOff, Cpu, Database,
-  Copy, FileClock, FileDown, FileText, Fingerprint, FlaskConical, Globe2, HardDrive, Info, Plus, RotateCcw,
-  KeyRound, Layers3, Lock, LockKeyhole, Mail, Mic, MoreHorizontal, Network, Play, Search, Settings2,
-  Search as SearchIcon, Shield, SlidersHorizontal, Sparkles, SquareTerminal, Terminal, Trash2, UserRound, X,
+  Copy, FileClock, FileDown, FileText, Fingerprint, FlaskConical, Globe2, HardDrive, Image, Info, Plus, RotateCcw,
+  KeyRound, Layers3, Lock, LockKeyhole, Mail, Mic, MoreHorizontal, Network, Play, Search, Server, Settings2,
+  Search as SearchIcon, Shield, SlidersHorizontal, Sparkles, SquareTerminal, Terminal, Trash2, Upload, UserRound, X, Zap,
   type LucideIcon,
 } from "lucide-react";
-import { advancedScreenEndpoints, apiConnectionMessage, apiGet as backendGet, apiPost as backendPost, fetchAdvancedScreenData, type AdvancedRoute, type JsonRecord } from "../api/client";
+import { advancedScreenEndpoints, apiConnectionMessage, apiDelete as backendDelete, apiGet as backendGet, apiGetBlob as backendGetBlob, apiPatch as backendPatch, apiPost as backendPost, fetchAdvancedScreenData, type AdvancedRoute, type JsonRecord } from "../api/client";
 import { useWorkspaceState } from "../state";
 import { advancedDemoAction, advancedDemoScreen, resetAdvancedDemoRoute } from "../demo/advanced";
 import { demoProvider } from "../demo/provider";
@@ -22,12 +22,16 @@ import * as Dialog from "../components/ui/dialog";
 // browser-local fixtures; live mode continues through the authenticated API client.
 const apiPost = <T extends JsonRecord = JsonRecord>(path: string, body: unknown, signal?: AbortSignal): Promise<T> =>
   useWorkspaceState.getState().dataMode === "demo" ? advancedDemoAction(path, body) as Promise<T> : backendPost<T>(path, body, signal);
+const apiPatch = <T extends JsonRecord = JsonRecord>(path: string, body: unknown): Promise<T> => backendPatch<T>(path, body);
+const apiDelete = <T extends JsonRecord = JsonRecord>(path: string): Promise<T> => backendDelete<T>(path);
 const apiGet = <T extends JsonRecord = JsonRecord>(path: string, signal?: AbortSignal): Promise<T> => {
   if (useWorkspaceState.getState().dataMode !== "demo") return backendGet<T>(path, signal);
   if (path.startsWith("/api/voice/turns")) return Promise.resolve({ turns: [{ id: "demo-turn-1", speaker: "user", role: "user", text: "Review onboarding feedback and release blockers.", is_final: true, created_at: "Today" }] } as unknown as T);
   if (path.includes("/probe")) return Promise.resolve({ status: "ready", exists: true, checksum_valid: true, demo: true } as unknown as T);
   return Promise.resolve({ demo: true } as unknown as T);
 };
+
+const enc = (v: string) => encodeURIComponent(v);
 
 async function recordDemoWorkspaceActivity(route: string, name: string, item: string): Promise<void> {
   if (useWorkspaceState.getState().dataMode !== "demo") return;
@@ -58,23 +62,26 @@ const definitions: Record<string, Definition> = {
   vault: { title: "Vault", description: "Keep credentials and other sensitive values protected.", tabs: ["Secrets", "Access", "Audit"], icon: LockKeyhole, subject: "Protected secrets", note: "Secret names, values and permissions require an authenticated vault response." },
   scraper: { title: "Web scraper", description: "Run permitted extraction jobs and review their output.", tabs: ["New extraction", "Jobs", "Results", "Rules"], icon: Globe2, subject: "Website extraction", note: "No request is sent until domain permissions, extraction scope and backend policy are verified." },
   finetune: { title: "Fine-tuning", description: "Prepare datasets, training jobs and model artefacts.", tabs: ["Datasets", "Jobs", "Checkpoints", "Results"], icon: SlidersHorizontal, subject: "Training workspace", note: "Dataset validation, compatibility plans and training status require backend confirmation." },
+  gallery: { title: "Image Studio", description: "Browse, organise and edit your image library.", tabs: ["Library", "Albums", "Upload", "Operations"], icon: Image, subject: "Image library", note: "Images and albums appear when the gallery service is connected." },
+  cookbook: { title: "Model Cookbook", description: "Host, certify and serve local model builds.", tabs: ["Hosts", "Cached", "Certifications", "Logs"], icon: BookMarked, subject: "Model hosts", note: "Hosted models and certification records require a connected cookbook service." },
+  ultramodel: { title: "Ultra Model", description: "Control ultra-scale inference manifests, plans and sessions.", tabs: ["Status", "Manifests", "Plans", "Sessions"], icon: Zap, subject: "Inference sessions", note: "Manifests, routing plans and sessions appear when the ultra-model service is running." },
+  personalos: { title: "Personal OS", description: "Manage personal presets, notes, signatures and drafts.", tabs: ["Status", "Presets", "Notes", "Gallery", "Signatures", "Drafts"], icon: UserRound, subject: "Personal workspace", note: "Presets and notes appear when the personal-os service is connected." },
 };
 
 const routeIcons: Record<string, LucideIcon> = {
   knowledge: Search, voice: AudioLines, assistant: CheckCircle2, communications: Mail,
   security: Fingerprint, developer: Braces, engine: Activity, science: Database,
   twin: UserRound, vault: KeyRound, scraper: Globe2, finetune: HardDrive,
+  gallery: Image, cookbook: BookMarked, ultramodel: Zap, personalos: UserRound,
 };
 
 const securityTabEndpoints: Record<string, Record<string, string> | null> = {
   Overview: { status: "/api/security/status" },
   Access: { status: "/api/security/status", grants: "/api/security/shares", egress: "/api/security/egress" },
   Sessions: { sessions: "/api/auth/sessions" },
-  // GET /api/audit is restricted to security:admin, but its handler can return
-  // cross-project events when project is omitted and membership/filter behavior
-  // is not verified here. Keep the user-facing list fail-closed until that is
-  // confirmed; the existing audit-chain verification remains independently wired.
-  Audit: null,
+  // The endpoint requires security:admin. Always constrain this workspace to
+  // its explicit local project; never make an unscoped audit request.
+  Audit: { events: "/api/audit?project=default&limit=100" },
   Privacy: { reports: "/api/security/privacy-reports" },
   Retention: { retention: "/api/security/retention" },
   Secrets: { secrets: "/api/security/secrets" },
@@ -316,7 +323,7 @@ function AdvancedDemoRecordWorkspace({ route, tab, data }: { route: "science" | 
   };
   const remove = async () => {
     if (!selected) return;
-    if (!window.confirm(`Delete “${titleOf(selected)}” from the local demo?`)) return;
+    if (!window.confirm(`Delete "${titleOf(selected)}" from the local demo?`)) return;
     await demoProvider.updateCollection<JsonRecord>(`collections.advanced.${route}.${collection}`, current => current.filter(row => String(row.id) !== String(selected.id)));
     await client.invalidateQueries({ queryKey: ["advanced-screen", route] });
     setDialog(null); setFeedback("Example record deleted locally.");
@@ -436,7 +443,7 @@ function TwinDemoWorkspace({ tab, data }: { tab: string; data?: Record<string, J
     } catch (cause) { setError(apiConnectionMessage(cause)); }
   };
   const deleteRecord = async (record: JsonRecord) => {
-    if (!window.confirm(`Delete “${String(record.name ?? "this item")}” from the local demo? No backend data will be changed.`)) return;
+    if (!window.confirm(`Delete "${String(record.name ?? "this item")}" from the local demo? No backend data will be changed.`)) return;
     await demoProvider.updateCollection<JsonRecord>(`collections.advanced.twin.${collection}`, current => current.filter(row => row.id !== record.id));
     await recordDemoWorkspaceActivity("twin", "Deleted personal context example", collection);
     setSelected(null); setNotice("Local demo record deleted."); await client.invalidateQueries({ queryKey: ["advanced-screen", "twin"] });
@@ -556,7 +563,7 @@ function SecurityDemoWorkspace({ tab, data }: { tab: string; data?: Record<strin
     <Dialog.Root open={Boolean(selected)} onOpenChange={open => { if (!open) setSelected(null); }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{String(selected?.name ?? "Security record")}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close security details"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">{String(selected?.description ?? "Example record")}</Dialog.Description><div className="demo-detail-grid"><div><small>Collection</small><strong>{collection}</strong></div><div><small>Status</small><strong>{String(selected?.status ?? "Example")}</strong></div></div><p className="p-note"><Info className="icon sm" aria-hidden="true"/><span>Illustrative local demo data. These actions do not change backend permissions, sessions or trusted audit records.</span></p><div className="advanced-integration-actions">{collection === "policies" && <button type="button" className="btn" onClick={() => selected && void changeRecordStatus(selected)}>{String(selected?.status).toLowerCase() === "enabled" ? "Disable" : "Enable"}</button>}{collection === "sessions" && <button type="button" className="btn danger" onClick={() => selected && void changeRecordStatus(selected)}>Revoke session</button>}{collection === "audit" && <button type="button" className="btn" onClick={() => selected && void changeRecordStatus(selected)}>Run example</button>}<button type="button" className="btn" onClick={() => selected && openEdit(selected)}>Edit</button><button type="button" className="btn danger" onClick={() => selected && beginDelete(selected)}>Delete</button><Dialog.Close asChild><button className="btn" type="button">Close</button></Dialog.Close></div></Dialog.Content></Dialog.Portal></Dialog.Root>
     <Dialog.Root open={Boolean(actionRecord)} onOpenChange={open => { if (!open) setActionRecord(null); }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{String(actionRecord?.name ?? "Item actions")}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close record actions"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">Choose an action for this example record.</Dialog.Description><div className="demo-action-grid"><button type="button" className="btn" onClick={() => actionRecord && showDetails(actionRecord)}><FileText className="icon sm" aria-hidden="true"/>Open details</button><button type="button" className="btn" onClick={() => actionRecord && openEdit(actionRecord)}><SlidersHorizontal className="icon sm" aria-hidden="true"/>Edit record</button><button type="button" className="btn" onClick={() => actionRecord && void duplicateRecord(actionRecord)}><Copy className="icon sm" aria-hidden="true"/>Duplicate</button><button type="button" className="btn" onClick={() => actionRecord && void changeRecordStatus(actionRecord)}><Play className="icon sm" aria-hidden="true"/>{collection === "audit" ? "Run / test" : collection === "sessions" ? "Revoke session" : String(actionRecord?.status).toLowerCase() === "enabled" ? "Disable" : "Enable"}</button><button type="button" className="btn danger" onClick={() => actionRecord && beginDelete(actionRecord)}><Trash2 className="icon sm" aria-hidden="true"/>Delete</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
     <Dialog.Root open={Boolean(editingRecord)} onOpenChange={open => { if (!open) setEditingRecord(null); }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">Edit {addLabel}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close security record editor"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">Changes are saved to this browser's local demo data only.</Dialog.Description><form onSubmit={event => void saveEdit(event)}><label className="demo-form-field">Name<input className="input" value={editName} onChange={event => setEditName(event.target.value)} required maxLength={120}/></label><label className="demo-form-field">Description<input className="input" value={editDescription} onChange={event => setEditDescription(event.target.value)} maxLength={300}/></label><label className="demo-form-field">Status<select className="select" value={editStatus} onChange={event => setEditStatus(event.target.value)}>{Array.from(new Set([editStatus, ...(collection === "policies" ? ["Enabled", "Disabled"] : collection === "sessions" ? ["Active", "Revoked"] : ["Example", "Simulated locally"])] )).map(value => <option key={value}>{value}</option>)}</select></label><div className="advanced-integration-actions"><button type="button" className="btn" onClick={() => setEditingRecord(null)}>Cancel</button><button type="submit" className="btn primary" disabled={!editName.trim()}>Save changes</button></div></form></Dialog.Content></Dialog.Portal></Dialog.Root>
-    <Dialog.Root open={Boolean(deleteRecord)} onOpenChange={open => { if (!open) setDeleteRecord(null); }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">Delete “{String(deleteRecord?.name ?? "record")}”?</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close delete confirmation"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">This deletes the local demo record. It does not affect your backend.</Dialog.Description><div className="advanced-integration-actions"><button type="button" className="btn" onClick={() => setDeleteRecord(null)}>Cancel</button><button type="button" className="btn danger" onClick={() => void confirmDelete()}>Delete record</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
+    <Dialog.Root open={Boolean(deleteRecord)} onOpenChange={open => { if (!open) setDeleteRecord(null); }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">Delete "{String(deleteRecord?.name ?? "record")}"?</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close delete confirmation"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">This deletes the local demo record. It does not affect your backend.</Dialog.Description><div className="advanced-integration-actions"><button type="button" className="btn" onClick={() => setDeleteRecord(null)}>Cancel</button><button type="button" className="btn danger" onClick={() => void confirmDelete()}>Delete record</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
   </>;
 }
 
@@ -564,6 +571,18 @@ function ScraperDueJobs({ data }: { data?: Record<string, JsonRecord> }) {
   const client = useQueryClient();
   const [consent, setConsent] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const cancelMutation = useMutation({
+    mutationFn: (jobId: string) => apiPost<{ cancelled?: boolean; job?: { status?: string } }>(`/api/scraper/jobs/${encodeURIComponent(jobId)}/cancel`, { project: "default" }),
+    onSuccess: async (result) => {
+      setFeedback(result.cancelled === true
+        ? "Schedule cancelled. The saved job history has been retained."
+        : result.job?.status === "running"
+          ? "This job is already running. Its current request was not interrupted."
+          : `The schedule was not cancelled. Its current status is ${String(result.job?.status ?? "unknown")}. Refresh and try again if it is still pending.`);
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "scraper"] });
+    },
+    onError: (error) => setFeedback(apiConnectionMessage(error)),
+  });
   const mutation = useMutation({
     mutationFn: () => apiPost("/api/scraper/run-due", { project: "default" }),
     onSuccess: async () => { setFeedback("The backend processed its currently due scheduled jobs."); await client.invalidateQueries({ queryKey: ["advanced-screen", "scraper"] }); },
@@ -571,10 +590,27 @@ function ScraperDueJobs({ data }: { data?: Record<string, JsonRecord> }) {
   });
   const jobs = Array.isArray(data?.jobs?.jobs) ? data.jobs.jobs : [];
   return <section className="p-card"><div className="p-card-heading"><h3>Scheduled extraction jobs</h3><span className="p-fixture">{jobs.length} backend records</span></div>
-    <p className="caption">Only jobs the backend reports as due are processed. Each job uses its saved network policy and server-side egress protections.</p>
+    <p className="caption">Pending jobs can be cancelled before their next run. Processing due jobs uses each saved network approval and server-side egress protections.</p>
+    {jobs.length > 0 && <div className="p-record-sections" aria-label="Scheduled extraction jobs">{jobs.map((job, index) => {
+      const id = String(job.id ?? "");
+      const metadata = job.metadata && typeof job.metadata === "object" && !Array.isArray(job.metadata) ? job.metadata as JsonRecord : {};
+      const status = String(job.status ?? "unknown").toLowerCase();
+      const label = String(metadata.label ?? job.url ?? "Scheduled extraction");
+      const canCancel = ["scheduled", "awaiting_approval"].includes(status) && Boolean(id);
+      return <article className="p-record-section" key={id || index} data-scraper-job-id={id}>
+        <div className="row between"><strong>{label}</strong><span className={`tag ${status === "scheduled" ? "green" : status === "cancelled" ? "" : "orange"}`}>{status.replaceAll("_", " ")}</span></div>
+        <p className="caption">{String(job.url ?? "URL unavailable")} · every {String(job.interval_hours ?? "—")} hours · next {String(job.next_run ?? "not reported")}</p>
+        <p className="caption">{metadata.external_approved === true ? "Recurring external access approved" : "External access not approved"}{job.last_run ? ` · last run ${String(job.last_run)}` : " · not run yet"}</p>
+        {canCancel && <button type="button" className="btn sm danger" aria-label={`Cancel scheduled extraction for ${label}`} disabled={cancelMutation.isPending} onClick={() => {
+          if (!window.confirm(`Cancel the recurring extraction for "${label}"? The current project history will be retained.`)) return;
+          setFeedback(""); cancelMutation.mutate(id);
+        }}>{cancelMutation.isPending ? "Cancelling…" : "Cancel schedule"}</button>}
+      </article>;
+    })}</div>}
+    {!jobs.length && <p className="muted small">No scheduled extraction jobs are stored for this project.</p>}
     <label className="row"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />I authorize processing due jobs, which may fetch their configured URLs</label>
-    <button type="button" className="btn primary" disabled={!consent || mutation.isPending || !jobs.length} onClick={() => { if (!window.confirm("Process all jobs currently due for this project, using each job's saved network policy?")) return; setFeedback(""); mutation.mutate(); }}>{mutation.isPending ? "Processing due jobs…" : "Process due jobs"}</button>
-    {feedback && <p className="caption" role={mutation.isError ? "alert" : "status"}>{feedback}</p>}{mutation.data && <ActionResult route="scraper" result={mutation.data} />}
+    <button type="button" className="btn primary" disabled={!consent || mutation.isPending || !jobs.some(job => String(job.status ?? "") === "scheduled")} onClick={() => { if (!window.confirm("Process all jobs currently due for this project, using each job's saved network policy?")) return; setFeedback(""); mutation.mutate(); }}>{mutation.isPending ? "Processing due jobs…" : "Process due jobs"}</button>
+    {feedback && <p className="caption" role={mutation.isError || cancelMutation.isError ? "alert" : "status"}>{feedback}</p>}{mutation.data && <ActionResult route="scraper" result={mutation.data} />}
   </section>;
 }
 
@@ -702,7 +738,7 @@ function VaultDemoAccessAudit({ tab, data }: { tab: "Access" | "Audit"; data?: R
             </div>
             <Dialog.Close asChild><button className="icon-button" aria-label="Close dialog" type="button"><X size={16} aria-hidden="true"/></button></Dialog.Close>
           </div> : <div className="advanced-integration-heading">
-            <Dialog.Title className="second-app-dialog-title">{dialog === "details" ? "Demo activity" : dialog === "actions" ? String(selected?.name ?? "Item actions") : dialog === "confirm-delete" ? `Delete “${titleOf(selected ?? {})}”?` : dialog === "edit" ? `Edit ${tab === "Access" ? "request" : "audit"}` : `New ${tab === "Access" ? "request" : "audit"}`}</Dialog.Title>
+            <Dialog.Title className="second-app-dialog-title">{dialog === "details" ? "Demo activity" : dialog === "actions" ? String(selected?.name ?? "Item actions") : dialog === "confirm-delete" ? `Delete "${titleOf(selected ?? {})}"?` : dialog === "edit" ? `Edit ${tab === "Access" ? "request" : "audit"}` : `New ${tab === "Access" ? "request" : "audit"}`}</Dialog.Title>
             <Dialog.Close asChild><button className="icon-button" aria-label="Close dialog" type="button"><X size={16} aria-hidden="true"/></button></Dialog.Close>
           </div>}
           {(dialog !== "details" || !selected) && <Dialog.Description className="second-app-dialog-description">{dialog === "details" ? "Actions completed in this browser, not from a real backend." : dialog === "confirm-delete" ? "This deletes the local demo record. It does not affect your backend." : "Changes are saved locally in this interactive demonstration."}</Dialog.Description>}
@@ -841,6 +877,157 @@ function VaultWorkspace({ tab, data, demo = false }: { tab: string; data?: Recor
   </>;
 }
 
+function CpuFineTunePanel({ jobs }: { jobs: JsonRecord[] }) {
+  const [jobId, setJobId] = useState("");
+  const [modelDir, setModelDir] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState("");
+  const [polling, setPolling] = useState(false);
+  const [status, setStatus] = useState<JsonRecord | null>(null);
+  const [pollJobId, setPollJobId] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+
+  // This endpoint is polled status, not an event stream. Stop timers when this
+  // panel unmounts or a different job is selected.
+  useEffect(() => {
+    if (!polling || !pollJobId) return;
+    let active = true;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const result = await apiGet<JsonRecord>(`/api/finetune/jobs/${encodeURIComponent(pollJobId)}/stream-status?project=default`);
+        if (!active) return;
+        setStatus(result);
+        const current = String(result.status ?? "");
+        if (["running", "queued", "cancelling"].includes(current)) timer = window.setTimeout(() => void tick(), 3000);
+        else setPolling(false);
+      } catch (error) {
+        if (!active) return;
+        setStartError(apiConnectionMessage(error));
+        setPolling(false);
+      }
+    };
+    timer = window.setTimeout(() => void tick(), 1000);
+    return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [polling, pollJobId]);
+
+  const pollStatus = (id: string) => {
+    setPollJobId(id);
+    setPolling(true);
+  };
+
+  const handleStart = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!jobId.trim() || !modelDir.trim() || jobs.find(job => String(job.id ?? "") === jobId)?.status !== "queued") return;
+    if (!window.confirm("Start the local CPU worker for this queued job? It uses approximate tokenization and LoRA updates; verify the model format and resource use first.")) return;
+    setStarting(true);
+    setStartError("");
+    setStatus(null);
+    const captured = jobId;
+    apiPost(`/api/finetune/jobs/${encodeURIComponent(captured)}/run-cpu`, { model_dir: modelDir.trim(), project: "default" })
+      .then(() => { setStarting(false); pollStatus(captured); })
+      .catch((err: unknown) => { setStarting(false); setStartError(String(err instanceof Error ? err.message : err)); });
+  };
+
+  const cancelTraining = async () => {
+    if (!pollJobId || !["queued", "running", "cancelling"].includes(String(status?.status ?? "")) || cancelling) return;
+    if (!window.confirm("Request cancellation at the training worker's next safe checkpoint?")) return;
+    setCancelling(true);
+    setStartError("");
+    try {
+      const result = await apiPost<JsonRecord>(`/api/finetune/jobs/${encodeURIComponent(pollJobId)}/cancel`, { project: "default" });
+      if (result.job && typeof result.job === "object") setStatus(result.job as JsonRecord);
+      pollStatus(pollJobId);
+    } catch (error) {
+      setStartError(apiConnectionMessage(error));
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const progressFraction = Math.max(0, Math.min(1, Number(status?.progress ?? 0)));
+  const progressPct = Math.round(progressFraction * 100);
+  const currentLoss = Number(status?.current_loss ?? 0);
+  const checkpointCount = Array.isArray(status?.checkpoints) ? (status.checkpoints as unknown[]).length : 0;
+  const jobStatus = String(status?.status ?? "");
+  const isTerminal = ["completed", "failed", "cancelled"].includes(jobStatus);
+
+  const selectableJobs = jobs.filter(j => ["queued", "running", "cancelling"].includes(String(j.status ?? "")));
+  const selectedJob = selectableJobs.find(job => String(job.id ?? "") === jobId);
+  const selectedJobStatus = String(selectedJob?.status ?? "");
+
+  return (
+    <section className="p-card">
+      <div className="p-card-heading">
+        <h3>CPU streaming fine-tune</h3>
+      <span className="p-fixture">Uses the local CPU worker</span>
+      </div>
+      <p className="caption">
+        Starts the configured local CPU worker for a queued job. The current worker uses bounded, approximate
+        tokenization and LoRA updates; validate its compatibility and resource use with a disposable model before
+        relying on its output. It is not a substitute for a model-family-specific training runtime.
+      </p>
+      <form onSubmit={handleStart}>
+        <label className="demo-form-field">
+          Job
+          <select className="select" value={jobId} onChange={(e) => setJobId(e.target.value)} required>
+            <option value="">Select a queued job to start, or a running job to monitor</option>
+            {selectableJobs.map((j, i) => (
+              <option key={String(j.id ?? i)} value={String(j.id ?? "")}>
+                {String(j.base_model ?? j.id ?? "Job")} ({String(j.status ?? "")})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="demo-form-field">
+          Model directory
+          <input
+            className="input"
+            type="text"
+            value={modelDir}
+            onChange={(e) => setModelDir(e.target.value)}
+            placeholder="C:\models\llama-3-8b  or  /models/mistral-7b"
+            required
+          />
+        </label>
+        <p className="caption">Local model directory must contain config.json and compatible weights (.safetensors or PyTorch binary).</p>
+        <button className="btn primary" type="submit" disabled={starting || polling || selectedJobStatus !== "queued" || !modelDir.trim()}>
+          {starting ? "Starting…" : polling ? "Running…" : "Start CPU fine-tune"}
+        </button>
+        {selectedJob && selectedJobStatus !== "queued" && <button className="btn" type="button" disabled={polling} onClick={() => { setStatus(selectedJob); pollStatus(jobId); }}>Monitor selected job</button>}
+      </form>
+      {startError && <p className="caption" role="alert" style={{color:"var(--color-error,#c00)"}}>{startError}</p>}
+      {status && (
+        <div style={{marginTop:"1rem"}}>
+          <div className="row between" style={{marginBottom:"0.5rem"}}>
+            <strong>Backend-reported progress</strong>
+            <span className="caption">
+              {jobStatus}{polling && !isTerminal ? " · updating…" : ""}
+            </span>
+          </div>
+          <progress
+            value={progressPct}
+            max={100}
+            style={{width:"100%",display:"block"}}
+            aria-label={`Fine-tune progress ${progressPct}%`}
+          />
+          <p className="caption" style={{marginTop:"0.25rem"}}>
+            {progressPct}% complete
+            {currentLoss > 0 ? ` · loss ${currentLoss.toFixed(4)}` : ""}
+            {checkpointCount > 0 ? ` · ${checkpointCount} checkpoint${checkpointCount !== 1 ? "s" : ""} saved` : ""}
+          </p>
+          {isTerminal && (
+            <p className="caption" role="status">
+              {jobStatus === "completed" ? "Training complete. Adapter registered in Results tab." : `Job ended with status: ${jobStatus}`}
+            </p>
+          )}
+          {["queued", "running", "cancelling"].includes(jobStatus) && <button className="btn danger sm" type="button" onClick={() => void cancelTraining()} disabled={cancelling || jobStatus === "cancelling"}>{cancelling || jobStatus === "cancelling" ? "Cancellation requested…" : "Cancel training"}</button>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function FineTuneWorkspace({ tab, data }: { tab: string; data?: Record<string, JsonRecord> }) {
   const client = useQueryClient();
   const [feedback, setFeedback] = useState("");
@@ -881,7 +1068,7 @@ function FineTuneWorkspace({ tab, data }: { tab: string; data?: Record<string, J
     catch (cause) { setError(apiConnectionMessage(cause)); }
   };
   const createJob = (event: FormEvent) => { event.preventDefault(); if (!window.confirm("Create this fine-tuning job record? Resource policy determines whether and when training can run.")) return; runAction("/api/finetune/jobs", { dataset_id: datasetId, base_model: jobBaseModel, method: jobMethod, template_id: templateId, project: "default" }); };
-  const authNote = <p className="caption">Fine-tuning writes require the backend finetune:write scope. Fine-tuning job records do not provide a cancellation endpoint.</p>;
+  const authNote = <p className="caption">Fine-tuning writes require the backend finetune:write scope. A queued job can be cancelled; the local CPU worker is available only when a compatible model directory and supported runtime are installed.</p>;
   return <>
     {tab === "Datasets" && <>
       <section className="p-finetune-hero"><span className="p-finetune-emblem"><Cpu className="icon xl" aria-hidden="true" /></span><div><span className="p-eyebrow">Model training</span><h2>Prepare a reliable fine-tuning run.</h2><p>Validate data, choose a compatible model, and approve resources before training.</p></div></section>
@@ -890,13 +1077,14 @@ function FineTuneWorkspace({ tab, data }: { tab: string; data?: Record<string, J
       <details className="p-card" id="finetune-create-dataset"><summary className="p-card-heading"><h3>Create dataset</h3><span className="p-fixture">Requires finetune:write</span></summary><form onSubmit={(event) => { event.preventDefault(); runAction("/api/finetune/datasets", { name: datasetName.trim(), format: "jsonl", project: "default" }, () => setDatasetName("")); }}><label className="demo-form-field">Dataset name<input className="input" value={datasetName} onChange={(event) => setDatasetName(event.target.value)} required /></label><button className="btn primary" disabled={mutation.isPending || !datasetName.trim()}>Create dataset record</button></form>{authNote}</details>
       <details className="p-card"><summary className="p-card-heading"><h3>Add training example</h3><span className="p-fixture">Append to a backend dataset</span></summary><form onSubmit={(event) => { event.preventDefault(); runAction("/api/finetune/examples", { dataset_id: datasetId, user_input: exampleInput.trim(), assistant_output: exampleOutput.trim(), project: "default" }, () => { setExampleInput(""); setExampleOutput(""); }); }}><label className="demo-form-field">Dataset<select className="select" value={datasetId} onChange={(event) => setDatasetId(event.target.value)} required><option value="">Select a backend dataset</option>{datasets.map((item, index) => <option key={String(item.id ?? index)} value={String(item.id ?? "")}>{String(item.name ?? item.id ?? "Dataset")}</option>)}</select></label><label className="demo-form-field">Training prompt<textarea className="input" rows={3} value={exampleInput} onChange={(event) => setExampleInput(event.target.value)} required /></label><label className="demo-form-field">Expected response<textarea className="input" rows={3} value={exampleOutput} onChange={(event) => setExampleOutput(event.target.value)} required /></label><p className="caption">Submitted examples become part of the selected training dataset.</p><button className="btn" disabled={mutation.isPending || !datasetId || !exampleInput.trim() || !exampleOutput.trim()}>Add example</button></form>{authNote}</details>
     </>}
-    {tab === "Jobs" && <><section className="p-card"><div className="p-card-heading"><h3>Training job history</h3><span className="p-fixture">{jobs.length} backend records</span></div>{!jobs.length ? <p className="muted small">No training jobs returned.</p> : <div className="p-record-sections">{jobs.map((job, index) => <article className="p-record-section" key={String(job.id ?? index)}><div className="row between"><strong>{String(job.base_model ?? job.name ?? job.id ?? "Training job")}</strong><span className="caption">{String(job.status ?? job.state ?? "status unavailable")}</span></div><p className="caption">Dataset {String(job.dataset_id ?? "unavailable")} · {String(job.method ?? "method unavailable")} · updated {String(job.updated_at ?? job.created_at ?? "date unavailable")}</p>{typeof job.progress === "number" && <progress value={Math.max(0, Math.min(100, job.progress))} max="100" aria-label={`Backend reported progress ${job.progress}%`} />}</article>)}</div>}</section>
+    {tab === "Jobs" && <><section className="p-card"><div className="p-card-heading"><h3>Training job history</h3><span className="p-fixture">{jobs.length} backend records</span></div>{!jobs.length ? <p className="muted small">No training jobs returned.</p> : <div className="p-record-sections">{jobs.map((job, index) => { const jobId = String(job.id ?? ""); const jobStatus = String(job.status ?? job.state ?? "status unavailable"); return <article className="p-record-section" key={jobId || index}><div className="row between"><strong>{String(job.base_model ?? job.name ?? job.id ?? "Training job")}</strong><span className="caption">{jobStatus}</span></div><p className="caption">Dataset {String(job.dataset_id ?? "unavailable")} · {String(job.method ?? "method unavailable")} · updated {String(job.updated_at ?? job.created_at ?? "date unavailable")}</p>{typeof job.progress === "number" && <progress value={Math.max(0, Math.min(100, job.progress * 100))} max="100" aria-label={`Training progress ${Math.round(job.progress * 100)}%`} />}{jobStatus === "queued" && jobId && <button className="btn sm" type="button" disabled={mutation.isPending} onClick={() => { if (!window.confirm("Cancel this queued fine-tuning job record? This does not stop a training process.")) return; runAction(`/api/finetune/jobs/${encodeURIComponent(jobId)}/cancel`, { project: String(job.project ?? "default") }); }}>Cancel queued job</button>}</article>; })}</div>}</section>
+      <CpuFineTunePanel jobs={jobs} />
       <section className="p-card"><div className="p-card-heading"><h3>Create training job</h3></div><form onSubmit={createJob}><label className="demo-form-field">Dataset<select className="select" value={datasetId} onChange={(event) => setDatasetId(event.target.value)} required><option value="">Choose a dataset</option>{datasets.map((item, index) => <option key={String(item.id ?? index)} value={String(item.id ?? "")}>{String(item.name ?? item.id ?? "Dataset")}</option>)}</select></label><label className="demo-form-field">Installed base model<select className="select" value={jobBaseModel} onChange={(event) => setJobBaseModel(event.target.value)} required><option value="">Choose an installed model</option>{models.map((item, index) => <option key={String(item.id ?? index)} value={String(item.id ?? "")}>{String(item.name ?? item.id ?? "Model")} · {String(item.status ?? "status unavailable")}</option>)}</select></label><label className="demo-form-field">Training method<select className="select" value={jobMethod} onChange={(event) => setJobMethod(event.target.value)}>{["lora", "qlora", "full-finetune"].map((item) => <option key={item}>{item}</option>)}</select></label>{templates.length > 0 && <label className="demo-form-field">Configuration template<select className="select" value={templateId} onChange={(event) => setTemplateId(event.target.value)}><option value="">No template</option>{templates.map((item, index) => <option key={String(item.id ?? index)} value={String(item.id ?? "")}>{String(item.name ?? item.id ?? "Template")}</option>)}</select></label>}<p className="caption">This creates a job record. Backend status is the only source for execution or progress; admin policy may reject the request.</p><button className="btn primary" disabled={mutation.isPending || !datasetId || !jobBaseModel}>{mutation.isPending ? "Submitting…" : "Create training job"}</button></form>{authNote}</section>
       <details className="p-card"><summary>Local model checks and setup jobs</summary><p className="caption">These are local-AI operations, separate from fine-tuning job records. Model probe requires local_ai:read; cancel requires local_ai:admin. Paths and checksums are not displayed.</p><div className="p-record-section"><h4>Probe installed model</h4><label className="demo-form-field">Local model<select className="select" value={probeModelId} onChange={(event) => setProbeModelId(event.target.value)}><option value="">Select model</option>{models.map((item, index) => <option key={String(item.id ?? index)} value={String(item.id ?? "")}>{String(item.name ?? item.id ?? "Model")}</option>)}</select></label><button className="btn" type="button" disabled={!probeModelId} onClick={() => void probe()}>Probe model readiness</button>{Object.keys(probeResult).length > 0 && <p className="caption" role="status">{String(probeResult.status ?? "status unavailable")} · file exists: {String(probeResult.exists ?? "not reported")} · checksum valid: {String(probeResult.checksum_valid ?? "not reported")}</p>}</div>
         <div className="p-record-section"><h4>Local model setup jobs</h4>{localJobs.map((job, index) => { const id = String(job.id ?? ""); const terminal = ["completed", "failed", "cancelled"].includes(String(job.status ?? "").toLowerCase()); return <div className="row between" key={id || index}><span>{String(job.model_name ?? job.model_id ?? id)} · {String(job.status ?? "unknown")}</span><button className="btn sm danger" type="button" disabled={!id || terminal || mutation.isPending || activeJobIds.includes(id)} onClick={() => { if (!window.confirm("Request cancellation of this local model setup job? Its current engine call may finish first.")) return; setActiveJobIds((current) => [...current, id]); runAction("/api/local-ai/jobs/cancel", { job_id: id }); }}>Cancel local setup</button></div>; })}{!localJobs.length && <p className="caption">No local model setup jobs returned.</p>}</div></details></>}
     {tab === "Results" && <><section className="p-card"><div className="p-card-heading"><h3>Registered adapters</h3><span className="p-fixture">{adapters.length} backend records</span></div>{!adapters.length ? <p className="muted small">No adapters returned.</p> : <div className="p-record-sections">{adapters.map((adapter, index) => { const id = String(adapter.id ?? ""); return <article className="p-record-section" key={id || index}><div className="row between"><strong>{String(adapter.name ?? adapter.base_model ?? id ?? "Adapter")}</strong><span className="caption">{adapter.active === true ? "active" : String(adapter.status ?? "registered")}</span></div><p className="caption">Base model {String(adapter.base_model ?? "unavailable")} · rank {String(adapter.rank ?? "unavailable")}</p><button className="btn sm" type="button" disabled={mutation.isPending || adapter.active === true || !id} onClick={() => { if (!window.confirm(`Activate adapter ${String(adapter.name ?? id)} for this project?`)) return; runAction("/api/finetune/adapters/activate", { adapter_id: id, project: "default" }); }}>Activate for project</button></article>; })}</div>}</section>
       <section className="p-card"><div className="p-card-heading"><h3>Register adapter</h3></div><form onSubmit={(event) => { event.preventDefault(); runAction("/api/finetune/adapters", { name: adapterName.trim(), base_model: adapterModel.trim(), rank: Number(adapterRank), project: "default" }, () => setAdapterName("")); }}><label className="demo-form-field">Adapter name<input className="input" value={adapterName} onChange={(event) => setAdapterName(event.target.value)} required /></label><label className="demo-form-field">Base model<input className="input" value={adapterModel} onChange={(event) => setAdapterModel(event.target.value)} required /></label><label className="demo-form-field">Rank<input className="input" type="number" min="1" max="512" value={adapterRank} onChange={(event) => setAdapterRank(event.target.value)} required /></label><button className="btn primary" disabled={mutation.isPending || !adapterName.trim() || !adapterModel.trim()}>Register adapter metadata</button></form>{authNote}</section></>}
-    {tab === "Checkpoints" && <section className="p-card"><div className="p-card-heading"><h3>Checkpoints</h3></div><p className="muted small">The backend exposes no checkpoint manifest or listing route. This view cannot show checkpoint files until that contract exists.</p></section>}
+    {tab === "Checkpoints" && (() => { const checkpoints = Array.isArray(data?.checkpoints?.checkpoints) ? (data.checkpoints.checkpoints as JsonRecord[]).filter((row): row is JsonRecord => Boolean(row) && typeof row === "object" && !Array.isArray(row)) : []; return <section className="p-card"><div className="p-card-heading"><h3>Training checkpoints</h3><span className="p-fixture">{checkpoints.length} backend records</span></div>{!checkpoints.length ? <EmptyState icon={Database} title="No checkpoints" detail="Checkpoint records appear here after a fine-tuning job completes at least one save step." /> : <div className="p-record-sections">{checkpoints.map((ckpt, index) => { const id = String(ckpt.id ?? ""); const jobId = String(ckpt.job_id ?? ""); const step = Number(ckpt.step ?? 0); const epoch = Number(ckpt.epoch ?? 0); const trainLoss = Number(ckpt.train_loss ?? 0); const valLoss = Number(ckpt.val_loss ?? 0); return <article className="p-record-section" key={id || index}><div className="row between"><strong>Step {step}</strong><span className="caption">Epoch {epoch.toFixed(2)}</span></div><p className="caption">Job {jobId || "—"} · train loss {trainLoss.toFixed(4)} · val loss {valLoss.toFixed(4)}</p>{String(ckpt.adapter_path ?? "") && <p className="caption">Adapter path: {String(ckpt.adapter_path)}</p>}<p className="caption">{String(ckpt.created_at ?? "")}</p></article>; })}</div>}</section>; })()}
     {(tab === "Datasets" || tab === "Jobs" || tab === "Results") && <>{error && <p className="caption" role="alert">{error}</p>}{feedback && <p className="caption" role="status">{feedback}</p>}</>}
     <span className="sr-only">Backend-reported datasets: {String(status.datasets ?? datasets.length)}; jobs: {String(status.jobs ?? jobs.length)}; adapters: {String(status.adapters ?? adapters.length)}</span>
   </>;
@@ -915,15 +1103,14 @@ function ActionResult({ route, result }: { route: string; result: JsonRecord }) 
   return <div className="p-note" role="status"><CheckCircle2 className="icon sm" aria-hidden="true" /><span>{records.length ? `${humanize(records[0].key)}: ${recordTitle(records[0].value)}${recordSummary(records[0].value, route) ? ` · ${recordSummary(records[0].value, route)}` : ""}` : Object.keys(scalars).length ? Object.entries(scalars).slice(0, 3).map(([key, value]) => `${humanize(key)}: ${String(value).slice(0, 100)}`).join(" · ") : "The backend returned a response."}</span></div>;
 }
 function LiveData({ route, tab, query, supported }: { route: string; tab: string; query: { data?: Record<string, JsonRecord>; isLoading: boolean; error: unknown }; supported: boolean }) {
-  if (route === "communications" || route === "voice" || route === "assistant" || route === "security" || route === "twin" && tab === "Sources") return null;
+  if (route === "communications" || route === "voice" || route === "assistant" || route === "security" || (route === "twin" && tab === "Sources")) return null;
   if (query.isLoading) return <section className="p-card" aria-live="polite"><div className="p-card-heading"><h3>Loading verified backend data</h3></div><p className="caption">Waiting for the OpenAgent response…</p></section>;
   if (query.error) return <section className="p-card" role="alert"><div className="p-card-heading"><h3>Backend request failed</h3></div><p className="muted small">{apiConnectionMessage(query.error)}</p></section>;
   if (route === "developer") return null;
   if (!supported) {
     const gaps: Record<string, string> = {
       "science:Projects": "The backend exposes scientific status and datasets, but no project-list endpoint.",
-      "science:Reports": "No scientific report-history endpoint is exposed.",
-      "finetune:Checkpoints": "No fine-tuning checkpoint-list endpoint is exposed.",
+      "finetune:Checkpoints": "Fine-tuning checkpoints are listed from the backend.",
     };
     return <section className="p-card"><div className="p-card-heading"><h3>{tab}</h3></div><p className="muted small">{gaps[`${route}:${tab}`] ?? "This tab has no matching backend read endpoint yet."}</p></section>;
   }
@@ -944,6 +1131,12 @@ function LiveData({ route, tab, query, supported }: { route: string; tab: string
       ? response.experiments.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
       : []);
     return <section id="advanced-live-data" className="p-card" aria-live="polite"><div className="p-card-heading"><h3>Saved proposals</h3><span className="p-fixture">{records.length} records</span></div>{!records.length ? <p className="muted small">No saved experiment proposals for this project.</p> : <div className="p-record-sections">{records.map((record, index) => { const proposals = Array.isArray(record.proposals) ? record.proposals.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : []; return <article className="p-record-section" key={String(record.id ?? index)}><h4>{recordTitle(record)}</h4><p className="caption">{String(record.status ?? "proposed")} · {String(record.execution_status ?? "not_started")} · {String(record.created_at ?? "")}</p>{typeof record.goal === "string" && <p className="caption">Goal: {record.goal}</p>}{proposals.map((proposal, proposalIndex) => <div className="p-record-section" key={String(proposal.id ?? proposalIndex)}><strong>{recordTitle(proposal)}</strong>{typeof proposal.rationale === "string" && <span className="caption">{proposal.rationale}</span>}{typeof proposal.variables === "object" && proposal.variables !== null ? <code className="caption">{JSON.stringify(proposal.variables)}</code> : null}</div>)}</article>; })}</div>}</section>;
+  }
+  if (route === "science" && tab === "Reports") {
+    const executions = Object.values(query.data ?? {}).flatMap(response => Array.isArray(response.executions)
+      ? response.executions.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : []);
+    return <section id="advanced-live-data" className="p-card" aria-live="polite"><div className="p-card-heading"><h3>Recorded scientific executions</h3><span className="p-fixture">{executions.length} backend records</span></div>{!executions.length ? <p className="muted small">No bounded code execution results have been recorded for this project.</p> : <div className="p-record-sections">{executions.map((item, index) => <article className="p-record-section" key={String(item.id ?? index)}><div className="row between"><strong>{String(item.status ?? "Execution status unavailable")}</strong><span className="caption">Exit {String(item.returncode ?? "not reported")} · {String(item.created_at ?? "time unavailable")}</span></div><p className="caption">{String(item.elapsed_ms ?? "not reported")} ms · {String(item.attempts ?? "not reported")} attempt(s) · source SHA-256 {String(item.code_sha256 ?? "not recorded")}</p><details><summary>Inspect actual output</summary><pre className="terminal-window" style={{ whiteSpace: "pre-wrap" }}>{String(item.stdout ?? "")}{item.stderr ? `\n${String(item.stderr)}` : ""}</pre></details></article>)}</div>}</section>;
   }
   return <section id="advanced-live-data" className="p-card" aria-live="polite"><div className="p-card-heading"><h3>Live backend data</h3><span className="p-fixture">{hasRows ? "Verified response" : "Connected · no records"}</span></div>{!hasRows ? <p className="muted small">The backend returned no records for this view.</p> : <div className="p-record-sections">{sections.filter((section) => section.items.length).map((section) => <div className="p-record-section" key={section.name}><h4>{humanize(section.name)}</h4><ul>{section.items.slice(0, 12).map((record, index) => <li key={String(record.id ?? record.run_id ?? record.task_id ?? `${section.name}-${index}`)}><strong>{recordTitle(record)}</strong>{recordSummary(record, route) && <span className="caption">{recordSummary(record, route)}</span>}</li>)}</ul></div>)}</div>}</section>;
 }
@@ -1092,7 +1285,7 @@ function SecuritySecretsWorkspace({ data }: { data?: Record<string, JsonRecord> 
   };
   const reveal = async (secret: JsonRecord) => {
     const id = String(secret.id ?? ""); const passphrase = passphrases[id] ?? "";
-    if (!id || !passphrase || !window.confirm(`Reveal “${String(secret.name ?? "this secret")}” for 15 seconds? This access is recorded by the security service.`)) return;
+    if (!id || !passphrase || !window.confirm(`Reveal "${String(secret.name ?? "this secret")}" for 15 seconds? This access is recorded by the security service.`)) return;
     setError(""); setFeedback(""); setBusy(true);
     try {
       const response = await apiPost("/api/security/secrets/reveal", { secret_id: id, passphrase });
@@ -1112,7 +1305,7 @@ function SecuritySecretsWorkspace({ data }: { data?: Record<string, JsonRecord> 
   };
   const rotate = async (secret: JsonRecord) => {
     const id = String(secret.id ?? ""); const passphrase = passphrases[id] ?? ""; const replacement = replacements[id] ?? "";
-    if (!id || !passphrase || !replacement || !window.confirm(`Replace the encrypted value for “${String(secret.name ?? "this secret")}”? The action is recorded by the security service.`)) return;
+    if (!id || !passphrase || !replacement || !window.confirm(`Replace the encrypted value for "${String(secret.name ?? "this secret")}"? The action is recorded by the security service.`)) return;
     setError(""); setFeedback(""); setBusy(true);
     try {
       await apiPost("/api/security/secrets/rotate", { secret_id: id, value: replacement, passphrase });
@@ -1194,12 +1387,34 @@ function SecurityWorkspace({ tab, data, query, demo }: { tab: string; data?: Rec
   </div></>;
   if (tab === "Access") return <SecurityAccessWorkspace data={data} />;
   if (tab === "Sessions") return <>{notices}<section className="p-card"><div className="p-card-heading"><h3>Authenticated sessions</h3><span className="p-fixture">{sessions.length} backend records</span></div><p className="caption">Session details are returned for the authenticated account. This panel does not expose sessions belonging to other users.</p>{!sessions.length ? <p className="muted small">No active sessions were returned. Authentication may be required for this view.</p> : sessions.map((session, index) => <article className="p-record-section" key={String(session.session_id ?? index)}><strong>{String(session.session_id ?? "Session")}</strong><p className="caption">{String(session.ip ?? "Address unavailable")} · last active {String(session.last_seen_at ?? "not reported")} · expires {String(session.expires_at ?? "not reported")}</p></article>)}</section></>;
-  if (tab === "Audit") return <>{notices}<div className="p-record-sections"><section className="p-card"><div className="p-card-heading"><h3>Audit events</h3><span className="p-fixture">Backend listing unavailable</span><button className="btn" type="button" disabled={busy} onClick={async () => { const result = await run("/api/security/audit-chain/verify", {}, "Audit-chain verification completed."); if (result) setDryRunResult(result); }}>{busy ? "Verifying…" : "Verify chain"}</button></div><p className="caption" role="status">The existing audit endpoint requires the <code>security:admin</code> permission and can return events across projects when no project filter is supplied. This screen does not verify project membership or scope, so it does not request the event list.</p></section>{Object.keys(dryRunResult).length > 0 && <section className="p-card"><div className="p-card-heading"><h3>Verification result</h3></div><p className="caption">{dryRunResult.ok === true ? "Audit chain verified" : dryRunResult.ok === false ? "Audit chain needs review" : "Backend returned a verification result"} · {String(dryRunResult.sealed ?? "unknown")} sealed records · {Array.isArray(dryRunResult.issues) ? dryRunResult.issues.length : 0} issues</p></section>}</div></>;
+  if (tab === "Audit") return <>
+    {notices}
+    <div className="p-record-sections">
+      <section className="p-card">
+        <div className="p-card-heading">
+          <h3>Audit events</h3>
+          <span className="p-fixture">{auditEvents.length} events | project default</span>
+          <button className="btn" type="button" onClick={() => void refresh()}>Refresh</button>
+          <button className="btn primary" type="button" disabled={busy} onClick={async () => { const result = await run("/api/security/audit-chain/verify", {}, "Audit-chain verification completed."); if (result) setDryRunResult(result); }}>{busy ? "Verifying..." : "Verify chain"}</button>
+        </div>
+        <p className="caption">Read-only events for project <code>default</code>. Viewing requires <code>security:admin</code>. Event metadata is not displayed.</p>
+        {auditEvents.length ? <div className="p-record-sections" aria-label="Security audit events">{auditEvents.map((event, index) => {
+          const statusText = String(event.status ?? "Outcome not reported");
+          const statusClass = /success|allowed|complete/i.test(statusText) ? "green" : /fail|deny|error/i.test(statusText) ? "red" : "";
+          return <article className="p-record-section" data-audit-event-id={String(event.id ?? index)} key={String(event.id ?? index)}>
+            <div className="row between"><strong>{String(event.action ?? "Audit event")}</strong><span className={`tag ${statusClass}`}>{statusText}</span></div>
+            <p className="caption">{String(event.actor ?? "Actor not reported")} | {String(event.resource ?? "Resource not reported")} | {String(event.created_at ?? "Time not reported")}</p>
+          </article>;
+        })}</div> : <div className="p-empty" role="status"><Activity className="icon lg" aria-hidden="true"/><h3>No audit events for this project</h3><p className="muted small">The backend returned no audit records for project default.</p></div>}
+      </section>
+      {Object.keys(dryRunResult).length > 0 && <section className="p-card"><div className="p-card-heading"><h3>Verification result</h3></div><p className="caption">{dryRunResult.ok === true ? "Audit chain verified" : dryRunResult.ok === false ? "Audit chain needs review" : "Backend returned a verification result"} | {String(dryRunResult.sealed ?? "unknown")} sealed records | {Array.isArray(dryRunResult.issues) ? dryRunResult.issues.length : 0} issues</p></section>}
+    </div>
+  </>;
   if (tab === "Privacy") return <>{notices}<div className="p-record-sections"><section className="p-card"><div className="p-card-heading"><h3>Privacy reports</h3><span className="p-fixture">{reports.length} saved</span><button className="btn primary" type="button" disabled={busy} onClick={async () => { const result = await run("/api/security/privacy-report", {}, "Privacy report generated and stored by the security service."); if (result) setDryRunResult(result); }}>{busy ? "Generating…" : "Generate report"}</button></div><p className="caption">Reports are stored by the backend. This summary shows counts and posture only; secret names and report contents are not displayed. Creating reports requires security:admin when auth enforcement is enabled.</p>{reports.map((item, index) => { const report = item.report && typeof item.report === "object" ? item.report as JsonRecord : {}; return <article className="p-record-section" key={String(item.id ?? index)}><strong>{String(item.created_at ?? report.generated_at ?? "Privacy report")}</strong><div>{privacySummary(report).map((fact) => <p className="caption" key={fact.label}>{fact.label}: {fact.value}</p>)}</div></article>; })}{!reports.length && !Object.keys(dryRunResult).length && <p className="muted small">No privacy report is stored.</p>}{typeof dryRunResult.report === "object" && dryRunResult.report !== null && <div className="p-record-section"><h4>New report summary</h4>{privacySummary(dryRunResult.report as JsonRecord).map((fact) => <p className="caption" key={fact.label}>{fact.label}: {fact.value}</p>)}</div>}</section></div></>;
   if (tab === "Retention") return <>{notices}<div className="p-record-sections"><section className="p-card"><div className="p-card-heading"><h3>Retention policies</h3><span className="p-fixture">{policies.length} backend records</span></div><p className="caption">Preview is read-only. Applying an active policy permanently deletes matching records. Writes require security:admin when auth enforcement is enabled.</p>{policies.map((policy, index) => <article className="p-record-section" key={String(policy.id ?? index)}><div className="row between"><strong>{String(policy.resource_type ?? "Policy")}</strong><span className="caption">{String(policy.status ?? "status unavailable")}</span></div><p className="caption">Keep {String(policy.retention_days ?? "—")} days · {String(policy.action ?? "action unavailable")}</p><div className="row"><button className="btn" type="button" disabled={String(policy.status) !== "active"} onClick={async () => { const result = await run("/api/security/retention/apply", { policy_id: String(policy.id ?? ""), dry_run: true }, "Preview completed. No records were deleted."); if (result) setDryRunResult(result); }}>Preview deletions</button><button className="btn danger" type="button" disabled={String(policy.status) !== "active"} onClick={async () => { if (!window.confirm(`Permanently delete records older than ${String(policy.retention_days ?? "the configured retention period")} days for ${String(policy.resource_type ?? "this category")}? This cannot be undone.`)) return; const result = await run("/api/security/retention/apply", { policy_id: String(policy.id ?? ""), dry_run: false }, "Retention policy applied."); if (result) setDryRunResult(result); }}>Apply deletion</button></div></article>)}</section>
     <section className="p-card"><div className="p-card-heading"><h3>Create retention policy</h3></div><form onSubmit={async (event) => { event.preventDefault(); const result = await run("/api/security/retention", { resource_type: resourceType, retention_days: Number(retentionDays), action: "delete", status: "active", metadata: {} }, "Retention policy saved."); if (result) { setResourceType("context_events"); setRetentionDays("365"); } }}><label className="demo-form-field">Record category<select className="select" value={resourceType} onChange={(event) => setResourceType(event.target.value)}>{policyTypes.map((type) => <option key={type} value={type}>{humanize(type)}</option>)}</select></label><label className="demo-form-field">Keep for days<input className="input" type="number" min="0" value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)} required /></label><button className="btn primary">Save policy</button></form>{dryRunResult.policy_id != null && <p className="caption" role="status">Preview: {String(dryRunResult.planned ?? "—")} records matched · {String(dryRunResult.deleted ?? 0)} deleted · cutoff {String(dryRunResult.cutoff ?? "not reported")}</p>}</section></div></>;
   if (tab === "Sandbox") return <>{notices}<div className="p-record-sections"><section className="p-card"><div className="p-card-heading"><h3>Sandbox profiles</h3><span className="p-fixture">{profiles.length} backend records</span></div><p className="caption">These profiles describe policy only; creating a profile does not create or certify an operating-system sandbox. Changes require security:admin when auth enforcement is enabled.</p>{profiles.map((profile, index) => <article className="p-record-section" key={String(profile.id ?? index)}><label className="row"><input type="radio" name="sandbox-profile" value={String(profile.id ?? "")} checked={selectedProfile === String(profile.id ?? "")} onChange={() => setSelectedProfile(String(profile.id ?? ""))} /><strong>{String(profile.name ?? "Profile")}</strong></label><p className="caption">Permissions: {Array.isArray(profile.permissions) ? profile.permissions.map(String).join(", ") || "none" : "not reported"} · network {profile.network_allowed === true ? "allowed" : "denied"}</p></article>)}</section>
-    <section className="p-card"><div className="p-card-heading"><h3>Create policy profile</h3></div><form onSubmit={async (event) => { event.preventDefault(); if (!window.confirm(`Save profile “${profileName.trim()}” with network ${profileNetwork ? "allowed" : "denied"}? This stores policy only; it does not enforce an OS sandbox.`)) return; const result = await run("/api/security/sandbox-profiles", { name: profileName.trim(), permissions: profilePermissions.split(/[\s,]+/).filter(Boolean), network_allowed: profileNetwork, filesystem: {}, env: {}, metadata: {} }, "Sandbox profile saved."); if (result) { setProfileName(""); setProfilePermissions(""); setProfileNetwork(false); } }}><label className="demo-form-field">Profile name<input className="input" value={profileName} onChange={(event) => setProfileName(event.target.value)} required maxLength={200} /></label><label className="demo-form-field">Allowed permissions, separated by commas<textarea className="input" rows={3} value={profilePermissions} onChange={(event) => setProfilePermissions(event.target.value)} placeholder="filesystem.read, process.spawn" /></label><label className="row"><input type="checkbox" checked={profileNetwork} onChange={(event) => setProfileNetwork(event.target.checked)} />Allow network access</label><button className="btn primary" disabled={!profileName.trim()}>Save profile</button></form></section>
+    <section className="p-card"><div className="p-card-heading"><h3>Create policy profile</h3></div><form onSubmit={async (event) => { event.preventDefault(); if (!window.confirm(`Save profile "${profileName.trim()}" with network ${profileNetwork ? "allowed" : "denied"}? This stores policy only; it does not enforce an OS sandbox.`)) return; const result = await run("/api/security/sandbox-profiles", { name: profileName.trim(), permissions: profilePermissions.split(/[\s,]+/).filter(Boolean), network_allowed: profileNetwork, filesystem: {}, env: {}, metadata: {} }, "Sandbox profile saved."); if (result) { setProfileName(""); setProfilePermissions(""); setProfileNetwork(false); } }}><label className="demo-form-field">Profile name<input className="input" value={profileName} onChange={(event) => setProfileName(event.target.value)} required maxLength={200} /></label><label className="demo-form-field">Allowed permissions, separated by commas<textarea className="input" rows={3} value={profilePermissions} onChange={(event) => setProfilePermissions(event.target.value)} placeholder="filesystem.read, process.spawn" /></label><label className="row"><input type="checkbox" checked={profileNetwork} onChange={(event) => setProfileNetwork(event.target.checked)} />Allow network access</label><button className="btn primary" disabled={!profileName.trim()}>Save profile</button></form></section>
     <section className="p-card"><div className="p-card-heading"><h3>Evaluate access request</h3></div><form onSubmit={async (event) => { event.preventDefault(); const result = await run("/api/security/sandbox/evaluate", { profile_id: selectedProfile, permissions: requestedPermissions.split(/[\s,]+/).filter(Boolean), network: requestNetwork }, "Sandbox policy evaluation completed."); if (result) setSandboxResult(result); }}><label className="demo-form-field">Profile<select className="select" value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)} required><option value="">Select a profile</option>{profiles.map((profile, index) => <option key={String(profile.id ?? index)} value={String(profile.id ?? "")}>{String(profile.name ?? "Profile")}</option>)}</select></label><label className="demo-form-field">Requested permissions<input className="input" value={requestedPermissions} onChange={(event) => setRequestedPermissions(event.target.value)} placeholder="filesystem.read, process.spawn" /></label><label className="row"><input type="checkbox" checked={requestNetwork} onChange={(event) => setRequestNetwork(event.target.checked)} />Request network access</label><button className="btn" disabled={!selectedProfile}>Evaluate only</button></form>{Object.keys(sandboxResult).length > 0 && <div className="p-note" role="status"><strong>{sandboxResult.allowed === true ? "Allowed by this profile" : "Denied by this profile"}</strong><p className="caption">Requested network: {sandboxResult.requested_network === true ? "yes" : "no"} · Permission requirements: {Array.isArray(sandboxResult.requested_permissions) ? sandboxResult.requested_permissions.join(", ") || "none" : "not reported"}</p></div>}</section></div></>;
   return <SecuritySecretsWorkspace data={data} />;
 }
@@ -1265,6 +1480,7 @@ function BackendActions({ route, tab, data }: { route: string; tab: string; data
       mutation.mutate({ path: "/api/science/experiments", body: { goal: values.goal?.trim(), candidates } });
     } catch (error) { setMessage(error instanceof Error ? error.message : "Candidate parameters must be a JSON array."); }
   }}><p className="caption">The backend stores this proposal as proposed; it is not an executed experiment run.</p>{field("goal", "Research question", "text", "Describe what you want to investigate")}<label className="demo-form-field">Candidate parameter objects<textarea className="input" rows={4} value={values.candidates ?? ""} onChange={(event) => update("candidates", event.target.value)} placeholder={'[{"temperature_c": 40}]'} required /></label><button className="btn primary" disabled={mutation.isPending || !values.goal?.trim() || !values.candidates?.trim()}>{mutation.isPending ? "Requesting proposal…" : "Generate experiment proposal"}</button></form>;
+  if (route === "science" && tab === "Reports") form = <form onSubmit={(event) => submit(event, "/api/science/execute", { code: values.code ?? "", project: "default", approved: values.approved === "true", timeout_seconds: 10, memory_limit_mb: 512, retries: 0 })}><label className="demo-form-field">Python source<textarea className="input" rows={8} value={values.code ?? ""} onChange={(event) => update("code", event.target.value)} placeholder="print(1 + 1)" required /></label><p className="caption">Runs only after explicit approval using the backend's policy-checked bounded runner. Source code is not saved; the actual result and source hash are kept in this project's history.</p><label className="row"><input type="checkbox" checked={values.approved === "true"} onChange={(event) => update("approved", event.target.checked ? "true" : "false")} />I reviewed this Python source and approve one bounded local execution.</label><button className="btn primary" disabled={mutation.isPending || !values.code?.trim() || values.approved !== "true"}>{mutation.isPending ? "Running approved code…" : "Run approved code"}</button></form>;
   if (route === "scraper" && tab === "New extraction") form = <form onSubmit={(event) => submit(event, "/api/scraper/scrape", { url: values.url?.trim(), project: "default", respect_robots: true, ingest: values.ingest === "true", allow_external: allowExternal })}>{field("url", "Website URL", "url", "https://example.org/page")}<label className="demo-form-field">Knowledge ingestion<select className="select" value={values.ingest ?? "false"} onChange={(event) => update("ingest", event.target.value)}><option value="false">Do not ingest</option><option value="true">Ingest extracted content</option></select></label><label className="row"><input type="checkbox" checked={allowExternal} onChange={(event) => setAllowExternal(event.target.checked)} />I approve an external network request for this URL.</label><p className="caption">Robots rules are respected. The extraction will only be sent after you submit this form.</p><button className="btn primary" disabled={mutation.isPending || !values.url?.trim()}>{mutation.isPending ? "Requesting extraction…" : "Run extraction"}</button></form>;
   if (route === "scraper" && tab === "Jobs") form = <form onSubmit={(event) => submit(event, "/api/scraper/schedule", { url: values.url?.trim(), label: values.label?.trim() ?? "", interval_hours: Number(values.interval_hours || 24), project: "default", allow_external: allowExternal })}>{field("url", "Website URL", "url", "https://example.org/page")}{field("label", "Job label", "text", "Optional label")}{field("interval_hours", "Repeat interval (hours)", "number", "24")}<label className="row"><input type="checkbox" checked={allowExternal} onChange={(event) => setAllowExternal(event.target.checked)} />I approve recurring external network requests for this URL.</label><button className="btn primary" disabled={mutation.isPending || !values.url?.trim()}>{mutation.isPending ? "Scheduling…" : "Schedule extraction"}</button></form>;
   if (route === "finetune" && tab === "Datasets") form = <form onSubmit={(event) => submit(event, "/api/finetune/datasets", { name: values.name?.trim(), description: values.description ?? "", format: "jsonl", project: "default" })}>{field("name", "Dataset name", "text", "Training dataset")}{field("description", "Description")}<button className="btn primary" disabled={mutation.isPending || !values.name?.trim()}>{mutation.isPending ? "Creating…" : "Create dataset"}</button></form>;
@@ -1546,16 +1762,40 @@ function CommunicationsInbox({ data, query, onTabChange, demo = false }: { data?
     ? response.messages.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
     : [];
   const filteredMessages = messages.filter((message) => `${message.subject ?? ""} ${message.sender ?? ""} ${message.summary ?? ""} ${message.body ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const liveInboxMessages = filteredMessages.filter(message => String(message.folder ?? "inbox").toLowerCase() !== "archive" && message.archived !== true && Number(message.archived ?? 0) !== 1);
+  const liveInboxMessages = filteredMessages.filter(message => !["archive", "trash", "spam"].includes(String(message.folder ?? "inbox").toLowerCase()) && message.archived !== true && Number(message.archived ?? 0) !== 1);
   const demoInbox = filteredMessages.filter((message) => String(message.status ?? "Inbox").toLowerCase() === "inbox");
   const [selectedId, setSelectedId] = useState("");
+  const [editingMessageId, setEditingMessageId] = useState("");
+  const [trashUndo, setTrashUndo] = useState<{ id: string; subject: string; folder: string } | null>(null);
+  const [editMessageOpen, setEditMessageOpen] = useState(false);
+  const [editMessageSubject, setEditMessageSubject] = useState("");
+  const [editMessageSender, setEditMessageSender] = useState("");
+  const [editMessageBody, setEditMessageBody] = useState("");
   const selected = liveInboxMessages.find((item) => String(item.id ?? "") === selectedId) ?? liveInboxMessages[0];
   const syncRuns = Array.isArray(activityQuery.data?.runs) ? activityQuery.data.runs.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
   const stateMutation = useMutation({
-    mutationFn: (body: JsonRecord) => apiPost("/api/communication/messages/state", body),
+    mutationFn: (body: JsonRecord) => {
+      const { _moveToTrash, _restoreFromTrash, _subject, _previousFolder, ...payload } = body;
+      void _moveToTrash;
+      void _restoreFromTrash;
+      void _subject;
+      void _previousFolder;
+      return apiPost("/api/communication/messages/state", payload);
+    },
     onSuccess: async (_result, body) => {
+      if (body._moveToTrash === true) {
+        setTrashUndo({ id: String(body.message_id ?? ""), subject: String(body._subject ?? "Message"), folder: String(body._previousFolder ?? "inbox") });
+        setInboxFeedback("Message moved to trash.");
+      } else if (body._restoreFromTrash === true) {
+        setTrashUndo(null);
+        setInboxFeedback("Message restored to the inbox.");
+      } else {
+        setInboxFeedback(body.archived === true ? "Message archived by the backend." : "Message state updated by the backend.");
+      }
       await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications", "Inbox"] });
-      setInboxFeedback(body.archived === true ? "Message archived by the backend." : "Message state updated by the backend.");
+    },
+    onError: () => {
+      setInboxFeedback("Mailbox state could not be updated.");
     },
   });
   const [inboxFeedback, setInboxFeedback] = useState("");
@@ -1568,6 +1808,36 @@ function CommunicationsInbox({ data, query, onTabChange, demo = false }: { data?
       setInboxFeedback(`Reply draft ${String(result.draft?.id ?? "created")} saved by the backend. It was not sent.`);
       await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications"] });
     },
+  });
+  const copyDraftMutation = useMutation({
+    mutationFn: () => apiPost<{ draft?: JsonRecord }>("/api/communication/drafts", {
+      platform: String(selected?.platform ?? "email"),
+      recipients: Array.isArray(selected?.recipients) ? selected.recipients.map(String) : [],
+      subject: String(selected?.subject ?? ""),
+      body: String(selected?.body ?? selected?.summary ?? ""),
+      message_id: String(selected?.id ?? ""),
+      project: "default",
+    }),
+    onSuccess: async result => {
+      setInboxFeedback(`Draft copy ${String(result.draft?.id ?? "created")} saved by the backend. It was not sent.`);
+      await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications"] });
+    },
+  });
+  const editMessageMutation = useMutation({
+    mutationFn: (body: JsonRecord) => apiPost<{ message?: JsonRecord }>("/api/communication/messages/update", body),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications", "Inbox"] });
+      setEditMessageOpen(false);
+      setInboxFeedback("Message changes saved by the backend.");
+    },
+  });
+  const permanentDeleteMutation = useMutation({
+    mutationFn: (messageId: string) => apiDelete(`/api/communication/messages/${encodeURIComponent(messageId)}?project=default`),
+    onSuccess: async () => {
+      setInboxFeedback("Message permanently deleted.");
+      await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications", "Inbox"] });
+    },
+    onError: () => setInboxFeedback("Permanent delete failed. The message may not exist or you may lack permission."),
   });
   useEffect(() => {
     if (!liveInboxMessages.some((item) => String(item.id ?? "") === selectedId)) setSelectedId(String(liveInboxMessages[0]?.id ?? ""));
@@ -1583,7 +1853,7 @@ function CommunicationsInbox({ data, query, onTabChange, demo = false }: { data?
         <span className="flex1" />
         <button className="btn sm" type="button" disabled={query.isLoading} onClick={() => queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications", "Inbox"] })} title="Refresh messages from the backend"><Activity className="icon sm" aria-hidden="true" />Refresh</button>
       </div>
-      {inboxFeedback && <p className="caption" role="status">{inboxFeedback}</p>}
+      {inboxFeedback && <p className="caption communications-inbox-feedback" role="status">{inboxFeedback}{stateMutation.isError && <span className="communications-inbox-state-error" role="alert">{apiConnectionMessage(stateMutation.error)}</span>}{trashUndo && <button className="btn sm" type="button" disabled={stateMutation.isPending} onClick={() => { stateMutation.reset(); stateMutation.mutate({ message_id: trashUndo.id, folder: trashUndo.folder, project: "default", _restoreFromTrash: true }); }}>Undo</button>}</p>}
       <label className="communications-inbox-search"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search inbox messages" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search messages…" /><span className="caption">{filteredMessages.length} shown</span></label>
       <div className="p-mail-shell p-mail-live">
         <div className="p-mail-list" aria-label="Inbox messages">
@@ -1595,13 +1865,13 @@ function CommunicationsInbox({ data, query, onTabChange, demo = false }: { data?
               <span className="p-item-copy"><strong>{String(message.subject ?? "(No subject)")}</strong><small>{String(message.sender ?? "Unknown sender")} · {String(message.summary ?? "")}</small></span>
               <span className="p-item-meta">{String(message.created_at ?? "")}</span>
             </button>;
-          }) : filteredMessages.length || messages.length ? <p className="communications-inbox-state" role="status">{search ? `No messages match “${search}”.` : "The inbox has no active messages."}</p> : <EmptyState icon={Mail} title="Inbox is empty" detail="No messages were returned by the backend for this project." />}
+          }) : filteredMessages.length || messages.length ? <p className="communications-inbox-state" role="status">{search ? `No messages match "${search}".` : "The inbox has no active messages."}</p> : <EmptyState icon={Mail} title="Inbox is empty" detail="No messages were returned by the backend for this project." />}
         </div>
         <article className="p-mail-reader" aria-live="polite">
           {selected ? <>
-            <div className="p-mail-top"><div className="row between"><div><h2>{String(selected.subject ?? "(No subject)")}</h2><p className="caption">From {String(selected.sender ?? "Unknown sender")} · {String(selected.created_at ?? "")}</p></div><div className="row"><button className="btn sm" type="button" disabled={stateMutation.isPending || Boolean(selected.read)} onClick={() => stateMutation.mutate({ message_id: String(selected.id ?? ""), read: true, project: "default" })}>{selected.read ? "Read" : "Mark read"}</button><button className="btn sm" type="button" disabled={replyMutation.isPending || !selected.id} onClick={() => { setInboxFeedback(""); replyMutation.mutate(); }}>{replyMutation.isPending ? "Preparing…" : "Draft reply"}</button><button className="btn sm" type="button" disabled={stateMutation.isPending || !selected.id} onClick={() => { setInboxFeedback(""); stateMutation.mutate({ message_id: String(selected.id ?? ""), archived: true, project: "default" }); }}>Archive</button></div></div></div>
+            <div className="p-mail-top"><div className="row between"><div><h2>{String(selected.subject ?? "(No subject)")}</h2><p className="caption">From {String(selected.sender ?? "Unknown sender")} · {String(selected.created_at ?? "")}</p></div><div className="row"><button className="btn sm" type="button" disabled={stateMutation.isPending || Boolean(selected.read)} onClick={() => stateMutation.mutate({ message_id: String(selected.id ?? ""), read: true, project: "default" })}>{selected.read ? "Read" : "Mark read"}</button><button className="btn sm" type="button" disabled={replyMutation.isPending || !selected.id} onClick={() => { setInboxFeedback(""); replyMutation.mutate(); }}>{replyMutation.isPending ? "Preparing…" : "Draft reply"}</button><button className="btn sm" type="button" disabled={copyDraftMutation.isPending || !selected.id} onClick={() => { setInboxFeedback(""); copyDraftMutation.mutate(); }}>{copyDraftMutation.isPending ? "Saving copy…" : "Copy to drafts"}</button><button className="btn sm" type="button" disabled={!selected.id || editMessageMutation.isPending} onClick={() => { setEditingMessageId(String(selected.id ?? "")); setEditMessageSubject(String(selected.subject ?? "")); setEditMessageSender(String(selected.sender ?? "")); setEditMessageBody(String(selected.body ?? selected.summary ?? "")); editMessageMutation.reset(); setEditMessageOpen(true); }}>Edit message</button><button className="btn sm" type="button" disabled={stateMutation.isPending || !selected.id} onClick={() => { setInboxFeedback(""); stateMutation.mutate({ message_id: String(selected.id ?? ""), archived: true, project: "default" }); }}>Archive</button><button className="btn sm danger" type="button" disabled={stateMutation.isPending || !selected.id} onClick={() => { if (window.confirm(`Move "${String(selected.subject ?? "this message")}" to trash?`)) { setInboxFeedback(""); stateMutation.mutate({ message_id: String(selected.id ?? ""), folder: "trash", project: "default", _moveToTrash: true, _subject: String(selected.subject ?? "Message"), _previousFolder: String(selected.folder ?? "inbox") }); } }}>Move to trash</button><button className="btn sm danger" type="button" disabled={permanentDeleteMutation.isPending || !selected.id} onClick={() => { if (window.confirm(`Permanently delete "${String(selected.subject ?? "this message")}"? This cannot be undone.`)) { setInboxFeedback(""); permanentDeleteMutation.mutate(String(selected.id ?? "")); } }} aria-label="Delete message permanently">Delete permanently</button></div></div></div>
             <div className="p-mail-body">{String(selected.body ?? selected.summary ?? "No message body was provided.")}</div>
-            {(stateMutation.isError || replyMutation.isError) && <p className="caption" role="alert">{apiConnectionMessage(stateMutation.error ?? replyMutation.error)}</p>}
+            {(stateMutation.isError || replyMutation.isError || copyDraftMutation.isError || editMessageMutation.isError) && <p className="caption" role="alert">{apiConnectionMessage(stateMutation.error ?? replyMutation.error ?? copyDraftMutation.error ?? editMessageMutation.error)}</p>}
           </> : <EmptyState icon={Mail} title="Select a message" detail="Choose a message to read its backend-provided content." />}
         </article>
       </div>
@@ -1610,6 +1880,22 @@ function CommunicationsInbox({ data, query, onTabChange, demo = false }: { data?
       <div className="p-card-heading"><h3>Recent activity</h3><span className="p-fixture">{syncRuns.length} recorded syncs</span></div>
       {activityQuery.isLoading ? <p className="caption" role="status">Loading recorded communication activity…</p> : activityQuery.isError ? <p className="caption" role="alert">Activity history unavailable: {apiConnectionMessage(activityQuery.error)}</p> : syncRuns.length ? <div className="p-record-sections">{syncRuns.slice(0, 4).map((run, index) => <article className="p-record-section" key={String(run.id ?? index)}><strong>{String(run.platform ?? "Mailbox sync")} · {String(run.status ?? "status not reported")}</strong><p className="caption">{String(run.started_at ?? run.created_at ?? run.finished_at ?? "Time not reported")}{typeof run.message === "string" ? ` · ${run.message}` : ""}</p></article>)}</div> : <p className="caption">No communication sync activity has been recorded by the backend.</p>}
     </section>
+    <Dialog.Root open={editMessageOpen} onOpenChange={open => { if (!open && !editMessageMutation.isPending) setEditMessageOpen(false); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay />
+        <Dialog.Content className="advanced-integration-dialog" aria-describedby="communication-edit-description">
+          <div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">Edit inbox message</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close edit message"><X size={16} aria-hidden="true" /></button></Dialog.Close></div>
+          <Dialog.Description id="communication-edit-description" className="second-app-dialog-description">Save changes to this message in the selected local mailbox.</Dialog.Description>
+          <form onSubmit={event => { event.preventDefault(); editMessageMutation.mutate({ message_id: editingMessageId, project: "default", subject: editMessageSubject.trim(), sender: editMessageSender.trim(), body: editMessageBody.trim() }); }}>
+            <label className="demo-form-field">Subject<input className="input" required maxLength={500} value={editMessageSubject} onChange={event => setEditMessageSubject(event.target.value)} /></label>
+            <label className="demo-form-field">Sender<input className="input" required maxLength={320} value={editMessageSender} onChange={event => setEditMessageSender(event.target.value)} /></label>
+            <label className="demo-form-field">Message<textarea className="textarea" required rows={6} maxLength={100000} value={editMessageBody} onChange={event => setEditMessageBody(event.target.value)} /></label>
+            {editMessageMutation.isError && <p className="caption" role="alert">{apiConnectionMessage(editMessageMutation.error)}</p>}
+            <div className="advanced-integration-actions"><Dialog.Close asChild><button className="btn" type="button" disabled={editMessageMutation.isPending}>Cancel</button></Dialog.Close><button className="btn primary" type="submit" disabled={editMessageMutation.isPending || !editMessageSubject.trim() || !editMessageSender.trim() || !editMessageBody.trim()}>{editMessageMutation.isPending ? "Saving…" : "Save changes"}</button></div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   </>;
 }
 
@@ -1735,7 +2021,7 @@ function DemoCommunicationsInbox({ messages, search, onSearch, onTabChange }: { 
           <button className="icon-button communications-demo-row-action" type="button" aria-label={`Message options for ${String(message.subject ?? "message")}`} title="Message options" onClick={event => openMessageDialog(message, "details", event.currentTarget)}><Settings2 className="icon sm" aria-hidden="true" /></button>
           <button className="icon-button communications-demo-row-action" type="button" aria-label={`More options for ${String(message.subject ?? "message")}`} title="More options" onClick={event => openMessageDialog(message, "actions", event.currentTarget)}><span aria-hidden="true">···</span></button>
         </article>)}
-        {!filtered.length && <p className="communications-inbox-state" role="status">{messages.length ? `No messages match “${search}”.` : "No example inbox messages are available."}</p>}
+        {!filtered.length && <p className="communications-inbox-state" role="status">{messages.length ? `No messages match "${search}".` : "No example inbox messages are available."}</p>}
       </div>
       {feedback && <p className="caption communications-demo-feedback" role="status">{feedback}</p>}
     </section>
@@ -1743,7 +2029,7 @@ function DemoCommunicationsInbox({ messages, search, onSearch, onTabChange }: { 
       <div className="p-card-heading"><h3>Recent activity</h3><button className="btn sm" type="button" onClick={() => onTabChange("Connected accounts")}>All activity</button></div>
       {activityQuery.isLoading ? <p className="caption" role="status">Loading local communication activity…</p> : activityQuery.isError ? <p className="caption" role="alert">Local activity is unavailable.</p> : activityQuery.data?.length ? <div className="p-record-sections">{activityQuery.data.slice(0, 5).map((event, index) => <article className="p-record-section" key={String(event.id ?? index)}><strong>{String(event.name ?? "Communication action")}</strong><p className="caption">{String(event.status ?? "Recorded locally")} · {String(event.time ?? "Time not recorded")}</p></article>)}</div> : <p className="caption">No communication activity has been recorded in this demo session.</p>}
     </section>
-    <Dialog.Root open={Boolean(dialogMode)} onOpenChange={open => { if (!open && !actionBusy) { setDialogMode(null); setDialogMessage(null); setActionError(""); window.requestAnimationFrame(() => messageDialogTrigger.current?.focus()); } }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog communications-message-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{dialogMode === "actions" ? String(dialogMessage?.subject ?? "Message actions") : dialogMode === "details" ? String(dialogMessage?.subject ?? "Message details") : dialogMode === "edit" ? "Edit example message" : dialogMode === "delete" ? `Delete “${String(dialogMessage?.subject ?? "example message")}”?` : dialogMode === "run" ? "Run example action?" : "Message details"}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close message dialog" disabled={actionBusy}><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">{dialogMode === "actions" ? "Choose an action for this local example record." : dialogMode === "edit" ? "Changes are saved only in isolated Demo data." : dialogMode === "delete" ? "This deletes the local demo record. It does not affect your backend." : "This is an example message. No external account is contacted and no email is sent."}</Dialog.Description>
+    <Dialog.Root open={Boolean(dialogMode)} onOpenChange={open => { if (!open && !actionBusy) { setDialogMode(null); setDialogMessage(null); setActionError(""); window.requestAnimationFrame(() => messageDialogTrigger.current?.focus()); } }}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog communications-message-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{dialogMode === "actions" ? String(dialogMessage?.subject ?? "Message actions") : dialogMode === "details" ? String(dialogMessage?.subject ?? "Message details") : dialogMode === "edit" ? "Edit example message" : dialogMode === "delete" ? `Delete "${String(dialogMessage?.subject ?? "example message")}"?` : dialogMode === "run" ? "Run example action?" : "Message details"}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close message dialog" disabled={actionBusy}><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">{dialogMode === "actions" ? "Choose an action for this local example record." : dialogMode === "edit" ? "Changes are saved only in isolated Demo data." : dialogMode === "delete" ? "This deletes the local demo record. It does not affect your backend." : "This is an example message. No external account is contacted and no email is sent."}</Dialog.Description>
       {dialogMode === "actions" && <div className="communications-message-actions"><button className="btn" type="button" onClick={() => setDialogMode("details")}>Open details</button><button className="btn" type="button" onClick={() => setDialogMode("edit")}>Edit record</button><button className="btn" type="button" onClick={() => void applyMessageAction("duplicate")} disabled={actionBusy}>Duplicate</button><button className="btn" type="button" onClick={() => setDialogMode("run")}>Run / test</button><button className="btn danger" type="button" onClick={() => setDialogMode("delete")}>Delete</button></div>}
       {dialogMode === "details" && dialogMessage && <><div className="p-note"><Info className="icon sm" aria-hidden="true"/><span>Local Demo record · {String(dialogMessage.status ?? "Status unavailable")}</span></div><div className="p-record-sections"><article className="p-record-section"><strong>From</strong><p className="caption">{String(dialogMessage.sender ?? "Sender unavailable")}</p></article><article className="p-record-section"><strong>Message</strong><p className="caption">{String(dialogMessage.body ?? "No message body was provided.")}</p></article></div><div className="advanced-integration-actions"><button className="btn" type="button" onClick={() => { setDialogMode(null); openCompose(dialogMessage); }}>Reply</button>{String(dialogMessage.status ?? "").toLowerCase() !== "archived" && <button className="btn" type="button" disabled={actionBusy} onClick={() => void applyMessageAction("archive")}>Archive</button>}<button className="btn" type="button" onClick={() => setDialogMode("edit")}>Edit</button><button className="btn danger" type="button" onClick={() => setDialogMode("delete")}>Delete</button></div></>}
       {dialogMode === "edit" && dialogMessage && <form className="communications-message-edit" onSubmit={event => void saveMessageEdit(event)}><label className="demo-form-field">Subject<input className="input" required maxLength={180} value={editSubject} onChange={event => setEditSubject(event.target.value)}/></label><label className="demo-form-field">Sender<input className="input" required value={editSender} onChange={event => setEditSender(event.target.value)}/></label><label className="demo-form-field">Message<textarea className="input" rows={4} required value={editBody} onChange={event => setEditBody(event.target.value)}/></label><div className="row between"><button className="btn" type="button" disabled={actionBusy} onClick={() => setDialogMode("details")}>Cancel</button><button className="btn primary" type="submit" disabled={actionBusy}>{actionBusy ? "Saving…" : "Save changes"}</button></div></form>}
@@ -1900,6 +2186,7 @@ function CommunicationsDraftQueue({ data }: { data?: Record<string, JsonRecord> 
 
 function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
   const queryClient = useQueryClient();
+  const dataMode = useWorkspaceState(state => state.dataMode);
   const [sessionId, setSessionId] = useState("");
   const [language, setLanguage] = useState("en");
   const [audioFile, setAudioFile] = useState<File | null>(null);
@@ -1907,6 +2194,26 @@ function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<strin
   const [feedback, setFeedback] = useState("");
   const [latestTranscription, setLatestTranscription] = useState<JsonRecord | null>(null);
   const [latestSynthesis, setLatestSynthesis] = useState<JsonRecord | null>(null);
+  const [synthesisAudioUrl, setSynthesisAudioUrl] = useState("");
+  const [synthesisAudioBytes, setSynthesisAudioBytes] = useState(0);
+  const [synthesisAudioLoading, setSynthesisAudioLoading] = useState(false);
+  const [synthesisAudioError, setSynthesisAudioError] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordingWaveform, setRecordingWaveform] = useState<number[]>([]);
+  const captureRef = useRef<{
+    recorder: MediaRecorder;
+    stream: MediaStream;
+    chunks: BlobPart[];
+    sessionId: string;
+    audioContext: AudioContext | null;
+    analyser: AnalyserNode | null;
+    clockTimer: number | null;
+    waveformTimer: number | null;
+    discard: boolean;
+    streamId: string;
+    streamSequence: number;
+  } | null>(null);
   const sessions = Array.isArray(data?.sessions?.sessions) ? data.sessions.sessions.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
   const personas = Array.isArray(data?.personas?.personas) ? data.personas.personas.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
   const status = data?.status ?? {};
@@ -1935,23 +2242,23 @@ function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<strin
     onError: (error) => setFeedback(apiConnectionMessage(error)),
   });
   const transcribe = useMutation({
-    mutationFn: async () => {
-      if (!audioFile || !activeSessionId) throw new Error("Choose an audio file and an existing voice session.");
+    mutationFn: async ({ file, targetSessionId }: { file: File; targetSessionId: string }) => {
+      if (!file || !targetSessionId) throw new Error("Choose an audio file and an existing voice session.");
       const audioBase64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result).split(",").at(-1) ?? "");
         reader.onerror = () => reject(new Error("The selected audio file could not be read."));
-        reader.readAsDataURL(audioFile);
+        reader.readAsDataURL(file);
       });
-      return apiPost("/api/voice/stt", { audio_base64: audioBase64, filename: audioFile.name, project: "default", session_id: activeSessionId, language: language.trim() || "en", allow_fallback_stt: false });
+      return apiPost("/api/voice/stt", { audio_base64: audioBase64, filename: file.name, project: "default", session_id: targetSessionId, language: language.trim() || "en", allow_fallback_stt: false });
     },
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
       const transcription = result.transcription as JsonRecord | undefined;
       setLatestTranscription(transcription ?? null);
       setFeedback(`Backend transcription status: ${String(transcription?.transcript_status ?? "response received")}.`);
       setAudioFile(null);
       await refresh();
-      await queryClient.invalidateQueries({ queryKey: ["voice-turns", activeSessionId] });
+      await queryClient.invalidateQueries({ queryKey: ["voice-turns", variables.targetSessionId] });
     },
     onError: (error) => setFeedback(apiConnectionMessage(error)),
   });
@@ -1961,6 +2268,31 @@ function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<strin
       const script = result.script as JsonRecord | undefined;
       setLatestSynthesis(script ?? null);
       setFeedback(`Backend synthesis status: ${String(script?.audio_status ?? "response received")}.`);
+      setSynthesisAudioError("");
+      setSynthesisAudioBytes(0);
+      setSynthesisAudioUrl(current => { if (current) URL.revokeObjectURL(current); return ""; });
+      const audioAssetId = String(script?.audio_asset_id ?? "");
+      if (dataMode === "live" && audioAssetId) {
+        setSynthesisAudioLoading(true);
+        try {
+          const project = String(script?.project ?? selectedSession?.project ?? "default");
+          const blob = await backendGetBlob(`/api/voice/assets/${encodeURIComponent(audioAssetId)}/content?project=${encodeURIComponent(project)}`);
+          if (!blob.type.startsWith("audio/")) throw new Error("The backend asset is not reported as playable audio.");
+          if (blob.size <= 44) throw new Error("The backend returned an empty or incomplete WAV asset.");
+          const signatureBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => reader.result instanceof ArrayBuffer ? resolve(reader.result) : reject(new Error("Could not inspect the WAV header."));
+            reader.onerror = () => reject(new Error("Could not inspect the WAV header."));
+            reader.readAsArrayBuffer(blob.slice(0, 4));
+          });
+          const signature = new Uint8Array(signatureBuffer);
+          if (String.fromCharCode(...signature) !== "RIFF") throw new Error("The backend asset is not a valid WAV file.");
+          setSynthesisAudioBytes(blob.size);
+          setSynthesisAudioUrl(URL.createObjectURL(blob));
+        } catch (error) {
+          setSynthesisAudioError(`Generated audio could not be loaded: ${apiConnectionMessage(error)}`);
+        } finally { setSynthesisAudioLoading(false); }
+      }
       setSynthesisText("");
       await refresh();
       if (activeSessionId) await queryClient.invalidateQueries({ queryKey: ["voice-turns", activeSessionId] });
@@ -1971,23 +2303,161 @@ function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<strin
   const turnError = turnsQuery.error ? apiConnectionMessage(turnsQuery.error) : "";
   const turns = Array.isArray(turnsQuery.data?.turns) ? turnsQuery.data.turns.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
   const busy = createSession.isPending || closeSession.isPending || transcribe.isPending || synthesize.isPending;
+  useEffect(() => () => { if (synthesisAudioUrl) URL.revokeObjectURL(synthesisAudioUrl); }, [synthesisAudioUrl]);
+  const finishCapture = (capture: NonNullable<typeof captureRef.current>) => {
+    if (capture.clockTimer !== null) window.clearInterval(capture.clockTimer);
+    if (capture.waveformTimer !== null) window.clearInterval(capture.waveformTimer);
+    capture.stream.getTracks().forEach(track => track.stop());
+    if (capture.audioContext && capture.audioContext.state !== "closed") void capture.audioContext.close().catch(() => undefined);
+    if (captureRef.current === capture) {
+      captureRef.current = null;
+      setIsRecording(false);
+      setRecordingWaveform([]);
+    }
+    if (capture.discard) {
+      if (capture.streamId) {
+        void apiPost("/api/voice/stream/finish", { stream_id: capture.streamId, speaker: "user" }).catch(() => undefined);
+      }
+      return;
+    }
+    const mimeType = capture.recorder.mimeType || "audio/webm";
+    const audioBlob = new Blob(capture.chunks, { type: mimeType });
+    if (!audioBlob.size) { setFeedback("The recording contained no audio data. Try recording again."); return; }
+    const extension = mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp4") ? "m4a" : "webm";
+    const file = new File([audioBlob], `voice-recording-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`, { type: mimeType });
+    setAudioFile(file);
+    // Finish the streaming session (assembles + transcribes on the backend).
+    if (capture.streamId) {
+      void apiPost<{ transcription?: string }>("/api/voice/stream/finish", {
+        stream_id: capture.streamId, speaker: "user",
+        language: language.trim() || "en", allow_fallback_stt: false,
+      }).catch(() => undefined);
+    }
+    setFeedback("Recording stopped. Sending the captured audio to the local transcription service…");
+    transcribe.mutate({ file, targetSessionId: capture.sessionId });
+  };
+  const startRecording = async () => {
+    setFeedback("");
+    if (!activeSessionId) { setFeedback("Create or select a voice session before recording."); return; }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") { setFeedback("This browser does not support microphone recording."); return; }
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"].find(type => typeof MediaRecorder.isTypeSupported !== "function" || MediaRecorder.isTypeSupported(type));
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const capture = {
+        recorder, stream, chunks: [] as BlobPart[], sessionId: activeSessionId,
+        audioContext: null as AudioContext | null, analyser: null as AnalyserNode | null,
+        clockTimer: null as number | null, waveformTimer: null as number | null, discard: false,
+        streamId: "", streamSequence: 0,
+      };
+      captureRef.current = capture;
+      // Open a backend stream session for incremental chunk delivery.
+      try {
+        const streamResult = await apiPost<{ stream_id?: string }>("/api/voice/stream/start", {
+          project: "default", voice_session_id: activeSessionId,
+          audio_format: (mimeType ?? "audio/webm").split(";")[0]?.split("/")[1] ?? "webm",
+          language: language.trim() || "en",
+        });
+        if (streamResult.stream_id) capture.streamId = streamResult.stream_id;
+      } catch {
+        // Stream session unavailable — fall back to batch upload on stop.
+      }
+      recorder.ondataavailable = async event => {
+        if (!event.data.size) return;
+        capture.chunks.push(event.data);
+        if (capture.streamId && !capture.discard) {
+          try {
+            const arrayBuffer = await event.data.arrayBuffer();
+            const uint8 = new Uint8Array(arrayBuffer);
+            let binary = "";
+            for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]!);
+            const b64 = btoa(binary);
+            await apiPost("/api/voice/stream/chunk", { stream_id: capture.streamId, audio_base64: b64, sequence: capture.streamSequence++ });
+          } catch {
+            // Chunk delivery failure is non-fatal; batch upload still covers the recording.
+          }
+        }
+      };
+      recorder.onstop = () => finishCapture(capture);
+      recorder.onerror = () => { capture.discard = true; setFeedback("The browser could not continue recording. No audio was uploaded."); if (recorder.state !== "inactive") recorder.stop(); else finishCapture(capture); };
+      recorder.start(1000);
+      setRecordingSeconds(0);
+      setRecordingWaveform([18, 35, 54, 32, 46, 24, 59, 42, 28, 51, 36, 62, 31, 45, 22, 53, 39, 60, 29, 47, 34, 57, 25, 44, 33, 61, 39, 50, 27, 46, 32, 55]);
+      setIsRecording(true);
+      setFeedback("Recording from this browser microphone. Audio is uploaded to the local service after you stop.");
+      capture.clockTimer = window.setInterval(() => setRecordingSeconds(value => value + 1), 1000);
+      try {
+        if (typeof AudioContext !== "undefined") {
+          capture.audioContext = new AudioContext();
+          const source = capture.audioContext.createMediaStreamSource(stream);
+          capture.analyser = capture.audioContext.createAnalyser();
+          capture.analyser.fftSize = 128;
+          source.connect(capture.analyser);
+          const samples = new Uint8Array(capture.analyser.fftSize);
+          capture.waveformTimer = window.setInterval(() => {
+            if (!capture.analyser) return;
+            capture.analyser.getByteTimeDomainData(samples);
+            const levels = Array.from({ length: 32 }, (_, index) => {
+              const offset = Math.floor(index * samples.length / 32);
+              const amplitude = Math.abs((samples[offset] ?? 128) - 128) / 128;
+              return Math.round(12 + Math.min(1, amplitude * 3) * 48);
+            });
+            setRecordingWaveform(levels);
+          }, 90);
+        }
+      } catch {
+        // Capture still works if audio-level visualization is unavailable.
+      }
+    } catch (error) {
+      stream?.getTracks().forEach(track => track.stop());
+      const reason = error instanceof DOMException && error.name === "NotAllowedError" ? "Microphone permission was denied. Allow microphone access in your browser to record." : error instanceof Error ? error.message : "Microphone capture could not start.";
+      setFeedback(reason);
+    }
+  };
+  const stopRecording = (discard = false) => {
+    const capture = captureRef.current;
+    if (!capture) return;
+    capture.discard = discard;
+    if (discard) setFeedback("Recording discarded. Audio was not uploaded.");
+    if (capture.recorder.state === "inactive") finishCapture(capture);
+    else capture.recorder.stop();
+  };
+  useEffect(() => () => {
+    const capture = captureRef.current;
+    if (!capture) return;
+    capture.discard = true;
+    if (capture.clockTimer !== null) window.clearInterval(capture.clockTimer);
+    if (capture.waveformTimer !== null) window.clearInterval(capture.waveformTimer);
+    capture.recorder.onstop = null;
+    if (capture.recorder.state !== "inactive") { try { capture.recorder.stop(); } catch { /* The device may already have stopped. */ } }
+    capture.stream.getTracks().forEach(track => track.stop());
+    if (capture.audioContext && capture.audioContext.state !== "closed") void capture.audioContext.close().catch(() => undefined);
+    captureRef.current = null;
+  }, []);
 
   if (tab === "Recordings") return <>
     {query.isLoading && <section className="p-card" role="status"><p className="caption">Loading voice sessions and local runtime status…</p></section>}
     <section className="p-card voice-session-card">
       {queryError && <p className="p-note voice-query-status" role="alert"><AlertCircle className="icon sm" aria-hidden="true" />{queryError}</p>}
-      <div className="voice-capture-empty">
-        <div className="p-record-circle"><Mic className="icon lg" aria-hidden="true" /></div>
-        <span className="p-eyebrow">{String(status.microphone_control ?? "Microphone capture unavailable")}</span>
-        <h2>Capture your next idea.</h2>
-        <p>{selectedSession ? `Selected session: ${String(selectedSession.status ?? "status unavailable")}.` : "There is no live microphone streaming endpoint in this workspace."}</p>
-        <p>Upload audio to a session to transcribe it. Your voice data stays within the local service.</p>
-        <div className="voice-static-waveform" aria-hidden="true">{[18, 35, 54, 32, 46, 24, 59, 42, 28, 51, 36, 62, 31, 45, 22, 53, 39, 60, 29, 47, 34, 57, 25, 44, 33, 61, 39, 50, 27, 46, 32, 55].map((height, index) => <i key={index} style={{ height }} />)}</div>
-        <span className="voice-idle-time">00:00</span>
-        <div className="voice-primary-actions">
-          <button type="button" className="btn primary" disabled={busy || !language.trim()} onClick={() => { setFeedback(""); createSession.mutate(); }}><Mic className="icon sm" aria-hidden="true" />{createSession.isPending ? "Creating session…" : "Create session"}</button>
-          <button type="button" className="btn" disabled title="Live browser recording is not supported by the current backend contract"><AudioLines className="icon sm" aria-hidden="true" />Recording unavailable</button>
+      <div className="p-voice-hero">
+        <div className="p-record-circle"><Mic className="icon xl" aria-hidden="true" /></div>
+        <span className="p-eyebrow">Voice workspace</span>
+        <h2>Your ideas, captured clearly.</h2>
+        <p>Start a recording, then review an accurate transcript before using it in a conversation.</p>
+        <div className={`p-wave${isRecording ? " is-recording" : ""}`} aria-hidden="true">{Array.from({ length: 47 }, (_, index) => {
+          const measuredHeight = recordingWaveform[index % Math.max(1, recordingWaveform.length)];
+          const idleHeight = 15 + (index * 19 + index * index * 3) % 66;
+          return <span key={index} style={{ "--wave-height": `${isRecording && measuredHeight ? measuredHeight : idleHeight}px`, "--wave-delay": `${(index % 11) * -0.08}s` } as CSSProperties} />;
+        })}</div>
+        <div className="row" style={{ justifyContent: "center" }}>
+          {isRecording
+            ? <><button type="button" className="btn primary" onClick={() => stopRecording(false)}><AudioLines className="icon sm" aria-hidden="true" />Stop and transcribe</button><button type="button" className="btn" onClick={() => stopRecording(true)}>Discard recording</button></>
+            : <><button type="button" className="btn primary" disabled={busy || !activeSessionId} title={!activeSessionId ? "Create a voice session first." : undefined} onClick={() => void startRecording()}><Mic className="icon sm" aria-hidden="true" />{busy ? "Preparing…" : "Start recording"}</button><button type="button" className="btn" disabled={busy || isRecording || !language.trim()} onClick={() => { setFeedback(""); createSession.mutate(); }}>{createSession.isPending ? "Creating session…" : "New session"}</button></>
+          }
         </div>
+        <span className="voice-idle-time" aria-live="polite">{`${String(Math.floor(recordingSeconds / 60)).padStart(2, "0")}:${String(recordingSeconds % 60).padStart(2, "0")}`}</span>
+        <small className="p-subtext">Waveform is a visual animation, not live microphone input.</small>
       </div>
       {latestTranscription && <article className="p-record-section"><h4>Backend transcription result</h4><p className="caption">Status: {String(latestTranscription.transcript_status ?? "unreported")} · engine: {String(latestTranscription.stt_engine ?? "unreported")} · confidence: {String(latestTranscription.confidence ?? "unreported")}</p><p>{String(latestTranscription.display_text ?? "No transcript text returned.")}</p>{typeof latestTranscription.stt_message === "string" && latestTranscription.stt_message && <p className="caption">{latestTranscription.stt_message}</p>}{Array.isArray(latestTranscription.warnings) && <p className="caption">{latestTranscription.warnings.map(String).join(" · ")}</p>}</article>}
       {feedback && <p className="caption" role={createSession.isError || closeSession.isError || transcribe.isError || synthesize.isError ? "alert" : "status"}>{feedback}</p>}
@@ -2000,14 +2470,14 @@ function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<strin
       <div className="p-card-heading"><h3>{tab === "Voice settings" ? "Local voice runtime" : tab === "Transcripts" ? "Voice transcript" : "Voice sessions"}</h3><span className="p-fixture">{String(status.runtime ?? "runtime status unavailable")}</span></div>
       {queryError && <p className="p-note voice-query-status" role="alert"><AlertCircle className="icon sm" aria-hidden="true" />{queryError}</p>}
       <p className="caption">{String(status.privacy_boundary ?? "Voice data handling is reported by the backend.")}</p>
-      <p className="caption"><strong>Microphone capture:</strong> {String(status.microphone_control ?? "not reported")}. This workspace has no live microphone streaming endpoint.</p>
+      <p className="caption"><strong>Microphone capture:</strong> {String(status.microphone_control ?? "not reported")}. Incremental audio chunks are sent via <code>/api/voice/stream/start</code> → <code>/chunk</code> → <code>/finish</code>.</p>
       <div className="p-record-section"><label className="demo-form-field">Voice session<select className="select" value={activeSessionId} onChange={(event) => setSessionId(event.target.value)} aria-label="Voice session">
         {!sessions.length && <option value="">No sessions</option>}{sessions.map((session, index) => <option key={String(session.id ?? index)} value={String(session.id ?? "")}>{String(session.id ?? "Session").slice(0, 12)} · {String(session.mode ?? "mode unavailable")} · {String(session.status ?? "unknown")}</option>)}
       </select></label>
       <label className="demo-form-field">Language<input className="input" value={language} onChange={(event) => setLanguage(event.target.value)} maxLength={20} /></label>
       <button type="button" className="btn" disabled={busy || !language.trim()} onClick={() => { setFeedback(""); createSession.mutate(); }}>{createSession.isPending ? "Creating session…" : "Create transcription session"}</button>
       {selectedSession?.status === "active" && <button type="button" className="btn section-space" disabled={busy} onClick={() => { setFeedback(""); closeSession.mutate(activeSessionId); }}>{closeSession.isPending ? "Closing…" : "Close session"}</button>}
-      {tab === "Transcripts" && <><label className="demo-form-field section-space">Audio file<input aria-label="Choose audio file" className="input" type="file" accept="audio/*,.webm,.ogg,.wav,.mp4,.m4a" onChange={(event) => setAudioFile(event.target.files?.[0] ?? null)} /></label>{audioFile && <p className="caption">Selected: {audioFile.name} · {audioFile.size.toLocaleString()} bytes</p>}<button type="button" className="btn" disabled={!audioFile || !activeSessionId || busy} onClick={() => { setFeedback(""); transcribe.mutate(); }}>{transcribe.isPending ? "Uploading and transcribing…" : "Upload and transcribe"}</button></>}
+      {tab === "Transcripts" && <><label className="demo-form-field section-space">Audio file<input aria-label="Choose audio file" className="input" type="file" accept="audio/*,.webm,.ogg,.wav,.mp4,.m4a" onChange={(event) => setAudioFile(event.currentTarget.files?.[0] ?? null)} /></label>{audioFile && <p className="caption">Selected: {audioFile.name} · {audioFile.size.toLocaleString()} bytes</p>}<button type="button" className="btn" disabled={!audioFile || !activeSessionId || busy} onClick={() => { if (!audioFile || !activeSessionId) return; setFeedback(""); transcribe.mutate({ file: audioFile, targetSessionId: activeSessionId }); }}>{transcribe.isPending ? "Uploading and transcribing…" : "Upload and transcribe"}</button></>}
       {tab === "Transcripts" && latestTranscription && <article className="p-record-section"><h4>Backend transcription result</h4><p className="caption">Status: {String(latestTranscription.transcript_status ?? "unreported")} · engine: {String(latestTranscription.stt_engine ?? "unreported")} · confidence: {String(latestTranscription.confidence ?? "unreported")}</p><p>{String(latestTranscription.display_text ?? "No transcript text returned.")}</p>{typeof latestTranscription.stt_message === "string" && latestTranscription.stt_message && <p className="caption">{latestTranscription.stt_message}</p>}{Array.isArray(latestTranscription.warnings) && <p className="caption">{latestTranscription.warnings.map(String).join(" · ")}</p>}</article>}
       </div>
       {sessions.length > 0 && <div className="p-record-sections"><h4>Backend session history</h4>{sessions.map((session, index) => <article className="p-record-section" key={String(session.id ?? index)}><strong>{String(session.mode ?? "Voice session")} · {String(session.status ?? "unknown")}</strong><p className="caption">{String(session.created_at ?? "")} · language {String(session.language ?? "unreported")} · {String(session.id ?? "")}</p></article>)}</div>}
@@ -2015,7 +2485,7 @@ function VoiceWorkspace({ tab, data, query }: { tab: string; data?: Record<strin
 
     {tab === "Transcripts" && <section className="p-card"><div className="p-card-heading"><h3>Session turns</h3><span className="p-fixture">{turns.length} backend turns</span></div>{turnError && <p className="caption" role="alert">{turnError}</p>}{turnsQuery.isLoading && <p className="caption" role="status">Loading turns…</p>}{!turnError && !turnsQuery.isLoading && !turns.length && <EmptyState icon={AudioLines} title="No transcript turns" detail="Choose a session or upload audio to a transcription session." />}{turns.map((turn, index) => { const metadata = turn.metadata && typeof turn.metadata === "object" ? turn.metadata as JsonRecord : {}; const stt = metadata.stt && typeof metadata.stt === "object" ? metadata.stt as JsonRecord : {}; return <article className="p-record-section" key={String(turn.id ?? index)}><div className="row between"><strong>{String(turn.speaker ?? turn.role ?? "speaker")}</strong><span className="caption">{String(turn.created_at ?? "")}</span></div><p>{String(turn.text ?? "")}</p><p className="caption">{String(turn.role ?? "turn")} · {turn.is_final === true ? "final" : "partial"}{stt.status ? ` · STT ${String(stt.status)} (${String(stt.provider ?? "engine unavailable")})` : ""}{turn.audio_asset_id ? ` · audio asset ${String(turn.audio_asset_id)}` : ""}</p></article>; })}</section>}
 
-    {tab === "Voice settings" && <section className="p-card"><div className="p-card-heading"><h3>Local speech synthesis</h3></div><p className="caption">The backend generates a local WAV asset and returns its metadata. It does not provide an audio download/playback route, so this page can show the artifact and transcript but cannot play it.</p>{personas.length > 0 && <p className="caption">Available backend personas: {personas.map((persona) => String(persona.name ?? persona.id)).join(", ")}</p>}<label className="demo-form-field">Text to synthesize<textarea className="input" rows={3} value={synthesisText} onChange={(event) => setSynthesisText(event.target.value)} maxLength={5000} /></label><button type="button" className="btn primary" disabled={!synthesisText.trim() || busy} onClick={() => { setFeedback(""); synthesize.mutate(); }}>{synthesize.isPending ? "Generating local audio…" : "Generate local speech artifact"}</button>{latestSynthesis && <article className="p-record-section section-space"><h4>Backend synthesis artifact</h4><p className="caption">{String(latestSynthesis.audio_status ?? "status unavailable")} · {String(latestSynthesis.audio_mime_type ?? "type unavailable")} · asset {String(latestSynthesis.audio_asset_id ?? "ID unavailable")}</p><p className="caption">{String(latestSynthesis.privacy_boundary ?? "")}</p></article>}</section>}
+    {tab === "Voice settings" && <section className="p-card"><div className="p-card-heading"><h3>Local speech synthesis</h3></div><p className="caption">Generated WAV audio is stored in the local media library and can be played here. No external TTS provider is called.</p>{personas.length > 0 && <p className="caption">Available backend personas: {personas.map((persona) => String(persona.name ?? persona.id)).join(", ")}</p>}<label className="demo-form-field">Text to synthesize<textarea className="input" rows={3} value={synthesisText} onChange={(event) => setSynthesisText(event.target.value)} maxLength={5000} /></label><button type="button" className="btn primary" disabled={!synthesisText.trim() || busy} onClick={() => { setFeedback(""); synthesize.mutate(); }}>{synthesize.isPending ? "Generating local audio…" : "Generate local speech artifact"}</button>{latestSynthesis && <article className="p-record-section section-space"><h4>Backend synthesis artifact</h4><p className="caption">{String(latestSynthesis.audio_status ?? "status unavailable")} · {String(latestSynthesis.audio_mime_type ?? "type unavailable")} · asset {String(latestSynthesis.audio_asset_id ?? "ID unavailable")}</p><p className="caption">{String(latestSynthesis.privacy_boundary ?? "")}</p>{synthesisAudioLoading && <p role="status" className="caption">Loading the authenticated local WAV asset…</p>}{synthesisAudioError && <p role="alert" className="caption">{synthesisAudioError}</p>}{synthesisAudioUrl && <div className="voice-generated-audio"><audio controls preload="metadata" src={synthesisAudioUrl} aria-label="Generated local voice audio" data-audio-bytes={synthesisAudioBytes}/><a className="btn sm" href={synthesisAudioUrl} download={`openagent-voice-${String(latestSynthesis.audio_asset_id ?? "audio")}.wav`}>Download WAV</a></div>}</article>}</section>}
 
     {feedback && <p className="caption" role={createSession.isError || closeSession.isError || transcribe.isError || synthesize.isError ? "alert" : "status"}>{feedback}</p>}
   </div>;
@@ -2237,7 +2707,7 @@ function VoiceDemoRecordings({ data }: { data?: Record<string, JsonRecord> }) {
         </> : dialog === "actions" && selected ? <>
           <div className="row between"><Dialog.Title className="second-app-dialog-title">{String(selected.name ?? "Recording actions")}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close actions"><X className="icon sm"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">Choose an action for this example record.</Dialog.Description><div className="demo-action-grid voice-demo-action-grid"><button className="btn" type="button" onClick={() => setDialog("details")}><FileDown className="icon sm"/>Open details</button><button className="btn" type="button" onClick={() => openRecordDialog("edit", selected)}><SlidersHorizontal className="icon sm"/>Edit record</button><button className="btn" type="button" onClick={() => void duplicateRecord()} disabled={busy}><Plus className="icon sm"/>Duplicate</button><button className="btn" type="button" onClick={() => void startRecordingRun(selected)}><AudioLines className="icon sm"/>Run / test</button><button className="btn danger" type="button" onClick={() => openRecordDialog("delete", selected)}><X className="icon sm"/>Delete</button></div>{formError && <p className="form-error" role="alert">{formError}</p>}
         </> : dialog === "delete" && selected ? <>
-          <div className="row between"><Dialog.Title className="second-app-dialog-title">Delete “{String(selected.name ?? "recording")}”?</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close delete dialog" disabled={busy}><X className="icon sm"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">This deletes the local demo record. It does not affect your backend.</Dialog.Description>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="row end voice-demo-modal-actions"><button className="btn" type="button" onClick={closeDialog} disabled={busy}>Cancel</button><button className="btn danger" type="button" onClick={() => void deleteRecord()} disabled={busy}>{busy ? "Deleting…" : "Delete record"}</button></div>
+          <div className="row between"><Dialog.Title className="second-app-dialog-title">Delete "{String(selected.name ?? "recording")}"?</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close delete dialog" disabled={busy}><X className="icon sm"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">This deletes the local demo record. It does not affect your backend.</Dialog.Description>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="row end voice-demo-modal-actions"><button className="btn" type="button" onClick={closeDialog} disabled={busy}>Cancel</button><button className="btn danger" type="button" onClick={() => void deleteRecord()} disabled={busy}>{busy ? "Deleting…" : "Delete record"}</button></div>
         </> : null}
       </Dialog.Content></Dialog.Portal>
     </Dialog.Root>
@@ -2252,6 +2722,12 @@ function AssistantWorkspace({ tab, data, query }: { tab: string; data?: Record<s
   const [priority, setPriority] = useState("normal");
   const [dueAt, setDueAt] = useState("");
   const [goalId, setGoalId] = useState("");
+  const [editingTaskId, setEditingTaskId] = useState("");
+  const [showGoalForm, setShowGoalForm] = useState(false);
+  const [editingGoalId, setEditingGoalId] = useState("");
+  const [goalTitle, setGoalTitle] = useState("");
+  const [goalDescription, setGoalDescription] = useState("");
+  const [goalHorizon, setGoalHorizon] = useState("short");
   const [feedback, setFeedback] = useState("");
   const tasksResponse = data?.tasks ?? {};
   const brief = data?.brief ?? {};
@@ -2263,17 +2739,37 @@ function AssistantWorkspace({ tab, data, query }: { tab: string; data?: Record<s
   const recommended = Array.isArray(brief.recommended_focus) ? brief.recommended_focus.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["advanced-screen", "assistant"] });
   const createTask = useMutation({
-    mutationFn: () => apiPost("/api/assistant/tasks", {
+    mutationFn: () => editingTaskId ? apiPatch(`/api/assistant/tasks/${encodeURIComponent(editingTaskId)}?project=default`, {
+      title: title.trim(), priority, due_at: dueAt ? new Date(dueAt).toISOString() : "", goal_id: goalId,
+    }) : apiPost("/api/assistant/tasks", {
       project: "default", title: title.trim(), priority,
       due_at: dueAt ? new Date(dueAt).toISOString() : "", goal_id: goalId,
     }),
     onSuccess: async (result) => {
       const task = result.task as JsonRecord | undefined;
-      setTitle(""); setDueAt(""); setGoalId("");
-      setFeedback(`Task saved by the backend${task?.id ? ` (${String(task.id)})` : ""}.`);
+      const wasEditing = Boolean(editingTaskId);
+      setEditingTaskId(""); setTitle(""); setDueAt(""); setGoalId("");
+      setFeedback(`${wasEditing ? "Task updated" : "Task saved"} by the backend${task?.id ? ` (${String(task.id)})` : ""}.`);
       await refresh();
     },
     onError: (error) => setFeedback(apiConnectionMessage(error)),
+  });
+  const deleteTask = useMutation({
+    mutationFn: (taskId: string) => apiDelete(`/api/assistant/tasks/${encodeURIComponent(taskId)}?project=default`),
+    onSuccess: async () => { setFeedback("Task deleted by the backend."); await refresh(); },
+    onError: error => setFeedback(apiConnectionMessage(error)),
+  });
+  const saveGoal = useMutation({
+    mutationFn: () => editingGoalId
+      ? apiPatch(`/api/assistant/goals/${encodeURIComponent(editingGoalId)}?project=default`, { title: goalTitle.trim(), description: goalDescription.trim(), horizon: goalHorizon })
+      : apiPost("/api/assistant/goals", { project: "default", title: goalTitle.trim(), description: goalDescription.trim(), horizon: goalHorizon }),
+    onSuccess: async result => { const wasEditing = Boolean(editingGoalId); setShowGoalForm(false); setEditingGoalId(""); setGoalTitle(""); setGoalDescription(""); setFeedback(`${wasEditing ? "Goal updated" : "Goal created"} by the backend${result.goal && typeof result.goal === "object" && (result.goal as JsonRecord).id ? ` (${String((result.goal as JsonRecord).id)})` : ""}.`); await refresh(); },
+    onError: error => setFeedback(apiConnectionMessage(error)),
+  });
+  const deleteGoal = useMutation({
+    mutationFn: (goalIdValue: string) => apiDelete(`/api/assistant/goals/${encodeURIComponent(goalIdValue)}?project=default`),
+    onSuccess: async () => { setFeedback("Goal deleted by the backend. Linked tasks remain and are unlinked."); await refresh(); },
+    onError: error => setFeedback(apiConnectionMessage(error)),
   });
   const completeTask = useMutation({
     mutationFn: (taskId: string) => apiPost("/api/assistant/tasks/complete", { project: "default", task_id: taskId }),
@@ -2286,20 +2782,22 @@ function AssistantWorkspace({ tab, data, query }: { tab: string; data?: Record<s
   });
   const fail = query.error ? apiConnectionMessage(query.error) : "";
   const taskForm = <form className="p-record-sections" onSubmit={(event) => { event.preventDefault(); setFeedback(""); createTask.mutate(); }}>
-    <label className="demo-form-field">Task<input className="input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required /></label>
+    <label className="demo-form-field">{editingTaskId ? "Edit task" : "Task"}<input className="input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required /></label>
     <div className="row">
       <label className="demo-form-field">Priority<select className="select" value={priority} onChange={(event) => setPriority(event.target.value)}><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
       <label className="demo-form-field">Due date<input className="input" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label>
     </div>
     <label className="demo-form-field">Related goal<select className="select" value={goalId} onChange={(event) => setGoalId(event.target.value)}><option value="">No goal</option>{goals.map((goal, index) => <option key={String(goal.id ?? index)} value={String(goal.id ?? "")}>{String(goal.title ?? goal.id ?? "Goal")}</option>)}</select></label>
     {!goals.length && <p className="caption">No active goals are available to link. Create a goal in the Goals tab first.</p>}
-    <button className="btn primary" type="submit" disabled={!title.trim() || createTask.isPending}>{createTask.isPending ? "Saving task…" : "Add task"}</button>
+    <div className="row">{editingTaskId && <button className="btn" type="button" onClick={() => { setEditingTaskId(""); setTitle(""); setDueAt(""); setGoalId(""); }}>Cancel edit</button>}<button className="btn primary" type="submit" disabled={!title.trim() || createTask.isPending}>{createTask.isPending ? "Saving task…" : editingTaskId ? "Save changes" : "Add task"}</button></div>
   </form>;
   const taskList = (records: JsonRecord[], showComplete: boolean) => records.length ? <div className="p-record-sections">{records.map((task, index) => {
     const id = String(task.id ?? "");
     const linkedGoal = goals.find((goal) => String(goal.id ?? "") === String(task.goal_id ?? ""));
-    return <article className="p-record-section" key={id || index}><div className="row between"><strong>{String(task.title ?? "Untitled task")}</strong><span className="p-fixture">{String(task.status ?? "status unavailable")}</span></div><p className="caption">{String(task.priority ?? "priority unreported")} priority{task.due_at ? ` · due ${String(task.due_at)}` : " · no due date"}{linkedGoal ? ` · goal: ${String(linkedGoal.title ?? linkedGoal.id)}` : task.goal_id ? ` · goal ${String(task.goal_id)}` : ""}</p>{showComplete && task.status !== "completed" && id && <button type="button" className="btn" disabled={completeTask.isPending} onClick={() => { setFeedback(""); completeTask.mutate(id); }}>{completeTask.isPending ? "Updating…" : "Mark complete"}</button>}</article>;
+    return <article className="p-record-section" key={id || index}><div className="row between"><strong>{String(task.title ?? "Untitled task")}</strong><span className="p-fixture">{String(task.status ?? "status unavailable")}</span></div><p className="caption">{String(task.priority ?? "priority unreported")} priority{task.due_at ? ` · due ${String(task.due_at)}` : " · no due date"}{linkedGoal ? ` · goal: ${String(linkedGoal.title ?? linkedGoal.id)}` : task.goal_id ? ` · goal ${String(task.goal_id)}` : ""}</p><div className="row">{showComplete && task.status !== "completed" && id && <button type="button" className="btn" disabled={completeTask.isPending} onClick={() => { setFeedback(""); completeTask.mutate(id); }}>{completeTask.isPending ? "Updating…" : "Mark complete"}</button>}{id && <button type="button" className="btn" onClick={() => { setEditingTaskId(id); setTitle(String(task.title ?? "")); setPriority(String(task.priority ?? "normal")); setDueAt(task.due_at ? new Date(String(task.due_at)).toISOString().slice(0, 16) : ""); setGoalId(String(task.goal_id ?? "")); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Edit</button>}{id && <button type="button" className="btn" disabled={deleteTask.isPending} onClick={() => { if (window.confirm(`Delete task "${String(task.title ?? "Untitled task") }"?`)) deleteTask.mutate(id); }}>Delete</button>}</div></article>;
   })}</div> : <EmptyState icon={CheckCircle2} title="No tasks returned" detail="The backend has not returned any assistant tasks for this project." />;
+
+  if (tab === "Goals") return <div className="p-record-sections">{fail && <section className="p-card" role="alert"><p>{fail}</p></section>}<section className="p-card"><div className="p-card-heading"><h3>Goals</h3><span className="p-fixture">{goals.length} backend records</span><button className="btn primary sm" type="button" onClick={() => { setEditingGoalId(""); setGoalTitle(""); setGoalDescription(""); setGoalHorizon("short"); setShowGoalForm(true); }}>Add goal</button></div>{query.isLoading ? <p className="caption" role="status">Loading goals…</p> : goals.length ? <div className="p-record-sections">{goals.map((goal, index) => { const id = String(goal.id ?? ""); return <article className="p-record-section" key={id || index}><div className="row between"><strong>{String(goal.title ?? "Untitled goal")}</strong><span className="p-fixture">{String(goal.status ?? "status unavailable")}</span></div><p className="caption">{String(goal.horizon ?? "horizon not reported")}{goal.description ? ` · ${String(goal.description)}` : ""}</p><div className="row">{id && <button className="btn" type="button" onClick={() => { setEditingGoalId(id); setGoalTitle(String(goal.title ?? "")); setGoalDescription(String(goal.description ?? "")); setGoalHorizon(String(goal.horizon ?? "short")); setShowGoalForm(true); }}>Edit</button>}{id && <button className="btn" type="button" disabled={deleteGoal.isPending} onClick={() => { if (window.confirm(`Delete goal "${String(goal.title ?? "Untitled goal") }"? Linked tasks will remain unlinked.`)) deleteGoal.mutate(id); }}>Delete</button>}</div></article>; })}</div> : <EmptyState icon={CheckCircle2} title="No goals returned" detail="Create a goal to organize related tasks." />}{feedback && <p role={saveGoal.isError || deleteGoal.isError ? "alert" : "status"} className="caption">{feedback}</p>}</section><Dialog.Root open={showGoalForm} onOpenChange={setShowGoalForm}><Dialog.Portal><Dialog.Overlay/><Dialog.Content className="advanced-integration-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{editingGoalId ? "Edit goal" : "New goal"}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close goal form"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">Changes are saved to the current project.</Dialog.Description><form onSubmit={event => { event.preventDefault(); setFeedback(""); saveGoal.mutate(); }}><label className="demo-form-field">Name<input className="input" value={goalTitle} onChange={event => setGoalTitle(event.target.value)} required maxLength={160}/></label><label className="demo-form-field">Description<textarea className="textarea" rows={3} value={goalDescription} onChange={event => setGoalDescription(event.target.value)} maxLength={500}/></label><label className="demo-form-field">Horizon<select className="select" value={goalHorizon} onChange={event => setGoalHorizon(event.target.value)}><option value="short">Short term</option><option value="medium">Medium term</option><option value="long">Long term</option></select></label><div className="advanced-integration-actions"><button className="btn" type="button" onClick={() => setShowGoalForm(false)}>Cancel</button><button className="btn primary" type="submit" disabled={!goalTitle.trim() || saveGoal.isPending}>{saveGoal.isPending ? "Saving…" : editingGoalId ? "Save changes" : "Create goal"}</button></div></form></Dialog.Content></Dialog.Portal></Dialog.Root></div>;
 
   if (tab === "Daily brief") return <section className="p-card"><div className="p-card-heading"><h3>Daily brief</h3><CalendarClock className="icon sm" aria-hidden="true" /></div>{query.isLoading && <p role="status" className="caption">Loading the backend daily brief…</p>}{fail && <p role="alert" className="caption">{fail}</p>}{!query.isLoading && !fail && <>
     <p className="caption">Project: {String(brief.project ?? "not reported")}</p><p className="caption">{String(brief.priority_count ?? 0)} high or urgent open task(s)</p>
@@ -2308,7 +2806,33 @@ function AssistantWorkspace({ tab, data, query }: { tab: string; data?: Record<s
     <h4 className="section-space">Active goals</h4>{goals.length ? <div className="p-record-sections">{goals.map((goal, index) => <article className="p-record-section" key={String(goal.id ?? index)}><strong>{String(goal.title ?? "Goal")}</strong><p className="caption">{String(goal.status ?? "status unavailable")} · {String(goal.horizon ?? "horizon unreported")}{goal.description ? ` · ${String(goal.description)}` : ""}</p></article>)}</div> : <p className="caption">No active goals returned.</p>}
     <p className="caption section-space">Productivity coaching and meeting briefs are not enabled here: no user-facing workflow is included in this workspace slice.</p>
   </>}</section>;
-  if (tab === "Today") return <div className="p-record-sections">{fail && <section className="p-card" role="alert"><p>{fail}</p></section>}<section className="p-card"><div className="p-card-heading"><h3>Today</h3><span className="p-fixture">Backend daily brief</span></div>{query.isLoading ? <p role="status" className="caption">Loading current tasks and priorities…</p> : <><p className="caption">{String(brief.priority_count ?? 0)} high or urgent open task(s) · {goals.length} active goal(s)</p><h4>Recommended focus</h4>{taskList(recommended, true)}</>}</section><section className="p-card"><div className="p-card-heading"><h3>Add a task</h3></div>{taskForm}</section>{feedback && <p role={createTask.isError || completeTask.isError ? "alert" : "status"} className="caption">{feedback}</p>}</div>;
+  if (tab === "Today") {
+    const activityEvents = (Array.isArray((data?.activity as { events?: unknown })?.events) ? (data?.activity as { events: JsonRecord[] }).events : []) as JsonRecord[];
+    return <div className="p-record-sections">
+      {fail && <section className="p-card" role="alert"><p>{fail}</p></section>}
+      <section className="p-card">
+        <div className="p-card-heading"><h3>Today</h3><span className="p-fixture">Backend daily brief</span></div>
+        {query.isLoading ? <p role="status" className="caption">Loading current tasks and priorities…</p> : <>
+          <p className="caption">{String(brief.priority_count ?? 0)} high or urgent open task(s) · {goals.length} active goal(s)</p>
+          <h4>Recommended focus</h4>{taskList(recommended, true)}
+        </>}
+      </section>
+      <section className="p-card">
+        <div className="p-card-heading"><h3>Add a task</h3></div>{taskForm}
+      </section>
+      <section className="p-card">
+        <div className="p-card-heading"><h3>Recent activity</h3><span className="p-fixture">{activityEvents.length} task/goal events</span></div>
+        {query.isLoading ? <p className="caption" role="status">Loading project activity…</p> : activityEvents.length ? <div className="p-list">{activityEvents.slice(0, 10).map((event, idx) => <div className="p-list-row" key={String(event.id ?? idx)}>
+          <span className="status-dot" aria-hidden="true"/>
+          <div className="flex1">
+            <strong>{String(event.action ?? event.name ?? "Assistant event")}</strong>
+            <small className="muted">{String(event.resource ?? event.route ?? "")} · {String(event.created_at ?? event.time ?? "")}</small>
+          </div>
+        </div>)}</div> : <p className="caption">No task or goal activity has been recorded for this project yet.</p>}
+      </section>
+      {feedback && <p role={createTask.isError || completeTask.isError ? "alert" : "status"} className="caption">{feedback}</p>}
+    </div>;
+  }
   return <div className="p-record-sections">{fail && <section className="p-card" role="alert"><p>{fail}</p></section>}<section className="p-card"><div className="p-card-heading"><h3>Tasks</h3><span className="p-fixture">{tasks.length} backend records</span></div>{query.isLoading ? <p role="status" className="caption">Loading tasks…</p> : taskList(tasks, true)}</section><section className="p-card"><div className="p-card-heading"><h3>Add a task</h3></div>{taskForm}</section>{feedback && <p role={createTask.isError || completeTask.isError ? "alert" : "status"} className="caption">{feedback}</p>}</div>;
 }
 
@@ -2322,6 +2846,7 @@ function AssistantDemoWorkspace({ tab, data, query, onTabChange }: { tab: string
   const [goalProgress, setGoalProgress] = useState("65");
   const [editingGoalId, setEditingGoalId] = useState("");
   const [title, setTitle] = useState("");
+  const [editingTaskId, setEditingTaskId] = useState("");
   const [priority, setPriority] = useState("Normal");
   const [dueAt, setDueAt] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -2337,8 +2862,14 @@ function AssistantDemoWorkspace({ tab, data, query, onTabChange }: { tab: string
     event.preventDefault(); if (!title.trim()) return;
     setError(""); setFeedback("");
     try {
-      await advancedDemoAction("/api/assistant/tasks", { title: title.trim(), priority, due_at: dueAt || "", status: "Todo", project: "Personal Workspace" });
-      setTitle(""); setDueAt(""); setPriority("Normal"); setShowForm(false); setFeedback("Task saved to this browser’s demo data."); await refresh();
+      if (editingTaskId) {
+        // Canonical fixtures call this field `name`; the API-facing view model calls it
+        // `title`. Keep both in sync so the adapter cannot map the stale fixture name
+        // over the edited title on the next query refresh.
+        await demoProvider.updateCollection<JsonRecord>("collections.advanced.assistant.tasks", current => current.map(task => String(task.id ?? "") === editingTaskId ? { ...task, name: title.trim(), title: title.trim(), priority, due_at: dueAt } : task));
+        await demoProvider.recordActivity("assistant", { id: `assistant-task-edit-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`, name: "Task edited", item: title.trim(), route: "assistant", status: "Saved locally · demo", time: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), recorded_at: new Date().toISOString() });
+      } else await advancedDemoAction("/api/assistant/tasks", { title: title.trim(), priority, due_at: dueAt || "", status: "Todo", project: "Personal Workspace" });
+      setTitle(""); setDueAt(""); setPriority("Normal"); setEditingTaskId(""); setShowForm(false); setFeedback(editingTaskId ? "Task updated in this browser's demo data." : "Task saved to this browser's demo data."); await refresh();
     } catch (cause) { setError(apiConnectionMessage(cause)); }
   };
   const createGoal = async (event: FormEvent<HTMLFormElement>) => {
@@ -2348,39 +2879,42 @@ function AssistantDemoWorkspace({ tab, data, query, onTabChange }: { tab: string
     try {
       const progress = Math.min(100, Math.max(0, Number(goalProgress) || 0));
       if (editingGoalId) {
-        await demoProvider.updateCollection<JsonRecord>("collections.advanced.assistant.goals", current => current.map(goal => String(goal.id ?? "") === editingGoalId ? { ...goal, name: goalTitle.trim(), description: goalDescription.trim(), progress, status: "In progress" } : goal));
+        await demoProvider.updateCollection<JsonRecord>("collections.advanced.assistant.goals", current => current.map(goal => String(goal.id ?? "") === editingGoalId ? { ...goal, title: goalTitle.trim(), name: goalTitle.trim(), description: goalDescription.trim(), progress, status: "In progress" } : goal));
         const eventId = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
         await demoProvider.recordActivity("assistant", { id: `assistant-activity-${eventId}`, name: "Goal edited", item: goalTitle.trim(), route: "assistant", status: "Saved locally · demo", time: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), recorded_at: new Date().toISOString() });
-        setFeedback("Goal updated in this browser’s demo data.");
+        setFeedback("Goal updated in this browser's demo data.");
       } else {
         await advancedDemoAction("/api/assistant/goals", { title: goalTitle.trim(), description: goalDescription.trim(), progress, status: "In progress" });
-        setFeedback("Goal saved to this browser’s demo data.");
+        setFeedback("Goal saved to this browser's demo data.");
       }
       setGoalTitle(""); setGoalDescription(""); setGoalProgress("0"); setEditingGoalId(""); setShowGoalForm(false); await refresh();
     } catch (cause) { setError(apiConnectionMessage(cause)); }
   };
   const editGoal = (goal: JsonRecord) => { setEditingGoalId(String(goal.id ?? "")); setGoalTitle(String(goal.title ?? goal.name ?? "")); setGoalDescription(String(goal.description ?? "")); setGoalProgress(String(goal.progress ?? 0)); setShowGoalForm(true); };
+  const editTask = (task: JsonRecord) => { setEditingTaskId(String(task.id ?? "")); setTitle(String(task.title ?? "")); setPriority(String(task.priority ?? "Normal")); setDueAt(String(task.due_at ?? "")); setDetailsId(""); setShowForm(true); document.getElementById("assistant-demo-tasks")?.scrollIntoView({ behavior: "smooth", block: "center" }); };
+  const deleteTask = async (task: JsonRecord) => { const id = String(task.id ?? ""); if (!id || !window.confirm(`Delete "${String(task.title ?? "this task")}" from local demo data?`)) return; await demoProvider.updateCollection<JsonRecord>("collections.advanced.assistant.tasks", current => current.filter(item => String(item.id ?? "") !== id)); await demoProvider.recordActivity("assistant", { id: `assistant-task-delete-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`, name: "Task deleted", item: String(task.title ?? "Task"), route: "assistant", status: "Deleted locally · demo", time: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), recorded_at: new Date().toISOString() }); setFeedback("Task deleted from this browser's demo data."); setDetailsId(""); await refresh(); };
+  const deleteGoal = async (goal: JsonRecord) => { const id = String(goal.id ?? ""); if (!id || !window.confirm(`Delete "${String(goal.title ?? "this goal")}" from local demo data?`)) return; await demoProvider.updateCollection<JsonRecord>("collections.advanced.assistant.goals", current => current.filter(item => String(item.id ?? "") !== id)); await demoProvider.recordActivity("assistant", { id: `assistant-goal-delete-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`, name: "Goal deleted", item: String(goal.title ?? "Goal"), route: "assistant", status: "Deleted locally · demo", time: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), recorded_at: new Date().toISOString() }); setFeedback("Goal deleted from this browser's demo data."); setDetailsId(""); await refresh(); };
   const complete = async (task: JsonRecord) => {
     const id = String(task.id ?? ""); if (!id) return;
     setError(""); setFeedback("");
-    try { await advancedDemoAction("/api/assistant/tasks/complete", { task_id: id }); setFeedback("Task updated in this browser’s demo data."); await refresh(); }
+    try { await advancedDemoAction("/api/assistant/tasks/complete", { task_id: id }); setFeedback("Task updated in this browser's demo data."); await refresh(); }
     catch (cause) { setError(apiConnectionMessage(cause)); }
   };
   const taskRows = (records: JsonRecord[], allowComplete = true) => <div className="assistant-demo-list">{records.map((task, index) => {
     const id = String(task.id ?? index); const state = String(task.status ?? "Todo"); const done = ["done", "completed"].includes(state.toLowerCase());
-    return <article className="assistant-demo-row" key={id}><span className={`assistant-demo-check${done ? " is-done" : ""}`}><CheckCircle2 className="icon sm" aria-hidden="true" /></span><div className="assistant-demo-copy"><strong>{String(task.title ?? "Untitled task")}</strong><small>{String(task.description ?? "")}</small></div><span className={`tag assistant-demo-state ${state.toLowerCase() === "in progress" ? "orange" : done ? "green" : ""}`}>{state}</span><button type="button" className="icon-button" aria-label={done ? `Task details for ${String(task.title)}` : `Mark ${String(task.title)} complete`} onClick={() => allowComplete && !done ? void complete(task) : setDetailsId((current) => current === id ? "" : id)}><SlidersHorizontal className="icon sm" aria-hidden="true" /></button><button type="button" className="icon-button" aria-label={`More options for ${String(task.title)}`} onClick={() => setDetailsId((current) => current === id ? "" : id)}>···</button>{detailsId === id && <div className="assistant-demo-detail"><strong>{String(task.title ?? "Task details")}</strong><span>{String(task.priority ?? "Normal")} priority · {String(task.due_at ?? "No due date")}</span><p>{String(task.description ?? "No additional notes.")}</p></div>}</article>;
+    return <article className="assistant-demo-row" key={id}><span className={`assistant-demo-check${done ? " is-done" : ""}`}><CheckCircle2 className="icon sm" aria-hidden="true" /></span><div className="assistant-demo-copy"><strong>{String(task.title ?? "Untitled task")}</strong><small>{String(task.description ?? "")}</small></div><span className={`tag assistant-demo-state ${state.toLowerCase() === "in progress" ? "orange" : done ? "green" : ""}`}>{state}</span><button type="button" className="icon-button" aria-label={done ? `Task details for ${String(task.title)}` : `Mark ${String(task.title)} complete`} onClick={() => allowComplete && !done ? void complete(task) : setDetailsId((current) => current === id ? "" : id)}><SlidersHorizontal className="icon sm" aria-hidden="true" /></button><button type="button" className="icon-button" aria-label={`More options for ${String(task.title)}`} onClick={() => setDetailsId((current) => current === id ? "" : id)}>···</button>{detailsId === id && <div className="assistant-demo-detail"><strong>{String(task.title ?? "Task details")}</strong><span>{String(task.priority ?? "Normal")} priority · {String(task.due_at ?? "No due date")}</span><p>{String(task.description ?? "No additional notes.")}</p><div className="row"><button type="button" className="btn sm" onClick={() => editTask(task)}>Edit</button><button type="button" className="btn sm" onClick={() => void deleteTask(task)}>Delete</button></div></div>}</article>;
   })}</div>;
   if (tab === "Today") return <>
     <section className="demo-feature-hero assistant-demo-hero"><div className="demo-feature-symbol"><CheckCircle2 className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Today · Workspace</span><h2>Stay on top of your work</h2><p>Manage tasks, goals and the daily plan.</p></div></section>
-    <div className="demo-feature-split assistant-demo-split"><section className="p-focus-panel assistant-demo-focus"><div className="p-eyebrow">Today’s focus</div><h2>Make progress on the important things.</h2><p>Three priorities are prepared for your next work session.</p><div className="row p-focus-actions"><button className="btn primary" type="button" onClick={() => { setShowForm(true); document.getElementById("assistant-demo-tasks")?.scrollIntoView({ behavior: "smooth", block: "center" }); }}><Plus className="icon sm" aria-hidden="true" />Add task</button><button className="btn soft" type="button" onClick={() => onTabChange("Daily brief")}><Sparkles className="icon sm" aria-hidden="true" />Generate brief</button></div></section>
+    <div className="demo-feature-split assistant-demo-split"><section className="p-focus-panel assistant-demo-focus"><div className="p-eyebrow">Today's focus</div><h2>Make progress on the important things.</h2><p>Three priorities are prepared for your next work session.</p><div className="row p-focus-actions"><button className="btn primary" type="button" onClick={() => { setShowForm(true); document.getElementById("assistant-demo-tasks")?.scrollIntoView({ behavior: "smooth", block: "center" }); }}><Plus className="icon sm" aria-hidden="true" />Add task</button><button className="btn soft" type="button" onClick={() => onTabChange("Daily brief")}><Sparkles className="icon sm" aria-hidden="true" />Generate brief</button></div></section>
     <section className="p-card p-tight assistant-demo-task-card" id="assistant-demo-tasks"><div className="row assistant-demo-toolbar"><label className="search-field flex1"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search tasks" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><span className="caption">{filtered.length} items</span><button className="btn primary" type="button" onClick={() => setShowForm((current) => !current)}><Plus className="icon sm" aria-hidden="true" />Add</button></div>
-      {showForm && <form className="assistant-demo-form" onSubmit={(event) => void createTask(event)}><label className="demo-form-field">Task<input className="input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required /></label><label className="demo-form-field">Priority<select className="select" value={priority} onChange={(event) => setPriority(event.target.value)}>{["Low", "Normal", "High", "Urgent"].map((item) => <option key={item}>{item}</option>)}</select></label><label className="demo-form-field">Due date<input className="input" type="date" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label><div className="row"><button className="btn primary" disabled={!title.trim()}>Save locally</button><button className="btn" type="button" onClick={() => setShowForm(false)}>Cancel</button></div></form>}
+      {showForm && <form className="assistant-demo-form" onSubmit={(event) => void createTask(event)}><label className="demo-form-field">{editingTaskId ? "Edit task" : "Task"}<input className="input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required /></label><label className="demo-form-field">Priority<select className="select" value={priority} onChange={(event) => setPriority(event.target.value)}>{["Low", "Normal", "High", "Urgent"].map((item) => <option key={item}>{item}</option>)}</select></label><label className="demo-form-field">Due date<input className="input" type="date" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label><div className="row">{editingTaskId && <button className="btn" type="button" onClick={() => { setEditingTaskId(""); setTitle(""); }}>Cancel edit</button>}<button className="btn primary" disabled={!title.trim()}>{editingTaskId ? "Save changes" : "Save locally"}</button><button className="btn" type="button" onClick={() => { setShowForm(false); setEditingTaskId(""); }}>Cancel</button></div></form>}
       {query.isLoading ? <p className="caption" role="status">Loading the local task list…</p> : error ? <p className="caption" role="alert">{error}</p> : filtered.length ? taskRows(filtered) : <EmptyState icon={CheckCircle2} title={tasks.length ? "No matching tasks" : "No tasks yet"} detail="Add a task to keep your plan up to date." />}
       {feedback && <p className="caption" role="status">{feedback}</p>}
     </section></div>
   </>;
-  if (tab === "Tasks") return <><section className="demo-feature-hero assistant-demo-hero"><div className="demo-feature-symbol"><CheckCircle2 className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Tasks · Workspace</span><h2>Stay on top of your work</h2><p>Manage tasks, goals and the daily plan.</p></div></section><section className="p-card p-tight assistant-demo-task-card"><div className="p-card-heading"><h3>Tasks · demo records</h3><span className="p-fixture">{tasks.length} items</span></div><div className="row assistant-demo-toolbar"><label className="search-field flex1"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search tasks" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="btn primary" type="button" onClick={() => setShowForm((current) => !current)}><Plus className="icon sm" aria-hidden="true" />Add</button></div>{showForm && <form className="assistant-demo-form" onSubmit={(event) => void createTask(event)}><label className="demo-form-field">Task<input className="input" value={title} onChange={(event) => setTitle(event.target.value)} required /></label><label className="demo-form-field">Priority<select className="select" value={priority} onChange={(event) => setPriority(event.target.value)}>{["Low", "Normal", "High", "Urgent"].map((item) => <option key={item}>{item}</option>)}</select></label><button className="btn primary" type="submit" disabled={!title.trim()}>Save locally</button></form>}{query.isLoading ? <p className="caption" role="status">Loading the local task list…</p> : query.error ? <p className="caption" role="alert">Tasks are unavailable: {apiConnectionMessage(query.error)}</p> : filtered.length ? taskRows(filtered) : <EmptyState icon={CheckCircle2} title={tasks.length ? "No matching tasks" : "No tasks yet"} detail={tasks.length ? "Try another search or clear the filter." : "Add a task to keep your plan up to date."} />}{feedback && <p className="caption" role="status">{feedback}</p>}{error && <p className="caption" role="alert">{error}</p>}</section></>;
-  if (tab === "Goals") return <><section className="demo-feature-hero assistant-demo-hero"><div className="demo-feature-symbol"><CheckCircle2 className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Goals · Workspace</span><h2>Stay on top of your work</h2><p>Manage tasks, goals and the daily plan.</p></div></section><section className="p-card p-tight assistant-demo-task-card"><div className="p-card-heading"><h3>Goals · demo records</h3></div><div className="row assistant-demo-toolbar"><label className="search-field flex1"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search goals" placeholder="Search goals…" value={search} onChange={event => setSearch(event.target.value)} /></label><span className="caption">{goals.filter(goal => `${goal.title ?? ""} ${goal.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())).length} items</span><button className="btn primary" type="button" onClick={() => { setEditingGoalId(""); setGoalTitle(""); setGoalDescription(""); setGoalProgress("65"); setShowGoalForm(true); }}><Plus className="icon sm" aria-hidden="true" />Add</button></div><Dialog.Root open={showGoalForm} onOpenChange={setShowGoalForm}><Dialog.Portal><Dialog.Overlay className="assistant-goal-overlay"/><Dialog.Content className="advanced-integration-dialog assistant-goal-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{editingGoalId ? "Edit goal" : "New goal"}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close goal form"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">Changes are saved locally in this interactive demonstration.</Dialog.Description><form onSubmit={event => void createGoal(event)}><label className="demo-form-field">Name<input className="input" value={goalTitle} onChange={event => setGoalTitle(event.target.value)} required maxLength={160} placeholder="Short, meaningful name"/></label><label className="demo-form-field">Description<textarea className="textarea" rows={3} value={goalDescription} onChange={event => setGoalDescription(event.target.value)} maxLength={500} placeholder="What is this for?"/></label><label className="demo-form-field">Progress<input className="input" type="number" min="0" max="100" value={goalProgress} onChange={event => setGoalProgress(event.target.value)} placeholder="65"/></label><div className="advanced-integration-actions"><button className="btn" type="button" onClick={() => setShowGoalForm(false)}>Cancel</button><button className="btn primary" type="submit">{editingGoalId ? "Save changes" : "Create item"}</button></div></form></Dialog.Content></Dialog.Portal></Dialog.Root><div className="assistant-demo-list">{goals.filter(goal => `${goal.title ?? ""} ${goal.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())).map((goal,index)=><article className="assistant-demo-row" key={String(goal.id ?? index)}><span className="assistant-demo-check"><CheckCircle2 className="icon sm" aria-hidden="true"/></span><div className="assistant-demo-copy"><strong>{String(goal.title ?? "Goal")}</strong><small>{String(goal.description ?? "")}</small></div><span className="tag assistant-demo-state orange">{String(goal.status ?? "In progress")}</span><button type="button" className="icon-button" aria-label={`Edit ${String(goal.title ?? "goal")}`} onClick={() => editGoal(goal)}><SlidersHorizontal className="icon sm" aria-hidden="true"/></button><button type="button" className="icon-button" aria-label={`More actions for ${String(goal.title ?? "goal")}`} onClick={() => setDetailsId(current => current === String(goal.id ?? index) ? "" : String(goal.id ?? index))}><MoreHorizontal className="icon sm" aria-hidden="true"/></button>{detailsId === String(goal.id ?? index) && <div className="assistant-demo-detail"><strong>{String(goal.title ?? "Goal details")}</strong><span>{String(goal.status ?? "In progress")} · {String(goal.progress ?? 0)}% complete</span><p>{String(goal.description ?? "No additional notes.")}</p></div>}</article>)}</div>{feedback && <p className="caption" role="status">{feedback}</p>}</section></>;
+  if (tab === "Tasks") return <><section className="demo-feature-hero assistant-demo-hero"><div className="demo-feature-symbol"><CheckCircle2 className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Tasks · Workspace</span><h2>Stay on top of your work</h2><p>Manage tasks, goals and the daily plan.</p></div></section><section className="p-card p-tight assistant-demo-task-card"><div className="p-card-heading"><h3>Tasks · demo records</h3><span className="p-fixture">{tasks.length} items</span></div><div className="row assistant-demo-toolbar"><label className="search-field flex1"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search tasks" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="btn primary" type="button" onClick={() => { setEditingTaskId(""); setTitle(""); setShowForm(current => !current); }}><Plus className="icon sm" aria-hidden="true" />Add</button></div>{showForm && <form className="assistant-demo-form" onSubmit={(event) => void createTask(event)}><label className="demo-form-field">{editingTaskId ? "Edit task" : "Task"}<input className="input" value={title} onChange={(event) => setTitle(event.target.value)} required /></label><label className="demo-form-field">Priority<select className="select" value={priority} onChange={(event) => setPriority(event.target.value)}>{["Low", "Normal", "High", "Urgent"].map((item) => <option key={item}>{item}</option>)}</select></label><div className="row">{editingTaskId && <button className="btn" type="button" onClick={() => { setEditingTaskId(""); setTitle(""); }}>Cancel edit</button>}<button className="btn primary" type="submit" disabled={!title.trim()}>{editingTaskId ? "Save changes" : "Save locally"}</button></div></form>}{query.isLoading ? <p className="caption" role="status">Loading the local task list…</p> : query.error ? <p className="caption" role="alert">Tasks are unavailable: {apiConnectionMessage(query.error)}</p> : filtered.length ? taskRows(filtered) : <EmptyState icon={CheckCircle2} title={tasks.length ? "No matching tasks" : "No tasks yet"} detail={tasks.length ? "Try another search or clear the filter." : "Add a task to keep your plan up to date."} />}{feedback && <p className="caption" role="status">{feedback}</p>}{error && <p className="caption" role="alert">{error}</p>}</section></>;
+  if (tab === "Goals") return <><section className="demo-feature-hero assistant-demo-hero"><div className="demo-feature-symbol"><CheckCircle2 className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Goals · Workspace</span><h2>Stay on top of your work</h2><p>Manage tasks, goals and the daily plan.</p></div></section><section className="p-card p-tight assistant-demo-task-card"><div className="p-card-heading"><h3>Goals · demo records</h3></div><div className="row assistant-demo-toolbar"><label className="search-field flex1"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search goals" placeholder="Search goals…" value={search} onChange={event => setSearch(event.target.value)} /></label><span className="caption">{goals.filter(goal => `${goal.title ?? ""} ${goal.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())).length} items</span><button className="btn primary" type="button" onClick={() => { setEditingGoalId(""); setGoalTitle(""); setGoalDescription(""); setGoalProgress("65"); setShowGoalForm(true); }}><Plus className="icon sm" aria-hidden="true" />Add</button></div><Dialog.Root open={showGoalForm} onOpenChange={setShowGoalForm}><Dialog.Portal><Dialog.Overlay className="assistant-goal-overlay"/><Dialog.Content className="advanced-integration-dialog assistant-goal-dialog"><div className="advanced-integration-heading"><Dialog.Title className="second-app-dialog-title">{editingGoalId ? "Edit goal" : "New goal"}</Dialog.Title><Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close goal form"><X size={16} aria-hidden="true"/></button></Dialog.Close></div><Dialog.Description className="second-app-dialog-description">Changes are saved locally in this interactive demonstration.</Dialog.Description><form onSubmit={event => void createGoal(event)}><label className="demo-form-field">Name<input className="input" value={goalTitle} onChange={event => setGoalTitle(event.target.value)} required maxLength={160} placeholder="Short, meaningful name"/></label><label className="demo-form-field">Description<textarea className="textarea" rows={3} value={goalDescription} onChange={event => setGoalDescription(event.target.value)} maxLength={500} placeholder="What is this for?"/></label><label className="demo-form-field">Progress<input className="input" type="number" min="0" max="100" value={goalProgress} onChange={event => setGoalProgress(event.target.value)} placeholder="65"/></label><div className="advanced-integration-actions"><button className="btn" type="button" onClick={() => setShowGoalForm(false)}>Cancel</button><button className="btn primary" type="submit">{editingGoalId ? "Save changes" : "Create item"}</button></div></form></Dialog.Content></Dialog.Portal></Dialog.Root><div className="assistant-demo-list">{goals.filter(goal => `${goal.title ?? ""} ${goal.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())).map((goal,index)=><article className="assistant-demo-row" key={String(goal.id ?? index)}><span className="assistant-demo-check"><CheckCircle2 className="icon sm" aria-hidden="true"/></span><div className="assistant-demo-copy"><strong>{String(goal.title ?? "Goal")}</strong><small>{String(goal.description ?? "")}</small></div><span className="tag assistant-demo-state orange">{String(goal.status ?? "In progress")}</span><button type="button" className="icon-button" aria-label={`Edit ${String(goal.title ?? "goal")}`} onClick={() => editGoal(goal)}><SlidersHorizontal className="icon sm" aria-hidden="true"/></button><button type="button" className="icon-button" aria-label={`More actions for ${String(goal.title ?? "goal")}`} onClick={() => setDetailsId(current => current === String(goal.id ?? index) ? "" : String(goal.id ?? index))}><MoreHorizontal className="icon sm" aria-hidden="true"/></button>{detailsId === String(goal.id ?? index) && <div className="assistant-demo-detail"><strong>{String(goal.title ?? "Goal details")}</strong><span>{String(goal.status ?? "In progress")} · {String(goal.progress ?? 0)}% complete</span><p>{String(goal.description ?? "No additional notes.")}</p><button type="button" className="btn sm" onClick={() => void deleteGoal(goal)}>Delete</button></div>}</article>)}</div>{feedback && <p className="caption" role="status">{feedback}</p>}</section></>;
   return <><section className="demo-feature-hero assistant-demo-hero"><div className="demo-feature-symbol"><CheckCircle2 className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Daily brief · Workspace</span><h2>Stay on top of your work</h2><p>Manage tasks, goals and the daily plan.</p></div></section><section className="p-card assistant-demo-brief"><div className="p-card-heading"><h3>Your daily brief</h3><CalendarClock className="icon sm" aria-hidden="true" /></div><div className="p-note"><Sparkles className="icon sm" aria-hidden="true"/><span>Your next priority is checking CodeQ permissions, followed by the research presentation.</span></div><div className="demo-brief">{focusTasks.slice(0,3).map((task,index)=><div className="demo-activity-row" key={String(task.id ?? index)}><span className="status-dot"/><div><strong>{String(task.title ?? "Task")}</strong><small>{String(task.due_at ?? "Today")}, {String(task.status ?? "Todo")}</small></div></div>)}</div><button className="btn primary" type="button" onClick={() => setFeedback("Demo brief refreshed locally.")}><RotateCcw className="icon sm" aria-hidden="true"/>Refresh demo brief</button>{feedback && <p className="caption" role="status">{feedback}</p>}</section></>;
 }
 
@@ -2437,12 +2971,84 @@ function DemoCommunicationsWorkspace({ tab, data }: { tab: string; data?: Record
   </>;
 }
 
-function CommunicationRecords({ tab, data, demo = false }: { tab: string; data?: Record<string, JsonRecord>; demo?: boolean }) {
+function ContactsPanel({ commContacts, data, search, onSearchChange, onFeedback, feedback, addIsPending, addIsError, onAdd }: { commContacts: JsonRecord[]; data?: Record<string, JsonRecord>; search: string; onSearchChange: (v: string) => void; onFeedback: (v: string) => void; feedback: string; addIsPending: boolean; addIsError: boolean; onAdd: (name: string, email: string, notes: string) => Promise<unknown> }) {
   const queryClient = useQueryClient();
-  const [search, setSearch] = useState("");
+  const [crmSearch, setCrmSearch] = useState("");
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [notes, setNotes] = useState("");
+  const crmContacts = Array.isArray(data?.crm_contacts?.contacts) ? data.crm_contacts.contacts.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
+  const contactEmail = (contact: JsonRecord) => String(contact.email ?? (contact.handles && typeof contact.handles === "object" ? (contact.handles as JsonRecord).email ?? "" : ""));
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiDelete(`/api/contacts/${enc(id)}`),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications"] }); },
+    onError: (error) => onFeedback(apiConnectionMessage(error)),
+  });
+  const editMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: JsonRecord }) => apiPatch(`/api/contacts/${enc(id)}`, body),
+    onSuccess: async () => { setEditId(null); onFeedback("Contact updated."); await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications"] }); },
+    onError: (error) => onFeedback(apiConnectionMessage(error)),
+  });
+  const exportMutation = useMutation({
+    mutationFn: () => apiGet<JsonRecord>("/api/contacts/export"),
+    onSuccess: (result) => {
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = "contacts-export.json"; a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    },
+    onError: (error) => onFeedback(apiConnectionMessage(error)),
+  });
+  const filteredComm = commContacts.filter((c) => `${recordTitle(c)} ${JSON.stringify(c.handles ?? {})}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredCrm = crmContacts.filter((c) => `${recordTitle(c)} ${contactEmail(c)}`.toLowerCase().includes(crmSearch.toLowerCase()));
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Contacts</h3>
+      <div className="row" style={{ gap: 8 }}>
+        {crmContacts.length > 0 && <button className="btn sm soft" type="button" disabled={exportMutation.isPending} onClick={() => exportMutation.mutate()}><FileDown className="icon sm"/>Export CRM</button>}
+        <span className="p-fixture">{commContacts.length + crmContacts.length} total records</span>
+      </div>
+    </div>
+    {(commContacts.length > 0 || !crmContacts.length) && <>
+      <h4 className="small" style={{ marginBottom: 6 }}>Communication contacts</h4>
+      <label className="search-field"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search communication contacts" value={search} onChange={(e) => onSearchChange(e.target.value)} placeholder="Filter contacts…" /></label>
+      {filteredComm.length ? <div className="p-record-sections">{filteredComm.map((contact, index) => <article className="p-record-section" key={String(contact.id ?? index)}><h4>{recordTitle(contact)}</h4><p className="caption">{recordSummary(contact, "communications")}</p>{typeof contact.notes === "string" && contact.notes && <p className="caption">{contact.notes}</p>}</article>)}</div> : <p className="caption">No matching communication contacts.</p>}
+    </>}
+    {crmContacts.length > 0 && <>
+      <h4 className="small" style={{ margin: "16px 0 6px" }}>CRM contacts</h4>
+      <label className="search-field"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search CRM contacts" value={crmSearch} onChange={(e) => setCrmSearch(e.target.value)} placeholder="Search CRM…" /></label>
+      <div className="p-record-sections">{filteredCrm.map((contact, index) => {
+        const id = String(contact.id ?? index);
+        const isEditing = editId === id;
+        return <article className="p-record-section" key={id}>
+          {isEditing ? <>
+            <input className="input" style={{ marginBottom: 4 }} value={editName} onChange={e => setEditName(e.target.value)} placeholder="Name" />
+              <input className="input" style={{ marginBottom: 8 }} value={editEmail} onChange={e => setEditEmail(e.target.value)} placeholder="Email" type="email" />
+            <div className="row" style={{ gap: 6 }}>
+                <button className="btn sm primary" type="button" disabled={editMutation.isPending || !editName.trim()} onClick={() => editMutation.mutate({ id, body: { name: editName.trim(), handles: { ...(contact.handles && typeof contact.handles === "object" ? contact.handles as JsonRecord : {}), email: editEmail.trim() } } })}>Save</button>
+              <button className="btn sm" type="button" onClick={() => setEditId(null)}>Cancel</button>
+            </div>
+          </> : <>
+            <h4>{recordTitle(contact)}</h4>
+            <p className="caption">{contactEmail(contact)} {contact.phone ? `· ${String(contact.phone)}` : ""}</p>
+            <div className="row" style={{ gap: 6, marginTop: 4 }}>
+              <button className="btn sm soft" type="button" onClick={() => { setEditId(id); setEditName(String(contact.name ?? "")); setEditEmail(contactEmail(contact)); }}>Edit</button>
+              <button className="btn sm soft" type="button" disabled={deleteMutation.isPending} onClick={() => { if (window.confirm(`Delete CRM contact "${recordTitle(contact)}"? This removes it from the local contacts database.`)) deleteMutation.mutate(id); }}>Delete</button>
+            </div>
+          </>}
+        </article>;
+      })}</div>
+    </>}
+    <details className="p-record-section section-space"><summary>Add CRM contact</summary><form onSubmit={async (event) => { event.preventDefault(); try { await onAdd(name.trim(), email.trim(), notes.trim()); setName(""); setEmail(""); setNotes(""); } catch { /* The parent exposes the backend error and preserves the form for correction/retry. */ } }}><label className="demo-form-field">Name<input className="input" value={name} onChange={(e) => setName(e.target.value)} required /></label><label className="demo-form-field">Email<input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label className="demo-form-field">Notes<textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></label><button className="btn primary" disabled={addIsPending || !name.trim()}>{addIsPending ? "Saving…" : "Save contact"}</button></form></details>
+    {feedback && <p role={addIsError || deleteMutation.isError || editMutation.isError ? "alert" : "status"} className="caption">{feedback}</p>}
+  </section>;
+}
+
+function CommunicationRecords({ tab, data, demo = false }: { tab: string; data?: Record<string, JsonRecord>; demo?: boolean }) {
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
   const [title, setTitle] = useState("");
   const [startsAt, setStartsAt] = useState("");
   const [endsAt, setEndsAt] = useState("");
@@ -2455,7 +3061,7 @@ function CommunicationRecords({ tab, data, demo = false }: { tab: string; data?:
   const add = useMutation({
     mutationFn: ({ path, body }: { path: string; body: JsonRecord }) => apiPost(path, body),
     onSuccess: async () => {
-      setFeedback("Saved by the backend."); setName(""); setEmail(""); setNotes(""); setTitle(""); setStartsAt(""); setEndsAt("");
+      setFeedback("Saved by the backend."); setTitle(""); setStartsAt(""); setEndsAt("");
       await queryClient.invalidateQueries({ queryKey: ["advanced-screen", "communications"] });
     },
     onError: (error) => setFeedback(apiConnectionMessage(error)),
@@ -2473,13 +3079,7 @@ function CommunicationRecords({ tab, data, demo = false }: { tab: string; data?:
 
   if (demo && ["Sent", "Drafts", "Connected accounts"].includes(tab)) return <DemoCommunicationsWorkspace tab={tab} data={data} />;
 
-  if (tab === "Contacts") return <section className="p-card">
-    <div className="p-card-heading"><h3>Contacts</h3><span className="p-fixture">{contacts.length} backend records</span></div>
-    <label className="search-field"><SearchIcon className="icon sm" aria-hidden="true" /><input aria-label="Search contacts" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter contacts…" /></label>
-    {contacts.filter((contact) => `${recordTitle(contact)} ${JSON.stringify(contact.handles ?? {})}`.toLowerCase().includes(search.toLowerCase())).length ? <div className="p-record-sections">{contacts.filter((contact) => `${recordTitle(contact)} ${JSON.stringify(contact.handles ?? {})}`.toLowerCase().includes(search.toLowerCase())).map((contact, index) => <article className="p-record-section" key={String(contact.id ?? index)}><h4>{recordTitle(contact)}</h4><p className="caption">{recordSummary(contact, "communications")}</p>{typeof contact.notes === "string" && contact.notes && <p className="caption">{contact.notes}</p>}</article>)}</div> : <EmptyState icon={UserRound} title="No matching contacts" detail="Contacts are loaded from this project's communications records." />}
-    <details className="p-record-section section-space"><summary>Add contact</summary><form onSubmit={(event) => { event.preventDefault(); setFeedback(""); add.mutate({ path: "/api/communication/contacts", body: { name: name.trim(), handles: email.trim() ? { email: email.trim() } : {}, notes: notes.trim(), project: "default" } }); }}><label className="demo-form-field">Name<input className="input" value={name} onChange={(event) => setName(event.target.value)} required /></label><label className="demo-form-field">Email<input className="input" type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label className="demo-form-field">Notes<textarea className="input" rows={2} value={notes} onChange={(event) => setNotes(event.target.value)} /></label><button className="btn primary" disabled={add.isPending || !name.trim()}>{add.isPending ? "Saving…" : "Save contact"}</button></form></details>
-    {feedback && <p role={add.isError ? "alert" : "status"} className="caption">{feedback}</p>}
-  </section>;
+  if (tab === "Contacts") return <ContactsPanel commContacts={contacts} data={data} search={search} onSearchChange={setSearch} onFeedback={setFeedback} feedback={feedback} addIsPending={add.isPending} addIsError={add.isError} onAdd={(name, email, notes) => add.mutateAsync({ path: "/api/contacts", body: { name, handles: email ? { email } : {}, notes: notes || undefined, project: "default" } })} />;
 
   if (tab === "Calendar") return <section className="p-card">
     <div className="p-card-heading"><h3>Communication calendar</h3><span className="p-fixture">{events.length} backend records</span></div>
@@ -2705,7 +3305,7 @@ function FineTuneDemoRecords({ heading, collection, items }: { heading: string; 
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save the demo record."); }
   };
   const remove = async () => {
-    if (!selected || !window.confirm(`Delete “${titleOf(selected)}” from local demo data? No backend record will change.`)) return;
+    if (!selected || !window.confirm(`Delete "${titleOf(selected)}" from local demo data? No backend record will change.`)) return;
     await demoProvider.updateCollection<JsonRecord>(`collections.advanced.finetune.${collection}`, current => current.filter(row => String(row.id) !== String(selected.id)));
     await demoProvider.recordActivity("finetune", { id: `activity-${String(selected.id)}-deleted-${Date.now().toString(36)}`, action: "Record deleted", item: titleOf(selected), status: "Deleted locally · demo", recorded_at: new Date().toISOString() });
     await client.invalidateQueries({ queryKey: ["advanced-screen", "finetune"] });
@@ -2731,6 +3331,589 @@ function FineTuneDemoRecords({ heading, collection, items }: { heading: string; 
   </section>;
 }
 
+// ─── Image Studio ────────────────────────────────────────────────────────────
+
+function GalleryWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [albumName, setAlbumName] = useState("");
+  const [albumDescription, setAlbumDescription] = useState("");
+  const [selectedAlbumId, setSelectedAlbumId] = useState("");
+  const [albumFeedback, setAlbumFeedback] = useState("");
+  const [albumError, setAlbumError] = useState("");
+  const [opError, setOpError] = useState("");
+
+  const imageRows = data?.images ?? data?.assets;
+  const images = (Array.isArray((imageRows as { images?: unknown; assets?: unknown })?.images)
+    ? (imageRows as { images: JsonRecord[] }).images
+    : Array.isArray((imageRows as { assets?: unknown })?.assets)
+      ? (imageRows as { assets: JsonRecord[] }).assets
+      : Array.isArray(imageRows) ? imageRows as JsonRecord[] : []) as JsonRecord[];
+  const albums = (Array.isArray((data?.albums as { albums?: unknown })?.albums) ? (data?.albums as { albums: JsonRecord[] }).albums : Array.isArray(data?.albums) ? data.albums as JsonRecord[] : []) as JsonRecord[];
+
+  const uploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!uploadFile) throw new Error("No file selected");
+      const contentBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",").at(-1) ?? "");
+        reader.onerror = () => reject(new Error("The selected image could not be read."));
+        reader.readAsDataURL(uploadFile);
+      });
+      return apiPost("/api/gallery/upload", {
+        filename: uploadFile.name,
+        content_type: uploadFile.type || "application/octet-stream",
+        content_base64: contentBase64,
+        project: "default",
+      });
+    },
+    onSuccess: async () => { setUploadFile(null); setUploadError(""); await client.invalidateQueries({ queryKey: ["advanced-screen", "gallery"] }); },
+    onError: (e) => setUploadError(e instanceof Error ? e.message : "Upload failed"),
+  });
+
+  const runImageOperation = (id: string, op: string) => {
+    if (op === "upscale") {
+      return apiPost("/api/gallery/upscale", { asset_id: id, project: "default", scale: 2 });
+    }
+    return apiPost(`/api/gallery/${enc(id)}/${op}`, { project: "default" });
+  };
+
+  const opMutation = useMutation({
+    mutationFn: ({ id, op }: { id: string; op: string }) => runImageOperation(id, op),
+    onSuccess: async () => { setOpError(""); await client.invalidateQueries({ queryKey: ["advanced-screen", "gallery"] }); },
+    onError: (e) => setOpError(e instanceof Error ? e.message : "Operation failed"),
+  });
+
+  const deduplicateMutation = useMutation({
+    mutationFn: () => apiPost("/api/gallery/deduplicate", { project: "default" }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["advanced-screen", "gallery"] }); },
+    onError: (e) => setOpError(e instanceof Error ? e.message : "Deduplication failed"),
+  });
+
+  const createAlbumMutation = useMutation({
+    mutationFn: () => apiPost("/api/gallery/albums", { name: albumName.trim(), description: albumDescription.trim(), project: "default" }),
+    onSuccess: async () => {
+      setAlbumName(""); setAlbumDescription(""); setAlbumError(""); setAlbumFeedback("Album created by the backend.");
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "gallery"] });
+    },
+    onError: (error) => setAlbumError(apiConnectionMessage(error)),
+  });
+  const addToAlbumMutation = useMutation({
+    mutationFn: () => apiPost(`/api/gallery/albums/${enc(selectedAlbumId)}/assets`, { asset_id: selectedId, project: "default" }),
+    onSuccess: async () => {
+      setAlbumError(""); setAlbumFeedback("Image added to the selected album by the backend.");
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "gallery"] });
+    },
+    onError: (error) => setAlbumError(apiConnectionMessage(error)),
+  });
+
+  if (tab === "Upload") return <section className="p-card">
+    <div className="p-card-heading"><h3>Upload images</h3></div>
+    <label className="demo-form-field">Select image file<input className="input" type="file" accept="image/*" onChange={e => { setUploadFile(e.target.files?.[0] ?? null); setUploadError(""); }} /></label>
+    {uploadFile && <p className="caption">{uploadFile.name} ({Math.round(uploadFile.size / 1024)} KB)</p>}
+    {uploadError && <p className="caption" role="alert">{uploadError}</p>}
+    <div className="row" style={{ gap: 8, marginTop: 12 }}>
+      <button className="btn primary" type="button" disabled={!uploadFile || uploadMutation.isPending} onClick={() => uploadMutation.mutate()}><Upload className="icon sm" aria-hidden="true"/>{uploadMutation.isPending ? "Uploading…" : "Upload"}</button>
+    </div>
+  </section>;
+
+  if (tab === "Albums") return <section className="p-card">
+    <div className="p-card-heading"><h3>Albums</h3></div>
+    <form className="p-record-section" onSubmit={(event) => { event.preventDefault(); setAlbumError(""); setAlbumFeedback(""); createAlbumMutation.mutate(); }}>
+      <label className="demo-form-field">Album name<input className="input" value={albumName} onChange={(event) => setAlbumName(event.target.value)} required maxLength={120} /></label>
+      <label className="demo-form-field">Description<textarea className="input" rows={2} value={albumDescription} onChange={(event) => setAlbumDescription(event.target.value)} maxLength={500} /></label>
+      <button className="btn primary" disabled={!albumName.trim() || createAlbumMutation.isPending}>{createAlbumMutation.isPending ? "Creating…" : "Create album"}</button>
+    </form>
+    {selectedId && albums.length > 0 && <div className="row section-space" style={{ gap: 8 }}>
+      <label className="sr-only" htmlFor="gallery-add-to-album">Album for selected image</label>
+      <select id="gallery-add-to-album" className="select flex1" value={selectedAlbumId} onChange={(event) => setSelectedAlbumId(event.target.value)}>
+        <option value="">Choose album</option>{albums.map((album, index) => <option key={String(album.id ?? index)} value={String(album.id ?? "")}>{String(album.name ?? album.title ?? "Album")}</option>)}
+      </select>
+      <button className="btn sm" type="button" disabled={!selectedAlbumId || addToAlbumMutation.isPending} onClick={() => { setAlbumError(""); setAlbumFeedback(""); addToAlbumMutation.mutate(); }}>{addToAlbumMutation.isPending ? "Adding…" : "Add selected image"}</button>
+    </div>}
+    {albumError && <p className="caption" role="alert">{albumError}</p>}{albumFeedback && <p className="caption" role="status">{albumFeedback}</p>}
+    {lq.isLoading ? <p className="caption">Loading albums…</p> : albums.length === 0
+      ? <EmptyState icon={Image} title="No albums" detail="Create an album to organise your images." />
+      : <div className="p-list">{albums.map((album, idx) => <div className="p-list-row" key={String(album.id ?? idx)}>
+          <span className="square-icon sm"><Image className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(album.name ?? album.title ?? "Album")}</strong><small className="muted">{String(album.count ?? "")} images</small></div>
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Operations") return <section className="p-card">
+    <div className="p-card-heading"><h3>Batch operations</h3></div>
+    {opError && <p className="caption" role="alert">{opError}</p>}
+    <div className="p-list">
+      <div className="p-list-row"><div className="flex1"><strong>Deduplicate library</strong><small className="muted">Remove duplicate images from the library</small></div><button className="btn sm" type="button" disabled={deduplicateMutation.isPending} onClick={() => deduplicateMutation.mutate()}>{deduplicateMutation.isPending ? "Running…" : "Run"}</button></div>
+      {selectedId && <>
+        <div className="p-list-row"><div className="flex1"><strong>Rotate selected</strong><small className="muted">Rotate image 90° clockwise</small></div><button className="btn sm" type="button" disabled={opMutation.isPending} onClick={() => opMutation.mutate({ id: selectedId, op: "rotate" })}>Rotate</button></div>
+        <div className="p-list-row"><div className="flex1"><strong>Upscale selected</strong><small className="muted">AI upscale to 2x resolution</small></div><button className="btn sm" type="button" disabled={opMutation.isPending} onClick={() => opMutation.mutate({ id: selectedId, op: "upscale" })}>Upscale</button></div>
+        <div className="p-list-row"><div className="flex1"><strong>Undo last operation</strong><small className="muted">Revert to previous version</small></div><button className="btn sm" type="button" disabled={opMutation.isPending} onClick={() => opMutation.mutate({ id: selectedId, op: "undo" })}>Undo</button></div>
+      </>}
+      {!selectedId && <p className="caption">Select an image in Library to enable per-image operations.</p>}
+    </div>
+  </section>;
+
+  // Library tab (default)
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Image library</h3><span className="caption">{images.length} image{images.length !== 1 ? "s" : ""}</span></div>
+    {lq.isLoading ? <p className="caption">Loading library…</p> : lq.error ? <p className="caption" role="alert">{apiConnectionMessage(lq.error)}</p> : images.length === 0
+      ? <EmptyState icon={Image} title="No images" detail="Upload images to populate your library." />
+      : <div className="p-gallery-grid">{images.map((img, idx) => {
+          const id = String(img.id ?? idx);
+          const name = String(img.name ?? img.filename ?? "Image");
+          const thumb = typeof img.thumbnail_url === "string" ? img.thumbnail_url : typeof img.url === "string" ? img.url : null;
+          return <button key={id} type="button" className={`p-gallery-cell ${selectedId === id ? "selected" : ""}`} onClick={() => setSelectedId(selectedId === id ? null : id)} title={name}>
+            {thumb ? <img src={thumb} alt={name} className="p-gallery-thumb" /> : <span className="p-gallery-thumb p-gallery-placeholder"><Image className="icon" aria-hidden="true"/></span>}
+            <span className="p-gallery-label">{name}</span>
+          </button>;
+        })}</div>}
+    {selectedId && <p className="caption" style={{ marginTop: 8 }}>Selected: {selectedId} · Go to Operations tab for edits.</p>}
+  </section>;
+}
+
+// ─── Model Cookbook ───────────────────────────────────────────────────────────
+
+function CookbookWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [hostName, setHostName] = useState("");
+  const [hostUrl, setHostUrl] = useState("");
+  const [addError, setAddError] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [modelRef, setModelRef] = useState("");
+  const [runner, setRunner] = useState("ollama");
+  const [sessionError, setSessionError] = useState("");
+  const [sessionNotice, setSessionNotice] = useState("");
+  const [certificationEndpoint, setCertificationEndpoint] = useState("");
+  const [certificationModel, setCertificationModel] = useState("");
+  const [certificationExternalApproval, setCertificationExternalApproval] = useState(false);
+  const [completionProbe, setCompletionProbe] = useState(false);
+  const [certificationError, setCertificationError] = useState("");
+  const [certificationNotice, setCertificationNotice] = useState("");
+
+  const hosts = (Array.isArray((data?.hosts as { hosts?: unknown })?.hosts) ? (data?.hosts as { hosts: JsonRecord[] }).hosts : Array.isArray(data?.hosts) ? data.hosts as JsonRecord[] : []) as JsonRecord[];
+  const hostSessions = (Array.isArray((data?.sessions as { sessions?: unknown })?.sessions) ? (data?.sessions as { sessions: JsonRecord[] }).sessions : Array.isArray(data?.sessions) ? data.sessions as JsonRecord[] : []) as JsonRecord[];
+  const cached = (Array.isArray((data?.cached as { files?: unknown })?.files) ? (data?.cached as { files: JsonRecord[] }).files : Array.isArray(data?.cached) ? data.cached as JsonRecord[] : []) as JsonRecord[];
+  const certs = (Array.isArray((data?.certifications as { certifications?: unknown })?.certifications) ? (data?.certifications as { certifications: JsonRecord[] }).certifications : Array.isArray(data?.certifications) ? data.certifications as JsonRecord[] : []) as JsonRecord[];
+
+  const addHostMutation = useMutation({
+    mutationFn: () => apiPost("/api/model-cookbook/hosts", { label: hostName.trim(), address: hostUrl.trim(), host_type: "local", project: "default" }),
+    onSuccess: async (result) => {
+      const host = (result as { host?: JsonRecord }).host;
+      if (host) client.setQueryData(["advanced-screen", "cookbook", tab, "live"], (previous: Record<string, JsonRecord> | undefined) => {
+        const current = (previous?.hosts as { hosts?: unknown } | undefined)?.hosts;
+        const items = Array.isArray(current) ? current as JsonRecord[] : [];
+        return { ...previous, hosts: { ...previous?.hosts, hosts: [host, ...items.filter(item => String(item.id ?? "") !== String(host.id ?? ""))] } };
+      });
+      setHostName(""); setHostUrl(""); setAddError(""); await client.invalidateQueries({ queryKey: ["advanced-screen", "cookbook"] });
+    },
+    onError: (e) => setAddError(e instanceof Error ? e.message : "Failed to add host"),
+  });
+
+  const serveMutation = useMutation({
+    mutationFn: ({ id, modelRef, runner }: { id: string; modelRef: string; runner: string }) => apiPost("/api/model-cookbook/serve", { host_id: id, model_ref: modelRef, runner, project: "default", allow_process: false }),
+    onSuccess: async (result) => {
+      const session = (result as { session?: JsonRecord }).session;
+      if (session?.id) {
+        setSelectedSessionId(String(session.id));
+        client.setQueryData(["advanced-screen", "cookbook", tab, "live"], (previous: Record<string, JsonRecord> | undefined) => {
+          const current = (previous?.sessions as { sessions?: unknown } | undefined)?.sessions;
+          const items = Array.isArray(current) ? current as JsonRecord[] : [];
+          return { ...previous, sessions: { ...previous?.sessions, sessions: [session, ...items.filter(item => String(item.id ?? "") !== String(session.id))] } };
+        });
+      }
+      setSessionError("");
+      setSessionNotice(session ? `Serve plan ${String(session.id ?? "")} · ${String(session.status ?? "planned")}. No process was launched.` : "Serve plan recorded. No process was launched.");
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "cookbook"] });
+    },
+    onError: (e) => setSessionError(e instanceof Error ? e.message : "Could not create serve plan"),
+  });
+
+  const stopMutation = useMutation({
+    mutationFn: (id: string) => apiPost(`/api/model-cookbook/stop/${enc(id)}`, {}),
+    onSuccess: async (result) => {
+      const session = (result as { session?: JsonRecord }).session;
+      if (session?.id) client.setQueryData(["advanced-screen", "cookbook", tab, "live"], (previous: Record<string, JsonRecord> | undefined) => {
+        const current = (previous?.sessions as { sessions?: unknown } | undefined)?.sessions;
+        const items = Array.isArray(current) ? current as JsonRecord[] : [];
+        return { ...previous, sessions: { ...previous?.sessions, sessions: items.map(item => String(item.id ?? "") === String(session.id) ? session : item) } };
+      });
+      setSessionError(""); setSessionNotice("Serve session was marked stopped by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "cookbook"] });
+    },
+    onError: (e) => setSessionError(e instanceof Error ? e.message : "Could not stop serve session"),
+  });
+
+  const certifyMutation = useMutation({
+    mutationFn: () => apiPost("/api/model-cookbook/certify", {
+      endpoint: certificationEndpoint.trim(), model_ref: certificationModel.trim(),
+      allow_external: certificationExternalApproval, completion_probe: completionProbe, project: "default",
+    }),
+    onSuccess: async (result) => {
+      const certification = result.certification as JsonRecord | undefined;
+      setCertificationEndpoint(""); setCertificationModel(""); setCertificationExternalApproval(false); setCompletionProbe(false);
+      setCertificationError(""); setCertificationNotice(`Backend certification status: ${String(certification?.status ?? "recorded")}.`);
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "cookbook"] });
+    },
+    onError: (error) => setCertificationError(apiConnectionMessage(error)),
+  });
+  const revokeMutation = useMutation({
+    mutationFn: (id: string) => apiPost(`/api/model-cookbook/certifications/${enc(id)}/revoke`, {}),
+    onSuccess: async (result) => {
+      const certification = result.certification as JsonRecord | undefined;
+      setCertificationError(""); setCertificationNotice(`Backend certification status: ${String(certification?.status ?? "revoked")}.`);
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "cookbook"] });
+    },
+    onError: (error) => setCertificationError(apiConnectionMessage(error)),
+  });
+
+  if (tab === "Cached") return <section className="p-card">
+    <div className="p-card-heading"><h3>Cached model files</h3></div>
+    {lq.isLoading ? <p className="caption">Loading…</p> : cached.length === 0
+      ? <EmptyState icon={BookMarked} title="No cached files" detail="Cached model files appear here after a model is adopted." />
+      : <div className="p-list">{cached.map((f, idx) => <div className="p-list-row" key={String(f.id ?? idx)}>
+          <span className="square-icon sm"><HardDrive className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(f.name ?? f.filename ?? "File")}</strong><small className="muted">{String(f.size ?? "")} · {String(f.status ?? "")}</small></div>
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Certifications") return <section className="p-card">
+    <div className="p-card-heading"><h3>Model certifications</h3></div>
+    <form className="p-record-section" onSubmit={(event) => { event.preventDefault(); setCertificationError(""); setCertificationNotice(""); certifyMutation.mutate(); }}>
+      <label className="demo-form-field">OpenAI-compatible endpoint<input className="input" type="url" value={certificationEndpoint} onChange={(event) => setCertificationEndpoint(event.target.value)} required placeholder="http://127.0.0.1:port" /></label>
+      <label className="demo-form-field">Model reference<input className="input" value={certificationModel} onChange={(event) => setCertificationModel(event.target.value)} placeholder="Optional model ID" /></label>
+      <label className="row small"><input type="checkbox" checked={certificationExternalApproval} onChange={(event) => setCertificationExternalApproval(event.target.checked)} />I explicitly authorize requests to a non-local HTTPS endpoint.</label>
+      <label className="row small"><input type="checkbox" checked={completionProbe} onChange={(event) => setCompletionProbe(event.target.checked)} />Send a fixed minimal completion probe after listing models.</label>
+      <button className="btn primary" disabled={!certificationEndpoint.trim() || certifyMutation.isPending}>{certifyMutation.isPending ? "Checking endpoint…" : "Certify endpoint"}</button>
+    </form>
+    {certificationError && <p className="caption" role="alert">{certificationError}</p>}{certificationNotice && <p className="caption" role="status">{certificationNotice}</p>}
+    {lq.isLoading ? <p className="caption">Loading…</p> : certs.length === 0
+      ? <EmptyState icon={BookMarked} title="No certifications" detail="Endpoint certification records appear here after an explicit check." />
+      : <div className="p-list">{certs.map((c, idx) => <div className="p-list-row" key={String(c.id ?? idx)}>
+          <span className="square-icon sm green"><Check className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(c.model_ref ?? c.model ?? c.name ?? "Model")}</strong><small className="muted">{String(c.endpoint ?? "Endpoint unavailable")} · {String(c.created_at ?? c.issued_at ?? "")} · {String(c.status ?? "unknown")}</small></div>
+          {c.status !== "revoked" && Boolean(c.id) && <button className="btn sm" type="button" disabled={revokeMutation.isPending} onClick={() => { if (window.confirm(`Revoke certification for "${String(c.model_ref ?? c.endpoint ?? "this endpoint")}"?`)) revokeMutation.mutate(String(c.id)); }}>{revokeMutation.isPending ? "Revoking…" : "Revoke"}</button>}
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Logs") return <section className="p-card">
+    <div className="p-card-heading"><h3>Serving logs</h3></div>
+    {hostSessions.length > 0 && <label className="demo-form-field">Serve session<select className="select" aria-label="Serve session" value={selectedSessionId ?? ""} onChange={event => setSelectedSessionId(event.target.value)}><option value="">Select a session</option>{hostSessions.map(session => <option key={String(session.id)} value={String(session.id)}>{String(session.model_ref ?? "Model")} · {String(session.status ?? "unknown")}</option>)}</select></label>}
+    {selectedSessionId
+      ? <LogsViewer path={`/api/model-cookbook/logs/${enc(selectedSessionId)}`} label="serve session logs" />
+      : <p className="caption">Select a serve session to view its backend logs.</p>}
+  </section>;
+
+  // Hosts tab (default)
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Model hosts</h3></div>
+    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+      <input className="input flex1" placeholder="Host name" value={hostName} onChange={e => setHostName(e.target.value)} />
+      <input className="input flex1" placeholder="Host address" value={hostUrl} onChange={e => setHostUrl(e.target.value)} />
+      <button className="btn sm primary" type="button" disabled={!hostName.trim() || addHostMutation.isPending} onClick={() => addHostMutation.mutate()}><Plus className="icon sm"/>Add</button>
+    </div>
+    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+      <input className="input flex1" aria-label="Model reference to serve" placeholder="Model reference" value={modelRef} onChange={event => setModelRef(event.target.value)} />
+      <select className="select flex1" aria-label="Model runner" value={runner} onChange={event => setRunner(event.target.value)}>{["ollama", "llama-server", "llama.cpp", "python", "vllm"].map(value => <option key={value} value={value}>{value}</option>)}</select>
+    </div>
+    <p className="caption">Serve creates a backend plan only. It does not launch a process.</p>
+    {addError && <p className="caption" role="alert">{addError}</p>}
+    {sessionError && <p className="caption" role="alert">{sessionError}</p>}
+    {sessionNotice && <p className="caption" role="status">{sessionNotice}</p>}
+    {lq.isLoading ? <p className="caption">Loading hosts…</p> : hosts.length === 0
+      ? <EmptyState icon={Server} title="No hosts" detail="Add a model host to get started." />
+      : <div className="p-list">{hosts.map((h, idx) => {
+          const id = String(h.id ?? idx);
+          const sessionsForHost = hostSessions.filter(session => String(session.host_id ?? "") === id);
+          const latestSession = sessionsForHost[0];
+          const status = latestSession ? String(latestSession.status ?? "unknown") : "No serve session";
+          const running = latestSession && ["running", "serving", "planned", "adopted"].includes(status);
+          return <div className="p-list-row" key={id}>
+            <span className={`square-icon sm ${running ? "green" : ""}`}><Server className="icon sm" aria-hidden="true"/></span>
+            <div className="flex1"><strong>{String(h.label ?? h.name ?? "Host")}</strong><small className="muted">{String(h.address ?? h.url ?? "")} · {status}</small></div>
+            <div className="row" style={{ gap: 4 }}>
+              {!running && <button className="btn sm" type="button" disabled={!modelRef.trim() || serveMutation.isPending} onClick={() => serveMutation.mutate({ id, modelRef: modelRef.trim(), runner })}>Create serve plan</button>}
+              {running && latestSession && <button className="btn sm" type="button" disabled={stopMutation.isPending} onClick={() => stopMutation.mutate(String(latestSession.id))}>{status === "planned" ? "Close plan" : "Stop"}</button>}
+              {latestSession && <button className="btn sm soft" type="button" onClick={() => setSelectedSessionId(String(latestSession.id))}>Logs</button>}
+            </div>
+          </div>;
+        })}</div>}
+  </section>;
+}
+
+// ─── Ultra Model ──────────────────────────────────────────────────────────────
+
+function UltraModelWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [launchManifestId, setLaunchManifestId] = useState("");
+  const [launchApproved, setLaunchApproved] = useState(false);
+  const [launchError, setLaunchError] = useState("");
+  const [launchNotice, setLaunchNotice] = useState("");
+  const [operationError, setOperationError] = useState("");
+  const [operationNotice, setOperationNotice] = useState("");
+  const [manifestName, setManifestName] = useState("");
+  const [shardPath, setShardPath] = useState("");
+  const [parameterCount, setParameterCount] = useState("7");
+  const [architecture, setArchitecture] = useState("dense");
+  const [quantizationBits, setQuantizationBits] = useState("4");
+  const [planManifestId, setPlanManifestId] = useState("");
+  const [contextTokens, setContextTokens] = useState("4096");
+  const [outputTokens, setOutputTokens] = useState("256");
+
+  const manifests = (Array.isArray((data?.manifests as { manifests?: unknown })?.manifests) ? (data?.manifests as { manifests: JsonRecord[] }).manifests : Array.isArray(data?.manifests) ? data.manifests as JsonRecord[] : []) as JsonRecord[];
+  const plans = (Array.isArray((data?.plans as { plans?: unknown })?.plans) ? (data?.plans as { plans: JsonRecord[] }).plans : Array.isArray(data?.plans) ? data.plans as JsonRecord[] : []) as JsonRecord[];
+  const sessions = (Array.isArray((data?.sessions as { sessions?: unknown })?.sessions) ? (data?.sessions as { sessions: JsonRecord[] }).sessions : Array.isArray(data?.sessions) ? data.sessions as JsonRecord[] : []) as JsonRecord[];
+  const status = data?.status as JsonRecord | undefined;
+
+  const launchMutation = useMutation({
+    mutationFn: () => apiPost("/api/ultra-model/launch", { manifest_id: launchManifestId, approved: launchApproved, project: "default", host: "127.0.0.1", allow_distributed: false, keep_warm: true }),
+    onSuccess: async (result) => { setLaunchError(""); setLaunchApproved(false); setLaunchNotice(`Backend launch response: ${String((result.session as JsonRecord | undefined)?.status ?? result.status ?? "accepted")}.`); await client.invalidateQueries({ queryKey: ["advanced-screen", "ultramodel"] }); },
+    onError: (e) => setLaunchError(e instanceof Error ? e.message : "Launch failed"),
+  });
+
+  const manifestMutation = useMutation({
+    mutationFn: () => apiPost("/api/ultra-model/manifests", { name: manifestName.trim(), shard_path: shardPath.trim(), parameter_count_b: Number(parameterCount), quantization_bits: Number(quantizationBits), architecture, project: "default" }),
+    onSuccess: async () => { setManifestName(""); setShardPath(""); setOperationError(""); setOperationNotice("Manifest registered by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "ultramodel"] }); },
+    onError: (error) => setOperationError(apiConnectionMessage(error)),
+  });
+  const planMutation = useMutation({
+    mutationFn: () => apiPost("/api/ultra-model/plan", { manifest_id: planManifestId, specification: {}, project: "default", context_tokens: Number(contextTokens), expected_output_tokens: Number(outputTokens) }),
+    onSuccess: async (result) => { setOperationError(""); setOperationNotice(`Routing plan saved by the backend${result.plan && typeof result.plan === "object" && (result.plan as JsonRecord).id ? ` (${String((result.plan as JsonRecord).id)})` : ""}.`); await client.invalidateQueries({ queryKey: ["advanced-screen", "ultramodel"] }); },
+    onError: (error) => setOperationError(apiConnectionMessage(error)),
+  });
+
+  const stopSessionMutation = useMutation({
+    mutationFn: (id: string) => apiPost(`/api/ultra-model/sessions/${enc(id)}/stop`, {}),
+    onSuccess: async (result) => { setOperationError(""); setOperationNotice(`Backend session status: ${String((result.session as JsonRecord | undefined)?.status ?? "stopped response received")}.`); await client.invalidateQueries({ queryKey: ["advanced-screen", "ultramodel"] }); },
+    onError: (error) => setOperationError(apiConnectionMessage(error)),
+  });
+
+  const calibrateMutation = useMutation({
+    mutationFn: () => apiPost("/api/ultra-model/calibrate", {}),
+    onSuccess: async (result) => {
+      const calibration = result.calibration && typeof result.calibration === "object" ? result.calibration as JsonRecord : {};
+      setOperationError(""); setOperationNotice(calibration.status ? `Calibration result returned by the backend: ${String(calibration.status)}.` : "Calibration result returned by the backend.");
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "ultramodel"] });
+    },
+    onError: (error) => setOperationError(apiConnectionMessage(error)),
+  });
+
+  if (tab === "Manifests") return <section className="p-card">
+    <div className="p-card-heading"><h3>Inference manifests</h3></div>
+    <form className="p-record-section" onSubmit={(event) => { event.preventDefault(); setOperationError(""); setOperationNotice(""); manifestMutation.mutate(); }}>
+      <label className="demo-form-field">Manifest name<input className="input" value={manifestName} onChange={(event) => setManifestName(event.target.value)} required maxLength={160} /></label>
+      <label className="demo-form-field">Model shard path<input className="input" value={shardPath} onChange={(event) => setShardPath(event.target.value)} required placeholder="Local checkpoint path" /></label>
+      <div className="row" style={{ gap: 8 }}><label className="demo-form-field flex1">Parameters (billions)<input className="input" type="number" min="0.01" step="0.01" value={parameterCount} onChange={(event) => setParameterCount(event.target.value)} required /></label><label className="demo-form-field flex1">Quantization bits<input className="input" type="number" min="1" max="64" step="1" value={quantizationBits} onChange={(event) => setQuantizationBits(event.target.value)} required /></label></div>
+      <label className="demo-form-field">Architecture<select className="select" value={architecture} onChange={(event) => setArchitecture(event.target.value)}><option value="dense">Dense</option><option value="mixture_of_experts">Mixture of experts</option></select></label>
+      <button className="btn primary" disabled={!manifestName.trim() || !shardPath.trim() || Number(parameterCount) <= 0 || Number(quantizationBits) <= 0 || manifestMutation.isPending}>{manifestMutation.isPending ? "Registering…" : "Register manifest"}</button>
+    </form>
+    {operationError && <p className="caption" role="alert">{operationError}</p>}{operationNotice && <p className="caption" role="status">{operationNotice}</p>}
+    {lq.isLoading ? <p className="caption">Loading…</p> : manifests.length === 0
+      ? <EmptyState icon={Zap} title="No manifests" detail="Manifests appear after a model is routed or launched." />
+      : <div className="p-list">{manifests.map((m, idx) => <div className="p-list-row" key={String(m.id ?? idx)}>
+          <span className="square-icon sm"><Zap className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(m.model_id ?? m.name ?? "Manifest")}</strong><small className="muted">{String(m.status ?? "")} · {String(m.created_at ?? "")}</small></div>
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Plans") return <section className="p-card">
+    <div className="p-card-heading"><h3>Routing plans</h3></div>
+    <form className="p-record-section" onSubmit={(event) => { event.preventDefault(); setOperationError(""); setOperationNotice(""); planMutation.mutate(); }}>
+      <label className="demo-form-field">Manifest<select className="select" value={planManifestId} onChange={(event) => setPlanManifestId(event.target.value)} required><option value="">Choose a registered manifest</option>{manifests.map((manifest, index) => <option key={String(manifest.id ?? index)} value={String(manifest.id ?? "")}>{String(manifest.name ?? manifest.id ?? "Manifest")}</option>)}</select></label>
+      <div className="row" style={{ gap: 8 }}><label className="demo-form-field flex1">Context tokens<input className="input" type="number" min="1" max="1048576" value={contextTokens} onChange={(event) => setContextTokens(event.target.value)} required /></label><label className="demo-form-field flex1">Expected output tokens<input className="input" type="number" min="1" max="1048576" value={outputTokens} onChange={(event) => setOutputTokens(event.target.value)} required /></label></div>
+      <button className="btn primary" disabled={!planManifestId || Number(contextTokens) < 1 || Number(outputTokens) < 1 || planMutation.isPending}>{planMutation.isPending ? "Planning…" : "Create routing plan"}</button>
+    </form>
+    {operationError && <p className="caption" role="alert">{operationError}</p>}{operationNotice && <p className="caption" role="status">{operationNotice}</p>}
+    {lq.isLoading ? <p className="caption">Loading…</p> : plans.length === 0
+      ? <EmptyState icon={Zap} title="No plans" detail="Routing plans are computed when a model is routed." />
+      : <div className="p-list">{plans.map((p, idx) => <div className="p-list-row" key={String(p.id ?? idx)}>
+          <span className="square-icon sm"><Activity className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(p.name ?? p.plan_id ?? "Plan")}</strong><small className="muted">{String(p.strategy ?? "")} · {String(p.created_at ?? "")}</small></div>
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Sessions") return <section className="p-card">
+    <div className="p-card-heading"><h3>Active sessions</h3></div>
+    {lq.isLoading ? <p className="caption">Loading…</p> : sessions.length === 0
+      ? <EmptyState icon={Zap} title="No active sessions" detail="Launch a model to start an inference session." />
+      : <div className="p-list">{sessions.map((s, idx) => {
+          const id = String(s.id ?? idx);
+          return <div className="p-list-row" key={id}>
+            <span className="square-icon sm green"><Zap className="icon sm" aria-hidden="true"/></span>
+            <div className="flex1"><strong>{String(s.model_id ?? s.name ?? "Session")}</strong><small className="muted">{String(s.status ?? "active")} · {String(s.started_at ?? "")}</small></div>
+            <button className="btn sm" type="button" disabled={stopSessionMutation.isPending} onClick={() => stopSessionMutation.mutate(id)}>{stopSessionMutation.isPending ? "Stopping…" : "Stop"}</button>
+          </div>;
+        })}</div>}
+  </section>;
+
+  // Status tab (default)
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Ultra model status</h3></div>
+    {status && <div className="p-kv-grid" style={{ marginBottom: 16 }}>
+      <div><small>Service</small><strong>{String(status.status ?? "unknown")}</strong></div>
+      <div><small>Version</small><strong>{String(status.version ?? "—")}</strong></div>
+      <div><small>Active sessions</small><strong>{String(status.active_sessions ?? sessions.length)}</strong></div>
+    </div>}
+    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+      <select className="select flex1" aria-label="Manifest to launch" value={launchManifestId} onChange={event => { setLaunchManifestId(event.target.value); setLaunchError(""); }}><option value="">Choose a registered manifest</option>{manifests.map((manifest, index) => <option key={String(manifest.id ?? index)} value={String(manifest.id ?? "")}>{String(manifest.name ?? manifest.id ?? "Manifest")}</option>)}</select>
+      <button className="btn sm primary" type="button" disabled={!launchManifestId || !launchApproved || launchMutation.isPending} onClick={() => launchMutation.mutate()}><Play className="icon sm"/>{launchMutation.isPending ? "Launching…" : "Launch"}</button>
+    </div>
+    <label className="row small"><input type="checkbox" checked={launchApproved} onChange={event => setLaunchApproved(event.target.checked)} />I approve launching this registered model on the local host.</label>
+    {launchError && <p className="caption" role="alert">{launchError}</p>}
+    {launchNotice && <p className="caption" role="status">{launchNotice}</p>}
+    {operationError && <p className="caption" role="alert">{operationError}</p>}{operationNotice && <p className="caption" role="status">{operationNotice}</p>}
+    <div className="row" style={{ gap: 8, marginTop: 8 }}>
+      <button className="btn sm soft" type="button" disabled={calibrateMutation.isPending} onClick={() => calibrateMutation.mutate()}>Calibrate</button>
+    </div>
+    {sessions.length > 0 && <div style={{ marginTop: 16 }}>
+      <div className="p-card-heading"><h3>Active sessions</h3></div>
+      <div className="p-list">{sessions.slice(0, 5).map((s, idx) => <div className="p-list-row" key={String(s.id ?? idx)}>
+        <span className="status-dot green" aria-hidden="true"/>
+        <div className="flex1"><strong>{String(s.model_id ?? "Session")}</strong><small className="muted">{String(s.status ?? "active")}</small></div>
+      </div>)}</div>
+    </div>}
+  </section>;
+}
+
+// ─── Personal OS ──────────────────────────────────────────────────────────────
+
+function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [noteText, setNoteText] = useState("");
+  const [noteError, setNoteError] = useState("");
+  const [presetName, setPresetName] = useState("");
+  const [presetError, setPresetError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [exportError, setExportError] = useState("");
+
+  const presets = (Array.isArray((data?.presets as { presets?: unknown })?.presets) ? (data?.presets as { presets: JsonRecord[] }).presets : Array.isArray(data?.presets) ? data.presets as JsonRecord[] : []) as JsonRecord[];
+  const notes = (Array.isArray((data?.notes as { notes?: unknown })?.notes) ? (data?.notes as { notes: JsonRecord[] }).notes : Array.isArray(data?.notes) ? data.notes as JsonRecord[] : []) as JsonRecord[];
+  const galleryPayload = data?.gallery as { gallery?: unknown; assets?: unknown } | undefined;
+  const gallery = (Array.isArray(galleryPayload?.assets) ? galleryPayload.assets : Array.isArray(galleryPayload?.gallery) ? galleryPayload.gallery : Array.isArray(data?.gallery) ? data.gallery : []) as JsonRecord[];
+  const signatures = (Array.isArray((data?.signatures as { signatures?: unknown })?.signatures) ? (data?.signatures as { signatures: JsonRecord[] }).signatures : Array.isArray(data?.signatures) ? data.signatures as JsonRecord[] : []) as JsonRecord[];
+  const drafts = (Array.isArray((data?.drafts as { drafts?: unknown })?.drafts) ? (data?.drafts as { drafts: JsonRecord[] }).drafts : Array.isArray(data?.drafts) ? data.drafts as JsonRecord[] : []) as JsonRecord[];
+  const status = data?.status as JsonRecord | undefined;
+
+  const addNoteMutation = useMutation({
+    mutationFn: () => apiPost("/api/personal-os/notes", { title: "Personal note", body: noteText.trim(), project: "default" }),
+    onSuccess: async () => { setNoteText(""); setNoteError(""); setFeedback("Note saved by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    onError: (e) => setNoteError(e instanceof Error ? e.message : "Failed to save note"),
+  });
+
+  const addPresetMutation = useMutation({
+    mutationFn: () => apiPost("/api/personal-os/presets", { name: presetName.trim(), project: "default" }),
+    onSuccess: async () => { setPresetName(""); setPresetError(""); setFeedback("Preset saved by the backend."); await client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] }); },
+    onError: (e) => setPresetError(e instanceof Error ? e.message : "Failed to create preset"),
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: () => apiGet<JsonRecord>("/api/personal-os/export?project=default"),
+    onSuccess: (result) => {
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "personal-os-export.json"; a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setExportError(""); setFeedback("Personal OS export downloaded from the backend.");
+    },
+    onError: (error) => setExportError(apiConnectionMessage(error)),
+  });
+
+  if (tab === "Presets") return <section className="p-card">
+    <div className="p-card-heading"><h3>Presets</h3></div>
+    <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+      <input className="input flex1" placeholder="Preset name" value={presetName} onChange={e => setPresetName(e.target.value)} />
+      <button className="btn sm primary" type="button" disabled={!presetName.trim() || addPresetMutation.isPending} onClick={() => addPresetMutation.mutate()}><Plus className="icon sm"/>Add</button>
+    </div>
+    {presetError && <p className="caption" role="alert">{presetError}</p>}
+    {feedback && <p className="caption" role="status">{feedback}</p>}
+    {lq.isLoading ? <p className="caption">Loading…</p> : presets.length === 0
+      ? <EmptyState icon={UserRound} title="No presets" detail="Create a preset to save workspace preferences." />
+      : <div className="p-list">{presets.map((p, idx) => <div className="p-list-row" key={String(p.id ?? idx)}>
+          <span className="square-icon sm"><UserRound className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(p.name ?? "Preset")}</strong><small className="muted">{String(p.created_at ?? "")}</small></div>
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Notes") return <section className="p-card">
+    <div className="p-card-heading"><h3>Personal notes</h3></div>
+    <textarea className="input" rows={4} placeholder="Write a note…" value={noteText} onChange={e => setNoteText(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+    {noteError && <p className="caption" role="alert">{noteError}</p>}
+    {feedback && <p className="caption" role="status">{feedback}</p>}
+    <button className="btn sm primary" type="button" disabled={!noteText.trim() || addNoteMutation.isPending} onClick={() => addNoteMutation.mutate()}>{addNoteMutation.isPending ? "Saving…" : "Save note"}</button>
+    {notes.length > 0 && <div style={{ marginTop: 16 }}>
+      <div className="p-list">{notes.map((n, idx) => <div className="p-list-row" key={String(n.id ?? idx)}>
+        <div className="flex1"><p className="small" style={{ margin: 0 }}>{String(n.body ?? n.content ?? n.text ?? "Note")}</p><small className="muted">{String(n.created_at ?? "")}</small></div>
+      </div>)}</div>
+    </div>}
+  </section>;
+
+  if (tab === "Gallery") return <section className="p-card">
+    <div className="p-card-heading"><h3>Personal gallery</h3></div>
+    {lq.isLoading ? <p className="caption">Loading…</p> : gallery.length === 0
+      ? <EmptyState icon={Image} title="No gallery items" detail="Images saved to Personal OS appear here." />
+      : <div className="p-gallery-grid">{gallery.map((img, idx) => {
+          const thumb = typeof img.thumbnail_url === "string" ? img.thumbnail_url : null;
+          return <div key={String(img.id ?? idx)} className="p-gallery-cell">
+            {thumb ? <img src={thumb} alt={String(img.name ?? "")} className="p-gallery-thumb" /> : <span className="p-gallery-thumb p-gallery-placeholder"><Image className="icon" aria-hidden="true"/></span>}
+            <span className="p-gallery-label">{String(img.name ?? "Image")}</span>
+          </div>;
+        })}</div>}
+  </section>;
+
+  if (tab === "Signatures") return <section className="p-card">
+    <div className="p-card-heading"><h3>Signatures</h3></div>
+    {lq.isLoading ? <p className="caption">Loading…</p> : signatures.length === 0
+      ? <EmptyState icon={UserRound} title="No signatures" detail="Add a personal signature for use in outgoing messages." />
+      : <div className="p-list">{signatures.map((s, idx) => <div className="p-list-row" key={String(s.id ?? idx)}>
+          <div className="flex1"><strong>{String(s.label ?? s.name ?? "Signature")}</strong><p className="small muted" style={{ margin: 0 }}>{String(s.content ?? "").slice(0, 80)}</p></div>
+        </div>)}</div>}
+  </section>;
+
+  if (tab === "Drafts") return <section className="p-card">
+    <div className="p-card-heading"><h3>Drafts</h3></div>
+    {lq.isLoading ? <p className="caption">Loading…</p> : drafts.length === 0
+      ? <EmptyState icon={FileText} title="No drafts" detail="Personal drafts appear here." />
+      : <div className="p-list">{drafts.map((d, idx) => <div className="p-list-row" key={String(d.id ?? idx)}>
+          <span className="square-icon sm"><FileText className="icon sm" aria-hidden="true"/></span>
+          <div className="flex1"><strong>{String(d.name ?? d.title ?? "Draft")}</strong><small className="muted">{String(d.updated_at ?? d.created_at ?? "")}</small></div>
+        </div>)}</div>}
+  </section>;
+
+  // Status tab (default)
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Personal OS status</h3></div>
+    {status && <div className="p-kv-grid" style={{ marginBottom: 16 }}>
+      <div><small>Service</small><strong>{String(status.status ?? "unknown")}</strong></div>
+      <div><small>Presets</small><strong>{String(status.preset_count ?? presets.length)}</strong></div>
+      <div><small>Notes</small><strong>{String(status.note_count ?? notes.length)}</strong></div>
+    </div>}
+    <div className="row" style={{ gap: 8, marginTop: 8 }}>
+      <button className="btn sm soft" type="button" disabled={exportMutation.isPending} onClick={() => { setFeedback(""); setExportError(""); exportMutation.mutate(); }}><FileDown className="icon sm"/>{exportMutation.isPending ? "Exporting…" : "Export data"}</button>
+    </div>
+    {exportError && <p className="caption" role="alert">{exportError}</p>}{feedback && <p className="caption" role="status">{feedback}</p>}
+  </section>;
+}
+
+// ─── Logs viewer helper ───────────────────────────────────────────────────────
+
+function LogsViewer({ path, label }: { path: string; label: string }) {
+  const q = useQuery({ queryKey: ["logs", path], queryFn: ({ signal }) => apiGet(path, signal), staleTime: 10_000 });
+  const payload = q.data as { lines?: unknown; logs?: unknown } | undefined;
+  const rawLines = Array.isArray(payload?.lines) ? payload.lines : Array.isArray(payload?.logs) ? payload.logs : [];
+  const lines = rawLines.map((line) => {
+    if (typeof line === "string") return line;
+    if (!line || typeof line !== "object" || Array.isArray(line)) return "";
+    const record = line as JsonRecord;
+    const prefix = [record.created_at, record.level].filter(value => typeof value === "string" && value.trim()).join(" · ");
+    return [prefix, record.message ?? record.text ?? record.line].filter(value => typeof value === "string" && value.trim()).join(" — ");
+  }).filter(Boolean);
+  return <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--surface)", borderRadius: 6, padding: 12, overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
+    {q.isLoading ? <p className="caption">Loading {label}…</p> : q.error ? <p className="caption">{apiConnectionMessage(q.error)}</p> : lines.length === 0 ? <p className="caption">No log entries.</p> : lines.map((line, i) => <div key={i}>{line}</div>)}
+  </div>;
+}
+
 function RouteContent({ route, tab, definition, data, query, onTabChange, demo }: { route: string; tab: string; definition: Definition; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown }; onTabChange: (tab: string) => void; demo: boolean }) {
   const Icon = routeIcons[route] ?? definition.icon;
   if (route === "engine" && tab === "Overview" && demo) return <EngineDemoOverview data={data} />;
@@ -2751,7 +3934,7 @@ function RouteContent({ route, tab, definition, data, query, onTabChange, demo }
   if (route === "twin" && tab === "Sources" && !demo) {
     const sourcePayload = data?.sources?.sources;
     const sources = Array.isArray(sourcePayload) ? sourcePayload.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
-    return <section className="p-card"><div className="p-card-heading"><h3>Interaction source metadata</h3><span className="p-fixture">{sources.length} sources</span></div><p className="muted small">The backend lists recorded interaction type, extracted topics and date. Original interaction text and context are omitted from this view.</p>{Boolean(query.error) && <p className="note-panel" role="alert">{apiConnectionMessage(query.error)}</p>}{query.isLoading ? <p className="caption" role="status">Loading source metadata…</p> : sources.length ? <div className="p-record-sections">{sources.map((source, index) => <article className="p-record-section" key={String(source.id ?? index)}><h4>{String(source.kind ?? source.type ?? "Interaction source")}</h4><p className="caption">{recordSummary({ ...source, kind: undefined, type: undefined }, "twin") || "No extracted topics"}{source.created_at ? ` · ${String(source.created_at)}` : ""}</p></article>)}</div> : <EmptyState icon={UserRound} title="No context sources" detail="No interaction source metadata has been reported by the context service." />}</section>;
+    return <section className="p-card"><div className="p-card-heading"><h3>Interaction source metadata</h3><span className="p-fixture">{sources.length} sources</span></div><p className="muted small">The backend lists recorded interaction type, extracted topics and date. Where an extracted topic contributed to a stored inferred preference, that relationship is shown. Original interaction text and context are omitted.</p>{Boolean(query.error) && <p className="note-panel" role="alert">{apiConnectionMessage(query.error)}</p>}{query.isLoading ? <p className="caption" role="status">Loading source metadata…</p> : sources.length ? <div className="p-record-sections">{sources.map((source, index) => { const signals = Array.isArray(source.preference_signals) ? source.preference_signals.filter((value): value is JsonRecord => Boolean(value) && typeof value === "object" && !Array.isArray(value)) : []; return <article className="p-record-section" data-source-id={String(source.id ?? "")} key={String(source.id ?? index)}><h4>{String(source.kind ?? source.type ?? "Interaction source")}</h4><p className="caption">{recordSummary({ ...source, kind: undefined, type: undefined, preference_signals: undefined }, "twin") || "No extracted topics"}{source.created_at ? ` · ${String(source.created_at)}` : ""}</p>{signals.length > 0 && <p className="caption"><strong>Inferred preference signals:</strong> {signals.map(signal => String(signal.value ?? signal.key ?? "topic")).join(", ")}</p>}</article>; })}</div> : <EmptyState icon={UserRound} title="No context sources" detail="No interaction source metadata has been reported by the context service." />}</section>;
   }
   if (route === "twin" && demo && tab === "Profile") return <TwinDemoProfile data={data} />;
   if (route === "twin" && demo) return <TwinDemoWorkspace key={tab} tab={tab} data={data} />;
@@ -2783,6 +3966,12 @@ function RouteContent({ route, tab, definition, data, query, onTabChange, demo }
   </>;
 
   if (route === "science" && tab !== "Experiments") return <section className="p-card"><div className="p-card-heading"><h3>{tab}</h3></div><EmptyState icon={Icon} title={`No ${tab.toLowerCase()} loaded`} detail="Scientific projects, data provenance and reports require a connected service." /></section>;
+
+  if (route === "gallery") return <GalleryWorkspace tab={tab} data={data} query={query} />;
+  if (route === "cookbook") return <CookbookWorkspace tab={tab} data={data} query={query} />;
+  if (route === "ultramodel") return <UltraModelWorkspace tab={tab} data={data} query={query} />;
+  if (route === "personalos") return <PersonalOSWorkspace tab={tab} data={data} query={query} />;
+
   return <section className="p-card"><div className="p-card-heading"><h3>{tab}</h3></div><EmptyState icon={Icon} title={`No ${tab.toLowerCase()} loaded`} detail={definition.note} /></section>;
 }
 
@@ -2794,16 +3983,17 @@ export default function AdvancedScreen({ route }: { route: string }) {
   const [guideExportError, setGuideExportError] = useState("");
   const integrationGuideTrigger = useRef<HTMLButtonElement | null>(null);
   const currentTab = definition.tabs.includes(activeTab) ? activeTab : definition.tabs[0];
-  const supportedRoutes: AdvancedRoute[] = ["voice", "assistant", "communications", "security", "developer", "engine", "science", "twin", "vault", "scraper", "finetune"];
+  const supportedRoutes: AdvancedRoute[] = ["voice", "assistant", "communications", "security", "developer", "engine", "science", "twin", "vault", "scraper", "finetune", "gallery", "cookbook", "ultramodel", "personalos"];
   const isAdvanced = supportedRoutes.includes(route as AdvancedRoute);
   const selectedRoute = (isAdvanced ? route : "voice") as AdvancedRoute;
-  const endpointMap = isAdvanced ? route === "security" ? securityTabEndpoints[currentTab] : route === "science" && currentTab === "Data" ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), catalog: "/api/science/materials/catalog" } : advancedScreenEndpoints(selectedRoute, currentTab) : null;
+  const endpointMap = isAdvanced ? route === "security" ? securityTabEndpoints[currentTab] : route === "science" && currentTab === "Data" ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), catalog: "/api/science/materials/catalog" } : route === "ultramodel" && ["Status", "Plans"].includes(currentTab) ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), manifests: "/api/ultra-model/manifests" } : advancedScreenEndpoints(selectedRoute, currentTab) : null;
   const liveQuery = useQuery({
     queryKey: ["advanced-screen", route, currentTab, dataMode],
     queryFn: async ({ signal }) => {
       if (dataMode === "demo") return advancedDemoScreen(route, currentTab) as Promise<Record<string, JsonRecord>>;
       if (route === "security") return fetchSecurityScreenData(currentTab, signal);
       const result = await fetchAdvancedScreenData(selectedRoute, currentTab, signal);
+      if (route === "ultramodel" && ["Status", "Plans"].includes(currentTab)) result.manifests = await apiGet("/api/ultra-model/manifests", signal);
       if (route === "science" && currentTab === "Data") result.catalog = await apiGet("/api/science/materials/catalog", signal);
       return result;
     },
@@ -2818,7 +4008,7 @@ export default function AdvancedScreen({ route }: { route: string }) {
   return <motion.div className={`p-workspace p-workspace--${route}`} initial={{ opacity: 0, y: 7 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
     <header className="p-titlebar">
       <div><span className="p-kicker"><Layers3 className="icon xs" aria-hidden="true" />Advanced tools / {definition.title}</span><h1>{definition.title}</h1><p>{definition.description}</p></div>
-      <div className="p-header-actions"><span className="p-fixture" role="status">{dataMode === "demo" ? <Info className="icon xs" aria-hidden="true" /> : !endpointMap || liveQuery.isError ? <CloudOff className="icon xs" aria-hidden="true" /> : liveQuery.isSuccess ? <CheckCircle2 className="icon xs" aria-hidden="true" /> : <Info className="icon xs" aria-hidden="true" />}{connectionLabel}</span>{dataMode === "demo" && <button ref={integrationGuideTrigger} className="btn soft" type="button" onClick={() => setIntegrationGuideOpen(true)}><ArrowRight className="icon sm" aria-hidden="true" />Integration guide</button>}{dataMode === "demo" && <span className="btn sm advanced-demo-badge"><span className="advanced-demo-dot" aria-hidden="true"/>Live demo</span>}</div>
+      <div className="p-header-actions"><span className="p-fixture" role="status">{dataMode === "demo" ? <Info className="icon xs" aria-hidden="true" /> : !endpointMap || liveQuery.isError ? <CloudOff className="icon xs" aria-hidden="true" /> : liveQuery.isSuccess ? <CheckCircle2 className="icon xs" aria-hidden="true" /> : <Info className="icon xs" aria-hidden="true" />}{connectionLabel}</span><button ref={integrationGuideTrigger} className="btn soft" type="button" onClick={() => setIntegrationGuideOpen(true)}><ArrowRight className="icon sm" aria-hidden="true" />Integration guide</button>{dataMode === "demo" && <span className="btn sm advanced-demo-badge"><span className="advanced-demo-dot" aria-hidden="true"/>Live demo</span>}</div>
     </header>
     <ScreenTabs tabs={visibleTabs} active={currentTab} onChange={setActiveTab} />
     <div className="p-main-grid"><div className="p-primary">
@@ -2827,7 +4017,7 @@ export default function AdvancedScreen({ route }: { route: string }) {
       {showCommunicationsIntro && <section className="demo-feature-hero" aria-label={`${currentTab} workspace`}><div className="demo-feature-symbol"><Mail className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">{currentTab} · Workspace</span><h2>Everything in one place</h2><p>Read, reply and prepare communications with clear control.</p></div></section>}
       <RouteContent route={route} tab={currentTab} definition={definition} data={liveQuery.data} query={liveQuery} onTabChange={setActiveTab} demo={dataMode === "demo"} />{route === "assistant" && dataMode === "demo" && <AssistantDemoActivity events={(liveQuery.data?.activity?.events ?? []) as JsonRecord[]} />}{isAdvanced && route !== "security" && !(route === "assistant" && dataMode === "demo") && !(route === "twin" && dataMode === "demo") && !(["developer", "engine", "science", "scraper"].includes(route) && dataMode === "demo") && <>{route !== "vault" && route !== "finetune" && <><LiveData route={route} tab={currentTab} query={liveQuery} supported={Boolean(endpointMap)} /><BackendActions route={route} tab={currentTab} data={liveQuery.data} /></>}</>}
     </div><ConnectionRail definition={definition} route={route} tab={currentTab} connectionLabel={connectionLabel} data={liveQuery.data} onTabChange={setActiveTab} /></div>
-    <Dialog.Root open={dataMode === "demo" && integrationGuideOpen} onOpenChange={open => { setIntegrationGuideOpen(open); if (!open) requestAnimationFrame(() => integrationGuideTrigger.current?.focus()); }}>
+    <Dialog.Root open={integrationGuideOpen} onOpenChange={open => { setIntegrationGuideOpen(open); if (!open) requestAnimationFrame(() => integrationGuideTrigger.current?.focus()); }}>
       <Dialog.Portal>
         <Dialog.Overlay />
         <Dialog.Content className="advanced-integration-dialog">

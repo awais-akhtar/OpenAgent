@@ -184,7 +184,9 @@ class NativeGlmDsaPublicAdapters(NativeMixtralPublicAdapters):
                         orphan=-id(engine)
                         self.objects[orphan]=('engine',engine)
                         self.pending[orphan]=cleanup
-                    error.add_note('DSA range construction cleanup pending: '+str(cleanup))
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(error,'DSA range construction cleanup pending: '+
+                        failure_summary(cleanup))
                 raise
             self._publish(engine,'engine',output)
         def create(engine_id,output,raw_options):

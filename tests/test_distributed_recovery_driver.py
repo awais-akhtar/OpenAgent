@@ -1,4 +1,6 @@
 from pathlib import Path
+import sys
+from types import ModuleType
 import unittest
 from unittest.mock import patch
 
@@ -16,9 +18,11 @@ class _Coordinator:
         self.closed = []
         self.fail_load = fail_load
         self.fail_close = set(fail_close)
+        self.next_session = 1000
 
     def open_session(self):
-        session = object()
+        session = self.next_session
+        self.next_session += 1
         self.sessions.append(session)
         self.operations.append(('open', session))
         return session
@@ -60,6 +64,8 @@ class DistributedRecoveryDriverTests(unittest.TestCase):
                           side_effect=((Path('first.cache'), {}),
                                        (Path('first.cache'), {}),
                                        (Path('second.cache'), {}),
+                                       (Path('second.cache'), {}),
+                                       (Path('first.cache'), {}),
                                        (Path('second.cache'), {}))) as admit:
             result = _RecoveryDriver(checkpoints, driver, 1, 3)(coordinator)
 
@@ -72,7 +78,23 @@ class DistributedRecoveryDriverTests(unittest.TestCase):
                                          'second': coordinator.sessions[1]})
         self.assertEqual([row[0] for row in coordinator.operations],
                          ['open', 'load', 'open', 'load'])
-        self.assertEqual(admit.call_count, 4)  # pin recheck after each restore
+        self.assertEqual(admit.call_count, 6)  # after restore and at the handoff barrier
+
+    def test_later_restore_cannot_invalidate_an_earlier_checkpoint_before_driver(self):
+        coordinator = _Coordinator()
+        checkpoints = self._checkpoints()
+        initial = (Path('first.cache'), {})
+        second = (Path('second.cache'), {})
+        driver_calls = []
+        with patch.object(RankRecoveryCheckpoint, 'admit',
+                          side_effect=(initial, initial, second, second,
+                                       ValueError('earlier checkpoint pin changed'))):
+            with self.assertRaisesRegex(ValueError, 'earlier checkpoint pin changed'):
+                _RecoveryDriver(checkpoints,
+                    lambda *_args: driver_calls.append(True), 1, 0)(coordinator)
+
+        self.assertEqual(driver_calls, [])
+        self.assertEqual(coordinator.closed, list(reversed(coordinator.sessions)))
 
     def test_restore_failure_closes_every_opened_session_in_reverse_order(self):
         coordinator = _Coordinator(fail_load=2)
@@ -97,7 +119,7 @@ class DistributedRecoveryDriverTests(unittest.TestCase):
         original_close = coordinator.close_session
 
         def close_with_one_failure(session):
-            if len(coordinator.sessions) >= 2 and session is coordinator.sessions[1]:
+            if len(coordinator.sessions) >= 2 and session == coordinator.sessions[1]:
                 coordinator.operations.append(('close', session))
                 raise OSError('injected rank cleanup failure')
             return original_close(session)
@@ -128,7 +150,7 @@ class DistributedRecoveryDriverTests(unittest.TestCase):
         original_close = coordinator.close_session
 
         def close_with_unprintable_failure(session):
-            if session is coordinator.sessions[1]:
+            if session == coordinator.sessions[1]:
                 coordinator.operations.append(('close', session))
                 raise UnprintableCleanupError()
             return original_close(session)
@@ -146,6 +168,69 @@ class DistributedRecoveryDriverTests(unittest.TestCase):
         self.assertEqual(coordinator.closed, [coordinator.sessions[0]])
         self.assertEqual([row[0] for row in coordinator.operations][-2:], ['close', 'close'])
         self.assertTrue(any('UnprintableCleanupError: failure details omitted' in note
+                            for note in getattr(caught.exception, '__notes__', ())))
+
+    def test_equal_but_distinct_integer_session_handles_are_rejected(self):
+        class ReusingCoordinator(_Coordinator):
+            def open_session(self):
+                # int() from a string creates a distinct object for this value
+                # while preserving the exact value returned by the first call.
+                session = int('1000')
+                self.sessions.append(session)
+                self.operations.append(('open', session))
+                return session
+
+        coordinator = ReusingCoordinator()
+        checkpoint = self._checkpoints()[0]
+        driver_calls = []
+        with patch.object(RankRecoveryCheckpoint, 'admit',
+                          return_value=(Path('first.cache'), {})):
+            with self.assertRaisesRegex(RuntimeError, 'reused session handle'):
+                _RecoveryDriver((checkpoint, checkpoint),
+                    lambda *_args: driver_calls.append(True), 1, 0)(coordinator)
+
+        self.assertEqual(driver_calls, [])
+        # Only the first handle is an owned session and is closed once.
+        self.assertEqual(coordinator.closed, [1000])
+        self.assertEqual([row[0] for row in coordinator.operations],
+                         ['open', 'load', 'open', 'close'])
+
+    def test_unprintable_worker_failure_does_not_mask_recovery_exhaustion(self):
+        class UnprintableWorkerFailure(Exception):
+            def __str__(self):
+                raise AssertionError('worker failure formatting must be safe')
+
+        checkpoint = RankRecoveryCheckpoint('first', 'unused', 'a' * 64, 1024)
+        failure = UnprintableWorkerFailure()
+        torch = ModuleType('torch')
+        torch.__path__ = []
+        multiprocessing = ModuleType('torch.multiprocessing')
+        multiprocessing.__path__ = []
+        spawn = ModuleType('torch.multiprocessing.spawn')
+        spawn.ProcessRaisedException = UnprintableWorkerFailure
+        spawn.ProcessExitedException = UnprintableWorkerFailure
+        multiprocessing.spawn = spawn
+        torch.multiprocessing = multiprocessing
+        with patch.object(RankRecoveryCheckpoint, 'admit',
+                          return_value=(Path('committed'), {})), \
+             patch.dict(sys.modules, {
+                 'torch': torch,
+                 'torch.multiprocessing': multiprocessing,
+                 'torch.multiprocessing.spawn': spawn,
+             }), \
+             patch('openagent.adaptive_engine.distributed_launcher.launch_distributed_execution',
+                   side_effect=failure):
+            with self.assertRaisesRegex(RuntimeError, 'recovery exhausted') as caught:
+                from openagent.adaptive_engine.distributed_recovery import (
+                    launch_recovered_distributed_execution,
+                )
+                launch_recovered_distributed_execution(
+                    lambda *_args: None, lambda *_args: None,
+                    checkpoints=(checkpoint,), rendezvous_urls=('tcp://attempt-0',),
+                    world_size=1, projection_backend='gloo')
+
+        self.assertIs(caught.exception.__cause__, failure)
+        self.assertTrue(any('UnprintableWorkerFailure: failure details omitted' in note
                             for note in getattr(caught.exception, '__notes__', ())))
 
 

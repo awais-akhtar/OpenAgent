@@ -8,10 +8,14 @@ import numpy as np
 from .native_checkpoint import _pairs,_finish_decoder,_cancelled
 from .session_recovery import _path
 from .publisher_checkpoint.storage import snapshot
-from .publisher_family_contracts import component_contract
+from .publisher_family_contracts import component_contract,is_mtp_tensor_name
 from .publisher_tensor_reader import PublisherTensorReader,TensorSlice
 from .publisher_weight_mapping import expert_bindings,qwen4_ple_bindings,WeightBinding,materialize
 from .publisher_media_files import read_regular
+
+def _inkling_mtp_headers(inventory):
+    return {name:(record.shape,record.dtype) for name,record in inventory.tensors.items()
+        if is_mtp_tensor_name(name)}
 
 def load_publisher_conditional_decoder(directory,*,family,library,text_library,
         max_weight_bytes,max_bytes,context_tokens,max_conversion_bytes,
@@ -106,8 +110,7 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
     # wrappers previously retained MTP tensors as opaque auxiliary payloads,
     # which made their inventory look supported despite there being no draft
     # execution path.  Reject those headers before any tensor payload read.
-    mtp_headers=tuple(name for name in inventory.tensors if name.startswith((
-        'mtp.','model.mtp.','model.language_model.mtp.')))
+    mtp_headers=tuple(name for name in inventory.tensors if is_mtp_tensor_name(name))
     # The wrapper mapper can preserve an MTP/next-token-prediction config even
     # when the checkpoint has no corresponding tensor namespace.  Such a
     # config is still a claim about an optional execution bank; do not silently
@@ -149,8 +152,7 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
     c=components.text_config
     if family=='inkling_mm_model':
         from .inkling_mtp import admit_mtp_inventory
-        mtp_headers={name:(record.shape,record.dtype) for name,record in inventory.tensors.items()
-            if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.'))}
+        mtp_headers=_inkling_mtp_headers(inventory)
         if mtp_headers and not mtp_max_bytes:
             raise ValueError('Inkling MTP tensors require explicit admitted draft execution budgets')
         admit_mtp_inventory(c,components.auxiliary_config,mtp_headers,
@@ -293,7 +295,7 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
             seen_text=set();seen_visual=set()
             for binding in bindings:
                 name=binding.destination
-                if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
+                if is_mtp_tensor_name(name):
                     continue  # Explicitly retained auxiliary namespace, never a text weight.
                 if name.startswith(('model.visual.','model.vision_tower.',
                                     'model.video_tower.','model.audio_tower.',
@@ -433,13 +435,16 @@ def load_publisher_conditional_decoder(directory,*,family,library,text_library,
                 except BaseException as failure:failures.append(failure)
                 else:pending.remove(owner)
             if failures:
+                from .failure_reporting import add_failure_note, failure_summary
                 for failure in failures[1:]:
-                    failures[0].add_note('additional publisher provider cleanup failure: '+repr(failure))
+                    add_failure_note(failures[0],
+                        'additional publisher provider cleanup failure: '+failure_summary(failure))
                 raise failures[0]
         try:cleanup()
         except BaseException as failure:
-            primary.cleanup=cleanup
-            primary.add_note('conditional publisher ownership cleanup remains pending: '+repr(failure))
+            from .failure_reporting import retain_cleanup_failure
+            retain_cleanup_failure(primary,cleanup,failure,
+                'conditional publisher ownership cleanup remains pending: ')
         raise
     finally:
         reader.close()

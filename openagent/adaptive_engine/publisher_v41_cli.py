@@ -26,11 +26,16 @@ def _finish_reason(generated, eos_tokens, stop_prefixes):
     """Return the V4.1 terminal reason from the committed token boundary."""
     if generated and generated[-1] in eos_tokens:
         return 'eos'
-    if any(len(generated)>=len(prefix) and
-           tuple(generated[-len(prefix):])==tuple(prefix)
-           for prefix in stop_prefixes):
+    if _matches_generated_stop_prefix(generated, stop_prefixes):
         return 'stop_prefix'
     return 'length'
+
+
+def _matches_generated_stop_prefix(generated, stop_prefixes):
+    """Match stop strings only against generated tokens, never prompt tokens."""
+    return any(len(generated) >= len(prefix) and
+               tuple(generated[-len(prefix):]) == tuple(prefix)
+               for prefix in stop_prefixes)
 
 
 def parser():
@@ -197,6 +202,8 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             image_options = dict(images=images, vision=vision, token_types=types)
         loaded = time.perf_counter()
         first_token_ms = None
+        cleanup_pending_seen = False
+        checkpoint_pending = False
 
         def checkpoint_boundary():
             if checkpoint_sink is not None:
@@ -215,11 +222,18 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
                     host_bytes=args.sampling_mib*mib, cancelled=cancelled)
 
         def record(tokens, **details):
-            nonlocal first_token_ms
+            nonlocal first_token_ms, cleanup_pending_seen, checkpoint_pending
             if first_token_ms is None:
                 first_token_ms = (time.perf_counter()-loaded)*1000
+            cleanup_pending = bool(details.pop('cleanup_pending', False))
             generated.extend(tokens)
-            checkpoint_boundary()
+            if cleanup_pending:
+                # The committed step is publishable, but snapshot cleanup
+                # quarantines the decoder from checkpoint capture and reuse.
+                cleanup_pending_seen = True
+                checkpoint_pending = checkpoint_sink is not None
+            else:
+                checkpoint_boundary()
             if emit is not None:
                 # A checkpoint sink can block or invoke caller code. Recheck
                 # immediately before publishing the corresponding stream event
@@ -228,13 +242,15 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
                 check_cancelled()
                 # A later sink/callback error may restore target and draft
                 # state, but cannot retract bytes already delivered.
-                emit(dict(event='tokens', token_ids=list(tokens), committed=False, **details))
+                emit(dict(event='tokens', token_ids=list(tokens), committed=False,
+                          cleanup_pending=cleanup_pending, **details))
 
         if args.dspark:
             draft = session._draft(args, draft_rng)
             decoder = create_dspark_decoder(model, draft, temperature=temperature,
                 max_bytes=args.sampling_mib*mib, evidence_max_bytes=args.evidence_mib*mib,
                 target_rng=target_rng, proposal_rng=draft_rng)
+            session._active_speculative_decoder = decoder
             check_cancelled()
             # The decoder owns cancellation scopes for both target and draft
             # state during prefill; passing the request predicate through lets
@@ -244,11 +260,12 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             check_cancelled()
             checkpoint_boundary()
             for step in decoder.generate(args.max_tokens, stop_tokens=stop_tokens,
-                                         stop_prefixes=stop_prefixes, cancelled=cancelled):
+                                         stop_prefixes=stop_prefixes, cancelled=cancelled,
+                                         stop_prefix_start=len(prompt)):
                 accepted += step.accepted
                 proposed += step.proposed
                 record(step.tokens, accepted=step.accepted, proposed=step.proposed,
-                    rejected=step.rejected)
+                    rejected=step.rejected, cleanup_pending=step.cleanup_pending)
         else:
             logits = None
             if image_options:
@@ -267,10 +284,7 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
                 logits = model.forward([token])[-1]
                 check_cancelled()
                 record((token,))
-                if (token in stop_tokens or any(
-                        len(prompt + generated) >= len(prefix) and
-                        tuple((prompt + generated)[-len(prefix):]) == prefix
-                        for prefix in stop_prefixes)):
+                if token in stop_tokens or _matches_generated_stop_prefix(generated, stop_prefixes):
                     break
         check_cancelled()
         return dict(schema='openagent.publisher-v41-generation.v1',
@@ -282,7 +296,8 @@ def _run_request(session, args, *, emit=None, cancelled=None, checkpoint_sink=No
             request_setup_ms=(loaded-started)*1000, first_token_ms=first_token_ms,
             total_ms=(time.perf_counter()-started)*1000,
             implementation=model.implementation, numerical_parity_verified=False,
-            platform_certified=False)
+            platform_certified=False, cleanup_pending=cleanup_pending_seen,
+            checkpoint_pending=checkpoint_pending)
 
 
 class PublisherSession:
@@ -368,6 +383,20 @@ class PublisherSession:
         if not directory.is_dir():
             raise ValueError('local checkpoint directory required')
         device=getattr(args,'device',None)
+        # The V4.1 CLI is also a public loader entrypoint (it does not have to
+        # be reached through NativePublisherProvider).  Gate the complete
+        # checkpoint inventory here, before opening arithmetic libraries,
+        # tokenizer state, or the execution payload.  The inventory gate
+        # checks all three BF16/FP8/FP4 banks against the exact local route;
+        # the distributed route is separately rejected above until its
+        # failure-consensus contract is admitted.
+        from .source_scope import require_checkpoint_inventory_admission
+        require_checkpoint_inventory_admission(
+            directory, family='deepseek-v41', model_type='deepseek_v41',
+            backend=('distributed' if distributed is not None else
+                     'device' if device is not None else 'native'),
+            arithmetic='publisher-bf16-fp8-fp4',
+            max_metadata_bytes=getattr(args,'metadata_mib',256)*1024**2)
         if device is None:
             if any(path is None for path in (args.execution_library,args.mxfp4_library,args.fp8_library)):
                 raise ValueError('native V4.1 requires all three explicit prebuilt arithmetic libraries')
@@ -390,6 +419,9 @@ class PublisherSession:
         self._closed = False
         self._requests = 0
         self._vision_model = self._draft_model = None
+        # Retain the request decoder until its target/draft snapshot receipts
+        # are released; a failed release must not disappear with a local.
+        self._active_speculative_decoder = None
         self._vision_budget = self._draft_budget = None
         self._auxiliary = None
         from .owned_resources import OwnedResources
@@ -534,6 +566,18 @@ class PublisherSession:
         return self._draft_model
 
     def _reset_request(self):
+        decoder = getattr(self, '_active_speculative_decoder', None)
+        if decoder is not None:
+            try:
+                decoder.retry_cleanup()
+            except BaseException as error:
+                # Snapshot receipts may still borrow these live owners. Keep
+                # the decoder reachable and do not reset/close its owners yet.
+                self._closed = True
+                raise RuntimeError(
+                    'publisher speculative snapshot cleanup remains pending') from error
+            else:
+                self._active_speculative_decoder = None
         errors = []
         # Target and draft own separate physical histories.  Always attempt
         # both resets: a target reset failure must not leave draft KV/RNG
@@ -593,7 +637,20 @@ class PublisherSession:
                     add_failure_note(primary, 'publisher request rollback/reset failed: '+failure_summary(cleanup_error))
                 raise
             else:
-                self._reset_request()
+                try:
+                    self._reset_request()
+                except Exception as cleanup_error:
+                    # A speculative step may have committed and returned its
+                    # token tuple while retaining a snapshot-release retry.
+                    # Preserve that completed response; this warm owner is
+                    # already quarantined and remains reachable for close().
+                    if not (result.get('cleanup_pending') and
+                            getattr(self, '_active_speculative_decoder', None) is not None and
+                            self._closed):
+                        raise
+                    result['cleanup_error'] = failure_summary(cleanup_error)
+                else:
+                    result['cleanup_pending'] = False
             result['warm_reused'] = warm_reused
             result['total_ms'] = (time.perf_counter()-started)*1000
             return result
@@ -660,19 +717,19 @@ class PublisherSession:
                                 temperature=header['temperature'], max_bytes=args.sampling_mib*1024**2,
                                 evidence_max_bytes=args.evidence_mib*1024**2,
                                 target_rng=target_rng, proposal_rng=draft_rng)
+                            self._active_speculative_decoder = decoder
                             owner = decoder
                         check(); owner.restore_cache(cache, max_bytes=size); check()
                         if cache.tell() != size or self.model.length != header['position']:
                             raise ValueError('recovered V4.1 physical cache extent differs')
                         if tuple(self.model.snapshot().tokens) != tuple(header['prompt_ids'] + header['generated_ids']):
                             raise ValueError('recovered V4.1 token history differs')
-                        recovered_ids = header['prompt_ids'] + header['generated_ids']
                         if decoder is not None and (decoder.history != tuple(header['prompt_ids'] + header['generated_ids'])
                                 or not np.array_equal(decoder.next_logits, logits)
                                 or decoder._stopped != bool(header['generated_ids'] and
                                     (header['generated_ids'][-1] in header['stops'] or any(
-                                        len(recovered_ids) >= len(prefix) and
-                                        tuple(recovered_ids[-len(prefix):]) == tuple(prefix)
+                                        len(header['generated_ids']) >= len(prefix) and
+                                        tuple(header['generated_ids'][-len(prefix):]) == tuple(prefix)
                                         for prefix in header['stop_prefixes'])))
                                 or not _same_receipt_state(decoder.rng.bit_generator.state, header['rng'])
                                 or not _same_receipt_state(decoder.proposer.rng.bit_generator.state, header['proposal_rng'])):
@@ -686,6 +743,10 @@ class PublisherSession:
                     else:
                         cache.close()
                     generated = list(header['generated_ids'])
+                    recovered_token_count = len(generated)
+                    resumed_ids = []
+                    cleanup_pending_seen = False
+                    checkpoint_pending = False
                     stops = frozenset(header['stops'])
                     stop_prefixes = tuple(tuple(prefix) for prefix in header['stop_prefixes'])
                     eos = self.checkpoint.config['text_config'].get('eos_token_id', [])
@@ -697,10 +758,13 @@ class PublisherSession:
                         # lengthy. Do not publish the recovered event if the
                         # caller disconnected while those checks were running.
                         check()
-                        emit(dict(event='recovered', text=self.tokenizer.decode(generated), position=self.model.length))
-                    def record(tokens, accepted=0, proposed=0):
-                        nonlocal logits
+                        emit(dict(event='recovered', token_ids=list(generated),
+                            stop_prefixes=[list(prefix) for prefix in stop_prefixes],
+                            text=self.tokenizer.decode(generated), position=self.model.length))
+                    def record(tokens, accepted=0, proposed=0, cleanup_pending=False):
+                        nonlocal logits, cleanup_pending_seen, checkpoint_pending
                         generated.extend(tokens)
+                        resumed_ids.extend(tokens)
                         header['generated_ids'] = list(generated)
                         header['position'] = self.model.length
                         header['accepted'] += accepted; header['proposed'] += proposed
@@ -708,7 +772,10 @@ class PublisherSession:
                         header['proposal_rng'] = (None if decoder is None else
                             copy.deepcopy(decoder.proposer.rng.bit_generator.state))
                         if decoder is not None: logits = decoder.next_logits
-                        if checkpoint_sink is not None:
+                        if cleanup_pending:
+                            cleanup_pending_seen = True
+                            checkpoint_pending = checkpoint_sink is not None
+                        elif checkpoint_sink is not None:
                             publish(checkpoint_sink, header, logits, owner, model=self.model,
                                 tokenizer=self._tokenizer_identity, max_bytes=max_checkpoint_bytes,
                                 host_bytes=args.sampling_mib*1024**2, cancelled=cancelled)
@@ -717,17 +784,17 @@ class PublisherSession:
                             # long enough for the consumer to disconnect.
                             check()
                             emit(dict(event='tokens', token_ids=list(tokens), text=self.tokenizer.decode(generated),
-                                committed=False))
+                                committed=False, cleanup_pending=cleanup_pending))
                     recovered_stopped = bool(generated and (
-                        generated[-1] in stops or any(
-                            len(header['prompt_ids'] + generated) >= len(prefix) and
-                            tuple((header['prompt_ids'] + generated)[-len(prefix):]) == tuple(prefix)
-                            for prefix in stop_prefixes)))
+                        generated[-1] in stops or
+                        _matches_generated_stop_prefix(generated, stop_prefixes)))
                     if not recovered_stopped:
                         if decoder is not None:
                             for step in decoder.generate(limit, stop_tokens=stops,
-                                stop_prefixes=stop_prefixes, cancelled=cancelled):
-                                record(step.tokens, step.accepted, step.proposed)
+                                stop_prefixes=stop_prefixes, cancelled=cancelled,
+                                stop_prefix_start=len(header['prompt_ids'])):
+                                record(step.tokens, step.accepted, step.proposed,
+                                       cleanup_pending=step.cleanup_pending)
                         else:
                             for _ in range(limit):
                                 check()
@@ -735,22 +802,30 @@ class PublisherSession:
                                     max_bytes=args.sampling_mib*1024**2-history_reservation)
                                 logits = self.model.forward([token])[-1]
                                 check(); record((token,))
-                                if (token in stops or any(
-                                        len(header['prompt_ids'] + generated) >= len(prefix) and
-                                        tuple((header['prompt_ids'] + generated)[-len(prefix):]) == prefix
-                                        for prefix in stop_prefixes)):
+                                if token in stops or _matches_generated_stop_prefix(generated, stop_prefixes):
                                     break
                     check()
+                    terminal_stop_start = None
+                    for prefix in stop_prefixes:
+                        if (len(generated) >= len(prefix) and
+                                tuple(generated[-len(prefix):]) == tuple(prefix)):
+                            terminal_stop_start = len(generated) - len(prefix)
+                            break
                     self._requests += 1
-                    return dict(schema='openagent.publisher-v41-generation.v1',
+                    result = dict(schema='openagent.publisher-v41-generation.v1',
                         prompt_ids=header['prompt_ids'], generated_ids=generated,
+                        resumed_ids=resumed_ids,recovered_token_count=recovered_token_count,
+                        stop_prefixes=[list(prefix) for prefix in stop_prefixes],
+                        terminal_stop_start=terminal_stop_start,
                         prompt_tokens=len(header['prompt_ids']),
                         expanded_prompt_tokens=len(header['prompt_ids']),
                         finish_reason=_finish_reason(generated,stops,stop_prefixes),
                         text=self.tokenizer.decode(generated), dspark=header['dspark'],
                         accepted_draft_tokens=header['accepted'], proposed_draft_tokens=header['proposed'],
                         recovered=True, implementation=self.model.implementation,
-                        numerical_parity_verified=False, platform_certified=False)
+                        numerical_parity_verified=False, platform_certified=False,
+                        cleanup_pending=cleanup_pending_seen,
+                        checkpoint_pending=checkpoint_pending)
             except BaseException as primary:
                 # Recovery may have staged or partially installed target and
                 # draft cache state before a codec, event, checkpoint, or
@@ -762,9 +837,19 @@ class PublisherSession:
                     add_failure_note(primary, 'publisher recovery rollback/reset failed: '+failure_summary(cleanup_error))
                 raise
             else:
-                self._reset_request()
+                try:
+                    self._reset_request()
+                except Exception as cleanup_error:
+                    if not (result.get('cleanup_pending') and
+                            getattr(self, '_active_speculative_decoder', None) is not None and
+                            self._closed):
+                        raise
+                    result['cleanup_error'] = failure_summary(cleanup_error)
+                else:
+                    result['cleanup_pending'] = False
         finally:
             self._lock.release()
+        return result
 
     def close(self):
         if not self._lock.acquire(blocking=False):
@@ -776,6 +861,17 @@ class PublisherSession:
             # providers retained by that stack.
             self._closed = True
             errors = []
+            decoder = getattr(self, '_active_speculative_decoder', None)
+            if decoder is not None:
+                try:
+                    decoder.retry_cleanup()
+                except BaseException as error:
+                    # Do not close owners that may still be referenced by an
+                    # unreleased decoder snapshot; leave close() retryable.
+                    raise RuntimeError(
+                        'publisher speculative snapshot cleanup remains pending') from error
+                else:
+                    self._active_speculative_decoder = None
             for attribute in ('_draft_model', '_vision_model'):
                 owner = getattr(self, attribute)
                 if owner is None:
@@ -857,7 +953,8 @@ def main(argv=None):
         print('Generation cancelled', file=sys.stderr)
         return 130
     except (ValueError, RuntimeError, OSError, ImportError, KeyError, MemoryError, ArithmeticError) as error:
-        print(str(error), file=sys.stderr)
+        from .failure_reporting import failure_detail
+        print(failure_detail(error), file=sys.stderr)
         return 1
 
 

@@ -1,6 +1,10 @@
 import copy
 import threading
 import unittest
+from contextlib import nullcontext
+from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -11,7 +15,7 @@ from openagent.adaptive_engine.v41_execution.speculative import (
     SpeculativeDecoder,
 )
 from openagent.adaptive_engine.execution_service import ExecutionCancelled
-from openagent.adaptive_engine.publisher_v41_cli import _sample
+from openagent.adaptive_engine.publisher_v41_cli import PublisherSession, _sample
 
 
 class _Target:
@@ -80,6 +84,16 @@ class _UnprintableFailure(Exception):
         raise AssertionError('failure representation must not replace the primary exception')
 
 
+class _InterruptLogicalCommit(SpeculativeDecoder):
+    """Inject one interruption after history/logits stores but before stop state."""
+
+    def __setattr__(self, name, value):
+        if name == '_stopped' and getattr(self, '_interrupt_commit', False):
+            object.__setattr__(self, '_interrupt_commit', False)
+            raise KeyboardInterrupt('interrupted speculative logical commit')
+        object.__setattr__(self, name, value)
+
+
 class SpeculativeTransactionBoundaryTests(unittest.TestCase):
     def _decoder(self, *, context=8, tokens=(1, 1), draft_length=2):
         target = _Target()
@@ -115,6 +129,51 @@ class SpeculativeTransactionBoundaryTests(unittest.TestCase):
         self.assertEqual(result.tokens, (1,))
         self.assertEqual((result.accepted, result.proposed), (1, 1))
         self.assertEqual(target.history, (0, 1))
+        decoder.close()
+
+    def test_generated_stop_prefix_does_not_cross_prefill_boundary(self):
+        target = _Target()
+        proposer = _Proposer((1, 1))
+        decoder = SpeculativeDecoder(
+            target, proposer, vocabulary=3, context=8, temperature=0,
+            draft_length=2, rng=np.random.default_rng(13))
+        decoder.prefill([2])
+
+        steps = list(decoder.generate(2, stop_prefixes=((2, 1),)))
+
+        self.assertEqual(tuple(token for step in steps for token in step.tokens), (1, 1))
+        self.assertFalse(decoder._stopped)
+        decoder.close()
+
+    def test_generated_stop_prefix_spans_speculative_transaction_boundary(self):
+        target = _Target()
+        proposer = _Proposer((2, 1))
+        decoder = SpeculativeDecoder(
+            target, proposer, vocabulary=3, context=8, temperature=0,
+            draft_length=2, rng=np.random.default_rng(13))
+        decoder.prefill([0])
+
+        steps = list(decoder.generate(4, stop_prefixes=((1, 1),)))
+
+        self.assertEqual([step.tokens for step in steps], [(1,), (1,)])
+        self.assertTrue(decoder._stopped)
+        decoder.close()
+
+    def test_resumed_generation_preserves_original_prompt_offset_for_stop_match(self):
+        target = _Target()
+        proposer = _Proposer((2, 1))
+        decoder = SpeculativeDecoder(
+            target, proposer, vocabulary=3, context=8, temperature=0,
+            draft_length=2, rng=np.random.default_rng(13))
+        decoder.prefill([0])
+        earlier = decoder.step(max_tokens=1)
+        self.assertEqual(earlier.tokens, (1,))
+
+        continued = list(decoder.generate(1, stop_prefixes=((1, 1),),
+                                          stop_prefix_start=1))
+
+        self.assertEqual([step.tokens for step in continued], [(1,)])
+        self.assertTrue(decoder._stopped)
         decoder.close()
 
     def test_rejected_proposal_restores_draft_rng_and_replays_target_choice(self):
@@ -229,6 +288,197 @@ class SpeculativeTransactionBoundaryTests(unittest.TestCase):
         self.assertEqual(decoder.rng.bit_generator.state, target_rng_before)
         self.assertEqual(proposer.rng.bit_generator.state, draft_rng_before)
         decoder.close()
+
+    def test_interrupted_logical_publication_restores_decoder_and_physical_boundary(self):
+        target = _Target()
+        proposer = _Proposer((1, 1))
+        decoder = _InterruptLogicalCommit(
+            target, proposer, vocabulary=3, context=8, temperature=0,
+            draft_length=2, rng=np.random.default_rng(13))
+        decoder.prefill([0])
+        original_logits = decoder.next_logits.copy()
+        target_rng = copy.deepcopy(decoder.rng.bit_generator.state)
+        proposal_rng = copy.deepcopy(proposer.rng.bit_generator.state)
+        decoder._interrupt_commit = True
+
+        with self.assertRaisesRegex(KeyboardInterrupt, 'logical commit'):
+            decoder.step()
+
+        self.assertEqual(decoder.history, (0,))
+        np.testing.assert_array_equal(decoder.next_logits, original_logits)
+        self.assertFalse(decoder._stopped)
+        self.assertEqual(target.history, (0,))
+        self.assertEqual(proposer.history, ())
+        self.assertEqual(decoder.rng.bit_generator.state, target_rng)
+        self.assertEqual(proposer.rng.bit_generator.state, proposal_rng)
+        self.assertFalse(decoder._quarantined)
+        decoder.close()
+
+    def test_publisher_retains_decoder_until_transient_snapshot_release_retries(self):
+        decoder, target, proposer = self._decoder()
+        original_release = target.release_snapshot
+        attempts = []
+
+        def release_once(receipt):
+            attempts.append(receipt)
+            if len(attempts) == 1:
+                raise OSError('temporary snapshot release failure')
+            original_release(receipt)
+
+        target.release_snapshot = release_once
+        session = object.__new__(PublisherSession)
+        session._active_speculative_decoder = decoder
+        session._closed = False
+        session.model = target
+        session._draft_model = proposer
+
+        committed = decoder.step()
+        self.assertEqual(committed.tokens, (1, 1, 1))
+        self.assertFalse(committed.cleanup_pending)
+        self.assertEqual(target.history, (0, 1, 1, 1))
+        self.assertFalse(decoder._quarantined)
+        self.assertIs(session._active_speculative_decoder, decoder)
+
+        session._reset_request()
+
+        self.assertIsNone(session._active_speculative_decoder)
+        self.assertEqual(target.history, ())
+        self.assertEqual(proposer.history, ())
+        self.assertEqual(len(attempts), 2)
+
+    def test_publisher_defers_owner_reset_while_snapshot_cleanup_still_fails(self):
+        decoder, target, proposer = self._decoder()
+        target.release_snapshot = lambda _receipt: (_ for _ in ()).throw(
+            OSError('persistent snapshot release failure'))
+        target_reset = target.reset
+        reset_calls = []
+
+        def counted_reset():
+            reset_calls.append(True)
+            target_reset()
+
+        target.reset = counted_reset
+        session = object.__new__(PublisherSession)
+        session._active_speculative_decoder = decoder
+        session._closed = False
+        session.model = target
+        session._draft_model = proposer
+
+        committed_steps = list(decoder.generate(5))
+        self.assertEqual(len(committed_steps), 1)
+        committed = committed_steps[0]
+        self.assertEqual(committed.tokens, (1, 1, 1))
+        self.assertTrue(committed.cleanup_pending)
+        self.assertEqual(target.history, (0, 1, 1, 1))
+        with self.assertRaisesRegex(RuntimeError, 'speculative snapshot cleanup remains pending'):
+            session._reset_request()
+
+        self.assertIs(session._active_speculative_decoder, decoder)
+        self.assertEqual(reset_calls, [])
+        self.assertEqual(proposer.history, (0, 1, 1))
+
+        class _Owned:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        owned = _Owned()
+        session._lock = threading.Lock()
+        session._vision_model = None
+        session._owned = owned
+        target.release_snapshot = lambda _receipt: None
+
+        session.close()
+
+        self.assertIsNone(session._active_speculative_decoder)
+        self.assertIsNone(session._draft_model)
+        self.assertTrue(owned.closed)
+
+    def test_publisher_returns_committed_response_when_final_snapshot_cleanup_persists(self):
+        session = object.__new__(PublisherSession)
+        args = SimpleNamespace(checkpoint=Path('checkpoint'),
+            tokenizer=Path('checkpoint/tokenizer.json'), prompt='prompt',
+            token_ids=None, resume_generation=None)
+
+        class _Owner:
+            def cancellation_scope(self, _event):
+                return nullcontext()
+
+        session.arithmetic = session.model = _Owner()
+        session._lock = threading.Lock()
+        session._closed = False
+        session._requests = 0
+        session._admitted_args = args
+        session._signature_value = PublisherSession._signature(args)
+        session._active_speculative_decoder = object()
+        reset_calls = []
+
+        def reset_request():
+            reset_calls.append(True)
+            if len(reset_calls) == 1:
+                return
+            session._closed = True
+            raise RuntimeError('publisher speculative snapshot cleanup remains pending')
+
+        response = dict(generated_ids=[4, 5], cleanup_pending=True,
+                        checkpoint_pending=True)
+        with patch.object(PublisherSession, '_validate'), \
+                patch.object(session, '_reset_request', side_effect=reset_request), \
+                patch('openagent.adaptive_engine.publisher_v41_cli._run_request',
+                      return_value=response):
+            result = session.run(args)
+
+        self.assertEqual(result['generated_ids'], [4, 5])
+        self.assertTrue(result['cleanup_pending'])
+        self.assertTrue(result['checkpoint_pending'])
+        self.assertIn('cleanup_error', result)
+        self.assertTrue(session._closed)
+        self.assertIsNotNone(session._active_speculative_decoder)
+
+    def test_v41_resume_resets_recovered_owners_before_returning(self):
+        session = object.__new__(PublisherSession)
+        args = SimpleNamespace(max_tokens=2, context=8, sampling_mib=1, seed=7)
+        class _Scope:
+            def cancellation_scope(self, _event):
+                return nullcontext()
+
+        target = SimpleNamespace(
+            profile=SimpleNamespace(vocabulary=4),
+            length=2,
+            implementation='test-v41',
+            cancellation_scope=lambda _event: nullcontext(),
+            restore_cache=lambda _cache, max_bytes: None,
+            snapshot=lambda: SimpleNamespace(tokens=(1, 2)))
+        cache = BytesIO(b'x')
+        header = dict(position=2, prompt_ids=[1], generated_ids=[2],
+            temperature=0.0, rng=np.random.default_rng(7).bit_generator.state,
+            stops=[2], stop_prefixes=[], dspark=False, accepted=0, proposed=0)
+        reset_calls = []
+        session._lock = threading.Lock()
+        session._closed = False
+        session._admitted_args = args
+        session._tokenizer_identity = 'tokenizer-pin'
+        session.arithmetic = _Scope()
+        session.model = target
+        session.checkpoint = SimpleNamespace(config={
+            'text_config': {'eos_token_id': [2]}})
+        session.tokenizer = SimpleNamespace(decode=lambda ids: ''.join(map(str, ids)))
+        session._requests = 0
+
+        def reset_request():
+            reset_calls.append(True)
+
+        session._reset_request = reset_request
+        cache.seek(1)
+        with patch('openagent.adaptive_engine.v41_generation_recovery.read',
+                   return_value=(header, np.zeros(4), cache, 1)):
+            result = session.resume_generation(BytesIO(), max_bytes=64)
+
+        self.assertEqual(len(reset_calls), 2)
+        self.assertEqual(result['generated_ids'], [2])
+        self.assertFalse(result['cleanup_pending'])
 
     def test_unprintable_target_rollback_failure_preserves_cancellation_and_restores_draft(self):
         decoder, target, proposer = self._decoder()

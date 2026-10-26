@@ -95,11 +95,13 @@ for (const size of sizes) for (const theme of ['light', 'dark']) {
     await page.getByRole('button', { name: 'Simulate training' }).click();
     const trace = page.locator('.trace-mount.trace-finetune');
     await expect(trace).toBeVisible();
+    // Cancel immediately: this is a timed local preview, and later stage
+    // transitions may complete and remove Stop before subsequent assertions.
+    await trace.getByRole('button', { name: 'Stop', exact: true }).click();
+    await expect(trace.locator('.trace-head-state')).toHaveText('Cancelled');
     await expect(page.getByRole('status').filter({ hasText: 'No model was trained' })).toBeVisible();
     await expect(page.locator('.demo-records').getByText('Preview · demo')).toBeVisible();
     await expect(page.locator('.demo-records').getByText(/no model was trained and no checkpoint was created/i)).toBeVisible();
-    await trace.getByRole('button', { name: 'Stop', exact: true }).click();
-    await expect(trace.locator('.trace-head-state')).toHaveText('Cancelled');
 
     const guideButton = page.getByRole('button', { name: 'Integration guide' });
     await guideButton.click();

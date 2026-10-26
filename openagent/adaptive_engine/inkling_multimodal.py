@@ -1,5 +1,6 @@
 """Owned Inkling image/audio insertion, native text and physical continuation."""
 import hashlib
+import copy
 import threading
 import numpy as np
 from .publisher_family_contracts import component_contract,partition_weights
@@ -67,8 +68,9 @@ class InklingMultimodalDecoder:
             # not leak providers that this wrapper was explicitly asked to own.
             try:self.close()
             except BaseException as failure:
-                primary.cleanup=self.close
-                primary.add_note('Inkling admission cleanup remains pending: '+repr(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,failure,
+                    'Inkling admission cleanup remains pending: ')
             raise
         try:
             self.media=InklingMediaEncoder(self.components.vision_config,self.components.audio_config,
@@ -116,7 +118,9 @@ class InklingMultimodalDecoder:
             for name,array in sorted(self.auxiliary.items()):
                 digest.update(name.encode());digest.update(memoryview(array).cast('B'))
             self.identity='openagent-inkling-conditional-v1:'+digest.hexdigest()
-            self.session.identity=self.identity
+            # Public Segment/Edge identity is derived from its admitted source
+            # and cannot be replaced with the enclosing media identity.
+            if segment_runtime_library is None:self.session.identity=self.identity
             if self.mtp is not None:
                 from .grouped_continuation import GroupedContinuation
                 self.identity='openagent-inkling-conditional-mtp-v1:'+hashlib.sha256((self.identity+self.mtp.identity).encode()).hexdigest()
@@ -127,8 +131,9 @@ class InklingMultimodalDecoder:
             except BaseException as failure:
                 # Preserve the construction error while exporting a retryable
                 # handle for any owner whose interrupted close did not finish.
-                primary.cleanup=self.close
-                primary.add_note('Inkling conditional construction cleanup remains pending: '+repr(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,failure,
+                    'Inkling conditional construction cleanup remains pending: ')
             raise
 
     @property
@@ -137,10 +142,13 @@ class InklingMultimodalDecoder:
     def _check(self):
         if self._closed or self._busy: raise RuntimeError('Inkling conditional owner is closed or executing')
 
-    def forward(self,token_ids,*,pixel_values=None,audio_input_ids=None,audio_input_ids_mask=None,cancelled=None):
+    def forward(self,token_ids,*,pixel_values=None,audio_input_ids=None,audio_input_ids_mask=None,
+                cancelled=None,capture_routing=False):
         with self._lock:
             self._check();self._busy=True
             try:
+                if type(capture_routing) is not bool:
+                    raise TypeError('boolean Inkling routing observation policy required')
                 _cancel(cancelled);ids=np.asarray(token_ids)
                 if ids.ndim==1: ids=ids[None]
                 c=self.text.config
@@ -186,7 +194,9 @@ class InklingMultimodalDecoder:
                 if hasattr(self.text,'torch'):
                     with self.text.cancellation_scope(cancelled):
                         return self.text.forward(ids,inputs_embeds=embeds)
-                return self.text.forward(ids,inputs_embeds=embeds,cancelled=cancelled)
+                options={'capture_routing':True} if (capture_routing and
+                    type(self.text).__name__=='NativeFamilyPublicTextDecoder') else {}
+                return self.text.forward(ids,inputs_embeds=embeds,cancelled=cancelled,**options)
             finally: self._busy=False
 
     def snapshot(self):
@@ -218,7 +228,8 @@ class InklingMultimodalDecoder:
             finally:
                 self._busy=False
 
-    def draft(self,shifted_ids,previous_hidden,*,cancelled=None):
+    def draft(self,shifted_ids,previous_hidden,*,cancelled=None,rng=None,
+              temperature=1.0,return_distributions=False):
         with self._lock:
             self._check()
             if self.mtp is None: raise RuntimeError('Inkling MTP stages require explicit aggregate admission')
@@ -226,7 +237,18 @@ class InklingMultimodalDecoder:
             if ids.ndim!=2 or self.mtp.position+ids.shape[-1]!=self.position:
                 raise ValueError('MTP must consume exactly the unprocessed committed backbone hidden prefix')
             self._busy=True
-            try: return self.mtp.draft(shifted_ids,previous_hidden,cancelled=cancelled)
+            rng_state=(copy.deepcopy(rng.bit_generator.state)
+                if rng is not None and hasattr(rng,'bit_generator') else None)
+            try:
+                return self.mtp.draft(shifted_ids,previous_hidden,cancelled=cancelled,
+                    rng=rng,temperature=temperature,return_distributions=return_distributions)
+            except BaseException as error:
+                if rng_state is not None:
+                    try:rng.bit_generator.state=copy.deepcopy(rng_state)
+                    except BaseException as cleanup:
+                        from .failure_reporting import add_failure_note, failure_summary
+                        add_failure_note(error,'Inkling proposal RNG rollback failed: '+failure_summary(cleanup))
+                raise
             finally: self._busy=False
     def close(self):
         with self._lock:

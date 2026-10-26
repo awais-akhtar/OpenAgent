@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from ..semantic_memory import SemanticMemoryManager
 from . import JsonRouteResult
@@ -18,6 +18,9 @@ ROUTES = (
     ("POST", "/api/semantic/memories"),
     ("GET", "/api/semantic/collections"),
     ("POST", "/api/semantic/collections"),
+    ("POST", "/api/semantic/collections/{collection_name}/rename"),
+    ("POST", "/api/semantic/collections/{collection_name}/archive"),
+    ("DELETE", "/api/semantic/collections/{collection_name}"),
     ("GET", "/api/semantic/graph-analytics"),
     ("POST", "/api/semantic/consolidate"),
     ("POST", "/api/semantic/vectors"),
@@ -68,7 +71,8 @@ def handle_get(path: str, query: str, deps: SemanticRouteDependencies) -> JsonRo
     if path == "/api/semantic/collections":
         params = parse_qs(query)
         project = _first(params, "project") or "default"
-        return JsonRouteResult({"collections": deps.semantic_memory.collections(project=project)})
+        include_archived = _first(params, "include_archived") in {"1", "true", "yes"}
+        return JsonRouteResult({"collections": deps.semantic_memory.collections(project=project, include_archived=include_archived)})
     if path == "/api/semantic/graph-analytics":
         params = parse_qs(query)
         project = _first(params, "project") or "default"
@@ -110,6 +114,41 @@ def handle_post(path: str, deps: SemanticRouteDependencies) -> JsonRouteResult |
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
         )
         return JsonRouteResult({"collection": collection}, HTTPStatus.CREATED)
+    rename_prefix = "/api/semantic/collections/"
+    rename_suffix = "/rename"
+    if path.startswith(rename_prefix) and path.endswith(rename_suffix):
+        payload = deps.read_json()
+        name = unquote(path.removeprefix(rename_prefix).removesuffix(rename_suffix)).strip()
+        if not name or "/" in name:
+            return JsonRouteResult({"error": "Collection name is required."}, HTTPStatus.BAD_REQUEST)
+        try:
+            collection = deps.semantic_memory.rename_collection(
+                name, new_name=str(payload.get("new_name", "")).strip(),
+                project=str(payload.get("project", "default")).strip() or "default",
+            )
+        except KeyError:
+            return JsonRouteResult({"error": "Collection not found."}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        return JsonRouteResult({"collection": collection})
+    archive_suffix = "/archive"
+    if path.startswith(rename_prefix) and path.endswith(archive_suffix):
+        payload = deps.read_json()
+        name = unquote(path.removeprefix(rename_prefix).removesuffix(archive_suffix)).strip()
+        if not name or "/" in name:
+            return JsonRouteResult({"error": "Collection name is required."}, HTTPStatus.BAD_REQUEST)
+        archived = payload.get("archived")
+        if not isinstance(archived, bool):
+            return JsonRouteResult({"error": "archived must be a boolean."}, HTTPStatus.BAD_REQUEST)
+        try:
+            collection = deps.semantic_memory.set_collection_archived(
+                name, archived=archived, project=str(payload.get("project", "default")).strip() or "default",
+            )
+        except KeyError:
+            return JsonRouteResult({"error": "Collection not found."}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        return JsonRouteResult({"collection": collection})
     if path == "/api/semantic/vectors":
         payload = deps.read_json()
         vector = payload.get("vector")
@@ -149,3 +188,19 @@ def handle_post(path: str, deps: SemanticRouteDependencies) -> JsonRouteResult |
         )
         return JsonRouteResult(result, HTTPStatus.CREATED)
     return None
+
+
+def handle_delete(path: str, query: str, deps: SemanticRouteDependencies) -> JsonRouteResult | None:
+    prefix = "/api/semantic/collections/"
+    if not path.startswith(prefix):
+        return None
+    name = unquote(path.removeprefix(prefix)).strip().strip("/")
+    if not name or "/" in name:
+        return JsonRouteResult({"error": "Collection name is required."}, HTTPStatus.BAD_REQUEST)
+    project = _first(parse_qs(query), "project") or "default"
+    try:
+        return JsonRouteResult(deps.semantic_memory.delete_collection(name, project=project))
+    except KeyError:
+        return JsonRouteResult({"error": "Collection not found."}, HTTPStatus.NOT_FOUND)
+    except ValueError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

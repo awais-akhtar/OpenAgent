@@ -239,9 +239,11 @@ class ExpertKernelRegistry:
         self.register(Q5_1ExpertBackend())
         from .grouped_int4_expert import GroupedInt4ExpertBackend
         from .mxfp4_expert import MXFP4ExpertBackend
+        from .fp8_block_expert import FP8BlockExpertBackend
 
         self.register(GroupedInt4ExpertBackend())
         self.register(MXFP4ExpertBackend())
+        self.register(FP8BlockExpertBackend())
         from .lowbit_expert import LowBitExpertBackend, INT2, INT3
 
         self.register(LowBitExpertBackend(INT2))

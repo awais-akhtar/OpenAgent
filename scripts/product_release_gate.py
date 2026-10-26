@@ -50,7 +50,10 @@ def check_product(root: Path, ui_root: Path | None = None) -> dict:
     installer = root / "installers/windows/install.ps1"
     body = installer.read_text(encoding="utf-8") if installer.is_file() else ""
     verify("windows-install-uses-approved-react", all(
-        marker in body for marker in ("npm", "run build", "frontend-second", "--ui-root", "ui.previous")
+        marker in body for marker in ("npm", "run build", "frontend-second", "--ui-root", "ui.previous",
+                                      "Resolve-Path -LiteralPath $venvPythonw",
+                                      "savedShortcut.TargetPath", "$defaultInstallSuffix",
+                                      "$userProfileRoot", "AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs")
     ), "Installer must build, stage, validate, and explicitly load approved React assets")
 
     workflows = root / ".github/workflows"

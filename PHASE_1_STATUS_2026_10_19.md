@@ -1,5 +1,9 @@
 # Phase 1 Status Report — 2026-10-19
 
+> Historical snapshot, not a current closure certificate. See
+> [PHASE_1_ACTIVE_TODO.md](PHASE_1_ACTIVE_TODO.md) for the current source
+> matrix, evidence gaps and P15 status.
+
 **Project:** OpenAgent Adaptive Engine Optimization  
 **Work:** Phase 1 Route Closure (A01-A11)  
 **Status:** ✅ A01-A10 COMPLETE; A11 Ready for Closure

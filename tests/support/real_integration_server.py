@@ -7,11 +7,15 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from openagent.auth import AuthManager
+from openagent.context import ContextEngine
 from openagent.server import build_http_server
 from openagent.storage import OpenAgentStore
+from openagent.calendar_system import CalendarSystem
 from openagent.model_gateway import ModelResult, ProviderConfigurationError, StreamChunk
+from openagent.models import AuditEvent
 import openagent.codebase.service as codebase_service_module
 
 
@@ -25,6 +29,24 @@ def main() -> int:
     os.environ["OPENAGENT_BOOTSTRAP_TOKEN"] = "batch2b-integration-bootstrap-secret-32-chars"
     os.environ["OPENAGENT_DATA_DIR"] = str(root / "data")
     store = OpenAgentStore(root / "data")
+    ContextEngine(store).ingest(
+        title="Research source-note smoke fixture",
+        content="Synthetic local evidence for verifying persisted per-source Research notes. This record is confined to the temporary integration database.",
+        type="note", source="integration-test", project="default",
+    )
+    store.add_audit_event(AuditEvent(
+        actor="integration-fixture", action="security.audit.smoke",
+        resource="synthetic-only", project="default", status="success",
+        metadata={"private_marker": "must-not-be-rendered"}, id="integration-audit-smoke",
+    ))
+    # A due reminder gives the real React→Python smoke a safe, deterministic
+    # record for exercising the acknowledgement lifecycle.
+    due_start = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    CalendarSystem(store).create_event(
+        "Batch 2B due reminder fixture", due_start,
+        (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat(),
+        project="default", reminders=[0],
+    )
     # Inject exactly one TCP-close style interruption into a marked disposable
     # CodeQ SSE run. The real HTTP handler, event records and React subscriber
     # remain in use; the next request resumes from the supplied cursor.
@@ -63,7 +85,11 @@ def main() -> int:
 
     tokens = {
         "chat": token("smoke-chat", ["chat:read", "chat:write", "local_ai:read"]),
-        "codeq": token("smoke-codeq", ["codebase:read", "codebase:write", "local_ai:read"]),
+        # Home's attachment handoff composes Chat streaming with stored-media
+        # upload. Keep that integration test credential separate from the
+        # single-purpose Chat and Documents credentials above.
+        "chatMedia": token("smoke-chat-media", ["chat:read", "chat:write", "local_ai:read", "media:read", "media:write"]),
+        "codeq": token("smoke-codeq", ["codebase:read", "codebase:write", "local_ai:read", "terminal:read", "terminal:write"]),
         "research": token("smoke-research", ["knowledge:read", "knowledge:write"]),
         "agents": token("smoke-agents", ["agents:read", "agents:run"]),
         "agentsAdmin": token("smoke-agents-admin", ["agents:read", "agents:run", "agents:admin"]),
@@ -73,10 +99,28 @@ def main() -> int:
         "readonly": token("smoke-readonly", [
             "local_ai:read", "workspace:read", "calendar:read", "docs:read", "media:read",
         ]),
+        "models": token("smoke-models", ["local_ai:read", "local_ai:admin"]),
+        "personalOS": token("smoke-personal-os", ["personal_os:read", "personal_os:write"]),
+        "workflows": token("smoke-workflows", ["workflows:read", "workflows:write"]),
+        "scraper": token("smoke-scraper", ["scraper:read", "scraper:write"]),
         "documents": token("smoke-documents", ["docs:read", "docs:write", "media:read", "media:write"]),
-        "knowledge": token("smoke-knowledge", ["knowledge:read", "knowledge:write"]),
+        "workspace": token("smoke-workspace", ["workspace:read", "workspace:write"]),
+        # The Knowledge screen reads/ingests indexed documents with
+        # knowledge:* and manages semantic collections with semantic:*.
+        # Keep this integration credential limited to those exact operations.
+        "knowledge": token("smoke-knowledge", ["knowledge:read", "knowledge:write", "semantic:read", "semantic:write"]),
+        "voice": token("smoke-voice", ["voice:read", "voice:write"]),
         "communication": token("smoke-communications", ["communication:read", "communication:write"]),
         "calendar": token("smoke-calendar", ["calendar:read", "calendar:write"]),
+        # Fine-tuning Jobs composes the Fine-tuning contract with read-only
+        # Local AI model/job catalogs. Keep the credential least-privilege but
+        # grant the additional read scope the actual screen requests.
+        "finetune": token("smoke-finetune", ["finetune:read", "finetune:write", "local_ai:read"]),
+        "integrations": token("smoke-integrations", ["integrations:read", "integrations:admin"]),
+        "assistant": token("smoke-assistant", ["assistant:read", "assistant:write"]),
+        "twin": token("smoke-twin", ["twin:read", "twin:write"]),
+        "securityAdmin": token("smoke-security-admin", ["security:admin"]),
+        "securityRead": token("smoke-security-read", ["security:read"]),
         "otherAgentRead": foreign_auth.create_api_token(
             foreign_user["user_id"], "smoke-foreign-agent-history", scopes=["agents:read"],
         )["token"],
@@ -121,8 +165,16 @@ def main() -> int:
         def complete(self, messages, *, provider_id="local", model=None, allow_external=False, **kwargs):
             prompt = "\n".join(str(message.get("content", "")) for message in messages if isinstance(message, dict))
             print(f"integration fixture completion request: {prompt[-160:]!r}", file=sys.stderr, flush=True)
+            if "[integration-fail]" in prompt:
+                raise ProviderConfigurationError("Synthetic local integration provider failure.")
             if "Run-only scope fixture" in prompt or "History integration fixture from the Agents workspace" in prompt:
                 return ModelResult(provider="local", model="integration-fixture", content="Synthetic local agent response for the Batch 2A authorization test.", metadata={})
+            if "[integration-agent-cancel]" in prompt:
+                # Keep this disposable Agent job active until the real React
+                # cancel control has submitted its authenticated request.
+                print("integration Agent cancellation provider delay entered", file=sys.stderr, flush=True)
+                time.sleep(8)
+                return ModelResult(provider="local", model="integration-fixture", content="Synthetic local cancellation fixture.", metadata={})
             if "[integration-resume-fail]" in prompt:
                 raise ProviderConfigurationError("Controlled local failure for resume integration coverage.")
             if "[integration-research-cancel]" in prompt:
@@ -146,6 +198,10 @@ def main() -> int:
             print(f"integration fixture provider: request={prompt[:60]!r}", file=sys.stderr, flush=True)
             if "[integration-fail]" in prompt:
                 raise ProviderConfigurationError("Synthetic local integration provider failure.")
+            if "[integration-agent-cancel]" in prompt:
+                # Agent runs use the streaming provider path; hold this marked
+                # fixture here until React submits the real cancel request.
+                time.sleep(8)
             if "[integration-research-cancel]" in prompt:
                 # Research synthesis uses the streaming gateway path. Keep its
                 # deterministic local response in flight long enough for the

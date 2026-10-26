@@ -38,6 +38,8 @@ class ChatRouteDependencies:
     parse_bool: Any
     parse_int: Any
     read_json: Any
+    cancelled: Any = None
+    auth_scope_owner: Any = None
 
 
 def handle_get(path: str, query: str, deps: ChatRouteDependencies) -> JsonRouteResult | None:
@@ -91,9 +93,10 @@ def handle_post(path: str, deps: ChatRouteDependencies) -> JsonRouteResult | Str
                 "model": str(payload.get("model", "")).strip() or None,
                 "allow_external": deps.parse_bool(payload.get("allow_external"), default=False),
                 "attachments": payload.get("attachments") if isinstance(payload.get("attachments"), list) else [],
+                "owner": deps.auth_scope_owner() if callable(deps.auth_scope_owner) else "",
             }
             if path.endswith("/stream"):
-                return StreamRouteResult(deps.chat.stream(content, **arguments))
+                return StreamRouteResult(deps.chat.stream(content, cancelled=deps.cancelled, **arguments))
             return JsonRouteResult(deps.chat.send(content, **arguments), HTTPStatus.CREATED)
         if path == "/api/chat/artifact":
             artifact = deps.artifacts.render(

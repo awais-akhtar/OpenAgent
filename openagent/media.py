@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
 from pathlib import Path
 import re
 import shutil
@@ -25,6 +26,10 @@ AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".flac", ".ogg"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 
 
+class MediaAssetInUse(ValueError):
+    """Raised when deleting an asset would break a stored Voice reference."""
+
+
 class MediaManager:
     """Stores local media assets and deterministic local analysis records."""
 
@@ -36,6 +41,155 @@ class MediaManager:
 
     def initialize(self) -> None:
         self.store.initialize()
+        try:
+            with self.store.session() as connection:
+                connection.execute("ALTER TABLE media_assets ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        self._recover_pending_deletions()
+
+    def _recover_pending_deletions(self) -> None:
+        """Finish or roll back staged asset removal after an interrupted process."""
+        root = self.assets_root.resolve()
+        for staged in root.glob(".pending-delete-*"):
+            asset_id = staged.name.removeprefix(".pending-delete-")
+            try:
+                with self.store.session() as connection:
+                    row = connection.execute(
+                        "SELECT stored_path FROM media_assets WHERE id = ?", (asset_id,),
+                    ).fetchone()
+                target_raw = str(row["stored_path"] or "") if row else ""
+                if target_raw:
+                    target = Path(target_raw)
+                    if target.is_symlink():
+                        staged.unlink(missing_ok=True)
+                        continue
+                    target = target.resolve(strict=False)
+                    if root not in target.parents:
+                        staged.unlink(missing_ok=True)
+                        continue
+                    if not target.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(staged, target)
+                    else:
+                        staged.unlink(missing_ok=True)
+                else:
+                    # No database row means the delete transaction committed.
+                    staged.unlink(missing_ok=True)
+            except OSError:
+                # Keep staged bytes for a later startup retry.
+                continue
+
+    def delete_asset(self, asset_id: str, *, project: str, owner: str = "") -> dict[str, Any] | None:
+        """Delete a scoped asset and its derived media data, retaining the source file."""
+        asset_id = str(asset_id).strip()
+        project = str(project).strip()
+        owner = str(owner).strip()
+        if not asset_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", asset_id) or not project:
+            return None
+
+        root = self.assets_root.resolve()
+        staged = root / f".pending-delete-{asset_id}"
+        original: Path | None = None
+        staged_file = False
+        asset: dict[str, Any] | None = None
+        try:
+            with self.store.session() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if owner:
+                    row = connection.execute(
+                        "SELECT * FROM media_assets WHERE id = ? AND project = ? AND owner = ?",
+                        (asset_id, project, owner),
+                    ).fetchone()
+                else:
+                    row = connection.execute(
+                        "SELECT * FROM media_assets WHERE id = ? AND project = ?", (asset_id, project),
+                    ).fetchone()
+                if not row:
+                    return None
+                if connection.execute(
+                    "SELECT 1 FROM voice_personas WHERE project = ? AND voiceprint_asset_id = ? LIMIT 1",
+                    (project, asset_id),
+                ).fetchone() or connection.execute(
+                    "SELECT 1 FROM voice_turns WHERE project = ? AND audio_asset_id = ? LIMIT 1",
+                    (project, asset_id),
+                ).fetchone():
+                    raise MediaAssetInUse("This media file is still used by a saved Voice persona or session.")
+
+                stored_path = str(row["stored_path"] or "").strip()
+                if stored_path:
+                    candidate = Path(stored_path)
+                    if candidate.is_symlink():
+                        raise ValueError("Stored media path is not a regular local asset.")
+                    candidate = candidate.resolve(strict=False)
+                    if root not in candidate.parents or candidate == root:
+                        raise ValueError("Stored media path is outside the local media store.")
+                    if candidate.exists():
+                        if not candidate.is_file():
+                            raise ValueError("Stored media path is not a file.")
+                        if staged.exists():
+                            raise OSError("A previous removal is still pending recovery.")
+                        os.replace(candidate, staged)
+                        original = candidate
+                        staged_file = True
+
+                asset = {
+                    "id": asset_id,
+                    "title": str(row["title"]),
+                    "project": project,
+                    "media_type": str(row["media_type"]),
+                    "size_bytes": int(row["size_bytes"]),
+                    "source": str(row["source"]),
+                }
+                connection.execute("DELETE FROM media_analyses WHERE asset_id = ? AND project = ?", (asset_id, project))
+                try:
+                    connection.execute(
+                        "DELETE FROM events WHERE project = ? AND json_extract(metadata_json, '$.asset_id') = ?",
+                        (project, asset_id),
+                    )
+                except Exception as exc:
+                    if "json" not in str(exc).lower():
+                        raise
+                    event_rows = connection.execute(
+                        "SELECT id, metadata_json FROM events WHERE project = ?", (project,),
+                    ).fetchall()
+                    for event_row in event_rows:
+                        try:
+                            metadata = json.loads(event_row["metadata_json"] or "{}")
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(metadata, dict) and str(metadata.get("asset_id", "")) == asset_id:
+                            connection.execute("DELETE FROM events WHERE id = ?", (event_row["id"],))
+                connection.execute("DELETE FROM media_assets WHERE id = ? AND project = ?", (asset_id, project))
+                audit = AuditEvent(
+                    actor="media", action="media.delete", resource=f"media:{asset_id}", project=project,
+                    metadata={"media_type": asset["media_type"], "size_bytes": asset["size_bytes"]},
+                )
+                connection.execute(
+                    "INSERT INTO audit_events (id, actor, action, resource, project, status, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (audit.id, audit.actor, audit.action, audit.resource, audit.project, audit.status,
+                     json.dumps(audit.metadata, sort_keys=True), audit.created_at),
+                )
+        except Exception:
+            if staged_file and original is not None and staged.exists():
+                try:
+                    original.parent.mkdir(parents=True, exist_ok=True)
+                    if not original.exists():
+                        os.replace(staged, original)
+                except OSError:
+                    # Startup recovery restores staged bytes if the database
+                    # transaction rolled back and the asset row still exists.
+                    pass
+            raise
+
+        cleanup_pending = False
+        if staged_file:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                cleanup_pending = True
+        assert asset is not None
+        return {**asset, "stored_bytes_removed": not cleanup_pending, "cleanup_pending": cleanup_pending}
 
     def ingest_file(
         self,
@@ -46,6 +200,7 @@ class MediaManager:
         source: str = "file",
         metadata: dict[str, Any] | None = None,
         copy_to_store: bool = True,
+        owner: str = "",
     ) -> dict[str, Any]:
         file_path = Path(path).expanduser().resolve()
         if not file_path.exists() or not file_path.is_file():
@@ -60,6 +215,7 @@ class MediaManager:
             source_path=str(file_path),
             metadata=metadata,
             copy_to_store=copy_to_store,
+            owner=owner,
         )
 
     def ingest_bytes(
@@ -73,6 +229,7 @@ class MediaManager:
         source_path: str = "",
         metadata: dict[str, Any] | None = None,
         copy_to_store: bool = True,
+        owner: str = "",
     ) -> dict[str, Any]:
         if not data:
             raise ValueError("Media data is required.")
@@ -112,14 +269,15 @@ class MediaManager:
             "content_hash": content_hash,
             "metadata": metadata or {},
             "created_at": now,
+            "owner": owner,
         }
         with self.store.session() as connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO media_assets (
                     id, project, title, media_type, mime_type, source, source_path,
-                    stored_path, size_bytes, content_hash, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    stored_path, size_bytes, content_hash, metadata_json, created_at, owner
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asset["id"],
@@ -134,6 +292,7 @@ class MediaManager:
                     asset["content_hash"],
                     json.dumps(asset["metadata"], sort_keys=True),
                     asset["created_at"],
+                    asset["owner"],
                 ),
             )
         analysis = self.analyze_bytes(asset, data, suffix=suffix)
@@ -158,10 +317,12 @@ class MediaManager:
         )
         return {**asset, "analysis": analysis}
 
-    def analyze_asset(self, asset_id: str) -> dict[str, Any]:
-        asset = self.get_asset(asset_id)
+    def analyze_asset(
+        self, asset_id: str, *, project: str = "default", owner: str = "",
+    ) -> dict[str, Any]:
+        asset = self.get_asset(asset_id, project=project, owner=owner)
         if asset is None:
-            raise ValueError(f"Unknown media asset '{asset_id}'.")
+            raise KeyError(f"Unknown media asset '{asset_id}'.")
         stored_path = asset.get("stored_path", "")
         if not stored_path:
             raise ValueError("Asset bytes were not copied into the local media store.")
@@ -235,17 +396,65 @@ class MediaManager:
         )
         return analysis
 
-    def get_asset(self, asset_id: str) -> dict[str, Any] | None:
+    def get_asset(
+        self, asset_id: str, *, project: str | None = None, owner: str = "",
+    ) -> dict[str, Any] | None:
+        clauses = ["id = ?"]
+        params: list[Any] = [asset_id]
+        if project is not None:
+            clauses.append("project = ?")
+            params.append(str(project).strip() or "default")
+        if owner:
+            clauses.append("owner = ?")
+            params.append(str(owner).strip())
         with self.store.session() as connection:
-            row = connection.execute("SELECT * FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
+            row = connection.execute(
+                f"SELECT * FROM media_assets WHERE {' AND '.join(clauses)}", tuple(params)
+            ).fetchone()
         return asset_row(row) if row else None
 
-    def assets(self, *, project: str = "default", media_type: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    def read_audio_asset(
+        self, asset_id: str, *, project: str = "default", owner: str = "",
+    ) -> tuple[dict[str, Any], bytes] | None:
+        """Read one project- and owner-scoped stored audio asset for playback."""
+        project = project.strip() or "default"
+        clauses = ["id = ?", "project = ?", "media_type = 'audio'"]
+        params: list[Any] = [asset_id, project]
+        if owner:
+            clauses.append("owner = ?")
+            params.append(str(owner).strip())
+        with self.store.session() as connection:
+            row = connection.execute(
+                f"SELECT * FROM media_assets WHERE {' AND '.join(clauses)}",
+                tuple(params),
+            ).fetchone()
+        if not row:
+            return None
+        asset = asset_row(row)
+        stored_path = str(asset.get("stored_path", "")).strip()
+        if not stored_path:
+            return None
+        try:
+            path = Path(stored_path).resolve(strict=True)
+            root = self.assets_root.resolve(strict=True)
+            if root not in path.parents or not path.is_file():
+                return None
+            data = path.read_bytes()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if not data or hashlib.sha256(data).hexdigest() != str(asset.get("content_hash", "")):
+            return None
+        return asset, data
+
+    def assets(self, *, project: str = "default", media_type: str = "", limit: int = 50, owner: str = "") -> list[dict[str, Any]]:
         clauses = ["project = ?"]
         params: list[Any] = [project]
         if media_type:
             clauses.append("media_type = ?")
             params.append(media_type)
+        if owner:
+            clauses.append("owner = ?")
+            params.append(owner)
         params.append(max(1, min(limit, 200)))
         with self.store.session() as connection:
             rows = connection.execute(
@@ -254,29 +463,54 @@ class MediaManager:
             ).fetchall()
         return [asset_row(row) for row in rows]
 
-    def analyses(self, *, project: str = "default", asset_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
-        clauses = ["project = ?"]
-        params: list[Any] = [project]
-        if asset_id:
-            clauses.append("asset_id = ?")
-            params.append(asset_id)
-        params.append(max(1, min(limit, 200)))
-        with self.store.session() as connection:
-            rows = connection.execute(
-                f"SELECT * FROM media_analyses WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
-                tuple(params),
-            ).fetchall()
+    def analyses(self, *, project: str = "default", asset_id: str = "", limit: int = 50, owner: str = "") -> list[dict[str, Any]]:
+        if owner:
+            clauses = ["a.project = ?"]
+            params: list[Any] = [project]
+            if asset_id:
+                clauses.append("a.asset_id = ?")
+                params.append(asset_id)
+            clauses.append("m.owner = ?")
+            params.append(owner)
+            params.append(max(1, min(limit, 200)))
+            with self.store.session() as connection:
+                rows = connection.execute(
+                    f"SELECT a.* FROM media_analyses a JOIN media_assets m ON m.id = a.asset_id WHERE {' AND '.join(clauses)} ORDER BY a.created_at DESC LIMIT ?",
+                    tuple(params),
+                ).fetchall()
+        else:
+            clauses = ["project = ?"]
+            params = [project]
+            if asset_id:
+                clauses.append("asset_id = ?")
+                params.append(asset_id)
+            params.append(max(1, min(limit, 200)))
+            with self.store.session() as connection:
+                rows = connection.execute(
+                    f"SELECT * FROM media_analyses WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
+                    tuple(params),
+                ).fetchall()
         return [analysis_row(row) for row in rows]
 
-    def status(self, *, project: str = "default") -> dict[str, Any]:
+    def status(self, *, project: str = "default", owner: str = "") -> dict[str, Any]:
+        asset_scope = "project = ?"
+        analysis_scope = "project = ?"
+        params: list[Any] = [project]
+        analysis_params: list[Any] = [project]
+        if owner:
+            asset_scope += " AND owner = ?"
+            analysis_scope += " AND asset_id IN (SELECT id FROM media_assets WHERE project = ? AND owner = ?)"
+            params.append(owner)
+            analysis_params.append(project)
+            analysis_params.append(owner)
         with self.store.session() as connection:
             rows = connection.execute(
-                "SELECT media_type, count(*) AS count FROM media_assets WHERE project = ? GROUP BY media_type",
-                (project,),
+                f"SELECT media_type, count(*) AS count FROM media_assets WHERE {asset_scope} GROUP BY media_type",
+                tuple(params),
             ).fetchall()
             analyses = connection.execute(
-                "SELECT count(*) FROM media_analyses WHERE project = ?",
-                (project,),
+                f"SELECT count(*) FROM media_analyses WHERE {analysis_scope}",
+                tuple(analysis_params),
             ).fetchone()[0]
         return {
             "project": project,

@@ -26,8 +26,39 @@ class FamilyModelDescriptor(C.Structure):
         ('glm_weights',C.POINTER(Tensor)),('glm_step',C.c_void_p),('inkling_config',Config),
         ('inkling_layers',C.POINTER(Layer)),('inkling_run',C.c_void_p),('globals',Tensor*4)]
 
+
+def _verify_family_abi_layouts(probe):
+    """Fail closed unless every public family record matches the C ABI.
+
+    Kept separate from registration so the full record contract (including
+    nested Tensor/Config/Layer layouts) can be exercised without constructing
+    a model or allocating native state.
+    """
+    probe.argtypes=[C.c_uint32,C.POINTER(C.c_uint64),C.c_size_t]
+    probe.restype=C.c_size_t
+    records=((1,FamilyModelDescriptor),(2,Tensor),(3,Config),(4,Layer))
+    for number,record in records:
+        expected=[C.sizeof(record),len(record._fields_)]+[
+            getattr(record,name).offset for name,_ in record._fields_]
+        observed=(C.c_uint64*len(expected))()
+        count=probe(number,observed,len(observed))
+        if count!=len(expected) or list(observed)!=expected:
+            raise ValueError('native family descriptor ABI layout differs: '+str(number))
+
 _PINNED=set()
 _GUARD=threading.RLock()
+
+def _update_checkpoint_provenance(digest,inventory):
+    """Bind public ABI cache identity to the exact admitted checkpoint root/config."""
+    root=Path(inventory.root).resolve(strict=True)
+    config_digest=inventory.config_sha256
+    if (type(config_digest) is not str or len(config_digest)!=64 or
+            any(char not in '0123456789abcdef' for char in config_digest)):
+        raise ValueError('verified checkpoint configuration digest required for public ABI identity')
+    inventory.assert_unchanged()
+    digest.update(b'openagent-public-family-checkpoint-v1\0')
+    digest.update(str(root).encode('utf-8'))
+    digest.update(b'\0'+config_digest.encode('ascii'))
 
 class NativeFamilyPublicAdapters:
     def __init__(self,runtime_library,decoder,*,model_directory,max_resource_bytes,max_work_bytes,
@@ -83,6 +114,7 @@ class NativeFamilyPublicAdapters:
             self._kernel_release=weakref.finalize(self,release,self.kernel._handle)
             kernel_identity.assert_unchanged()
             self._runtime_identity,self._kernel_identity=runtime_identity,kernel_identity
+            _update_checkpoint_provenance(digest,inventory)
             if provider is not None:
                 from .native_original_experts import NativeOriginalExperts
                 self._expert_bank=NativeOriginalExperts(self.native,provider,max_bytes=expert_budget)
@@ -129,12 +161,7 @@ class NativeFamilyPublicAdapters:
             version=self.native.library.oa_segment_family_version;version.argtypes=[];version.restype=C.c_uint32
             if version()!=1:raise ValueError('unsupported native public family model ABI')
             probe=self.native.library.oa_segment_family_layout
-            probe.argtypes=[C.c_uint32,C.POINTER(C.c_uint64),C.c_size_t];probe.restype=C.c_size_t
-            for number,record in ((1,FamilyModelDescriptor),(2,Tensor),(3,Config),(4,Layer)):
-                expected=[C.sizeof(record),len(record._fields_)]+[getattr(record,name).offset for name,_ in record._fields_]
-                observed=(C.c_uint64*len(expected))()
-                if probe(number,observed,len(observed))!=len(expected) or list(observed)!=expected:
-                    raise ValueError('native family descriptor ABI layout differs: '+str(number))
+            _verify_family_abi_layouts(probe)
             result=C.c_uint64();error=C.create_string_buffer(4096)
             runtime_identity.assert_unchanged();kernel_identity.assert_unchanged()
             if register(C.byref(descriptor),C.byref(result),error,len(error)):
@@ -153,6 +180,16 @@ class NativeFamilyPublicAdapters:
                 if enable(self._model_id,pointer,error,len(error)):
                     raise RuntimeError(error.value.decode('utf-8',errors='replace'))
             self.layer_ranges_enabled=enable_layer_ranges
+            self.routing_observation_supported=self.family=='inkling_text'
+            if enable_layer_ranges and self.family=='glm5_next_text':
+                enable_observer=getattr(self.native.library,'oa_segment_family_enable_glm_route_observer',None)
+                observe=getattr(self.kernel,'oa_glm5_next_step_range_observed',None)
+                if enable_observer is not None and observe is not None:
+                    enable_observer.argtypes=[C.c_uint64,C.c_void_p,C.c_void_p,C.c_size_t]
+                    enable_observer.restype=C.c_int
+                    if enable_observer(self._model_id,C.cast(observe,C.c_void_p),error,len(error)):
+                        raise RuntimeError(error.value.decode('utf-8',errors='replace'))
+                    self.routing_observation_supported=True
             self.transport_width=(self.hidden_size*self.streams+self.context
                 if enable_layer_ranges and self.family=='glm5_next_text' else self.hidden_size)
             if self._expert_bank is not None:
@@ -172,7 +209,9 @@ class NativeFamilyPublicAdapters:
         except BaseException as error:
             try:self.close()
             except BaseException as failure:
-                error.cleanup=self.close;error.add_note('native public model cleanup retained: '+str(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,self.close,failure,
+                    'native public model cleanup retained: ')
             raise
 
     def final_hidden(self,wire):

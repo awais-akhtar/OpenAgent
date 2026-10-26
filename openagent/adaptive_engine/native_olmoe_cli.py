@@ -40,9 +40,11 @@ def build_parser():
     parser.add_argument("--max-tokens", type=positive, default=32)
     parser.add_argument("--context-tokens", type=positive, default=512)
     parser.add_argument("--cache-mib", type=positive, default=256)
-    parser.add_argument("--resident-mib", type=positive, default=2048)
-    parser.add_argument("--transfer-mib", type=positive, default=2048)
-    parser.add_argument("--staging-mib", type=positive, default=256)
+    parser.add_argument("--resident-mib", type=positive, default=4096)
+    parser.add_argument("--transfer-mib", type=positive, default=4096)
+    parser.add_argument("--staging-mib", type=positive, default=4096)
+    parser.add_argument("--conversion-mib", type=positive, default=4096,
+                        help="bounded temporary memory for dense embedding/head decoding")
     return parser
 
 
@@ -93,7 +95,8 @@ def run(args):
             expert_cache_bytes=args.cache_mib*mib, context_tokens=args.context_tokens,
             max_bytes=args.transfer_mib*mib, max_staging_bytes=args.staging_mib*mib))
         edge = stack.enter_context(NativeOlmoeEdge(args.model_directory, library,
-            max_resident_bytes=args.resident_mib*mib, max_bytes=args.transfer_mib*mib))
+            max_resident_bytes=args.resident_mib*mib, max_bytes=args.transfer_mib*mib,
+            max_conversion_bytes=args.conversion_mib*mib))
         session = stack.enter_context(engine.create_decoder_session(edge))
         loaded = time.perf_counter()
         generated, pending = [], prompt

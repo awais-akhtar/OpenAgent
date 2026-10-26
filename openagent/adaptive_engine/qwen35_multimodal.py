@@ -101,8 +101,9 @@ class Qwen35MultimodalDecoder(Qwen4MultimodalDecoder):
         except BaseException as primary:
             try:self.close()
             except BaseException as cleanup:
-                primary.cleanup=self.close
-                primary.add_note('Qwen3.5 inventory admission cleanup remains pending: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'Qwen3.5 inventory admission cleanup remains pending: ')
             raise
         try:
             self.vision=Qwen35VisionEncoder(self.components.vision_config,vision,library=library,max_bytes=available//2)
@@ -126,7 +127,9 @@ class Qwen35MultimodalDecoder(Qwen4MultimodalDecoder):
         except BaseException as primary:
             try:self.close()
             except BaseException as cleanup:
-                primary.cleanup=self.close;primary.add_note('Qwen3.5 component cleanup retained: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'Qwen3.5 component cleanup retained: ')
             raise
 
 

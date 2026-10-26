@@ -60,12 +60,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
 
       await newRow.locator('button[aria-label="More actions for Desktop access review"]').click();
       await page.getByRole('dialog', { name: 'Desktop access review' }).getByRole('button', { name: 'Delete', exact: true }).click();
-      const confirm = page.getByRole('dialog', { name: 'Delete “Desktop access review”?' });
+      const confirm = page.getByRole('dialog', { name: 'Delete "Desktop access review"?' });
       await confirm.getByRole('button', { name: 'Cancel' }).click();
       await expect(rows.filter({ hasText: 'Desktop access review' }).filter({ hasNotText: '(copy)' })).toHaveCount(1);
       const detailAfterCancel = page.getByRole('dialog', { name: 'Desktop access review' });
       await detailAfterCancel.getByRole('button', { name: 'Delete', exact: true }).click();
-      await page.getByRole('dialog', { name: 'Delete “Desktop access review”?' }).getByRole('button', { name: 'Delete record' }).click();
+      await page.getByRole('dialog', { name: 'Delete "Desktop access review"?' }).getByRole('button', { name: 'Delete record' }).click();
       await expect(rows.filter({ hasText: 'Desktop access review' }).filter({ hasNotText: '(copy)' })).toHaveCount(0);
       await expect(page.locator('.advanced-demo-activity')).toContainText('Agent needs GitHub read access · Denied');
       expect(apiRequests).toEqual([]);

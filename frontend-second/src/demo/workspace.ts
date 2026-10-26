@@ -1,6 +1,40 @@
 import { demoProvider } from './provider';
 
 type DemoRow = Record<string, unknown>;
+
+function calendarOccurrences(event: DemoRow, fromMs: number, toMs: number): DemoRow[] {
+  const startMs = new Date(String(event.starts_at ?? '')).getTime();
+  const endMs = new Date(String(event.ends_at ?? '')).getTime();
+  const rule = String(event.rrule ?? '');
+  if (!rule || !Number.isFinite(startMs) || !Number.isFinite(endMs)) return startMs < toMs && endMs > fromMs ? [event] : [];
+  const parts = Object.fromEntries(rule.split(';').map(pair => pair.split('=', 2)).filter(pair => pair.length === 2));
+  const frequency = parts.FREQ;
+  const interval = Math.max(1, Math.min(1000, Number(parts.INTERVAL ?? 1) || 1));
+  const count = Math.max(1, Math.min(1000, Number(parts.COUNT ?? 1000) || 1));
+  const untilValue = String(parts.UNTIL ?? '');
+  const untilMatch = untilValue.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/);
+  const until = untilMatch ? new Date(`${untilMatch[1]}-${untilMatch[2]}-${untilMatch[3]}T${untilMatch[4]}:${untilMatch[5]}:${untilMatch[6]}Z`).getTime() : untilValue ? new Date(untilValue).getTime() : Number.POSITIVE_INFINITY;
+  if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(String(frequency))) return startMs >= fromMs && startMs < toMs ? [event] : [];
+  const start = new Date(startMs);
+  const duration = endMs - startMs;
+  const results: DemoRow[] = [];
+  for (let index = 0; index < count && index < 1000; index += 1) {
+    const occurrence = new Date(startMs);
+    if (frequency === 'DAILY') occurrence.setDate(start.getDate() + index * interval);
+    else if (frequency === 'WEEKLY') occurrence.setDate(start.getDate() + index * interval * 7);
+    else {
+      const monthOffset = index * interval * (frequency === 'YEARLY' ? 12 : 1);
+      const monthStart = new Date(start.getFullYear(), start.getMonth() + monthOffset, 1, start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+      const day = Math.min(start.getDate(), new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate());
+      monthStart.setDate(day);
+      occurrence.setTime(monthStart.getTime());
+    }
+    const occurrenceMs = occurrence.getTime();
+    if (occurrenceMs > until) break;
+    if (occurrenceMs < toMs && occurrenceMs + duration > fromMs) results.push({ starts_at: occurrence.toISOString(), ends_at: new Date(occurrenceMs + duration).toISOString() });
+  }
+  return results;
+}
 export const codeQDemoProductCardContent = `import { useState } from 'react';
 import { Heart, ShoppingCart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -210,7 +244,7 @@ function ok<T extends DemoRow>(data: T): T { return data; }
 function parse(path: string) { return new URL(path, 'http://demo.local'); }
 
 /** Local-only implementation of the workspace API shapes used by these screens. */
-export async function workspaceDemoRequest<T extends DemoRow>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, input?: unknown, signal?: AbortSignal): Promise<T> {
+export async function workspaceDemoRequest<T extends DemoRow>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, input?: unknown, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
   const body: DemoRow = input instanceof FormData
     ? { filename: (input.get('file') as File | null)?.name ?? 'Uploaded file', title: (input.get('file') as File | null)?.name ?? 'Uploaded reference' }
@@ -333,24 +367,86 @@ export async function workspaceDemoRequest<T extends DemoRow>(method: 'GET' | 'P
   }
   if (pathname === '/api/media/assets') return result({ assets: state.assets });
   if (pathname === '/api/media/ingest') { const asset = { id: uid('asset'), title: String(body?.title ?? body?.filename ?? 'Uploaded file'), mime_type: 'application/octet-stream', size_bytes: 0, created_at: now(), media_type: 'file' }; state.assets.unshift(asset); await save(state); return result({ asset }); }
-  if (pathname === '/api/workspace/items' && method === 'GET') return result({ items: state.workspaceItems });
+  if (pathname === '/api/workspace/items' && method === 'GET') {
+    const includeArchived = url.searchParams.get('include_archived') === 'true' || url.searchParams.get('include_archived') === '1';
+    const requestedProject = url.searchParams.get('project');
+    const items = state.workspaceItems.filter(item => includeArchived || !item.archived)
+      .filter(item => !requestedProject || String(item.project ?? 'default') === requestedProject);
+    return result({ items });
+  }
   if (pathname === '/api/workspace/items' && method === 'POST') {
     const item = { ...body, id: uid('workspace-item'), updated_at: now() };
     state.workspaceItems.unshift(item); await save(state); return result({ item });
   }
   if (pathname === '/api/workspace/items/update') {
-    const item = state.workspaceItems.find(candidate => candidate.id === body?.item_id);
+    const project = String(body?.project ?? 'default');
+    const item = state.workspaceItems.find(candidate => candidate.id === body?.item_id && String(candidate.project ?? 'default') === project);
     if (item) { item.title = body?.title; item.content = body?.content; item.metadata = body?.metadata; item.updated_at = now(); }
     await save(state); return result({ item: item ?? null });
   }
+  if (pathname.startsWith('/api/workspace/items/') && method === 'POST' && ['archive', 'restore'].includes(String(parts.at(-1)))) {
+    const action = String(parts.at(-1));
+    const itemId = String(parts.at(-2) ?? '');
+    const project = String(body?.project ?? 'default');
+    const item = state.workspaceItems.find(candidate => String(candidate.id) === itemId && String(candidate.project ?? 'default') === project);
+    if (!item) return result({ error: 'Workspace item not found.' }) as T;
+    const archived = action === 'archive';
+    item.archived = archived;
+    item.archived_at = archived ? now() : '';
+    item.updated_at = now();
+    await save(state);
+    return result(archived ? { archived: true, item_id: itemId } : { restored: true, item_id: itemId });
+  }
+  if (pathname.startsWith('/api/workspace/items/') && method === 'DELETE') {
+    const itemId = parts[parts.indexOf('items') + 1];
+    const itemIndex = state.workspaceItems.findIndex(candidate => String(candidate.id) === itemId);
+    if (itemIndex < 0) return result({ error: 'Workspace item not found.' });
+    if (state.workspaceItems.some(candidate => String(candidate.parent_id ?? '') === itemId)) return result({ error: 'Move or delete this item’s children before deleting it.' });
+    state.workspaceItems.splice(itemIndex, 1); await save(state); return result({ deleted: true, item_id: itemId });
+  }
 
+  if (parts[0] === 'api' && parts[1] === 'knowledge' && parts[2] === 'documents' && parts[3] && method === 'PUT') {
+    const document = state.knowledgeDocuments.find(item => String(item.id) === parts[3] && String(item.project ?? 'default') === String(body?.project ?? 'default'));
+    if (!document) return result({ error: 'Knowledge source not found.' });
+    const nextTitle = String(body?.title ?? '').trim();
+    const nextContent = String(body?.content ?? '').trim();
+    if (!nextTitle || !nextContent) return result({ error: 'A title and source text are required.' });
+    document.title = nextTitle;
+    document.content = nextContent;
+    document.chunks = Math.max(1, Math.ceil(nextContent.length / 800));
+    document.updated_at = now();
+    await save(state);
+    return result({ document });
+  }
   if (pathname === '/api/knowledge/status') return result({ status: 'ready', documents: state.knowledgeDocuments.length, chunks: state.knowledgeDocuments.reduce((count, item) => count + Number(item.chunks ?? 1), 0) });
   if (pathname === '/api/knowledge/documents') return result({ documents: state.knowledgeDocuments });
   if (pathname === '/api/knowledge/tags') return result({ tags: [...new Set(state.knowledgeDocuments.flatMap(item => Array.isArray(item.tags) ? item.tags as string[] : []))].map((tag, index) => ({ id: `tag-${index}`, tag })) });
   if (pathname === '/api/knowledge/timeline') return result({ timeline: state.knowledgeDocuments.slice(0, 8).map(item => ({ source_id: item.id, title: item.title, type: 'indexed', timestamp: now() })) });
   if (pathname === '/api/knowledge/graph') return result({ entities: [{ id: 'entity-product', name: 'Product requirements', entity_type: 'document', source_ids: ['demo-knowledge-1'] }], relationships: [{ id: 'relation-product-roadmap', subject: 'Product requirements', predicate: 'informs', object: 'Roadmap', source_id: 'demo-knowledge-1', weight: 1 }] });
   if (pathname === '/api/rag/status') return result({ status: 'ready', documents: state.knowledgeDocuments.length });
-  if (pathname === '/api/semantic/collections' && method === 'GET') return result({ collections: state.knowledgeCollections });
+  if (pathname === '/api/semantic/collections' && method === 'GET') { const includeArchived = url.searchParams.get('include_archived') === 'true'; return result({ collections: state.knowledgeCollections.filter(item => includeArchived || !item.archived) }); }
+  const semanticCollectionMatch = pathname.match(/^\/api\/semantic\/collections\/([^/]+)(?:\/(rename|archive))?$/);
+  if (semanticCollectionMatch && method === 'POST' && semanticCollectionMatch[2] === 'rename') {
+    const currentName = decodeURIComponent(semanticCollectionMatch[1]);
+    const collection = state.knowledgeCollections.find(item => String(item.name) === currentName);
+    const nextName = String(body?.new_name ?? '').trim();
+    if (!collection) return result({ error: 'Collection not found.' });
+    if (!nextName || state.knowledgeCollections.some(item => item !== collection && String(item.name).toLowerCase() === nextName.toLowerCase())) return result({ error: 'Enter a unique collection name.' });
+    collection.name = nextName; collection.updated_at = now(); await save(state); return result({ collection });
+  }
+  if (semanticCollectionMatch && method === 'POST' && semanticCollectionMatch[2] === 'archive') {
+    const currentName = decodeURIComponent(semanticCollectionMatch[1]);
+    const collection = state.knowledgeCollections.find(item => String(item.name) === currentName);
+    if (!collection) return result({ error: 'Collection not found.' });
+    if (typeof body?.archived !== 'boolean') return result({ error: 'archived must be a boolean.' });
+    collection.archived = body.archived; collection.archived_at = body.archived ? now() : ''; collection.updated_at = now(); await save(state); return result({ collection });
+  }
+  if (semanticCollectionMatch && method === 'DELETE' && !semanticCollectionMatch[2]) {
+    const collectionName = decodeURIComponent(semanticCollectionMatch[1]);
+    const index = state.knowledgeCollections.findIndex(item => String(item.name) === collectionName);
+    if (index < 0) return result({ error: 'Collection not found.' });
+    const [collection] = state.knowledgeCollections.splice(index, 1); await save(state); return result({ deleted: true, name: collectionName, collection_id: collection.id, records_removed: 0 });
+  }
   if (pathname === '/api/knowledge/search' || pathname === '/api/knowledge/semantic-search' || pathname === '/api/knowledge/hybrid-search') {
     const query = String(body?.query ?? url.searchParams.get('q') ?? '').toLowerCase();
     const matches = state.knowledgeDocuments.filter(item => !query || `${item.title} ${item.content}`.toLowerCase().includes(query) || String(item.title).toLowerCase().includes(query.split(' ')[0] ?? ''));
@@ -369,13 +465,34 @@ export async function workspaceDemoRequest<T extends DemoRow>(method: 'GET' | 'P
   if (pathname === '/api/semantic/collections' && method === 'POST') { const collection = { id: uid('collection'), name: String(body?.name ?? 'Collection'), dimensions: 1536, distance: 'cosine', updated_at: now() }; state.knowledgeCollections.unshift(collection); await save(state); return result({ collection }); }
 
   if (pathname === '/api/calendar/calendars' && method === 'GET') return result({ calendars: state.calendarCalendars });
-  if (pathname === '/api/calendar/events' && method === 'GET') return result({ events: state.calendarEvents.filter(event => { const start = new Date(String(event.starts_at)).getTime(); return start >= new Date(url.searchParams.get('from') ?? 0).getTime() && start < new Date(url.searchParams.get('to') ?? 8640000000000000).getTime() && (!url.searchParams.get('calendar_id') || event.calendar_id === url.searchParams.get('calendar_id')); }) });
+  if (pathname === '/api/calendar/events' && method === 'GET') {
+    const from = new Date(url.searchParams.get('from') ?? 0).getTime();
+    const to = new Date(url.searchParams.get('to') ?? 8640000000000000).getTime();
+    const events = state.calendarEvents.flatMap(event => {
+      if (url.searchParams.get('calendar_id') && event.calendar_id !== url.searchParams.get('calendar_id')) return [];
+      const occurrences = calendarOccurrences(event, from, to);
+      return occurrences.length
+        ? [{ ...event, occurrences: String(event.rrule ?? '') ? occurrences : undefined }]
+        : [];
+    });
+    return result({ events });
+  }
   if (pathname === '/api/calendar/free-slots') return result({ slots: [{ starts_at: new Date(Date.now() + 86_400_000).toISOString(), duration_minutes: Number(url.searchParams.get('duration') ?? 60) }] });
   if (pathname === '/api/calendar/reminders') return result({ reminders: state.calendarEvents.slice(0, 2).map(event => ({ id: event.id, title: event.title, trigger_at: event.starts_at })) });
   if (pathname === '/api/calendar/providers') return result({ providers: state.providers });
   if (pathname === '/api/calendar/conflicts') return result({ conflicts: state.conflicts });
   if (pathname === '/api/calendar/optimize') return result({ total_events: state.calendarEvents.length, total_scheduled_minutes: state.calendarEvents.length * 60, suggestions: ['Your week has room for focused project work.'], conflicts: [] });
   if (pathname === '/api/calendar/events' && method === 'POST') { const event = { ...body, id: uid('event'), created_at: now() }; state.calendarEvents.push(event); await save(state); return result({ event }); }
+  if (parts[0] === 'api' && parts[1] === 'calendar' && parts[2] === 'events' && parts[3] && (method === 'PATCH' || method === 'DELETE')) {
+    const index = state.calendarEvents.findIndex(event => String(event.id) === parts[3] && (!url.searchParams.get('project') || String(event.project ?? 'default') === url.searchParams.get('project')));
+    if (index < 0) throw new Error('Event not found.');
+    if (method === 'DELETE') { const [deleted] = state.calendarEvents.splice(index, 1); await save(state); return result({ deleted: true, id: deleted.id }); }
+    const current = state.calendarEvents[index];
+    const updated: DemoRow = { ...current, ...body, id: current.id, updated_at: now() };
+    if (!String(updated.title ?? '').trim()) throw new Error('Event title is required.');
+    if (new Date(String(updated.ends_at)).getTime() <= new Date(String(updated.starts_at)).getTime()) throw new Error('Event end must be later than start.');
+    state.calendarEvents[index] = updated; await save(state); return result({ event: updated });
+  }
   if (pathname === '/api/calendar/calendars' && method === 'POST') { const calendar = { ...body, id: uid('calendar'), is_default: false }; state.calendarCalendars.push(calendar); await save(state); return result({ calendar }); }
   if (pathname === '/api/calendar/providers/register') {
     const supplied = body?.config && typeof body.config === 'object' ? body.config as DemoRow : {};

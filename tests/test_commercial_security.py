@@ -446,13 +446,28 @@ class HttpBoundaryTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
+                # Do not race the server thread's first select/accept cycle on
+                # Windows. The socket is bound before serve_forever begins,
+                # so an immediate POST can otherwise be aborted by the host
+                # while the thread is still entering its request loop.
+                ready = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+                try:
+                    ready.request("GET", "/api/health")
+                    response = ready.getresponse()
+                    response.read()
+                    self.assertEqual(response.status, 200)
+                finally:
+                    ready.close()
                 with patch.object(SlidingWindowRateLimiter, "consume", return_value=(False, 9)):
                     for method in ("POST", "PUT", "PATCH", "DELETE"):
                         with self.subTest(method=method):
                             connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
                             try:
-                                connection.request(method, "/api/document/missing", body="{}",
-                                                   headers={"Content-Type": "application/json"})
+                                # Rate limiting precedes JSON parsing, so this
+                                # probe needs no body. Sending an unread body
+                                # while the handler closes a rejected request
+                                # can reset the response on Windows TCP.
+                                connection.request(method, "/api/document/missing")
                                 response = connection.getresponse()
                                 response.read()
                                 self.assertEqual(response.status, 429)

@@ -38,7 +38,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
 
       await duplicate.getByRole('button', { name: 'More options for Workspace admin review (copy)' }).click();
       await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
-      const confirmation = page.getByRole('dialog', { name: 'Delete “Workspace admin review (copy)”?' });
+      const confirmation = page.getByRole('dialog', { name: 'Delete "Workspace admin review (copy)"?' });
       await expect(confirmation).toBeVisible();
       await confirmation.getByRole('button', { name: 'Delete record' }).click();
       await expect(page.locator('.security-demo-record').filter({ hasText: 'Workspace admin review (copy)' })).toHaveCount(0);

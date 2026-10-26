@@ -1,0 +1,15 @@
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const errors = [], assets = [];
+page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
+page.on('console', message => { if (message.type() === 'error') errors.push(`console: ${message.text()}`); });
+page.on('response', response => { if (new URL(response.url()).origin === 'http://127.0.0.1:8898' && /\.(js|css)(\?|$)/.test(response.url())) assets.push({ status: response.status(), url: new URL(response.url()).pathname }); });
+await page.goto('http://127.0.0.1:8898/', { waitUntil: 'networkidle' });
+await page.locator('.app-shell').waitFor({ state: 'visible', timeout: 30000 });
+await page.getByRole('heading', { name: 'Welcome to OpenAgent' }).waitFor({ state: 'visible', timeout: 15000 });
+await page.screenshot({ path: '../.qa/desktop-final-20261024/installed-clean-upgrade.png', fullPage: true });
+const report = { title: await page.title(), shellCount: await page.locator('.app-shell').count(), homeHeading: await page.getByRole('heading', { name: 'Welcome to OpenAgent' }).count(), assets, errors };
+console.log(JSON.stringify(report, null, 2));
+if (report.shellCount !== 1 || report.homeHeading !== 1 || !assets.length || assets.some(asset => asset.status !== 200) || errors.length) process.exitCode = 1;
+await browser.close();

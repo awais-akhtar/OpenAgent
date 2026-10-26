@@ -107,18 +107,18 @@ class FamilyRouteTrace:
 # ============================================================================
 
 QWEN35_NATIVE_TRACE = FamilyRouteTrace(
-    family='qwen3.5',
+    family='qwen35',
     model_type='qwen3_5_moe',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='publisher_family_contracts.component_contract(config)',
         checkpoint_type='native checkpoint safetensors',
         loader_function='native_checkpoint.read_native_text_checkpoint(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -150,14 +150,14 @@ QWEN4_NATIVE_TRACE = FamilyRouteTrace(
     model_type='qwen4_exp',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='publisher_family_contracts.component_contract(config)',
         checkpoint_type='native checkpoint safetensors',
         loader_function='native_checkpoint.read_native_text_checkpoint(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -189,14 +189,14 @@ GLM5_NATIVE_TRACE = FamilyRouteTrace(
     model_type='glm5_next',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='publisher_glm5_config.validate_glm5_identity(config)',
         checkpoint_type='publisher glm5 checkpoint',
         loader_function='publisher_glm5_loader.load_publisher_glm5(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -228,14 +228,14 @@ GLM_DSA_NATIVE_TRACE = FamilyRouteTrace(
     model_type='glm_moe_dsa',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='independent_glm_dsa.validate_glm_dsa_config(config)',
         checkpoint_type='native checkpoint safetensors',
         loader_function='native_checkpoint.read_native_text_checkpoint(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -266,15 +266,15 @@ DEEPSEEK_V41_NATIVE_BF16_TRACE = FamilyRouteTrace(
     family='deepseek-v41',
     model_type='deepseek_v41',
     backend='native',
-    arithmetic='fp32',
-    source_format='float32',
+    arithmetic='publisher-bf16-fp8-fp4',
+    source_format='BF16',
     persisted_format='bf16',
 
     loader=LoaderTrace(
         config_validator='publisher_checkpoint.contracts.validate_v41_identity(config)',
         checkpoint_type='publisher v41 checkpoint with bf16 bank',
         loader_function='publisher_checkpoint.v41_adapter.load_v41_bf16(...)',
-        tensor_source='bf16 weights',
+        tensor_source='BF16 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -311,14 +311,14 @@ MIXTRAL_NATIVE_TRACE = FamilyRouteTrace(
     model_type='mixtral',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='native_mixtral_decoder.validate_mixtral_identity(config)',
         checkpoint_type='native checkpoint safetensors',
         loader_function='native_checkpoint.read_native_text_checkpoint(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -350,14 +350,14 @@ OLMOE_NATIVE_TRACE = FamilyRouteTrace(
     model_type='olmoe',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='olmoe.validate_olmoe_config(config)',
         checkpoint_type='OLMoE segment manifest',
         loader_function='native_leased_olmoe_segments.NativeLeasedOlmoeSegmentEngine.load(...)',
-        tensor_source='float32 segments',
+        tensor_source='F32 segments',
     ),
 
     consumer=ConsumerTrace(
@@ -388,15 +388,15 @@ K3_NATIVE_TRACE = FamilyRouteTrace(
     family='kimi-k3',
     model_type='kimi_k3',
     backend='native',
-    arithmetic='fp32',
-    source_format='float32',
+    arithmetic='fp32-approximate',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='publisher_checkpoint.contracts.validate_k3_identity(config)',
         checkpoint_type='publisher k3 checkpoint',
         loader_function='publisher_checkpoint.k3_adapter.load_k3_checkpoint(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -428,14 +428,14 @@ INKLING_NATIVE_TRACE = FamilyRouteTrace(
     model_type='inkling_mm_model',
     backend='native',
     arithmetic='fp32',
-    source_format='float32',
+    source_format='F32',
     persisted_format='float32',
 
     loader=LoaderTrace(
         config_validator='publisher_family_contracts.component_contract(config)',
         checkpoint_type='native checkpoint safetensors',
         loader_function='native_checkpoint.read_native_text_checkpoint(...)',
-        tensor_source='float32 weights',
+        tensor_source='F32 weights',
     ),
 
     consumer=ConsumerTrace(
@@ -511,3 +511,10 @@ if __name__ == '__main__':
     print(f"✓ All {len(ALL_ROUTES)} routes validated (complete paths)")
     print(f"  Priority: {len(ALL_PRIORITY_ROUTES)}")
     print(f"  Remaining: {len(ALL_REMAINING_ROUTES)}")
+
+
+# Backward-compatible import path.  device_routes is the maintained catalog:
+# it uses canonical source tuples and explicitly labels unwired integrations.
+import sys as _sys
+from . import device_routes as _device_routes
+_sys.modules[__name__] = _device_routes

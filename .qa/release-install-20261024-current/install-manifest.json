@@ -1,0 +1,10 @@
+﻿{
+    "version":  "0.13.0",
+    "ui_source":  "frontend-second/dist",
+    "ui_root":  "D:\\openagent\\.qa\\release-install-20261024-current\\ui",
+    "installed_at":  "2026-10-24T19:37:03.1398164+00:00",
+    "source":  "D:\\openagent",
+    "data_dir":  "D:\\openagent\\.qa\\release-install-20261024-current\\data",
+    "product":  "OpenAgent",
+    "python":  "3.14.3"
+}

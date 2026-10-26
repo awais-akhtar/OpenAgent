@@ -5,23 +5,28 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const origin = process.env.OPENAGENT_UI_ORIGIN ?? 'http://127.0.0.1:5180';
-const port = Number(new URL(origin).port || 80);
+const configuredOrigin = process.env.OPENAGENT_UI_ORIGIN;
+let origin = configuredOrigin ?? '';
+let port = configuredOrigin ? Number(new URL(configuredOrigin).port || 80) : 0;
 const logDir = path.join(root, '.qa');
 const logFile = path.join(logDir, 'playwright-last.log');
 await mkdir(logDir, { recursive: true });
-await writeFile(logFile, `E2E run started ${new Date().toISOString()}\nOrigin: ${origin}\n`, 'utf8');
+await writeFile(logFile, `E2E run started ${new Date().toISOString()}\nOrigin: ${origin || 'reserved isolated loopback port'}\n`, 'utf8');
 
 function log(line) {
   process.stdout.write(line);
   void appendFile(logFile, line);
 }
 
-function assertPortAvailable(host, targetPort) {
+function reserveLocalPort(host) {
   return new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once('error', error => reject(new Error(`Cannot start isolated E2E Vite server: ${host}:${targetPort} is already occupied (${error.message}). Stop the existing process and retry.`)));
-    probe.listen(targetPort, host, () => probe.close(error => error ? reject(error) : resolve()));
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, host, () => {
+      const address = server.address();
+      const selectedPort = address && typeof address === 'object' ? address.port : 0;
+      server.close(error => error ? reject(error) : selectedPort ? resolve(selectedPort) : reject(new Error('Could not reserve an isolated E2E port.')));
+    });
   });
 }
 
@@ -48,8 +53,9 @@ let apiOrigin = origin;
 let exitCode = 1;
 try {
   if (!process.env.OPENAGENT_UI_ORIGIN) {
+    port = await reserveLocalPort('127.0.0.1');
+    origin = `http://127.0.0.1:${port}`;
     const parsed = new URL(origin);
-    await assertPortAvailable(parsed.hostname, port);
     vite = spawn(process.execPath, [path.join(root, 'node_modules/vite/bin/vite.js'), '--host', parsed.hostname, '--port', String(port), '--strictPort'], {
       cwd: root,
       windowsHide: true,
@@ -69,6 +75,22 @@ try {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     if (!serverStarted) throw new Error(`Timed out waiting for the isolated Vite server at ${origin}. See ${logFile}.`);
+
+    // The page HTML can answer before Vite has transformed the lazy-loaded
+    // workspace modules. Warm those route entry points before launching a
+    // browser so the first route assertion measures the app, not a cold
+    // transform on a busy Windows runner.
+    for (const modulePath of [
+      '/src/screens/HomeChat.tsx',
+      '/src/screens/WorkspaceScreens.tsx',
+      '/src/screens/OperationsScreens.tsx',
+      '/src/screens/AdvancedScreen.tsx',
+    ]) {
+      const response = await fetch(new URL(modulePath, origin), { signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) throw new Error(`Vite failed to prepare ${modulePath} (${response.status}). See ${logFile}.`);
+      const moduleSource = await response.text();
+      if (!moduleSource.trim()) throw new Error(`Vite returned an empty module for ${modulePath}. See ${logFile}.`);
+    }
     apiOrigin = origin;
   }
 

@@ -182,20 +182,49 @@ class DigitalTwin:
         return {"id": interaction_id, "kind": kind, "topics": topics}
 
     def list_sources(self, *, project: str = "default", limit: int = 100) -> list[dict[str, Any]]:
-        """List provenance event metadata without exposing captured interaction content."""
+        """List interaction provenance and the inferred preference signals it supplied.
+
+        The association is deliberately narrow: a signal is shown only when the
+        topic extractor recorded it on this interaction and the preference
+        learner currently has the corresponding project-scoped topic entry.
+        Captured interaction text and context are never returned.
+        """
         with self.store.session() as connection:
             rows = connection.execute(
                 "SELECT id, kind, topics_json, created_at FROM twin_interactions "
                 "WHERE project=? ORDER BY created_at DESC LIMIT ?",
                 (project, max(1, min(int(limit), 500))),
             ).fetchall()
+            preference_rows = connection.execute(
+                "SELECT key, value, weight, source FROM twin_preferences "
+                "WHERE project=? AND category='topic'",
+                (project,),
+            ).fetchall()
+        preferences = {
+            str(row[0]): {"value": str(row[1]), "weight": float(row[2]), "source": str(row[3])}
+            for row in preference_rows
+        }
         result = []
         for row in rows:
             try:
                 topics = json.loads(row[2] or "[]")
             except json.JSONDecodeError:
                 topics = []
-            result.append({"id": row[0], "kind": row[1], "topics": topics, "created_at": row[3]})
+            safe_topics = [str(topic) for topic in topics if isinstance(topic, str)]
+            signals = [
+                {
+                    "category": "topic",
+                    "key": topic,
+                    "value": preferences[topic]["value"],
+                    "relationship": "topic signal supplied to the preference learner",
+                }
+                for topic in safe_topics
+                if topic in preferences and preferences[topic]["source"] == "inferred"
+            ]
+            result.append({
+                "id": row[0], "kind": row[1], "topics": safe_topics,
+                "preference_signals": signals, "created_at": row[3],
+            })
         return result
 
     def _update_topic_weights(

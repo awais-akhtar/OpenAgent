@@ -13,6 +13,7 @@ from typing import Any
 
 from ..adaptive_engine.execution_service import ExecutionCancelled
 from ..adaptive_engine.admission_scheduler import AdmissionRejected, AdmissionTimedOut
+from ..adaptive_engine.failure_reporting import failure_detail, failure_summary
 from ..model_gateway import ModelGateway, ProviderConfigurationError, ProviderUnavailableError
 from ..models import AuditEvent
 from ..storage import OpenAgentStore
@@ -419,7 +420,8 @@ def _handle_compat_completion(path: str, payload: object,
             try:
                 require_colibri_capability("family_tool_protocols", operation="tool protocol")
             except ValueError as exc:
-                return error(str(exc), kind="unsupported_feature")
+                return error("tool calls and thinking blocks are not admitted on the Anthropic compatibility route: " + str(exc),
+                             kind="unsupported_feature")
             return error("tool calls and thinking blocks are not admitted on the Anthropic compatibility route",
                          kind="unsupported_feature")
         if "temperature" in payload or "top_p" in payload:
@@ -523,12 +525,10 @@ def _handle_compat_completion(path: str, payload: object,
                 (size := utf8_size(item)) is None or size > 4096
                 for item in stop_sequences)):
         return error("stop must be a string or an array of at most four bounded strings")
-    # Native PublisherSession stop-prefix arguments are token-ID sequences,
-    # not user-facing text. Do not misroute raw strings as iterable token IDs;
-    # until the tokenizer/template-aware stop adapter exists, reject explicitly.
-    if stop_sequences:
-        return error("text stop sequences are not yet adapted to native token boundaries",
-                     kind="unsupported_feature")
+    # Preserve API text stops as strings here. NativePublisherProvider encodes
+    # them with the exact tokenizer loaded for this checkpoint, then passes the
+    # resulting token prefixes to the same transactional generation path used
+    # by direct native callers.
     def _text_content(value):
         if type(value) is str:
             return value
@@ -574,7 +574,7 @@ def _handle_compat_completion(path: str, payload: object,
     try:
         configured = provider._configuration()["model"]
     except (ProviderConfigurationError, ProviderUnavailableError, OSError, ValueError, TypeError) as exc:
-        return error(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
+        return error(failure_detail(exc, limit=2048), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
     try:
         if model != configured:
             return error("requested model differs from configured native checkpoint")
@@ -584,7 +584,8 @@ def _handle_compat_completion(path: str, payload: object,
             try:
                 stream_iterator = iter(provider.stream_complete(
                     messages, model=model, max_output_tokens=max_tokens,
-                    stop_prefixes=(), cancelled=deps.cancelled,
+                    stop_prefixes=(), stop_sequences=tuple(stop_sequences),
+                    cancelled=deps.cancelled,
                     queue_timeout=admission_timeout))
                 first_event = next(stream_iterator)
                 first_metadata = getattr(first_event, "metadata", {})
@@ -595,7 +596,8 @@ def _handle_compat_completion(path: str, payload: object,
                     stream_iterator, first_event, path=path, model=model,
                     prompt=payload.get("prompt", ""), echo=payload.get("echo", False),
                     anthropic=anthropic, include_usage=include_usage,
-                    request_cancelled=deps.cancelled),
+                    request_cancelled=deps.cancelled,
+                    stop_sequences=tuple(stop_sequences)),
                     headers={"X-Queue-Wait-Ms": str(queue_wait_ms)})
                 # Ownership moves to the response iterator only after the
                 # first event has been validated and the route result exists.
@@ -615,24 +617,25 @@ def _handle_compat_completion(path: str, payload: object,
                             # emitted headers and cannot report cleanup over SSE.
                             pass
         result = provider.complete(messages, model=model, max_output_tokens=max_tokens,
-                                   stop_prefixes=(),cancelled=deps.cancelled,
+                                   stop_prefixes=(), stop_sequences=tuple(stop_sequences),
+                                   cancelled=deps.cancelled,
                                    queue_timeout=admission_timeout)
         if deps.cancelled is not None and deps.cancelled():
             raise ExecutionCancelled("completion request cancelled before response publication")
     except AdmissionRejected as exc:
-        return JsonRouteResult(error(str(exc), HTTPStatus.TOO_MANY_REQUESTS, "server_error").payload,
+        return JsonRouteResult(error(failure_detail(exc, limit=2048), HTTPStatus.TOO_MANY_REQUESTS, "server_error").payload,
                                HTTPStatus.TOO_MANY_REQUESTS, {"Retry-After": "1"})
     except AdmissionTimedOut as exc:
-        return JsonRouteResult(error(str(exc), HTTPStatus.TOO_MANY_REQUESTS, "server_error").payload,
+        return JsonRouteResult(error(failure_detail(exc, limit=2048), HTTPStatus.TOO_MANY_REQUESTS, "server_error").payload,
                                HTTPStatus.TOO_MANY_REQUESTS, {"Retry-After": "1"})
     except ExecutionCancelled as exc:
-        return error(str(exc), HTTPStatus.REQUEST_TIMEOUT, "request_cancelled")
+        return error(failure_detail(exc, limit=2048), HTTPStatus.REQUEST_TIMEOUT, "request_cancelled")
     except (ProviderConfigurationError, ValueError, TypeError) as exc:
-        return error(str(exc))
+        return error(failure_detail(exc, limit=2048))
     except ProviderUnavailableError as exc:
-        return error(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
+        return error(failure_detail(exc, limit=2048), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
     except RuntimeError as exc:
-        return error(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
+        return error(failure_detail(exc, limit=2048), HTTPStatus.SERVICE_UNAVAILABLE, "server_error")
     created = int(time())
     runtime = result.metadata.get("runtime", {})
     prompt_tokens = runtime.get("expanded_prompt_tokens",
@@ -640,10 +643,14 @@ def _handle_compat_completion(path: str, payload: object,
     completion_tokens = len(runtime.get("generated_ids", ()))
     queue_headers = {"X-Queue-Wait-Ms": str(max(0, int(result.metadata.get("queue_wait_ms", 0))))}
     if anthropic:
+        matched_stop = runtime.get("stop_sequence")
+        stopped_by_sequence = (runtime.get("finish_reason") == "stop_sequence" and
+                               type(matched_stop) is str and matched_stop in stop_sequences)
         return JsonRouteResult({"id": "msg_" + str(created), "type": "message", "role": "assistant",
             "model": result.model, "content": [{"type": "text", "text": result.content}],
-            "stop_reason": "max_tokens" if runtime.get("finish_reason") == "length" else "end_turn",
-            "stop_sequence": None,
+            "stop_reason": ("max_tokens" if runtime.get("finish_reason") == "length" else
+                            "stop_sequence" if stopped_by_sequence else "end_turn"),
+            "stop_sequence": matched_stop if stopped_by_sequence else None,
             "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}},
             headers=queue_headers)
     if path == "/v1/completions":
@@ -661,7 +668,7 @@ def _handle_compat_completion(path: str, payload: object,
 
 
 def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, echo,
-                       anthropic, include_usage, request_cancelled):
+                       anthropic, include_usage, request_cancelled, stop_sequences=()):
     """Translate native transactional deltas into OpenAI or Anthropic SSE frames."""
     from uuid import uuid4
 
@@ -670,25 +677,36 @@ def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, ech
 
     def frames():
         source_closed = False
+        close_attempts = 0
 
         def close_source(primary=None):
-            nonlocal source_closed
-            if source_closed:
+            nonlocal source_closed, close_attempts
+            if source_closed or close_attempts >= 2:
                 return
-            source_closed = True
             close = getattr(stream_iterator, "close", None)
             if callable(close):
+                close_attempts += 1
                 try:
                     close()
                 except BaseException as cleanup:
                     if primary is None:
                         raise
                     try:
-                        primary.add_note("compatibility stream cleanup failed: " + repr(cleanup))
+                        primary.add_note("compatibility stream cleanup failed: " +
+                                         failure_summary(cleanup))
                     except BaseException:
                         pass
+                    return
+            source_closed = True
 
         try:
+            # The first provider event is pulled before the HTTP response takes
+            # ownership of this iterator so admission errors can still become
+            # ordinary JSON responses.  The peer can disconnect in that gap;
+            # do not emit protocol prelude frames for a request that is already
+            # cancelled.
+            if request_cancelled is not None and request_cancelled():
+                raise ExecutionCancelled("stream request cancelled before publication")
             if anthropic:
                 first_meta = getattr(first_event, "metadata", {})
                 prompt_tokens = first_meta.get("prompt_tokens") if type(first_meta) is dict else None
@@ -722,10 +740,17 @@ def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, ech
 
             completion_tokens = 0
             finish_reason = "stop"
+            anthropic_stop_sequence = None
             prompt_tokens = 0
             terminal_seen = False
             from itertools import chain
             for chunk in chain((first_event,), stream_iterator):
+                # Treat the route boundary as the final publication gate. A
+                # provider implementation may ignore the cooperative callback
+                # or already have buffered deltas; never translate/publish
+                # those stale events after the HTTP peer has gone away.
+                if request_cancelled is not None and request_cancelled():
+                    raise ExecutionCancelled("stream request cancelled before event publication")
                 metadata = chunk.metadata if type(chunk.metadata) is dict else {}
                 if chunk.done:
                     terminal_seen = True
@@ -736,6 +761,10 @@ def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, ech
                         completion_tokens = len(runtime.get("generated_ids", ()))
                         if runtime.get("finish_reason") == "length":
                             finish_reason = "length"
+                        elif (runtime.get("finish_reason") == "stop_sequence" and
+                              type(runtime.get("stop_sequence")) is str and
+                              runtime["stop_sequence"] in stop_sequences):
+                            anthropic_stop_sequence = runtime["stop_sequence"]
                     break
                 prompt_tokens = metadata.get("prompt_tokens", prompt_tokens)
                 if not chunk.content:
@@ -766,8 +795,9 @@ def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, ech
             if anthropic:
                 yield ServerSentEvent({"type": "content_block_stop", "index": 0}, event="content_block_stop")
                 yield ServerSentEvent({"type": "message_delta", "delta": {
-                    "stop_reason": "max_tokens" if finish_reason == "length" else "end_turn",
-                    "stop_sequence": None}, "usage": {"output_tokens": completion_tokens}},
+                    "stop_reason": ("max_tokens" if finish_reason == "length" else
+                                    "stop_sequence" if anthropic_stop_sequence is not None else "end_turn"),
+                    "stop_sequence": anthropic_stop_sequence}, "usage": {"output_tokens": completion_tokens}},
                     event="message_delta")
                 yield ServerSentEvent({"type": "message_stop"}, event="message_stop", terminal=True)
             else:
@@ -790,7 +820,7 @@ def _compat_sse_events(stream_iterator, first_event, *, path, model, prompt, ech
             close_source(primary=exc)
             if request_cancelled is not None and request_cancelled():
                 return
-            message = str(exc)[:2048]
+            message = failure_detail(exc, limit=2048)
             if anthropic:
                 yield ServerSentEvent({"type": "error", "error": {
                     "type": "api_error", "message": message}}, event="error", terminal=True)

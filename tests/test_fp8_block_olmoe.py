@@ -78,6 +78,18 @@ class FP8ModelIntegrationTests(unittest.TestCase):
                     np.testing.assert_allclose(actual.forward(tokens), expected.forward(tokens),
                                                atol=8e-6, rtol=8e-5)
 
+            # The production model's default registry must expose the bounded,
+            # independently decoded reference consumer for this persisted dtype.
+            with OlmoeModel(root, manifest,
+                            kernels=ExpertKernelRegistry([NativeFP8BlockExpertBackend()]),
+                            preferred_kernel=NativeFP8BlockExpertBackend.NAME,
+                            expert_cache_bytes=payload_size(64, 96)) as actual_default, OlmoeModel(
+                                root, manifest,
+                                expert_cache_bytes=payload_size(64, 96)) as reference:
+                for tokens in ([1, 4], [7]):
+                    np.testing.assert_allclose(actual_default.forward(tokens), reference.forward(tokens),
+                                               atol=8e-6, rtol=8e-5)
+
     def test_actual_gateway_and_cli_select_compiled_backend(self):
         from openagent.model_gateway import OlmoeDirectProvider
 

@@ -52,33 +52,43 @@ def pack_matrix(matrix, *, dtype):
     group = group or columns
     groups = (columns + group - 1) // group
     stride = (columns * bits + 7) // 8
-    output = bytearray(rows * stride)
-    scales = np.empty((rows, groups), dtype="<f4")
     maximum_code = (1 << (bits - 1)) - 1
-    for row in range(rows):
-        for index in range(groups):
-            start, end = index * group, min(columns, (index + 1) * group)
-            with np.errstate(over="ignore", invalid="ignore"):
-                block = values[row, start:end].astype(np.float32)
-            if not np.isfinite(block).all():
-                raise ValueError("weights must be finite float32")
-            maximum = float(np.max(np.abs(block)))
-            delta = np.float32(maximum / maximum_code) if maximum else np.float32(1)
-            if maximum and delta == 0:
-                delta = np.nextafter(np.float32(0), np.float32(1))
-            codes = np.clip(np.rint(block.astype(np.float64) / float(delta)),
-                            -maximum_code, maximum_code).astype(np.int8)
-            with np.errstate(over="ignore"):
-                if not np.isfinite((codes.astype(np.float64) * float(delta)).astype(np.float32)).all():
-                    raise ValueError("quantized weights exceed float32 range")
-            scales[row, index] = delta
-            for column, code in enumerate(codes, start):
-                address, shift = divmod(column * bits, 8)
-                encoded = int(code) & ((1 << bits) - 1)
-                output[row * stride + address] |= (encoded << shift) & 255
-                if shift + bits > 8:
-                    output[row * stride + address + 1] |= encoded >> (8 - shift)
-    return bytes(output), scales
+    with np.errstate(over="ignore", invalid="ignore"):
+        block_values = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(block_values).all():
+        raise ValueError("weights must be finite float32")
+
+    # Build [row, group, item] views so scales and codes are computed in bulk.
+    # INT3's last group may be partial; padding with zeros preserves its max.
+    padded_columns = groups * group
+    if padded_columns != columns:
+        padded = np.zeros((rows, padded_columns), dtype=np.float32)
+        padded[:, :columns] = block_values
+        grouped = padded.reshape(rows, groups, group)
+    else:
+        grouped = block_values.reshape(rows, groups, group)
+    maxima = np.max(np.abs(grouped), axis=2).astype(np.float64)
+    scales = (maxima / maximum_code).astype("<f4")
+    scales[maxima == 0] = np.float32(1)
+    underflow = (maxima != 0) & (scales == 0)
+    scales[underflow] = np.nextafter(np.float32(0), np.float32(1))
+
+    expanded_scales = np.repeat(scales, group, axis=1)[:, :columns]
+    codes = np.clip(np.rint(block_values.astype(np.float64) / expanded_scales.astype(np.float64)),
+                    -maximum_code, maximum_code).astype(np.int8)
+    with np.errstate(over="ignore"):
+        reconstructed = (codes.astype(np.float64) * expanded_scales.astype(np.float64)).astype(np.float32)
+    if not np.isfinite(reconstructed).all():
+        raise ValueError("quantized weights exceed float32 range")
+
+    # Each two-/three-bit two's-complement code is emitted least-significant
+    # bit first, matching the payload reader's divmod(column * bits, 8) layout.
+    bit_offsets = np.arange(bits, dtype=np.uint8)
+    bit_planes = ((codes.astype(np.uint8)[:, :, None] >> bit_offsets) & 1)
+    packed = np.packbits(bit_planes.reshape(rows, columns * bits), axis=1, bitorder="little")
+    if packed.shape != (rows, stride):
+        raise AssertionError("low-bit packer produced an invalid row stride")
+    return packed.tobytes(order="C"), scales
 
 
 def pack_expert(gate, up, down, *, dtype):

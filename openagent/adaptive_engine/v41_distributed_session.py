@@ -69,6 +69,7 @@ class V41DistributedOptions:
     bf16: bool = True
     fp8: bool = True
     fp4: bool = True
+    collective_timeout_seconds: int = 120
 
     def __post_init__(self):
         if type(self.torch_version) is not str or not self.torch_version:
@@ -77,6 +78,9 @@ class V41DistributedOptions:
             raise ValueError('caller-pinned complete checkpoint identity required')
         if type(self.max_collective_bytes) is not int or self.max_collective_bytes<=0:
             raise ValueError('positive collective allocation admission required')
+        if (type(self.collective_timeout_seconds) is not int or
+                not 1 <= self.collective_timeout_seconds <= 300):
+            raise ValueError('V4.1 distributed collective timeout must be in 1..300 seconds')
         if any(type(value) is not bool for value in (self.bf16,self.fp8,self.fp4)) or not (self.bf16 or self.fp8 or self.fp4):
             raise ValueError('at least one explicit distributed projection format required')
 
@@ -90,7 +94,10 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
     from .projection_dispatch import ProjectionDispatch
     from .publisher_checkpoint.v41_adapter import _shard_rule
     from .v41_execution.fp8_projection import NativeFP8Projection
-    from .tensor_parallel import _failure_type_name, _safe_agreement_descriptor
+    from .tensor_parallel import (
+        _failure_type_name, _safe_agreement_descriptor,
+        configured_group_timeout_seconds,
+    )
     if type(options) is not V41DistributedOptions:
         raise TypeError('explicit distributed publisher options required')
     if not distributed.is_available() or not distributed.is_initialized():
@@ -98,6 +105,13 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
     world_size=distributed.get_world_size(options.group)
     if type(world_size) is not int or world_size<=0:
         raise ValueError('nonempty distributed projection group required')
+    # This preflight is intentionally local and precedes every bank collective:
+    # if one rank has already left, a caller-owned default-timeout group could
+    # otherwise keep the survivors inside the first object gather for tens of
+    # minutes. All ranks must supply the same bounded group policy.
+    group_timeout_seconds=configured_group_timeout_seconds(options.group)
+    if group_timeout_seconds > options.collective_timeout_seconds:
+        raise ValueError('caller-owned process group timeout exceeds explicit V4.1 admission')
     policy_error=None
     local_policy=None
     execution_device=None
@@ -129,6 +143,7 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
         local_policy=(
             options.bf16,options.fp8,options.fp4,options.torch_version,
             options.checkpoint_identity,str(options.device),options.max_collective_bytes,
+            options.collective_timeout_seconds,group_timeout_seconds,
             max_arithmetic_bytes,
             None if execution_device is None else str(execution_device),
             report.family,report.config_sha256,payload.family,payload.config_sha256,
@@ -251,7 +266,8 @@ def make_projection_backend(options,*,checkpoint,payload,bf16_provider,fp8_libra
             raise RuntimeError(detail)
         return value
     common=dict(group=options.group,device=options.device,torch_version=options.torch_version,
-        checkpoint_identity=options.checkpoint_identity,max_bytes=options.max_collective_bytes)
+        checkpoint_identity=options.checkpoint_identity,max_bytes=options.max_collective_bytes,
+        collective_timeout_seconds=options.collective_timeout_seconds)
     assignments={}
     def publish_assignment(source, bank):
         """Agree the local dispatch publication before the next bank collective.

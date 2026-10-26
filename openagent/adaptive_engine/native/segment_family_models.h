@@ -28,6 +28,11 @@ typedef int (*oa_family_inkling_run)(const oa_family_inkling_config *,oa_family_
 typedef int (*oa_family_glm_range)(const int32_t *,const float *,const int32_t *,
     const oa_family_tensor *,oa_family_tensor,oa_family_tensor,oa_family_tensor *,
     int32_t,int64_t,int32_t,int32_t,oa_family_tensor,oa_family_tensor);
+typedef int (*oa_family_glm_range_observed)(const int32_t *,const float *,const int32_t *,
+    const oa_family_tensor *,oa_family_tensor,oa_family_tensor,oa_family_tensor *,
+    int32_t,int64_t,int32_t,int32_t,oa_family_tensor,oa_family_tensor,
+    int (*)(void *,int32_t,int32_t,const float *,float *),void *,
+    oa_family_tensor,oa_family_tensor);
 typedef int (*oa_family_inkling_range)(const oa_family_inkling_config *,oa_family_inkling_layer *,
     const oa_family_tensor *,const int64_t *,uint64_t,uint64_t,uint64_t,uint64_t,
     uint64_t,uint64_t,oa_family_tensor,oa_family_tensor,oa_family_tensor);
@@ -65,6 +70,7 @@ OA_API int oa_segment_family_release(uint64_t,char *,size_t);
 /* Additive extension: install before opening handles, preserving descriptor ABI1. */
 OA_API int oa_segment_family_enable_inkling_ranges(uint64_t,oa_family_inkling_range,char *,size_t);
 OA_API int oa_segment_family_enable_glm_ranges(uint64_t,oa_family_glm_range,char *,size_t);
+OA_API int oa_segment_family_enable_glm_route_observer(uint64_t,oa_family_glm_range_observed,char *,size_t);
 OA_API int oa_segment_family_glm_final_hidden(uint64_t,const float *,uint32_t,uint64_t,
     float *,uint64_t,char *,size_t);
 OA_API int oa_segment_family_attach_original_experts(uint64_t,oa_original_experts *,

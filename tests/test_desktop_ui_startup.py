@@ -7,14 +7,20 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
 import unittest
+import json
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import patch
 
-from openagent.desktop import build_parser as build_desktop_parser
+import openagent.config as config
+from openagent.desktop import build_parser as build_desktop_parser, main as desktop_main
 from openagent.workbench import (
     DesktopAssetError,
+    _existing_instance_is_healthy,
     _wait_for_ui_server,
     build_parser as build_workbench_parser,
     launch_workbench,
+    main as workbench_main,
     validate_desktop_ui,
 )
 from openagent.config import web_root
@@ -25,6 +31,27 @@ class DesktopUIStartupTests(unittest.TestCase):
         selected = web_root().resolve()
         self.assertEqual(selected, (Path(__file__).resolve().parents[1] / "frontend-second" / "dist").resolve())
         self.assertTrue((selected / "index.html").is_file())
+
+    def test_installed_ui_manifest_overrides_stale_virtualenv_web_copy(self) -> None:
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            app_data = root / "appdata"
+            install = app_data / "OpenAgent"
+            installed_ui = install / "ui"
+            stale_ui = install / ".venv" / "web"
+            installed_ui.mkdir(parents=True)
+            stale_ui.mkdir(parents=True)
+            (installed_ui / "index.html").write_text("<main>approved React UI</main>", encoding="utf-8")
+            (stale_ui / "index.html").write_text("<main>stale package UI</main>", encoding="utf-8")
+            (install / "install-manifest.json").write_text(
+                json.dumps({"ui_root": str(installed_ui), "ui_source": "frontend-second/dist"}),
+                encoding="utf-8",
+            )
+            package_root = root / "site-packages"
+            package_root.mkdir()
+            with patch.dict("os.environ", {"LOCALAPPDATA": str(app_data)}), \
+                 patch("openagent.config.project_root", return_value=package_root):
+                self.assertEqual(config.web_root(), installed_ui)
 
     def test_missing_ui_fails_with_build_instructions(self) -> None:
         with TemporaryDirectory() as folder:
@@ -82,8 +109,10 @@ class DesktopUIStartupTests(unittest.TestCase):
             def do_GET(self) -> None:
                 if self.path in {"/", "/api/health", "/app.js", "/styles.css"}:
                     self.send_response(200)
+                    if self.path == "/api/health":
+                        self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(b"ok")
+                    self.wfile.write(b'{"status":"ok"}' if self.path == "/api/health" else b"ok")
                 else:
                     self.send_error(404)
 
@@ -94,6 +123,7 @@ class DesktopUIStartupTests(unittest.TestCase):
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
+                self.assertTrue(_existing_instance_is_healthy(f"http://127.0.0.1:{server.server_port}/stale-query?ignored=1"))
                 _wait_for_ui_server(
                     f"http://127.0.0.1:{server.server_port}",
                     ["app.js", "styles.css"],
@@ -102,6 +132,7 @@ class DesktopUIStartupTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 worker.join(timeout=2)
+        self.assertFalse(_existing_instance_is_healthy(f"http://127.0.0.1:{server.server_port}/"))
 
     def test_isolated_ui_root_flag_is_available_on_both_launchers(self) -> None:
         self.assertEqual(build_workbench_parser().parse_args(["--ui-root", "frontend-second/dist"]).ui_root, "frontend-second/dist")
@@ -119,6 +150,26 @@ class DesktopUIStartupTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             with self.assertRaisesRegex(DesktopAssetError, "loopback"):
                 launch_workbench(folder, host="0.0.0.0", ui_root=Path(folder) / "dist")
+
+    def test_status_json_reports_the_explicit_ui_root(self) -> None:
+        with TemporaryDirectory() as folder:
+            root = Path(folder) / "dist"
+            root.mkdir()
+            (root / "index.html").write_text("<main>isolated UI</main>", encoding="utf-8")
+            for name in ("app.js", "styles.css"):
+                (root / name).write_text("", encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(workbench_main(["--status-json", "--data-dir", folder, "--ui-root", str(root)]), 0)
+            status = json.loads(output.getvalue())
+            self.assertEqual(Path(status["assets"]["web_root"]), root.resolve())
+            self.assertTrue(status["assets"]["build"])
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(desktop_main(["--status-json", "--data-dir", folder, "--ui-root", str(root)]), 0)
+            status = json.loads(output.getvalue())
+            self.assertEqual(Path(status["modern_workbench"]["assets"]["web_root"]), root.resolve())
 
 
 if __name__ == "__main__":

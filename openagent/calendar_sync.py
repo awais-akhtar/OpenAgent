@@ -168,6 +168,51 @@ class CalendarSyncManager:
             ).fetchall()
             return [self._row_to_provider(row) for row in rows]
 
+    def delete_provider(self, provider_id: str, *, owner: str = "") -> dict[str, Any]:
+        """Remove a calendar provider registration and its sync state."""
+        provider_id = str(provider_id or "").strip()
+        if not provider_id:
+            raise ValueError("provider_id is required.")
+        with self.store.session() as connection:
+            row = self._provider_row(connection, provider_id, owner=owner)
+            snapshot = self._row_to_provider(row)
+            connection.execute(
+                "DELETE FROM calendar_sync_providers WHERE id = ?", (provider_id,)
+            )
+        return {"deleted": True, "provider_id": provider_id, "provider": snapshot["provider"]}
+
+    def reauthenticate_provider(
+        self,
+        provider_id: str,
+        *,
+        owner: str = "",
+        config: dict[str, Any] | None = None,
+        account_ref: str = "",
+    ) -> dict[str, Any]:
+        """Update credentials / config for an existing provider (re-auth flow)."""
+        provider_id = str(provider_id or "").strip()
+        if not provider_id:
+            raise ValueError("provider_id is required.")
+        now = utc_now()
+        with self.store.session() as connection:
+            self._provider_row(connection, provider_id, owner=owner)
+            sets: list[str] = ["updated_at = ?", "status = 'active'"]
+            params: list[Any] = [now]
+            if config is not None:
+                sets.append("config_json = ?")
+                params.append(json.dumps(config))
+            if account_ref:
+                sets.append("account_ref = ?")
+                params.append(account_ref)
+            # Reset the sync token so the next sync does a full pull with new credentials.
+            sets.append("sync_token = ''")
+            params.append(provider_id)
+            connection.execute(
+                f"UPDATE calendar_sync_providers SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+        return self.get_provider(provider_id, owner=owner)
+
     # ------------------------------------------------------------------
     # Sync execution
     # ------------------------------------------------------------------
@@ -190,6 +235,16 @@ class CalendarSyncManager:
         pulled = pushed = conflicts = 0
         state = "completed"
         error = ""
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO calendar_sync_jobs
+                    (id, provider_id, project, direction, conflict_policy, state, pulled, pushed, conflicts, error,
+                     created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, '', ?, '')
+                """,
+                (job_id, provider_id, project, direction, conflict_policy, "running", created_at),
+            )
         try:
             if provider_row["provider"] == "caldav_http" and not allow_external:
                 raise CalendarSyncError("CalDAV network sync requires allow_external=true for this run")
@@ -213,14 +268,8 @@ class CalendarSyncManager:
             error = str(exc)
         with self.store.session() as connection:
             connection.execute(
-                """
-                INSERT INTO calendar_sync_jobs
-                    (id, provider_id, project, direction, conflict_policy, state, pulled, pushed, conflicts, error,
-                     created_at, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (job_id, provider_id, project, direction, conflict_policy, state, pulled, pushed, conflicts, error,
-                 created_at, utc_now()),
+                "UPDATE calendar_sync_jobs SET state = ?, pulled = ?, pushed = ?, conflicts = ?, error = ?, completed_at = ? WHERE id = ?",
+                (state, pulled, pushed, conflicts, error, utc_now(), job_id),
             )
             connection.execute(
                 "UPDATE calendar_sync_providers SET status = ?, updated_at = ? WHERE id = ?",
@@ -706,7 +755,60 @@ class CalendarSyncManager:
                         (local_hash, local_hash, put_meta.get("remote_etag", ""), put_meta.get("remote_href", ""), utc_now(), mapping["id"]),
                     )
             pushed += 1
+
+        # Propagate local deletions to the CalDAV server.
+        if provider_row["provider"] == "caldav_http" and provider_row["base_url"]:
+            pushed += self._push_deletions(
+                provider_row,
+                allow_external=allow_external,
+                allow_local_transport=allow_local_transport,
+            )
         return pushed
+
+    def _push_deletions(
+        self,
+        provider_row: Any,
+        *,
+        allow_external: bool,
+        allow_local_transport: bool,
+    ) -> int:
+        """Issue CalDAV DELETE for each locally-deleted event that has a remote href."""
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT * FROM calendar_sync_uid_map WHERE provider_id = ? AND deleted_at != '' AND remote_href != ''",
+                (provider_row["id"],),
+            ).fetchall()
+        config = json.loads(provider_row["config_json"] or "{}")
+        base_url = str(config.get("calendar_collection_url") or provider_row["base_url"]).rstrip("/")
+        deleted_count = 0
+        for row in rows:
+            remote_href = str(row["remote_href"])
+            url = urljoin(base_url + "/", remote_href)
+            del_headers = self._caldav_headers(config, {})
+            if row["remote_etag"]:
+                del_headers["If-Match"] = f'"{row["remote_etag"]}"'
+            try:
+                response = self.egress.fetch(
+                    url,
+                    approved=allow_external,
+                    allow_loopback=allow_local_transport,
+                    purpose="CalDAV event DELETE",
+                    method="DELETE",
+                    headers=del_headers,
+                    timeout_seconds=float(config.get("timeout_seconds") or 20),
+                    max_response_bytes=1024,
+                )
+            except (EgressError, PermissionError) as exc:
+                raise CalendarSyncError(f"CalDAV DELETE failed for {remote_href}: {exc}") from exc
+            if response.status not in {200, 204, 404}:
+                raise CalendarSyncError(f"CalDAV DELETE returned HTTP {response.status} for {remote_href}")
+            with self.store.session() as connection:
+                connection.execute(
+                    "UPDATE calendar_sync_uid_map SET remote_href = '', updated_at = ? WHERE id = ?",
+                    (utc_now(), row["id"]),
+                )
+            deleted_count += 1
+        return deleted_count
 
     def _put_caldav_event(
         self,
@@ -754,7 +856,42 @@ class CalendarSyncManager:
             raise CalendarSyncError(f"CalDAV PUT failed for {event['id']}: {exc}") from exc
         status = response.status
         etag = str(response.headers.get("etag", "")).strip().strip('"')
-        if status in {409, 412}:
+        if status == 412:
+            # ETag mismatch: fetch the current ETag and retry once.
+            try:
+                head_resp = self.egress.fetch(
+                    url,
+                    approved=allow_external,
+                    allow_loopback=allow_local_transport,
+                    purpose="CalDAV event HEAD (ETag refresh)",
+                    method="HEAD",
+                    headers=self._caldav_headers(config, {}),
+                    timeout_seconds=float(config.get("timeout_seconds") or 20),
+                    max_response_bytes=1024,
+                )
+                fresh_etag = str(head_resp.headers.get("etag", "")).strip().strip('"')
+            except (EgressError, PermissionError):
+                fresh_etag = ""
+            retry_headers = self._caldav_headers(config, {"Content-Type": "text/calendar; charset=utf-8"})
+            if fresh_etag:
+                retry_headers["If-Match"] = f'"{fresh_etag}"'
+            try:
+                response = self.egress.fetch(
+                    url,
+                    approved=allow_external,
+                    allow_loopback=allow_local_transport,
+                    purpose="CalDAV event PUT (retry after 412)",
+                    method="PUT",
+                    body=self._caldav_ical_body(event).encode("utf-8"),
+                    headers=retry_headers,
+                    timeout_seconds=float(config.get("timeout_seconds") or 20),
+                    max_response_bytes=1024 * 1024,
+                )
+            except (EgressError, PermissionError) as exc:
+                raise CalendarSyncError(f"CalDAV PUT retry failed for {event['id']}: {exc}") from exc
+            status = response.status
+            etag = str(response.headers.get("etag", "")).strip().strip('"')
+        if status == 409:
             raise CalendarSyncError(f"CalDAV ETag/update conflict for {event['id']}: HTTP {status}")
         success_codes = tuple(int(code) for code in config.get("success_codes", CALDAV_SUCCESS_CODES))
         if status not in success_codes:

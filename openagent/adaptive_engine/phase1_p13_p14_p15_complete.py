@@ -707,15 +707,8 @@ class Phase1ClosureValidator:
             return False, family_counts
 
     def validate_p04_media_lifecycle(self) -> bool:
-        """Check P04: media lifecycle complete (success/error/cancel paths)."""
-        try:
-            # Would check ExecutionServiceMediaLifecycle is integrated
-            self._checks['P04_media'] = True
-            return True
-        except Exception as e:
-            logger.error(f"P04 validation failed: {e}")
-            self._checks['P04_media'] = False
-            return False
+        """Legacy presence-only check cannot certify media lifecycle."""
+        raise RuntimeError('legacy P04 check is not authoritative; use Phase1ValidatorComplete')
 
     def validate_p05_speculative_rng(self) -> bool:
         """Check P05: speculative RNG management."""
@@ -811,62 +804,22 @@ class Phase1ClosureValidator:
         return family_ready
 
     def validate_all(self) -> Dict[str, Any]:
-        """
-        Complete Phase 1 validation.
-        Returns phase1_closed=True only when ALL checks pass.
-        """
-        results = {
-            'phase1_closed': False,
-            'timestamp': time.time(),
-            'checks': {},
-            'families_ready': {},
-            'blockers': [],
+        """Delegate closure decisions to the receipt-backed canonical gate."""
+        from .phase1_closure_integrated import Phase1ValidatorComplete
+
+        canonical = Phase1ValidatorComplete().validate_all()
+        assertions = canonical.get('assertions', {})
+        families_ready = {
+            family: bool(canonical.get('phase1_closed') and
+                         assertions.get(f'A0X_{family}_route_complete', {}).get('passed'))
+            for family in self.PHASE1_FAMILIES
         }
-
-        # P02: CPU native routes
-        p02_ok, p02_counts = self.validate_p02_cpu_native_routes()
-        results['checks']['P02_cpu_native_routes'] = {
-            'passed': p02_ok,
-            'family_breakdown': p02_counts,
-        }
-
-        # P04-P07: Framework pieces
-        results['checks']['P04_media_lifecycle'] = self.validate_p04_media_lifecycle()
-        results['checks']['P05_speculative_rng'] = self.validate_p05_speculative_rng()
-        results['checks']['P06_distributed_consensus'] = self.validate_p06_distributed_consensus()
-        results['checks']['P07_format_validation'] = self.validate_p07_format_validation()
-
-        # P13: Evidence
-        p13_ok, p13_counts = self.validate_p13_evidence_complete()
-        results['checks']['P13_evidence'] = {
-            'passed': p13_ok,
-            'family_breakdown': p13_counts,
-        }
-
-        # P14: Serving lifecycle
-        p14_ok, p14_counts = self.validate_p14_serving_lifecycle()
-        results['checks']['P14_serving_lifecycle'] = {
-            'passed': p14_ok,
-            'family_breakdown': p14_counts,
-        }
-
-        # Family readiness
-        results['families_ready'] = self.validate_all_families_ready()
-
-        # Overall status
-        all_checks_pass = all(
-            self._checks.get(k, False)
-            for k in ['P02_cpu_native', 'P04_media', 'P05_rng', 'P06_consensus',
-                     'P07_format', 'P13_evidence', 'P14_lifecycle']
-        )
-
-        if not all_checks_pass:
-            failing = [k for k, v in self._checks.items() if not v]
-            results['blockers'] = failing
-
-        results['phase1_closed'] = all_checks_pass and all(results['families_ready'].values())
-
-        return results
+        canonical['families_ready'] = families_ready
+        canonical['timestamp'] = time.time()
+        canonical['checks'] = assertions
+        canonical['blockers'] = [name for name, result in assertions.items()
+                                 if not result.get('passed')]
+        return canonical
 
     def report(self) -> str:
         """Generate human-readable closure report."""

@@ -502,7 +502,10 @@ class DurablePagedCache:
                 output = sqlite3.connect(temporary)
                 self._db.backup(output, pages=64)
                 output.close();output=None
-                with temporary.open("rb") as source:
+                # Windows requires a writable descriptor for os.fsync. The
+                # completed SQLite backup is closed here, so flushing the
+                # staged snapshot read/write is safe on every supported OS.
+                with temporary.open("rb+") as source:
                     os.fsync(source.fileno())
                 os.replace(temporary, target)
                 if os.name != "nt":

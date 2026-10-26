@@ -15,6 +15,7 @@ from ._contracts import route_contract
 ROUTE_GROUP = "model_cookbook"
 ROUTES = (
     ("GET", "/api/model-cookbook/hosts"),
+    ("GET", "/api/model-cookbook/sessions"),
     ("POST", "/api/model-cookbook/hosts"),
     ("GET", "/api/model-cookbook/cached"),
     ("POST", "/api/model-cookbook/serve"),
@@ -55,6 +56,12 @@ def handle_get(path: str, query: str, deps: ModelCookbookRouteDependencies) -> J
     project = _first(params, "project") or "default"
     if path == "/api/model-cookbook/hosts":
         return JsonRouteResult({"hosts": deps.cookbook.hosts(project=project)})
+    if path == "/api/model-cookbook/sessions":
+        try:
+            limit = int(_first(params, "limit") or 100)
+        except ValueError:
+            return JsonRouteResult({"error": "limit must be an integer."}, HTTPStatus.BAD_REQUEST)
+        return JsonRouteResult({"sessions": deps.cookbook.sessions(project=project, limit=limit)})
     if path == "/api/model-cookbook/cached":
         return JsonRouteResult({"files": deps.cookbook.cached_files(project=project, root=_first(params, "root"))})
     if path == "/api/model-cookbook/hardware-fit":

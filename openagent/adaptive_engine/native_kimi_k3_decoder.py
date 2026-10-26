@@ -1,10 +1,18 @@
 """Opt-in bounded K3 dense-MLA fixture, not published-checkpoint admission."""
 import ctypes as C
+import _ctypes
 from dataclasses import dataclass, fields
 import hashlib
+import os
 import threading
+import weakref
 
 import numpy as np
+
+
+def _release_native_library(handle):
+    release = _ctypes.FreeLibrary if os.name == 'nt' else _ctypes.dlclose
+    release(handle)
 
 
 @dataclass(frozen=True)
@@ -95,34 +103,85 @@ class KimiK3Snapshot:
 class NativeKimiK3DenseMLA:
     def __init__(self, library, config, weights):
         self.config = config
+        self._closed = False
+        self._library = None
+        self._function = None
+        self._library_release = None
         tensors = admit_weights(config, weights)
         self._weights = np.concatenate([a.ravel() for a in tensors.values()])
         self._weights.flags.writeable = False
         self._identity = hashlib.sha256(repr(config).encode()+self._weights.tobytes()).hexdigest()
         self._lock = threading.RLock()
-        self._library = C.CDLL(str(library))
-        self._function = self._library.oa_kimi_k3_decode
-        self._function.argtypes = [C.POINTER(_Config), C.POINTER(C.c_float), C.c_size_t,
-            C.POINTER(C.c_int), C.c_int, C.POINTER(C.c_float), C.POINTER(C.c_float),
-            C.POINTER(C.c_int), C.POINTER(C.c_float), C.c_int]
-        self._function.restype = C.c_int
-        self._c = _Config(*(getattr(config, f.name) for f in fields(config)))
-        self._keys = np.zeros((config.layers, config.capacity, config.heads, config.nope+config.rope), np.float32)
-        self._values = np.zeros((config.layers, config.capacity, config.heads, config.value), np.float32)
-        self._length = C.c_int(0)
+        try:
+            self._library = C.CDLL(str(library))
+            self._library_release = weakref.finalize(
+                self, _release_native_library, self._library._handle)
+            self._function = self._library.oa_kimi_k3_decode
+            self._function.argtypes = [C.POINTER(_Config), C.POINTER(C.c_float), C.c_size_t,
+                C.POINTER(C.c_int), C.c_int, C.POINTER(C.c_float), C.POINTER(C.c_float),
+                C.POINTER(C.c_int), C.POINTER(C.c_float), C.c_int]
+            self._function.restype = C.c_int
+            self._c = _Config(*(getattr(config, f.name) for f in fields(config)))
+            self._keys = np.zeros((config.layers, config.capacity, config.heads,
+                                   config.nope+config.rope), np.float32)
+            self._values = np.zeros((config.layers, config.capacity, config.heads,
+                                     config.value), np.float32)
+            self._length = C.c_int(0)
+        except BaseException as primary:
+            if self._library_release is not None and self._library_release.alive:
+                from .native_library_identity import release_finalizer
+                try:
+                    release_finalizer(self, '_library_release')
+                except BaseException as cleanup:
+                    from .failure_reporting import retain_cleanup_failure
+                    retain_cleanup_failure(primary,
+                        lambda: release_finalizer(self, '_library_release'), cleanup,
+                        'K3 dense decoder library cleanup retained: ')
+            self._function = self._library = None
+            raise
+
+    def _check_open(self):
+        if self._closed or self._function is None:
+            raise RuntimeError('K3 dense decoder is closed')
+
+    def close(self):
+        """Release the owned native ABI library after serialized operations."""
+        with self._lock:
+            if self._closed:
+                return
+            if self._library_release is not None:
+                from .native_library_identity import release_finalizer
+                release_finalizer(self, '_library_release')
+            self._closed = True
+            self._function = self._library = None
+            self._keys = np.empty((0,), dtype=np.float32)
+            self._values = np.empty((0,), dtype=np.float32)
+            self._weights = np.empty((0,), dtype=np.float32)
+            self._length = C.c_int(0)
+
+    def __enter__(self):
+        with self._lock:
+            self._check_open()
+            return self
+
+    def __exit__(self, *_):
+        self.close()
 
     def snapshot(self):
         with self._lock:
+            self._check_open()
             return KimiK3Snapshot(self._identity, self._length.value, self._keys.copy(), self._values.copy())
 
     def reset(self):
         with self._lock:
+            self._check_open()
             self._keys.fill(0)
             self._values.fill(0)
             self._length.value = 0
 
     def restore(self, snapshot):
         with self._lock:
+            self._check_open()
             if type(snapshot) is not KimiK3Snapshot or snapshot.identity != self._identity:
                 raise ValueError('foreign K3 snapshot')
             if type(snapshot.length) is not int or not 0 <= snapshot.length <= self.config.capacity:
@@ -150,6 +209,7 @@ class NativeKimiK3DenseMLA:
         def ptr(x):
             return x.ctypes.data_as(C.POINTER(C.c_float))
         with self._lock:
+            self._check_open()
             status = self._function(C.byref(self._c), ptr(self._weights), self._weights.size,
                 a.ctypes.data_as(C.POINTER(C.c_int)), len(a), ptr(self._keys), ptr(self._values),
                 C.byref(self._length), ptr(out), _fail_after_token)

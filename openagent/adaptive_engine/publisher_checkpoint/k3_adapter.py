@@ -27,6 +27,8 @@ class K3ExecutionPayload:
     _source_admission: object = field(default=None, repr=False, compare=False)
     _source_root: str | None = field(default=None, repr=False, compare=False)
     _source_files: tuple = field(default=(), repr=False, compare=False)
+    source_format: str | None = field(default=None, repr=False, compare=False)
+    persisted_format: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def family(self):
@@ -117,14 +119,62 @@ def _destinations(rule, expert_format):
             (rule.sources[1], (rows, cols//32), np.uint8))
 
 
+def k3_source_format(checkpoint):
+    """Identify the exact source weight encoding from the admitted header plan.
+
+    MXFP4 is a checkpoint-level expert-bank encoding; otherwise every mapped
+    floating projection must use one homogeneous SafeTensors dtype. Mixed or
+    unsupported inventories do not get guessed into a nearby matrix row.
+    """
+    if getattr(getattr(checkpoint, 'report', None), 'family', None) != 'kimi_k3':
+        raise ValueError('exact admitted K3 checkpoint required')
+    quantized = any(rule.encoding == 'mxfp4-g32'
+                    for rule in checkpoint.report.contracts)
+    if quantized:
+        return 'MXFP4'
+    dtypes = set()
+    for rule in checkpoint.report.contracts:
+        if rule.encoding != 'float32':
+            continue
+        for name in rule.sources:
+            tensor = checkpoint.tensors.get(name)
+            if tensor is None:
+                raise ValueError('K3 source format is missing an admitted tensor header')
+            dtypes.add(tensor.dtype)
+    if len(dtypes) != 1 or next(iter(dtypes), None) not in ('F32', 'BF16'):
+        raise ValueError('K3 source route requires a homogeneous F32, BF16, or admitted MXFP4 inventory')
+    return next(iter(dtypes))
+
+
+def k3_route_identity(checkpoint, *, backend, arithmetic, expert_format):
+    """Validate and return the source-bound K3 route before payload loading."""
+    source_format = k3_source_format(checkpoint)
+    if expert_format == 'fp32':
+        persisted_format = 'float32'
+    elif expert_format == 'e2m1-low-first-e8m0-g32':
+        persisted_format = 'mxfp4-e2m1-g32-ue8m0'
+    else:
+        raise ValueError('unsupported K3 persisted expert format')
+    from ..source_scope import require_source_matrix_admission
+    require_source_matrix_admission(
+        family='kimi-k3', model_type='kimi_k3', backend=backend,
+        arithmetic=arithmetic, source_format=source_format,
+        persisted_format=persisted_format)
+    return source_format, persisted_format
+
+
 def load_k3_projection_shard(checkpoint, runtime_name, *, rank, world_size,
                              max_weight_bytes, max_chunk_bytes=1024**2,
-                             bank_format='dense'):
+                             bank_format='dense', source_backend,
+                             source_arithmetic, expert_format='fp32'):
     """Load one admitted output-row shard under its exact executor spelling."""
     from dataclasses import replace
     from ..tensor_parallel import load_projection_shard
     if checkpoint.report.family != 'kimi_k3' or type(runtime_name) is not str:
         raise ValueError('exact K3 checkpoint and runtime projection name required')
+    k3_route_identity(checkpoint, backend=source_backend,
+                      arithmetic=source_arithmetic,
+                      expert_format=expert_format)
     if type(bank_format) is not str or bank_format not in ('dense', 'bf16', 'fp8', 'fp4'):
         raise ValueError('explicit K3 projection bank format required')
     allowed = {'q_proj','k_proj','v_proj','q_a_proj','q_b_proj','kv_a_proj_with_mqa','kv_b_proj',
@@ -152,7 +202,7 @@ def load_k3(checkpoint, *, capacity, max_weight_bytes, expert_format="fp32",
             rotary_mode="publisher-none", rotary_theta=10000.0,
             include_vision=False, vision_tower_epsilon=2**-23,
             use_expert_provider=False, max_expert_bytes=None, max_mapped_bytes=None,
-            sharded_projections=()):
+            sharded_projections=(), source_backend, source_arithmetic):
     """Prepare exact runtime names, optionally vision and leased mmap experts.
 
     Unmapped tensors remain attached as gaps. No library is opened and no
@@ -168,6 +218,17 @@ def load_k3(checkpoint, *, capacity, max_weight_bytes, expert_format="fp32",
         raise MemoryError("conversion chunk budget must be at least 4096 bytes")
     if expert_format not in ("fp32", "e2m1-low-first-e8m0-g32"):
         raise ValueError("unsupported explicit K3 executor expert format")
+    if (type(source_backend) is not str or not source_backend or
+            type(source_arithmetic) is not str or not source_arithmetic):
+        raise ValueError('explicit K3 source backend and arithmetic route required')
+    source_format = k3_source_format(checkpoint)
+    persisted_format = ('float32' if expert_format == 'fp32'
+                        else 'mxfp4-e2m1-g32-ue8m0')
+    selected_source, selected_persisted = k3_route_identity(
+        checkpoint, backend=source_backend, arithmetic=source_arithmetic,
+        expert_format=expert_format)
+    if (selected_source, selected_persisted) != (source_format, persisted_format):
+        raise ValueError('K3 route identity changed during admission')
     if type(use_expert_provider) is not bool:
         raise ValueError("use_expert_provider must be boolean")
     if use_expert_provider:
@@ -286,6 +347,8 @@ def load_k3(checkpoint, *, capacity, max_weight_bytes, expert_format="fp32",
                                      sharded_projections, _K3_PAYLOAD_ADMISSION,
                                      str(checkpoint._metadata.root),
                                      tuple(sorted(checkpoint._metadata.files.items())))
+        object.__setattr__(payload, 'source_format', source_format)
+        object.__setattr__(payload, 'persisted_format', persisted_format)
         owned.pop_all()
         return payload
 

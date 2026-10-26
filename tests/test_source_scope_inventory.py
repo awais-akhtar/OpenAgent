@@ -30,6 +30,12 @@ class SourceScopeInventoryTest(unittest.TestCase):
         self.assertIn('protocol-specific deltas', capabilities['openai_compatible']['scope'])
         self.assertIn('named message/content-block/terminal/error events',
                       capabilities['anthropic_messages']['scope'])
+        for name, field in (('openai_compatible', 'stop'),
+                            ('anthropic_messages', 'stop_sequences')):
+            scope = capabilities[name]['scope']
+            self.assertIn(field, scope)
+            self.assertIn('configured checkpoint tokenizer', scope)
+            self.assertNotIn('are rejected until tokenizer-aware', scope)
         self.assertNotIn('streaming, stream_options', capabilities['anthropic_messages']['scope'])
 
     def test_all_production_raw_checkpoint_reader_calls_supply_admission(self):
@@ -247,17 +253,25 @@ class SourceScopeInventoryTest(unittest.TestCase):
                     snapshot.assert_called_once_with('fixture',max_metadata_bytes=4096,
                         max_tensors=1_000_000,max_shards=4096)
 
-    def test_unverified_k3_format_rows_reject_direct_execution_routes(self):
+    def test_k3_factory_requires_all_native_formats_and_exact_rows_control_execution(self):
         with self.assertRaisesRegex(ValueError, 'P02 family/backend route is not admitted'):
             require_source_family_backend_admission(
                 family='kimi-k3', model_type='kimi_k3', backend='native',
                 arithmetic='fp32-approximate')
         from openagent.adaptive_engine.source_scope import require_source_matrix_admission
-        with self.assertRaisesRegex(ValueError, 'candidate-unverified'):
+        require_source_matrix_admission(
+            family='kimi-k3',model_type='kimi_k3',backend='native',
+            arithmetic='fp32-approximate',source_format='F32',
+            persisted_format='float32')
+        with self.assertRaisesRegex(ValueError, 'P02 source tuple is not admitted'):
             require_source_matrix_admission(
-                family='kimi-k3',model_type='kimi_linear',backend='native',
-                arithmetic='fp32-approximate',source_format='F32',
+                family='kimi-k3',model_type='kimi_k3',backend='device',
+                arithmetic='bf16',source_format='BF16',
                 persisted_format='float32')
+        require_source_matrix_admission(
+            family='kimi-k3',model_type='kimi_linear',backend='native',
+            arithmetic='fp32-approximate',source_format='F32',
+            persisted_format='float32')
 
     def test_kimi_linear_checkpoint_loader_gates_before_opening_checkpoint(self):
         from openagent.adaptive_engine.native_kimi import NativeKimiLinearDecoder
@@ -283,11 +297,12 @@ class SourceScopeInventoryTest(unittest.TestCase):
         )
         payload = K3ExecutionPayload(
             object.__new__(K3Config), {}, {}, 'fixture', (), (), ())
+        object.__setattr__(payload.config, 'expert_format', 'fp32')
         with patch('openagent.adaptive_engine.publisher_checkpoint.k3_adapter.require_k3_payload_admission'):
-            with self.assertRaisesRegex(ValueError, 'P02 family/backend route is not admitted'):
+            with self.assertRaisesRegex(ValueError, 'missing its exact source/persisted format binding'):
                 create_k3_execution_service(
                     payload, K3Libraries(), runtime_max_bytes=1)
-        with self.assertRaisesRegex(ValueError, 'P02 family/backend route is not admitted'):
+        with self.assertRaisesRegex(ValueError, 'prepared K3 execution payload required'):
             create_public_k3_execution_service(
                 None, None, runtime_library=None, model_directory='.',
                 checkpoint_identity='fixture', runtime_max_bytes=1,
@@ -477,6 +492,101 @@ class SourceScopeInventoryTest(unittest.TestCase):
                     ValueError, 'MTP configuration requires the admitted Inkling'):
                 partition_weights(weights, components)
 
+    def test_inkling_chain_norm_bank_is_admitted_as_shared_mtp(self):
+        from openagent.adaptive_engine.publisher_conditional_loader import _inkling_mtp_headers
+        from openagent.adaptive_engine.publisher_family_contracts import partition_weights
+
+        weights = {
+            'model.embed_tokens.weight': object(),
+            'lm_head.weight': object(),
+            'model.visual.patch.weight': object(),
+            'chain_norm.weight': object(),
+        }
+        components = SimpleNamespace(
+            variant=SimpleNamespace(wrapper='inkling_mm_model'),
+            text_config={'tie_word_embeddings': False}, audio_config=None,
+            auxiliary_config={'num_mtp_layers': 1, 'chain_hidden_post_norm': True})
+        _text, _vision, _audio, auxiliary = partition_weights(weights, components)
+        self.assertIs(auxiliary['chain_norm.weight'], weights['chain_norm.weight'])
+
+        inventory = SimpleNamespace(tensors={
+            'chain_norm.weight': SimpleNamespace(shape=(4,), dtype='F32'),
+            'mtp.layers.0.hnorm.weight': SimpleNamespace(shape=(4,), dtype='F32'),
+            'model.layers.0.weight': SimpleNamespace(shape=(4, 4), dtype='F32'),
+        })
+        headers = _inkling_mtp_headers(inventory)
+        self.assertEqual(headers['chain_norm.weight'], ((4,), 'F32'))
+        self.assertNotIn('model.layers.0.weight', headers)
+        alternate_namespace = _inkling_mtp_headers(SimpleNamespace(tensors={
+            'model.layers.0.mtpBlock.attn.q_proj.weight':
+                SimpleNamespace(shape=(2, 2), dtype='F32')}))
+        self.assertIn('model.layers.0.mtpBlock.attn.q_proj.weight', alternate_namespace)
+
+        from openagent.adaptive_engine import independent_inkling, inkling_mtp
+        class Planner:
+            def __init__(self, _config, _weights, *, _inventory_only):
+                self.tensor_shapes = {
+                    'model.layers.0.' + name: (2,)
+                    for name in independent_inkling.LAYER_NAMES}
+
+        complete_headers = {'chain_norm.weight': ((4,), 'F32'),
+            'layers.0.enorm.weight': ((4,), 'F32'),
+            'layers.0.hnorm.weight': ((4,), 'F32'),
+            'layers.0.eh_proj.weight': ((4, 8), 'F32')}
+        complete_headers.update({
+            'layers.0.mtp_block.' + name: ((2,), 'F32')
+            for name in independent_inkling.LAYER_NAMES})
+        with patch.object(independent_inkling, 'IndependentInklingDecoder', Planner):
+            inkling_mtp.admit_mtp_inventory(
+                {'hidden_size': 4, 'vocab_size': 8},
+                {'num_mtp_layers': 1, 'chain_hidden_post_norm': True},
+                complete_headers, max_total_bytes=1 << 20)
+            with self.assertRaisesRegex(ValueError, 'complete original Inkling MTP inventory differs'):
+                inkling_mtp.admit_mtp_inventory(
+                    {'hidden_size': 4, 'vocab_size': 8},
+                    {'num_mtp_layers': 1, 'chain_hidden_post_norm': True},
+                    alternate_namespace, max_total_bytes=1 << 20)
+
+    def test_publisher_media_aliases_are_canonicalized_for_exact_consumers(self):
+        from openagent.adaptive_engine.publisher_family_contracts import partition_weights
+
+        vision_value = object()
+        audio_value = object()
+        weights = {
+            'model.embed_tokens.weight': object(),
+            'lm_head.weight': object(),
+            'model.language_model.vision_tower.final_norm.weight': vision_value,
+            'model.language_model.audio_tower.norm.weight': audio_value,
+        }
+        components = SimpleNamespace(
+            variant=SimpleNamespace(wrapper='inkling_mm_model'),
+            text_config={'tie_word_embeddings': False},
+            audio_config={}, auxiliary_config={})
+
+        _text, vision, audio, _auxiliary = partition_weights(weights, components)
+
+        self.assertEqual(set(vision), {'model.vision_tower.final_norm.weight'})
+        self.assertEqual(set(audio), {'model.audio_tower.norm.weight'})
+        self.assertIs(vision['model.vision_tower.final_norm.weight'], vision_value)
+        self.assertIs(audio['model.audio_tower.norm.weight'], audio_value)
+
+    def test_publisher_media_alias_collision_is_rejected_during_partition(self):
+        from openagent.adaptive_engine.publisher_family_contracts import partition_weights
+
+        weights = {
+            'model.embed_tokens.weight': object(),
+            'lm_head.weight': object(),
+            'model.vision_tower.final_norm.weight': object(),
+            'model.language_model.vision_tower.final_norm.weight': object(),
+        }
+        components = SimpleNamespace(
+            variant=SimpleNamespace(wrapper='inkling_mm_model'),
+            text_config={'tie_word_embeddings': False},
+            audio_config=None, auxiliary_config={})
+
+        with self.assertRaisesRegex(ValueError, 'duplicate mapped publisher checkpoint tensor'):
+            partition_weights(weights, components)
+
     def test_publisher_component_contract_rejects_unknown_mtp_config_claims(self):
         from openagent.adaptive_engine.publisher_family_contracts import component_contract
         configs = (
@@ -499,22 +609,29 @@ class SourceScopeInventoryTest(unittest.TestCase):
 
     def test_direct_non_inkling_wrappers_reject_mtp_tensor_banks(self):
         from openagent.adaptive_engine.publisher_family_contracts import partition_weights
-        weights = {
-            'model.embed_tokens.weight': object(),
-            'lm_head.weight': object(),
-            'model.visual.patch.weight': object(),
-            'mtp.layers.0.projection.weight': object(),
-        }
-        for wrapper in ('qwen3_5_moe', 'qwen4_exp', 'glm5_next'):
-            components = SimpleNamespace(
-                variant=SimpleNamespace(wrapper=wrapper),
-                text_config={'tie_word_embeddings': False},
-                audio_config=None,
-                auxiliary_config={},
-            )
-            with self.subTest(wrapper=wrapper), self.assertRaisesRegex(
-                    ValueError, 'MTP tensors require the admitted Inkling'):
-                partition_weights(weights, components)
+        from openagent.adaptive_engine.publisher_family_contracts import is_mtp_tensor_name
+        mtp_names = ('mtp.layers.0.projection.weight',
+                     'model.layers.0.mtp_block.attn.q_proj.weight',
+                     'model.layers.0.mtpBlock.attn.q_proj.weight')
+        self.assertTrue(is_mtp_tensor_name(mtp_names[1]))
+        self.assertFalse(is_mtp_tensor_name('model.layers.0.self_attn.q_proj.weight'))
+        for mtp_name in mtp_names:
+            weights = {
+                'model.embed_tokens.weight': object(),
+                'lm_head.weight': object(),
+                'model.visual.patch.weight': object(),
+                mtp_name: object(),
+            }
+            for wrapper in ('qwen3_5_moe', 'qwen4_exp', 'glm5_next'):
+                components = SimpleNamespace(
+                    variant=SimpleNamespace(wrapper=wrapper),
+                    text_config={'tie_word_embeddings': False},
+                    audio_config=None,
+                    auxiliary_config={},
+                )
+                with self.subTest(wrapper=wrapper, tensor=mtp_name), self.assertRaisesRegex(
+                        ValueError, 'MTP tensors require the admitted Inkling'):
+                    partition_weights(weights, components)
 
     def test_qwen_conditional_constructors_reject_unconsumed_mtp_banks(self):
         from openagent.adaptive_engine import qwen35_multimodal, qwen4_multimodal
@@ -562,6 +679,29 @@ class SourceScopeInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'GLM5 publisher rejects auxiliary/MTP configuration'):
             admit_publisher_glm5_inventory(inventory, components)
 
+    def test_glm5_inventory_rejects_per_layer_mtp_namespace_before_mapping(self):
+        from openagent.adaptive_engine.publisher_glm5_loader import (
+            admit_publisher_glm5_inventory,
+        )
+        from openagent.adaptive_engine.independent_glm5_next import Glm5NextTextContract
+        components = SimpleNamespace(
+            variant=SimpleNamespace(wrapper='glm5_next'), original_config={},
+            text_config={}, vision_config={}, audio_config=None, auxiliary_config={})
+        contract = SimpleNamespace(tie_word_embeddings=False, vocab_size=1,
+                                   hidden_size=1, mlp_layer_types=('dense',),
+                                   n_routed_experts=0, moe_intermediate_size=1)
+        inventory = SimpleNamespace(
+            config={}, tensors={'model.layers.0.mtp_block.attn.weight':
+                                SimpleNamespace(dtype='F32', shape=(1,))})
+        with patch.object(Glm5NextTextContract, 'parse', return_value=contract), \
+                patch('openagent.adaptive_engine.publisher_glm5_loader.tensor_layout',
+                      return_value=({}, {})), \
+                patch('openagent.adaptive_engine.glm5_vision.vision_shapes',
+                      return_value=({}, {})), \
+                patch('openagent.adaptive_engine.source_scope.require_source_inventory_admission'):
+            with self.assertRaisesRegex(ValueError, 'GLM5 publisher loader rejects MTP tensors'):
+                admit_publisher_glm5_inventory(inventory, components)
+
     def test_conditional_service_rejects_unverified_inkling_mtp_before_checkpoint_open(self):
         from openagent.adaptive_engine.execution_factories import (
             open_native_conditional_directory_service,
@@ -577,8 +717,12 @@ class SourceScopeInventoryTest(unittest.TestCase):
         from openagent.adaptive_engine.execution_factories import (
             create_segment_edge_execution_service,
         )
+        # The public conditional wrapper route is now source-bound for the
+        # ordinary Qwen4 publisher identity, so use the text identity's
+        # deliberately unsupported F8 decoder tuple to prove admission runs
+        # before range validation.
         inventory = SimpleNamespace(tensors={
-            'model.layers.0.weight': SimpleNamespace(dtype='F16'),
+            'model.layers.0.weight': SimpleNamespace(dtype='F8_E4M3'),
         })
         with patch('openagent.adaptive_engine.publisher_checkpoint.storage.snapshot',
                    return_value=inventory):
@@ -930,7 +1074,7 @@ class SourceScopeInventoryTest(unittest.TestCase):
         rows=source_matrix_rows()
         self.assertTrue(rows)
         admitted=source_matrix_rows(admitted_only=True)
-        self.assertEqual(len(admitted),129)
+        self.assertEqual(len(admitted),171)
         mixtral = [row for row in admitted if row['family']=='mixtral']
         glm_dsa = [row for row in admitted if row['family']=='glm-dsa']
         inkling = [row for row in admitted if row['family']=='inkling']
@@ -964,16 +1108,27 @@ class SourceScopeInventoryTest(unittest.TestCase):
             row['arithmetic']=='fp32' and row['source_review'].startswith(
                 'p02-'+row['family']+'-local-')
             for row in local_publishers))
-        self.assertEqual(len(olmoe),27)
+        self.assertEqual(len(olmoe),45)
         self.assertTrue(all(row['backend'] in ('native','public-range') and
-            row['persisted_format'] in ({'float32','int8-row','q4_0','q4_1',
-                'q5_0','q5_1','q8_0','q8_1'} if row['backend']=='native'
+            row['persisted_format'] in ({'float32','int8-row','int2-row',
+                'int3-grouped-g64','int4-row','int4-grouped-g64',
+                'mxfp4-e2m1-g32-ue8m0','q4_0','q4_1','q5_0','q5_1',
+                'q8_0','q8_1','fp8-e4m3-b128-f32'} if row['backend']=='native'
                 else {'int8-row'}) and
             row['source_review']==(
                 'p02-olmoe-native-edge-dense-fp32-chain-2026-10-18'
                 if row['persisted_format']=='float32' else
+                'p02-olmoe-direct-gateway-manifest-consumer-chain-2026-10-23'
+                if row['backend']=='native' else
                 'p02-olmoe-leased-'+row['backend']+'-chain-2026-10-18')
             for row in olmoe))
+        segment_text = [row for row in admitted if row['model_type'] in (
+            'qwen3_5_moe_text','qwen4_exp_text') and row['backend']=='public-range']
+        self.assertEqual(len(segment_text),6)
+        self.assertTrue(all(
+            row['persisted_format']=='float32' and
+            row['source_review']=='p02-'+row['family']+'-native-segment-text-chain-2026-10-20'
+            for row in segment_text))
         public_text = [row for row in admitted if row['model_type'] in (
             'glm5_next_text','inkling_text') and row['backend']=='public-range']
         self.assertEqual(len(public_text),6)
@@ -986,13 +1141,48 @@ class SourceScopeInventoryTest(unittest.TestCase):
                 in row['callable_chain']['native_abi'] and
             row['cells']['media']['classification']=='contract-restriction'
             for row in public_text))
+        conditional_public = [row for row in admitted
+            if row['family'] in ('qwen4','glm5-next') and
+            row['model_type'] in ('qwen4_exp','glm5_next') and
+            row['backend']=='public-range']
+        self.assertEqual(len(conditional_public),8)
+        self.assertTrue(all(
+            row['source_format'] in ('F32','F16','BF16','F8_E4M3') and
+            row['persisted_format']==(
+                'fp8-e4m3-b128-f32' if row['source_format']=='F8_E4M3'
+                else 'float32') and
+            row['source_review']=='p02-'+row['family']+
+                '-local-public-conditional-chain-2026-10-23'
+            for row in conditional_public))
+        kimi_linear = [row for row in admitted
+            if row['family']=='kimi-k3' and row['model_type']=='kimi_linear']
+        self.assertEqual(len(kimi_linear),2)
+        self.assertTrue(all(
+            row['backend']=='native' and row['arithmetic']=='fp32-approximate' and
+            row['source_format'] in ('F32','BF16') and
+            row['persisted_format']=='float32' and
+            row['source_review']=='p02-kimi-linear-native-cpu-service-chain-2026-10-23'
+            for row in kimi_linear))
+        kimi_k3 = [row for row in admitted
+            if row['family']=='kimi-k3' and row['model_type']=='kimi_k3']
+        self.assertEqual(len(kimi_k3),8)
+        self.assertTrue(all(
+            row['backend'] in ('native','public-range') and
+            row['arithmetic']=='fp32-approximate' and
+            (row['source_format'],row['persisted_format']) in {
+                ('F32','float32'),('BF16','float32'),
+                ('MXFP4','float32'),
+                ('MXFP4','mxfp4-e2m1-g32-ue8m0')} and
+            row['source_review']==
+                'p02-k3-publisher-adapter-exact-format-factory-chain-2026-10-23'
+            for row in kimi_k3))
         from openagent.adaptive_engine.source_scope import source_matrix_row
-        first=next(row for row in rows if row['admission']=='candidate-unverified')
+        first=next(row for row in rows if row['admission']!='verified-admitted')
         key={name:first[name] for name in (
             'family','model_type','backend','arithmetic','source_format','persisted_format')}
         detached=source_matrix_row(**key)
         detached['admission']='verified-admitted'
-        self.assertEqual(source_matrix_row(**key)['admission'],'candidate-unverified')
+        self.assertEqual(source_matrix_row(**key)['admission'],first['admission'])
         tuples=set()
         groups=set()
         for row in rows:
@@ -1026,9 +1216,38 @@ class SourceScopeInventoryTest(unittest.TestCase):
                         backend=backend,arithmetic=arithmetic,source_format=source_format,
                         persisted_format=persisted_format)
                     self.assertEqual(result['admission'],'verified-admitted')
-                elif (family=='glm5-next' and model_type=='glm5_next_text' and
+                elif (model_type in ('glm5_next_text','qwen3_5_moe_text','qwen4_exp_text') and
                         backend=='public-range' and source_format in ('F32','F16','BF16') and
                         persisted_format=='float32'):
+                    result=require_source_matrix_admission(family=family,model_type=model_type,
+                        backend=backend,arithmetic=arithmetic,source_format=source_format,
+                        persisted_format=persisted_format)
+                    self.assertEqual(result['admission'],'verified-admitted')
+                elif (family in ('qwen4','glm5-next') and
+                        model_type in ('qwen4_exp','glm5_next') and
+                        backend=='public-range' and
+                        (source_format,persisted_format) in {
+                            ('F32','float32'),('F16','float32'),
+                            ('BF16','float32'),
+                            ('F8_E4M3','fp8-e4m3-b128-f32')}):
+                    result=require_source_matrix_admission(family=family,model_type=model_type,
+                        backend=backend,arithmetic=arithmetic,source_format=source_format,
+                        persisted_format=persisted_format)
+                    self.assertEqual(result['admission'],'verified-admitted')
+                elif (family=='kimi-k3' and model_type=='kimi_linear' and
+                        backend=='native' and arithmetic=='fp32-approximate' and
+                        source_format in ('F32','BF16') and persisted_format=='float32'):
+                    result=require_source_matrix_admission(family=family,model_type=model_type,
+                        backend=backend,arithmetic=arithmetic,source_format=source_format,
+                        persisted_format=persisted_format)
+                    self.assertEqual(result['admission'],'verified-admitted')
+                elif (family=='kimi-k3' and model_type=='kimi_k3' and
+                        backend in ('native','public-range') and
+                        arithmetic=='fp32-approximate' and
+                        (source_format,persisted_format) in {
+                            ('F32','float32'),('BF16','float32'),
+                            ('MXFP4','float32'),
+                            ('MXFP4','mxfp4-e2m1-g32-ue8m0')}):
                     result=require_source_matrix_admission(family=family,model_type=model_type,
                         backend=backend,arithmetic=arithmetic,source_format=source_format,
                         persisted_format=persisted_format)
@@ -1070,8 +1289,12 @@ class SourceScopeInventoryTest(unittest.TestCase):
                 elif (family=='olmoe' and model_type=='olmoe' and
                         backend in ('native','public-range') and source_format in (
                             'F32','F16','BF16') and
-                        (persisted_format in {'int8-row','q4_0','q4_1','q5_0','q5_1','q8_0','q8_1'}
-                         if backend=='native' else persisted_format=='int8-row')):
+                        (persisted_format in {
+                            'int8-row','int2-row','int3-grouped-g64','int4-row',
+                            'int4-grouped-g64','mxfp4-e2m1-g32-ue8m0',
+                            'q4_0','q4_1','q5_0','q5_1','q8_0','q8_1',
+                            'fp8-e4m3-b128-f32'} if backend=='native'
+                         else persisted_format=='int8-row')):
                     result=require_source_matrix_admission(family=family,model_type=model_type,
                         backend=backend,arithmetic=arithmetic,source_format=source_format,
                         persisted_format=persisted_format)
@@ -1156,7 +1379,11 @@ class SourceScopeInventoryTest(unittest.TestCase):
             self.assertEqual(route['auxiliary'],
                              'device_e8_rotation.rotate_device_e8')
             self.assertIn(route['auxiliary'], row['callable_chain']['execution'])
-            self.assertEqual(row['admission'], 'candidate-unverified')
+            # The decode owners stay traceable, but publisher packed manifests
+            # are rejected by native_family_cli and the factory guards.
+            self.assertEqual(row['admission'], 'rejected-unadmitted')
+            self.assertEqual(row['combination_status'], 'restricted')
+            self.assertTrue(row['cells']['execution']['contract'])
         self.assertEqual(len({row['family'] for row in rows}), 3)
 
     def test_media_evidence_restriction_reason_cannot_be_weakened(self):

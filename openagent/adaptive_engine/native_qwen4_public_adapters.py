@@ -159,7 +159,9 @@ class NativeQwen4PublicAdapters:
         except BaseException as primary:
             try:self.close()
             except BaseException as cleanup:
-                primary.cleanup=self.close;primary.add_note('public Qwen4 ownership cleanup retained: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'public Qwen4 ownership cleanup retained: ')
             raise
 
     @contextmanager
@@ -210,7 +212,9 @@ class NativeQwen4PublicAdapters:
                 try:
                     finish()
                 except BaseException as cleanup:
-                    primary.add_note('native routing observer cleanup failed: '+repr(cleanup))
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(primary,'native routing observer cleanup failed: '+
+                        failure_summary(cleanup))
                 raise
             else:
                 finish()

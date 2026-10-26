@@ -1,9 +1,11 @@
 """Resident compiled C Inkling decoder; no Transformers forward dependency."""
 import ctypes as C
 import _ctypes
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from types import MappingProxyType
+from uuid import uuid4
 import weakref
 
 import numpy as np
@@ -42,12 +44,29 @@ def _release_library(handle):
     release(handle)
 
 
+@dataclass(frozen=True)
+class NativeInklingSnapshot:
+    """Instance-bound native cache capability for exact text recovery."""
+    owner: object
+    key: str
+    position: int
+
+
 class NativeInklingDecoder(IndependentInklingDecoder):
     implementation = 'compiled-c-inkling-token-stream'
     native_range_execution = True
     native_streamed_range_execution = False
 
-    def __init__(self, config, tensors, *, library, max_bytes=512 * 1024 * 1024,_borrow_globals=False,expert_provider=None):
+    def __init__(self, config, tensors, *, library, max_bytes=512 * 1024 * 1024,
+                 max_snapshots=4, context_tokens=None, _borrow_globals=False,
+                 expert_provider=None):
+        if type(max_snapshots) is not int or not 1 <= max_snapshots <= 64:
+            raise ValueError('bounded native Inkling snapshot count required')
+        if context_tokens is not None:
+            if (type(context_tokens) is not int or context_tokens <= 0 or
+                    context_tokens > config.get('max_position_embeddings', 0)):
+                raise ValueError('Inkling context capacity must be a positive bound within checkpoint positions')
+            config=dict(config);config['max_position_embeddings']=context_tokens
         if expert_provider is not None:
             from .inkling_publisher_experts import InklingPublisherExperts
             if type(expert_provider) is not InklingPublisherExperts:
@@ -57,6 +76,8 @@ class NativeInklingDecoder(IndependentInklingDecoder):
         super().__init__(config, tensors, max_bytes=max_bytes-reserve,_borrow_globals=_borrow_globals,
                          _omit_experts=expert_provider is not None)
         self.max_bytes=max_bytes
+        self.max_snapshots=max_snapshots
+        self._snapshot_owner=object();self._snapshots={};self._snapshot_bytes=0
         self._expert_provider=expert_provider;self._expert_reserve=reserve
         self._callback=None;self._callback_error=None;self._active_cancel=None;self._executing=False
         self._resident_bytes=(sum(value.nbytes for value in self.weights.values())+reserve+
@@ -77,8 +98,9 @@ class NativeInklingDecoder(IndependentInklingDecoder):
             try:
                 self.close()
             except BaseException as cleanup:
-                primary.cleanup = self.close
-                primary.add_note('Inkling native construction cleanup retained: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'Inkling native construction cleanup retained: ')
             raise
 
     def _bind_native(self):
@@ -127,6 +149,49 @@ class NativeInklingDecoder(IndependentInklingDecoder):
             self._check_open()
             return super().cache_snapshot()
 
+    def snapshot(self):
+        """Capture the complete FIR/KV state with an exact-owner receipt."""
+        with self._lock:
+            self._check_open()
+            if len(self._snapshots)>=self.max_snapshots:
+                raise MemoryError('native Inkling snapshot inventory exhausted')
+            cache=super().cache_snapshot()
+            extent=sum(array.nbytes for array in cache)
+            if self._resident_bytes+self._snapshot_bytes+extent>self.max_bytes:
+                raise MemoryError('native Inkling snapshot exceeds aggregate decoder budget')
+            receipt=NativeInklingSnapshot(self._snapshot_owner,uuid4().hex,self.position)
+            self._snapshots[receipt.key]=(receipt,cache,extent,receipt.position)
+            self._snapshot_bytes+=extent
+            return receipt
+
+    def _snapshot_entry(self, receipt):
+        if (type(receipt) is not NativeInklingSnapshot or
+                receipt.owner is not self._snapshot_owner):
+            raise ValueError('foreign native Inkling snapshot')
+        entry=self._snapshots.get(receipt.key)
+        if (entry is None or entry[0] is not receipt or
+                receipt.position != entry[3]):
+            raise ValueError('released or forged native Inkling snapshot')
+        return entry
+
+    def restore(self, receipt):
+        with self._lock:
+            self._check_open()
+            _,cache,extent,saved_position=self._snapshot_entry(receipt)
+            current=0 if self._cache is None else sum(array.nbytes for array in self._cache)
+            if self._resident_bytes+self._snapshot_bytes+current+extent>self.max_bytes:
+                raise MemoryError('native Inkling restore staging exceeds aggregate decoder budget')
+            staged=tuple(array.copy() for array in cache)
+            self._cache=list(staged) if staged else None
+            self.position=saved_position
+
+    def release_snapshot(self, receipt):
+        with self._lock:
+            self._check_open()
+            entry=self._snapshot_entry(receipt)
+            del self._snapshots[receipt.key]
+            self._snapshot_bytes-=entry[2]
+
     def status(self):
         with self._lock:
             result = super().status()
@@ -138,6 +203,7 @@ class NativeInklingDecoder(IndependentInklingDecoder):
             if self._executing: raise RuntimeError('Inkling native callback owns resources')
             self._closed = True
             self._cache, self.position = None, 0
+            self._snapshots.clear();self._snapshot_bytes=0
             self.weights = MappingProxyType({})
             release_finalizer(self, '_library_release')
             self.library = None

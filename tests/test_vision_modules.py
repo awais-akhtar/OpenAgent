@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+import json
+from unittest.mock import patch
 
 
 def make_store():
@@ -124,6 +127,22 @@ class TestDigitalTwin(unittest.TestCase):
         self.assertIn("id", result)
         self.assertIn("topics", result)
         self.assertIsInstance(result["topics"], list)
+
+    def test_source_metadata_explains_inferred_preference_signals_without_content(self):
+        recorded = self.twin.record_interaction(
+            "research", "Please help me investigate materials science", project="alpha",
+            context={"private_path": "do-not-return"},
+        )
+        self.twin.record_interaction("chat", "materials science results", project="beta")
+
+        source = next(item for item in self.twin.list_sources(project="alpha") if item["id"] == recorded["id"])
+        self.assertTrue(source["preference_signals"])
+        self.assertEqual(source["preference_signals"][0]["relationship"], "topic signal supplied to the preference learner")
+        self.assertTrue({signal["key"] for signal in source["preference_signals"]}.issubset(set(source["topics"])))
+        self.assertNotIn("content", source)
+        self.assertNotIn("context", source)
+        self.assertNotIn("private_path", json.dumps(source))
+        self.assertEqual({item["id"] for item in self.twin.list_sources(project="alpha")}, {recorded["id"]})
 
     def test_analyse_patterns(self):
         self.twin.record_interaction("chat", "research Python code debugging", project="default")
@@ -277,6 +296,99 @@ class TestWebScraper(unittest.TestCase):
         jobs = self.scraper.list_scheduled(project="default")
         self.assertGreaterEqual(len(jobs), 1)
 
+    def test_schedule_is_offline_and_keeps_fetch_time_ssrf_checks(self):
+        with patch("openagent.egress.socket.getaddrinfo", side_effect=AssertionError("scheduling must not resolve DNS")):
+            job = self.scraper.schedule_scrape("https://example.com/offline", project="default")
+        self.assertEqual(job["status"], "awaiting_approval")
+        for url in ("http://127.0.0.1/admin", "http://localhost/private", "ftp://example.com/file"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                self.scraper.schedule_scrape(url, project="default")
+
+    def test_due_scrape_dns_failure_is_recorded_instead_of_crashing_worker(self):
+        job = self.scraper.schedule_scrape(
+            "https://unresolvable.example/offline", project="default", allow_external=True,
+        )
+        with self.store.session() as connection:
+            connection.execute("UPDATE scrape_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE id = ?", (job["job_id"],))
+        with patch.object(self.scraper, "scrape_url", side_effect=ValueError("Outbound hostname could not be resolved.")):
+            result = self.scraper.run_due_jobs(project="default")
+        self.assertEqual(result, {"ran": 0, "errors": 1, "total_due": 1})
+        history = self.scraper.get_scrape_history(project="default", limit=1)
+        self.assertEqual(history[0]["error"], "Outbound hostname could not be resolved.")
+
+    def test_cancel_pending_schedule_is_project_scoped_and_keeps_history(self):
+        job = self.scraper.schedule_scrape(
+            "https://example.com/cancellable", project="owner-project", allow_external=True,
+        )
+        self.assertIsNone(self.scraper.cancel_scheduled(job["job_id"], project="other-project"))
+        cancelled = self.scraper.cancel_scheduled(job["job_id"], project="owner-project")
+        self.assertEqual(cancelled["status"], "cancelled")
+        rows = self.scraper.list_scheduled(project="owner-project")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], job["job_id"])
+        self.assertEqual(rows[0]["status"], "cancelled")
+
+    def test_cancel_awaiting_approval_and_running_schedules_is_truthful(self):
+        pending = self.scraper.schedule_scrape("https://example.com/pending", project="default")
+        self.assertEqual(pending["status"], "awaiting_approval")
+        cancelled = self.scraper.cancel_scheduled(pending["job_id"], project="default")
+        self.assertEqual(cancelled["status"], "cancelled")
+
+        running = self.scraper.schedule_scrape(
+            "https://example.com/running", project="default", allow_external=True,
+        )
+        with self.store.session() as connection:
+            connection.execute("UPDATE scrape_jobs SET status='running' WHERE id=?", (running["job_id"],))
+        result = self.scraper.cancel_scheduled(running["job_id"], project="default")
+        self.assertEqual(result["status"], "running")
+
+    def test_cancelled_schedule_is_not_processed_and_restart_recovers_claimed_job(self):
+        job = self.scraper.schedule_scrape(
+            "https://example.com/restart", project="default", allow_external=True,
+        )
+        with self.store.session() as connection:
+            connection.execute("UPDATE scrape_jobs SET next_run='2000-01-01T00:00:00+00:00' WHERE id=?", (job["job_id"],))
+        self.scraper.cancel_scheduled(job["job_id"], project="default")
+        with patch.object(self.scraper, "scrape_url") as fetch:
+            result = self.scraper.run_due_jobs(project="default")
+        self.assertEqual(result, {"ran": 0, "errors": 0, "total_due": 0})
+        fetch.assert_not_called()
+
+        with self.store.session() as connection:
+            connection.execute("UPDATE scrape_jobs SET status='running' WHERE id=?", (job["job_id"],))
+        self.assertEqual(self.scraper.recover_interrupted_schedules(), 1)
+        recovered = self.scraper.list_scheduled(project="default")
+        self.assertEqual(recovered[0]["status"], "scheduled")
+
+    def test_cancel_racing_due_claim_does_not_claim_running_fetch_was_stopped(self):
+        job = self.scraper.schedule_scrape(
+            "https://example.com/race", project="default", allow_external=True,
+        )
+        with self.store.session() as connection:
+            connection.execute("UPDATE scrape_jobs SET next_run='2000-01-01T00:00:00+00:00' WHERE id=?", (job["job_id"],))
+        started = threading.Event()
+        release = threading.Event()
+        results = []
+
+        def fetch(*args, **kwargs):
+            started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("test fetch was not released")
+            return {"url": job["url"], "status": "ok", "status_code": 200}
+
+        with patch.object(self.scraper, "scrape_url", side_effect=fetch):
+            worker = threading.Thread(target=lambda: results.append(self.scraper.run_due_jobs(project="default")))
+            worker.start()
+            self.assertTrue(started.wait(timeout=5), "due job did not reach its fetch")
+            during = self.scraper.cancel_scheduled(job["job_id"], project="default")
+            self.assertEqual(during["status"], "running")
+            release.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive(), "due job did not finish")
+        self.assertEqual(results, [{"ran": 1, "errors": 0, "total_due": 1}])
+        self.assertEqual(self.scraper.list_scheduled(project="default")[0]["status"], "scheduled")
+
     def test_status(self):
         status = self.scraper.status(project="default")
         self.assertIn("scheduled_jobs", status)
@@ -324,6 +436,12 @@ class TestFineTuningManager(unittest.TestCase):
         refreshed = self.ft.get_dataset(ds["id"])
         self.assertEqual(refreshed["num_examples"], 2)
 
+    def test_add_example_rejects_dataset_from_another_project(self):
+        ds = self.ft.create_dataset("Private dataset", project="owner-project")
+        with self.assertRaisesRegex(KeyError, "Dataset not found in project"):
+            self.ft.add_example(ds["id"], "prompt", "response", project="other-project")
+        self.assertEqual(self.ft.get_dataset(ds["id"])["num_examples"], 0)
+
     def test_export_dataset_jsonl(self):
         ds = self.ft.create_dataset("Export test", project="default")
         self.ft.add_example(ds["id"], "User question", "Assistant answer", project="default")
@@ -338,6 +456,12 @@ class TestFineTuningManager(unittest.TestCase):
         self.assertEqual(job["method"], "lora")
         self.assertEqual(job["status"], "queued")
 
+    def test_create_job_rejects_dataset_from_another_project(self):
+        ds = self.ft.create_dataset("Private training", project="owner-project")
+        with self.assertRaisesRegex(KeyError, "Dataset not found in project"):
+            self.ft.create_job(ds["id"], "local-model", project="other-project")
+        self.assertEqual(self.ft.list_jobs(project="other-project"), [])
+
     def test_update_job_progress(self):
         ds = self.ft.create_dataset("Progress dataset", project="default")
         job = self.ft.create_job(ds["id"], "llama3.1", project="default")
@@ -351,6 +475,28 @@ class TestFineTuningManager(unittest.TestCase):
         completed = self.ft.complete_job(job["id"])
         self.assertEqual(completed["status"], "completed")
         self.assertAlmostEqual(completed["progress"], 1.0)
+
+    def test_cancel_queued_job_is_project_scoped_and_terminal(self):
+        ds = self.ft.create_dataset("Cancelable dataset", project="research")
+        job = self.ft.create_job(ds["id"], "qwen", project="research")
+        cancelled = self.ft.cancel_queued_job(job["id"], project="research")
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertTrue(cancelled["completed_at"])
+        with self.assertRaises(KeyError):
+            self.ft.cancel_queued_job(job["id"], project="other")
+        with self.assertRaisesRegex(RuntimeError, "Only queued or running jobs"):
+            self.ft.cancel_queued_job(job["id"], project="research")
+
+    def test_running_job_stays_cancelling_until_worker_acknowledges(self):
+        ds = self.ft.create_dataset("Running dataset", project="default")
+        job = self.ft.create_job(ds["id"], "qwen", project="default")
+        self.ft.update_job_progress(job["id"], 0.25, status="running")
+        requested = self.ft.cancel_queued_job(job["id"], project="default")
+        self.assertEqual(requested["status"], "cancelling")
+        # Late progress/completion callbacks must not overwrite the request.
+        self.assertEqual(self.ft.update_job_progress(job["id"], 0.9, status="running")["status"], "cancelling")
+        self.assertEqual(self.ft.complete_job(job["id"])["status"], "cancelling")
+        self.assertEqual(self.ft._finish_job_cancelled(job["id"], "default")["status"], "cancelled")
 
     def test_register_and_activate_adapter(self):
         adapter = self.ft.register_adapter(

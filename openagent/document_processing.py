@@ -14,6 +14,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from xml.etree import ElementTree
 
 from .documents import DocumentManager
 from .knowledge import KnowledgeEngine
@@ -86,8 +87,17 @@ class DocumentProcessing:
         owner: str = "local",
         title: str = "",
     ) -> dict[str, Any]:
+        extension = Path(filename).suffix.lower()
+        if extension in {".doc", ".ppt", ".xls"}:
+            modern = {".doc": ".docx", ".ppt": ".pptx", ".xls": ".xlsx"}[extension]
+            raise ValueError(
+                f"Legacy {extension[1:].upper()} files are not supported for text extraction. "
+                f"Save the file as {modern} or export it as PDF, then import it again."
+            )
         text = extract_office_text(filename, content)
         if not text.strip():
+            if extension in {".odt", ".rtf"}:
+                raise ValueError(f"Could not extract readable text from this {extension[1:].upper()} file.")
             text = content.decode("utf-8", errors="replace")
         doc = self.documents.create_document(
             title=title or Path(filename).stem or "Imported document",
@@ -373,6 +383,19 @@ class DocumentProcessing:
 
 def extract_pdf_text(content: bytes) -> str:
     try:
+        import pypdfium2 as pdfium
+
+        doc = pdfium.PdfDocument(content)
+        pages = []
+        for i in range(len(doc)):
+            textpage = doc[i].get_textpage()
+            pages.append(textpage.get_text_range().strip())
+        extracted = "\n".join(p for p in pages if p).strip()
+        if extracted:
+            return extracted
+    except Exception:
+        pass
+    try:
         from pypdf import PdfReader
 
         reader = PdfReader(BytesIO(content))
@@ -397,6 +420,21 @@ def extract_pdf_text(content: bytes) -> str:
 
 def extract_office_text(filename: str, content: bytes) -> str:
     lowered = filename.lower()
+    if lowered.endswith(".odt"):
+        try:
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                root = ElementTree.fromstring(archive.read("content.xml"))
+            paragraphs = []
+            for element in root.iter():
+                if element.tag.rsplit("}", 1)[-1] in {"p", "h"}:
+                    text = "".join(element.itertext()).strip()
+                    if text:
+                        paragraphs.append(text)
+            return "\n\n".join(paragraphs)
+        except (KeyError, ElementTree.ParseError, zipfile.BadZipFile):
+            return ""
+    if lowered.endswith(".rtf"):
+        return _extract_rtf_text(content)
     if lowered.endswith(".docx"):
         try:
             from docx import Document as WordDocument
@@ -420,3 +458,85 @@ def extract_office_text(filename: str, content: bytes) -> str:
         except zipfile.BadZipFile:
             return ""
     return content.decode("utf-8", errors="replace")
+
+
+def _extract_rtf_text(content: bytes) -> str:
+    raw = content.decode("cp1252", errors="replace")
+    if not re.match(r"^\s*\{\\rtf", raw):
+        return ""
+    ignored_groups = {
+        "colortbl", "datastore", "filetbl", "fonttbl", "generator", "info",
+        "listoverridetable", "listtable", "object", "pict", "stylesheet",
+        "xmlopen", "xmlattrname", "xmlattrvalue", "fldinst",
+    }
+    ignored = [False]
+    output: list[str] = []
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char == "{":
+            probe = index + 1
+            while probe < len(raw) and raw[probe].isspace():
+                probe += 1
+            if raw.startswith(r"\*", probe):
+                probe += 2
+                while probe < len(raw) and raw[probe].isspace():
+                    probe += 1
+            destination = re.match(r"\\([A-Za-z]+)", raw[probe:])
+            ignored.append(ignored[-1] or bool(destination and destination.group(1).lower() in ignored_groups))
+            index += 1
+            continue
+        if char == "}":
+            if len(ignored) > 1:
+                ignored.pop()
+            index += 1
+            continue
+        if char != "\\":
+            if not ignored[-1] and char not in "\r\n":
+                output.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(raw):
+            break
+        symbol = raw[index + 1]
+        if symbol in "\\{}":
+            if not ignored[-1]:
+                output.append(symbol)
+            index += 2
+            continue
+        if symbol == "'" and index + 3 < len(raw):
+            try:
+                decoded = bytes([int(raw[index + 2:index + 4], 16)]).decode("cp1252")
+            except (ValueError, UnicodeDecodeError):
+                decoded = ""
+            if not ignored[-1]:
+                output.append(decoded)
+            index += 4
+            continue
+        control = re.match(r"\\([A-Za-z]+)(-?\d+)? ?", raw[index:])
+        if control:
+            word = control.group(1).lower()
+            end = index + control.end()
+            if not ignored[-1]:
+                if word in {"par", "line"}:
+                    output.append("\n")
+                elif word == "tab":
+                    output.append("\t")
+                elif word == "u" and control.group(2):
+                    codepoint = int(control.group(2))
+                    output.append(chr(codepoint if codepoint >= 0 else codepoint + 65536))
+                    if end < len(raw) and raw[end] not in "\\{}":
+                        end += 1  # Skip the single fallback character used by \uN.
+            if word == "bin" and control.group(2):
+                end += max(0, int(control.group(2)))
+            index = min(end, len(raw))
+            continue
+        if not ignored[-1] and symbol == "~":
+            output.append(" ")
+        elif not ignored[-1] and symbol == "_":
+            output.append("-")
+        index += 2
+    text = "".join(output)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()

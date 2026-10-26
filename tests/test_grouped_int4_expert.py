@@ -53,7 +53,42 @@ def fixture(h, i, gs, seed=410):
     return b"".join(code_parts + scale_parts)
 
 
+def legacy_pack_matrix(matrix, group_size):
+    """Original scalar policy retained as an independent byte-layout oracle."""
+    weights = np.asarray(matrix)
+    rows, columns = weights.shape
+    stride = (columns + 1) // 2
+    groups = (columns + group_size - 1) // group_size
+    codes = bytearray(rows * stride)
+    scales = np.empty((rows, groups), dtype="<f4")
+    for row in range(rows):
+        for group in range(groups):
+            start, stop = group * group_size, min(columns, (group + 1) * group_size)
+            values = weights[row, start:stop].astype(np.float32)
+            maximum = float(np.max(np.abs(values)))
+            scale = np.float32(maximum / 7) if maximum else np.float32(1)
+            if maximum and scale == 0:
+                scale = np.nextafter(np.float32(0), np.float32(1))
+            integers = np.clip(np.rint(values.astype(np.float64) / float(scale)), -7, 7).astype(np.int8)
+            scales[row, group] = scale
+            for column, value in enumerate(integers, start):
+                codes[row * stride + column // 2] |= (int(value) & 15) << (4 * (column % 2))
+    return bytes(codes), scales
+
+
 class GroupedFormatTests(unittest.TestCase):
+    def test_tiled_vector_packer_matches_legacy_scalar_bytes(self):
+        rng = np.random.default_rng(420)
+        for group_size in (1, 2, 3, 7, 64, 100):
+            for row_count in (1, 3, 64):
+                for matrix in (rng.normal(0, .1, (7, 19)), np.zeros((4, 65)),
+                               np.full((2, 17), np.nextafter(np.float32(0), np.float32(1)))):
+                    expected_codes, expected_scales = legacy_pack_matrix(matrix, group_size)
+                    actual_codes, actual_scales = pack_matrix(matrix, group_size=group_size,
+                                                              row_count=row_count)
+                    self.assertEqual(actual_codes, expected_codes)
+                    np.testing.assert_array_equal(actual_scales, expected_scales)
+
     def test_payload_geometry_odd_rows_and_partial_groups(self):
         self.assertEqual(payload_size(3, 5, group_size=2), 145)
         self.assertEqual(payload_size(3, 5, group_size=64), 81)

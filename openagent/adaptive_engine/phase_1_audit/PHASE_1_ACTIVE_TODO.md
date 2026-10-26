@@ -1,4 +1,8 @@
-# Phase 1 — active completion queue
+# Phase 1 — historical audit snapshot (superseded)
+
+> **Do not use this file as the current completion queue.** Its 2026-10-19
+> route counts and completion claims conflict with the canonical source matrix.
+> The current audit and remaining work are in `D:/openagent/PHASE_1_ACTIVE_TODO.md`.
 
 Updated 2026-10-19 21:02 UTC. This is the authoritative short list of **remaining work**, not a record of past edits. The detailed requirements and audit history remain in [PHASE_1_SOURCE_CHECKLIST.md](PHASE_1_SOURCE_CHECKLIST.md). Phase 1 and P15 are **OPEN**.
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 from html.parser import HTMLParser
+from http.client import HTTPConnection
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -240,11 +242,21 @@ class WorkbenchInstanceLock:
 
     def acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b")
-        if self.path.stat().st_size == 0:
-            handle.write(b"0")
-            handle.flush()
-        handle.seek(0)
+        try:
+            handle = self.path.open("a+b")
+            if self.path.stat().st_size == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+        except OSError:
+            # The desktop entry point turns this into a user-visible launch
+            # error. Treat an inaccessible lock like contention so the caller
+            # can first check whether a healthy local server owns the runtime.
+            try:
+                handle.close()
+            except (UnboundLocalError, OSError):
+                pass
+            return False
         try:
             if os.name == "nt":
                 import msvcrt
@@ -296,6 +308,30 @@ def _running_instance_url(data_dir: Path) -> str:
     return str(value.get("url", "")).strip() if isinstance(value, dict) else ""
 
 
+def _existing_instance_is_healthy(instance_url: str) -> bool:
+    """Check a saved instance address before reusing it; never probe non-loopback URLs."""
+    connection: HTTPConnection | None = None
+    try:
+        parsed = urlsplit(instance_url)
+        if parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password:
+            return False
+        host = parsed.hostname
+        if host.casefold() != "localhost" and not ipaddress.ip_address(host).is_loopback:
+            return False
+        connection = HTTPConnection(host, parsed.port or 80, timeout=1.0)
+        connection.request("GET", "/api/health", headers={"Connection": "close"})
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        payload = json.loads(response.read(4096).decode("utf-8"))
+        return isinstance(payload, dict) and bool(str(payload.get("status", "")).strip())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def configure_managed_openvino_model(data_dir: Path) -> str:
     """Select a verified local OpenVINO model without crossing the network."""
 
@@ -318,10 +354,34 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
 
 
 def project_venv_python() -> Path | None:
-    """Return the installer-recorded source interpreter when it is available."""
+    """Return a source checkout's interpreter for development launches only.
+
+    An installed package may retain its source path in the install manifest for
+    accelerator/model discovery. That path must not redirect the desktop shell
+    away from the isolated interpreter that the installer created.
+    """
 
     package_root = Path(__file__).resolve().parents[1]
-    source_root = installation_source_root() or package_root
+    explicit_source = os.environ.get("OPENAGENT_SOURCE_ROOT", "").strip()
+    # The Windows installer intentionally installs the package editable from
+    # its source checkout so accelerator/model assets remain discoverable.
+    # In that case __file__ points into the checkout even though this process
+    # is already running from the isolated installed venv. Do not bounce the
+    # desktop process back into the developer's checkout venv.
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        installed_venv = Path(local_app_data) / "OpenAgent" / ".venv"
+        try:
+            if Path(sys.prefix).resolve() == installed_venv.resolve():
+                return None
+        except OSError:
+            pass
+    if explicit_source:
+        source_root = Path(explicit_source).expanduser()
+    elif (package_root / "pyproject.toml").is_file() and (package_root / "openagent").is_dir():
+        source_root = package_root
+    else:
+        return None
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     executable = "python.exe" if sys.platform == "win32" else "python"
     candidate = source_root / ".venv" / scripts_dir / executable
@@ -357,9 +417,14 @@ def maybe_reexec_project_venv() -> None:
     os.execv(str(target), command)
 
 
-def workbench_status(data_dir: Path | str | None = None, *, project: str = "default") -> dict[str, Any]:
+def workbench_status(
+    data_dir: Path | str | None = None,
+    *,
+    project: str = "default",
+    ui_root: Path | str | None = None,
+) -> dict[str, Any]:
     data_path = Path(data_dir).expanduser() if data_dir else desktop_home()
-    assets = web_root()
+    assets = (Path(ui_root).expanduser() if ui_root else web_root()).resolve()
     return {
         "status": "ready",
         "mode": "modern-desktop-workbench",
@@ -378,7 +443,7 @@ def workbench_status(data_dir: Path | str | None = None, *, project: str = "defa
             "python_module": "python -m openagent.workbench",
         },
         "assets": {
-            "build": ui_build_token(),
+            "build": ui_build_token(assets),
             "web_root": str(assets),
             "index": str(assets / "index.html"),
             "css": str(assets / "styles.css"),
@@ -439,10 +504,16 @@ def launch_workbench(
                 "The explicit --ui-root was not applied; stop the existing local instance and retry."
             )
         existing_url = _running_instance_url(runtime_path)
-        if existing_url and open_window:
-            open_app_window(existing_url, data_path, profile_dir=runtime_path / "browser-reconnect")
-        print(existing_url or "OpenAgent Workbench is already running for this data directory.")
-        return 0
+        if existing_url and _existing_instance_is_healthy(existing_url):
+            if open_window:
+                open_app_window(existing_url, data_path, profile_dir=runtime_path / "browser-reconnect")
+            print(existing_url)
+            return 0
+        raise DesktopAssetError(
+            "OpenAgent could not acquire its local runtime lock, and the saved workbench address is not healthy. "
+            "The launcher did not open a stale page. Close any existing OpenAgent process and try again; "
+            f"runtime directory: {runtime_path}"
+        )
     selected_ui_root = (Path(ui_root).expanduser() if ui_root else web_root()).resolve()
     try:
         referenced_assets = validate_desktop_ui(selected_ui_root)
@@ -635,7 +706,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.status_json:
         import json
 
-        print(json.dumps(workbench_status(data_dir, project=args.project), indent=2, sort_keys=True))
+        print(json.dumps(workbench_status(data_dir, project=args.project, ui_root=args.ui_root), indent=2, sort_keys=True))
         return 0
     return launch_workbench(
         data_dir,

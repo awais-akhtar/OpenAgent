@@ -182,7 +182,8 @@ class PublisherCheckpoint:
                                   l2_epsilon=1e-6, rotary_mode="publisher-none", rotary_theta=10000.0,
                                   include_vision=False, vision_tower_epsilon=2**-23,
                                   use_expert_provider=False, max_expert_bytes=None, max_mapped_bytes=None,
-                                  sharded_projections=()):
+                                  sharded_projections=(), source_backend,
+                                  source_arithmetic):
         from .k3_adapter import load_k3
         return load_k3(self, capacity=capacity, max_weight_bytes=max_weight_bytes,
                        expert_format=expert_format, max_chunk_bytes=max_chunk_bytes,
@@ -190,7 +191,8 @@ class PublisherCheckpoint:
                        rotary_mode=rotary_mode, rotary_theta=rotary_theta,
                        include_vision=include_vision, vision_tower_epsilon=vision_tower_epsilon,
                        use_expert_provider=use_expert_provider, max_expert_bytes=max_expert_bytes,
-                       max_mapped_bytes=max_mapped_bytes, sharded_projections=sharded_projections)
+                       max_mapped_bytes=max_mapped_bytes, sharded_projections=sharded_projections,
+                       source_backend=source_backend, source_arithmetic=source_arithmetic)
 
     def load_v41_execution_payload(self, *, capacity, max_weight_bytes,
                                    max_chunk_bytes=1024**2, use_providers=True,
@@ -198,6 +200,14 @@ class PublisherCheckpoint:
                                    max_engram_bytes=4*1024**2, max_engram_rows=4096,
                                    round_engram_to_bfloat16=True, max_projection_bytes=64*1024**2,
                                    sharded_projections=()):
+        # The public checkpoint API can be used without either the CLI or the
+        # execution factory. Gate the exact source inventory at the payload
+        # boundary, after metadata planning but before any mapped weight load.
+        from ..source_scope import require_checkpoint_inventory_admission
+        require_checkpoint_inventory_admission(
+            self._metadata.root, family='deepseek-v41', model_type='deepseek_v41',
+            backend='native', arithmetic='publisher-bf16-fp8-fp4',
+            max_metadata_bytes=max(1, self._metadata.metadata_bytes))
         from .v41_adapter import load_v41
         return load_v41(self, capacity=capacity, max_weight_bytes=max_weight_bytes,
                         max_chunk_bytes=max_chunk_bytes, use_providers=use_providers,
@@ -418,7 +428,8 @@ class PublisherCheckpointService:
                                   rotary_mode="publisher-none", rotary_theta=10000.0,
                                   include_vision=False, vision_tower_epsilon=2**-23,
                                   use_expert_provider=False, max_expert_bytes=None, max_mapped_bytes=None,
-                                  sharded_projections=()):
+                                  sharded_projections=(), source_backend,
+                                  source_arithmetic):
         checkpoint = PublisherCheckpoint.open(directory, family="kimi_k3",
             max_metadata_bytes=max_metadata_bytes, max_tensors=max_tensors, max_shards=max_shards)
         return checkpoint.load_k3_execution_payload(capacity=capacity,
@@ -427,7 +438,8 @@ class PublisherCheckpointService:
             l2_epsilon=l2_epsilon, rotary_mode=rotary_mode, rotary_theta=rotary_theta,
             include_vision=include_vision, vision_tower_epsilon=vision_tower_epsilon,
             use_expert_provider=use_expert_provider, max_expert_bytes=max_expert_bytes,
-            max_mapped_bytes=max_mapped_bytes, sharded_projections=sharded_projections)
+            max_mapped_bytes=max_mapped_bytes, sharded_projections=sharded_projections,
+            source_backend=source_backend, source_arithmetic=source_arithmetic)
 
     @staticmethod
     def load(directory, *, family, max_weight_bytes, targets=None,

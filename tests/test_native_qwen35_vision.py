@@ -16,6 +16,52 @@ from tests.test_native_qwen35 import build as build_text
 from tests import test_native_mixtral_qwen35 as text_oracle
 
 
+class Qwen35VisionBindingTests(unittest.TestCase):
+    def test_version_function_has_explicit_zero_argument_signature(self):
+        class Function:
+            argtypes = None
+            restype = None
+
+            def __call__(self, *args):
+                return 1
+
+        class Library:
+            _handle = 1
+
+            def __init__(self):
+                self.functions = {}
+
+            def __getattr__(self, name):
+                return self.functions.setdefault(name, Function())
+
+        class TextDecoder:
+            def __init__(self, *args, **kwargs):
+                self.weights = {}
+                self._bindings = []
+
+        from openagent.adaptive_engine import native_qwen35_vision as module
+        library = Library()
+        config = {
+            'model_type': 'qwen3_5_moe',
+            'text_config': {'hidden_size': 24, 'tie_word_embeddings': False, 'vocab_size': 64},
+            'vision_config': dict(NativeQwen35Vision._geometry),
+            'image_token_id': 35,
+            'video_token_id': 34,
+        }
+        tensors = {'model.visual.' + name: np.zeros(shape, np.float32)
+                   for name, shape in NativeQwen35Vision._shapes.items()}
+        with tempfile.TemporaryDirectory() as directory:
+            vision_path, text_path = Path(directory) / 'vision.dll', Path(directory) / 'text.dll'
+            vision_path.touch(); text_path.touch()
+            with (patch.object(module, 'NativeQwen35TextDecoder', TextDecoder),
+                  patch.object(module.C, 'CDLL', return_value=library),
+                  patch.object(module, '_own_library', return_value=lambda: None)):
+                NativeQwen35Vision(config, tensors, library=vision_path, text_library=text_path)
+        version = library.functions['oa_qwen35_vision_version']
+        self.assertEqual(version.argtypes, [])
+        self.assertIs(version.restype, module.C.c_uint64)
+
+
 def build_vision(directory):
     source = Path(__file__).resolve().parents[1]/'openagent/adaptive_engine/native_qwen35_vision.c'
     output = Path(directory)/('qwen35_vision.dll' if os.name == 'nt' else 'qwen35_vision.so')

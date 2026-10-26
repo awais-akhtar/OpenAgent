@@ -37,9 +37,6 @@ class InferenceRouteTests(unittest.TestCase):
     def test_compatibility_routes_fail_closed_for_unimplemented_features(self) -> None:
         cases = (
             ("/v1/messages", {"model": "local", "messages": [{"role": "user", "content": "hi"}],
-                              "max_tokens": 8, "stop_sequences": ["stop"]},
-             "text stop sequences are not yet adapted"),
-            ("/v1/messages", {"model": "local", "messages": [{"role": "user", "content": "hi"}],
                               "max_tokens": 8, "tools": [{"name": "lookup"}]},
              "tool calls and thinking blocks are not admitted"),
             ("/v1/messages", {"model": "local", "messages": [{"role": "user", "content": "hi"}],
@@ -88,6 +85,38 @@ class InferenceRouteTests(unittest.TestCase):
             self.assertEqual(provider.received["queue_timeout"], expected)
             self.assertEqual(result.headers["X-Queue-Wait-Ms"], "17")
 
+    def test_openai_and_anthropic_stop_strings_reach_native_tokenizer_adapter(self) -> None:
+        class Provider:
+            received = None
+
+            def _configuration(self):
+                return {"model": "local"}
+
+            def complete(self, *_args, **kwargs):
+                self.received = kwargs
+                return SimpleNamespace(model="local", content="answer", metadata={
+                    "runtime": {"prompt_tokens": 1, "generated_ids": [2]}})
+
+        class Gateway:
+            def __init__(self, provider):
+                self.providers = {"native-publisher": provider}
+
+        cases = (
+            ("/v1/chat/completions", {"model": "local", "messages": [
+                {"role": "user", "content": "hi"}], "max_tokens": 2, "stop": ["END", "\n\n"]}),
+            ("/v1/messages", {"model": "local", "messages": [
+                {"role": "user", "content": "hi"}], "max_tokens": 2, "stop_sequences": ["END"]}),
+        )
+        for path, payload in cases:
+            with self.subTest(path=path):
+                provider = Provider()
+                result = handle_post(path, InferenceRouteDependencies(
+                    gateway=Gateway(provider), store=object(), read_json=lambda: payload,
+                    anthropic_version="2023-06-01"))
+                self.assertEqual(result.status, HTTPStatus.OK)
+                expected = payload.get("stop", payload.get("stop_sequences"))
+                self.assertEqual(provider.received["stop_sequences"], tuple(expected))
+
     def test_openai_streaming_frames_usage_and_queue_admission(self) -> None:
         class Provider:
             received = None
@@ -112,13 +141,14 @@ class InferenceRouteTests(unittest.TestCase):
         provider = Provider()
         payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
                    "max_tokens": 2, "stream": True, "stream_options": {"include_usage": True},
-                   "queue": True, "queue_timeout": 1.25}
+                   "queue": True, "queue_timeout": 1.25, "stop": ["END"]}
         result = handle_post("/v1/chat/completions", InferenceRouteDependencies(
             gateway=Gateway(provider), store=object(), read_json=lambda: payload))
         self.assertIsInstance(result, StreamRouteResult)
         self.assertEqual(result.headers["X-Queue-Wait-Ms"], "23")
         frames = list(result.events)
         self.assertEqual(provider.received["queue_timeout"], 1.25)
+        self.assertEqual(provider.received["stop_sequences"], ("END",))
         self.assertEqual(frames[0].data["choices"][0]["delta"], {"role": "assistant"})
         self.assertEqual(frames[1].data["choices"][0]["delta"], {"content": "hello"})
         self.assertEqual(frames[2].data["choices"][0]["finish_reason"], "length")
@@ -187,6 +217,92 @@ class InferenceRouteTests(unittest.TestCase):
         self.assertIn("stream failed before first event", result.payload["error"]["message"])
         self.assertTrue(provider.source.closed)
 
+    def test_compat_stream_disconnect_before_sse_publication_closes_uncooperative_source(self) -> None:
+        cancelled = [False]
+
+        class Source:
+            closed = False
+
+            def __iter__(self):
+                try:
+                    yield StreamChunk("native-publisher", "local", "already buffered", False, {})
+                    yield StreamChunk("native-publisher", "local", "", True, {"runtime": {
+                        "prompt_ids": [1], "generated_ids": [2], "finish_reason": "eos"}})
+                finally:
+                    self.closed = True
+
+        class Provider:
+            def __init__(self):
+                self.source = Source()
+
+            def _configuration(self):
+                return {"model": "local"}
+
+            def stream_complete(self, *_args, **_kwargs):
+                return self.source
+
+        class Gateway:
+            def __init__(self, provider):
+                self.providers = {"native-publisher": provider}
+
+        provider = Provider()
+        payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 2, "stream": True}
+        result = handle_post("/v1/chat/completions", InferenceRouteDependencies(
+            gateway=Gateway(provider), store=object(), read_json=lambda: payload,
+            cancelled=lambda: cancelled[0]))
+        self.assertIsInstance(result, StreamRouteResult)
+
+        # handle_post has to pull the first event before handing the iterator
+        # to the HTTP response; simulate a disconnect in that narrow window.
+        cancelled[0] = True
+        self.assertEqual(list(result.events), [])
+        self.assertTrue(provider.source.closed)
+
+    def test_compat_stream_disconnect_stops_buffered_chunks_after_protocol_prelude(self) -> None:
+        cancelled = [False]
+
+        class Source:
+            closed = False
+
+            def __iter__(self):
+                try:
+                    yield StreamChunk("native-publisher", "local", "must not publish", False, {})
+                    yield StreamChunk("native-publisher", "local", "", True, {"runtime": {
+                        "prompt_ids": [1], "generated_ids": [2], "finish_reason": "eos"}})
+                finally:
+                    self.closed = True
+
+        class Provider:
+            def __init__(self):
+                self.source = Source()
+
+            def _configuration(self):
+                return {"model": "local"}
+
+            def stream_complete(self, *_args, **_kwargs):
+                return self.source
+
+        class Gateway:
+            def __init__(self, provider):
+                self.providers = {"native-publisher": provider}
+
+        provider = Provider()
+        payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 2, "stream": True}
+        result = handle_post("/v1/chat/completions", InferenceRouteDependencies(
+            gateway=Gateway(provider), store=object(), read_json=lambda: payload,
+            cancelled=lambda: cancelled[0]))
+        iterator = iter(result.events)
+        first = next(iterator)
+        self.assertEqual(first.data["choices"][0]["delta"], {"role": "assistant"})
+
+        # The source deliberately ignores cancellation. The route must not
+        # translate its already-buffered content delta after disconnect.
+        cancelled[0] = True
+        self.assertEqual(list(iterator), [])
+        self.assertTrue(provider.source.closed)
+
     def test_truncated_native_stream_emits_error_not_successful_stop(self) -> None:
         class Provider:
             def _configuration(self):
@@ -207,6 +323,32 @@ class InferenceRouteTests(unittest.TestCase):
         self.assertEqual(frames[-1].data, "[DONE]")
         self.assertFalse(any(frame.data.get("choices", [{}])[0].get("finish_reason")
                              for frame in frames[:-2] if type(frame.data) is dict))
+
+    def test_unprintable_backend_failure_becomes_protocol_error_event(self) -> None:
+        class UnprintableBackendError(Exception):
+            def __str__(self):
+                raise AssertionError("backend exception formatter must not run")
+
+        class Provider:
+            def _configuration(self):
+                return {"model": "local"}
+
+            def stream_complete(self, *_args, **_kwargs):
+                yield StreamChunk("native-publisher", "local", "partial", False, {})
+                raise UnprintableBackendError()
+
+        class Gateway:
+            providers = {"native-publisher": Provider()}
+
+        payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 2, "stream": True}
+        result = handle_post("/v1/chat/completions", InferenceRouteDependencies(
+            gateway=Gateway(), store=object(), read_json=lambda: payload))
+        frames = list(result.events)
+        self.assertEqual(frames[-2].data["error"]["type"], "server_error")
+        self.assertEqual(frames[-2].data["error"]["message"],
+                         "UnprintableBackendError: failure details omitted")
+        self.assertEqual(frames[-1].data, "[DONE]")
 
     def test_openai_stream_cleanup_failure_is_reported_before_success_terminal(self) -> None:
         class BrokenCleanupStream:
@@ -246,6 +388,56 @@ class InferenceRouteTests(unittest.TestCase):
         self.assertEqual(frames[-1].data, "[DONE]")
         self.assertFalse(any(frame.data.get("choices", [{}])[0].get("finish_reason")
                              for frame in frames[:-2] if type(frame.data) is dict))
+
+    def test_compat_stream_retries_transient_source_close_failure(self) -> None:
+        class TransientCleanupStream:
+            def __init__(self):
+                self.events = iter((
+                    StreamChunk("native-publisher", "local", "answer", False, {}),
+                    StreamChunk("native-publisher", "local", "", True, {"runtime": {
+                        "prompt_ids": [1], "generated_ids": [2], "finish_reason": "eos"}}),
+                ))
+                self.close_calls = 0
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.events)
+
+            def close(self):
+                self.close_calls += 1
+                if self.close_calls == 1:
+                    raise RuntimeError("transient upstream close failure")
+                self.closed = True
+
+        class Provider:
+            def __init__(self):
+                self.source = TransientCleanupStream()
+
+            def _configuration(self):
+                return {"model": "local"}
+
+            def stream_complete(self, *_args, **_kwargs):
+                return self.source
+
+        class Gateway:
+            def __init__(self):
+                self.provider = Provider()
+                self.providers = {"native-publisher": self.provider}
+
+        gateway = Gateway()
+        payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 2, "stream": True}
+        result = handle_post("/v1/chat/completions", InferenceRouteDependencies(
+            gateway=gateway, store=object(), read_json=lambda: payload))
+        frames = list(result.events)
+
+        self.assertEqual(gateway.provider.source.close_calls, 2)
+        self.assertTrue(gateway.provider.source.closed)
+        self.assertEqual(frames[-2].data["error"]["type"], "server_error")
+        self.assertEqual(frames[-1].data, "[DONE]")
 
     def test_anthropic_streaming_uses_named_protocol_events_and_closes_source(self) -> None:
         class Provider:
@@ -319,6 +511,27 @@ class InferenceRouteTests(unittest.TestCase):
         self.assertEqual(result.headers, {"Retry-After": "1"})
         self.assertIn("capacity exhausted", result.payload["error"]["message"])
 
+    def test_queue_timeout_uses_429_and_retry_after(self) -> None:
+        from openagent.adaptive_engine.admission_scheduler import AdmissionTimedOut
+
+        class Provider:
+            def _configuration(self):
+                return {"model": "local"}
+
+            def complete(self, *_args, **_kwargs):
+                raise AdmissionTimedOut("request admission deadline expired")
+
+        class Gateway:
+            providers = {"native-publisher": Provider()}
+
+        payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 2, "queue": True, "queue_timeout": 0.01}
+        result = handle_post("/v1/chat/completions", InferenceRouteDependencies(
+            gateway=Gateway(), store=object(), read_json=lambda: payload))
+        self.assertEqual(result.status, HTTPStatus.TOO_MANY_REQUESTS)
+        self.assertEqual(result.headers, {"Retry-After": "1"})
+        self.assertIn("deadline expired", result.payload["error"]["message"])
+
     def test_unreadable_server_provider_configuration_is_service_unavailable(self) -> None:
         class Provider:
             def _configuration(self):
@@ -387,6 +600,45 @@ class InferenceRouteTests(unittest.TestCase):
         self.assertEqual(result.status, HTTPStatus.OK)
         self.assertEqual(result.payload["usage"], {"input_tokens": 3, "output_tokens": 2})
         self.assertEqual(result.payload["stop_reason"], "max_tokens")
+
+    def test_anthropic_reports_matched_request_stop_sequence_in_json_and_sse(self) -> None:
+        class Provider:
+            def _configuration(self):
+                return {"model": "local"}
+
+            def complete(self, *_args, **_kwargs):
+                return SimpleNamespace(model="local", content="answer", metadata={"runtime": {
+                    "prompt_ids": [1], "generated_ids": [2, 3],
+                    "finish_reason": "stop_sequence", "stop_sequence": "END"}})
+
+            def stream_complete(self, *_args, **_kwargs):
+                yield StreamChunk("native-publisher", "local", "answer", False, {})
+                yield StreamChunk("native-publisher", "local", "", True, {"runtime": {
+                    "prompt_ids": [1], "generated_ids": [2, 3],
+                    "finish_reason": "stop_sequence", "stop_sequence": "END"}})
+
+        class Gateway:
+            providers = {"native-publisher": Provider()}
+
+        class Store:
+            def add_audit_event(self, _event):
+                pass
+
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                payload = {"model": "local", "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 4, "stop_sequences": ["END"], "stream": stream}
+                result = handle_post("/v1/messages", InferenceRouteDependencies(
+                    gateway=Gateway(), store=Store(), read_json=lambda: payload,
+                    anthropic_version="2023-06-01"))
+                if stream:
+                    frames = list(result.events)
+                    terminal = next(frame for frame in frames if frame.event == "message_delta")
+                    self.assertEqual(terminal.data["delta"], {
+                        "stop_reason": "stop_sequence", "stop_sequence": "END"})
+                else:
+                    self.assertEqual(result.payload["stop_reason"], "stop_sequence")
+                    self.assertEqual(result.payload["stop_sequence"], "END")
 
     def test_anthropic_requires_valid_version_before_provider_execution(self) -> None:
         class Gateway:

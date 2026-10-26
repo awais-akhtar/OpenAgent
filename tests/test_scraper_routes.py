@@ -35,6 +35,18 @@ class ScraperRouteTests(TestCase):
                 with urlopen(f"{base}/api/scraper/jobs?project=core", timeout=10) as response:
                     jobs = json.load(response)["jobs"]
                 self.assertIn(created["job_id"], {item["id"] for item in jobs})
+                cancel = Request(
+                    f"{base}/api/scraper/jobs/{created['job_id']}/cancel",
+                    data=json.dumps({"project": "core"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urlopen(cancel, timeout=10) as response:
+                    cancelled = json.load(response)
+                self.assertTrue(cancelled["cancelled"])
+                self.assertEqual(cancelled["job"]["status"], "cancelled")
+                with urlopen(f"{base}/api/scraper/jobs?project=core", timeout=10) as response:
+                    jobs = json.load(response)["jobs"]
+                self.assertEqual(next(item for item in jobs if item["id"] == created["job_id"])["status"], "cancelled")
                 invalid = Request(
                     f"{base}/api/scraper/schedule", data=b"{}",
                     headers={"Content-Type": "application/json"}, method="POST",
@@ -61,6 +73,7 @@ class ScraperRouteTests(TestCase):
         self.scraper.scrape_url.return_value = {"url": "https://example.com", "status": "ok"}
         self.scraper.schedule_scrape.return_value = {"job_id": "job-1"}
         self.scraper.run_due_jobs.return_value = {"ran": 0, "errors": 0, "total_due": 0}
+        self.scraper.cancel_scheduled.return_value = {"id": "job-1", "status": "cancelled"}
         self.deps = ScraperRouteDependencies(
             scraper=self.scraper,
             first=lambda params, key: params.get(key, [None])[0],
@@ -136,6 +149,28 @@ class ScraperRouteTests(TestCase):
         self.payload = {"project": " core "}
         handle_post("/api/scraper/run-due", self.deps)
         self.scraper.run_due_jobs.assert_called_with(project="core")
+
+    def test_cancel_requires_a_single_job_id_and_preserves_project_scope(self) -> None:
+        self.payload = {"project": " core "}
+        result = handle_post("/api/scraper/jobs/job-1/cancel", self.deps)
+        self.assertEqual(result.status, HTTPStatus.OK)
+        self.assertEqual(result.payload, {"job": {"id": "job-1", "status": "cancelled"}, "cancelled": True})
+        self.scraper.cancel_scheduled.assert_called_once_with("job-1", project="core")
+
+        self.scraper.cancel_scheduled.return_value = {"id": "job-1", "status": "running"}
+        running = handle_post("/api/scraper/jobs/job-1/cancel", self.deps)
+        self.assertEqual(running.payload, {"job": {"id": "job-1", "status": "running"}, "cancelled": False})
+
+        self.scraper.cancel_scheduled.reset_mock()
+        self.scraper.cancel_scheduled.side_effect = lambda job_id, project: None if job_id == "missing" else {"id": job_id, "status": "cancelled"}
+        missing = handle_post("/api/scraper/jobs/missing/cancel", self.deps)
+        self.assertEqual(missing.status, HTTPStatus.NOT_FOUND)
+        self.scraper.cancel_scheduled.assert_called_once_with("missing", project="core")
+
+        self.scraper.cancel_scheduled.reset_mock()
+        malformed = handle_post("/api/scraper/jobs/a%2Fb/cancel", self.deps)
+        self.assertEqual(malformed.status, HTTPStatus.NOT_FOUND)
+        self.scraper.cancel_scheduled.assert_not_called()
 
     def test_missing_url_and_scraper_errors_return_bad_request(self) -> None:
         for path in ("/api/scraper/scrape", "/api/scraper/schedule"):

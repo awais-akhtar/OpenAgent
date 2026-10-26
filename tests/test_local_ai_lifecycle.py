@@ -80,6 +80,37 @@ class ModelLifecycleTests(unittest.TestCase):
 
 
 class ModelLifecycleHttpRouteTests(unittest.TestCase):
+    def test_benchmark_history_route_returns_saved_measurements(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            infra = LocalAIInfrastructure(store)
+            model = infra.register_model(name="History Model", provider="local")
+            with store.session() as connection:
+                connection.execute(
+                    """INSERT INTO model_benchmarks
+                    (id, model_id, prompt_tokens, output_tokens, duration_ms, tokens_per_second, hardware_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ("bench-history-1", model["id"], 2, 4, 120.5, 33.2, '{"cpu_count": 4}', "2026-10-24T12:00:00Z"),
+                )
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                result = json.loads(urlopen(f"{base}/api/local-ai/benchmarks?model_id={model['id']}&limit=10", timeout=15).read().decode("utf-8"))
+                self.assertEqual(len(result["benchmarks"]), 1)
+                self.assertEqual(result["benchmarks"][0]["id"], "bench-history-1")
+                self.assertEqual(result["benchmarks"][0]["model"], "History Model")
+                self.assertEqual(result["benchmarks"][0]["duration_ms"], 120.5)
+                self.assertNotIn("prompt", result["benchmarks"][0])
+                self.assertNotIn("content", result["benchmarks"][0])
+                empty = json.loads(urlopen(f"{base}/api/local-ai/benchmarks?model_id=other", timeout=15).read().decode("utf-8"))
+                self.assertEqual(empty["benchmarks"], [])
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_transition_and_diagnostics_routes(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

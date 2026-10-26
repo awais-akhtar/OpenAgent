@@ -10,7 +10,8 @@ from unittest.mock import Mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from openagent.routes.semantic_routes import SemanticRouteDependencies, contract, handle_get, handle_post
+from openagent.auth import required_scope_for_path
+from openagent.routes.semantic_routes import SemanticRouteDependencies, contract, handle_delete, handle_get, handle_post
 from openagent.server import build_http_server
 from openagent.storage import OpenAgentStore
 
@@ -42,7 +43,12 @@ class SemanticRouteTests(TestCase):
 
         result = handle_get("/api/semantic/collections", "", deps)
         self.assertEqual(result.payload, {"collections": memory.collections.return_value})
-        memory.collections.assert_called_once_with(project="default")
+        memory.collections.assert_called_once_with(project="default", include_archived=False)
+
+        memory.reset_mock()
+        result = handle_get("/api/semantic/collections", "project=core&include_archived=true", deps)
+        self.assertEqual(result.payload, {"collections": memory.collections.return_value})
+        memory.collections.assert_called_once_with(project="core", include_archived=True)
 
         result = handle_get("/api/semantic/graph-analytics", "project=core", deps)
         self.assertEqual(result.payload, memory.graph_analytics.return_value)
@@ -88,6 +94,37 @@ class SemanticRouteTests(TestCase):
         result = handle_post("/api/semantic/collections", deps)
         self.assertEqual((result.payload, result.status), ({"collection": {"id": "c1"}}, HTTPStatus.CREATED))
         memory.create_collection.assert_called_once_with("research", project="core", dimensions=64, metadata={})
+
+    def test_semantic_collection_rename_and_delete_are_project_scoped(self) -> None:
+        self.assertEqual(required_scope_for_path("/api/semantic/collections/research/rename", "POST"), "semantic:write")
+        self.assertEqual(required_scope_for_path("/api/semantic/collections/research/archive", "POST"), "semantic:write")
+        self.assertEqual(required_scope_for_path("/api/semantic/collections/research", "DELETE"), "semantic:write")
+        memory, deps = self.dependencies({"new_name": " Renamed ", "project": " core "})
+        memory.rename_collection.return_value = {"id": "c1", "name": "Renamed", "project": "core"}
+        result = handle_post("/api/semantic/collections/original/rename", deps)
+        self.assertEqual((result.payload, result.status), ({"collection": memory.rename_collection.return_value}, HTTPStatus.OK))
+        memory.rename_collection.assert_called_once_with("original", new_name="Renamed", project="core")
+
+        memory.rename_collection.side_effect = ValueError("A collection with that name already exists in this project.")
+        result = handle_post("/api/semantic/collections/original/rename", deps)
+        self.assertEqual(result.status, HTTPStatus.BAD_REQUEST)
+
+        memory, deps = self.dependencies({"archived": True, "project": "core"})
+        memory.set_collection_archived.return_value = {"id": "c1", "name": "original", "archived": True}
+        result = handle_post("/api/semantic/collections/original/archive", deps)
+        self.assertEqual((result.payload, result.status), ({"collection": memory.set_collection_archived.return_value}, HTTPStatus.OK))
+        memory.set_collection_archived.assert_called_once_with("original", archived=True, project="core")
+        memory, deps = self.dependencies({"archived": "true"})
+        self.assertEqual(handle_post("/api/semantic/collections/original/archive", deps).status, HTTPStatus.BAD_REQUEST)
+
+        memory, deps = self.dependencies()
+        memory.delete_collection.return_value = {"deleted": True, "name": "Renamed", "records_removed": 3}
+        result = handle_delete("/api/semantic/collections/Renamed", "project=core", deps)
+        self.assertEqual((result.payload, result.status), (memory.delete_collection.return_value, HTTPStatus.OK))
+        memory.delete_collection.assert_called_once_with("Renamed", project="core")
+        memory.delete_collection.side_effect = KeyError("missing")
+        result = handle_delete("/api/semantic/collections/missing", "project=core", deps)
+        self.assertEqual((result.payload, result.status), ({"error": "Collection not found."}, HTTPStatus.NOT_FOUND))
 
     def test_vectors_post_converts_values_and_reports_errors(self) -> None:
         memory, deps = self.dependencies({
@@ -139,7 +176,7 @@ class SemanticRouteTests(TestCase):
         memory, deps = self.dependencies()
         for route in contract()["routes"]:
             with self.subTest(route=route):
-                result = handle_get(route["path"], "", deps) if route["method"] == "GET" else handle_post(route["path"], deps)
+                result = handle_get(route["path"], "", deps) if route["method"] == "GET" else handle_delete(route["path"], "", deps) if route["method"] == "DELETE" else handle_post(route["path"], deps)
                 self.assertIsNotNone(result)
         self.assertIsNone(handle_get("/api/other", "", deps))
         self.assertIsNone(handle_post("/api/other", deps))

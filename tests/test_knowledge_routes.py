@@ -11,18 +11,19 @@ from unittest.mock import Mock, patch
 from urllib.request import Request, urlopen
 
 from openagent.model_gateway import ProviderConfigurationError
-from openagent.routes.knowledge_routes import KnowledgeRouteDependencies, contract, handle_get, handle_post
+from openagent.routes.knowledge_routes import KnowledgeRouteDependencies, contract, handle_delete, handle_get, handle_post, handle_put
 from openagent.routes.runtime import build_http_server
 from openagent.storage import OpenAgentStore
 
 
 class KnowledgeRouteTests(TestCase):
-    def dependencies(self, payload: dict | None = None, *, body: bytes = b"", headers: dict | None = None):
+    def dependencies(self, payload: dict | None = None, *, body: bytes = b"", headers: dict | None = None, owner: str = ""):
         knowledge, gateway, media = Mock(), Mock(), Mock()
         read_json = Mock(return_value=payload if payload is not None else {})
         read_body = Mock(return_value=body)
         deps = KnowledgeRouteDependencies(
-            knowledge, gateway, media, read_json, headers or {}, read_body, 100_000
+            knowledge, gateway, media, read_json, headers or {}, read_body, 100_000,
+            auth_scope_owner=lambda: owner,
         )
         return knowledge, gateway, media, deps
 
@@ -42,14 +43,14 @@ class KnowledgeRouteTests(TestCase):
 
         result = handle_get("/api/knowledge/documents", "project=core&limit=bad", deps)
         self.assertEqual(result.payload, {"documents": [{"id": "d1"}]})
-        knowledge.list_documents.assert_called_once_with(project="core", limit=100)
+        knowledge.list_documents.assert_called_once_with(project="core", limit=100, owner="")
 
         result = handle_get("/api/knowledge/search", "q=local&mode=fts", deps)
         self.assertEqual(result.payload, {"results": [{"id": "lexical"}]})
-        knowledge.search.assert_called_once_with("local", project="default")
+        knowledge.search.assert_called_once_with("local", project="default", owner="")
         result = handle_get("/api/knowledge/search", "mode=semantic", deps)
         self.assertEqual(result.payload, {"results": [{"id": "semantic"}]})
-        knowledge.semantic_search.assert_called_once_with("", project="default")
+        knowledge.semantic_search.assert_called_once_with("", project="default", owner="")
 
         result = handle_get("/api/knowledge/graph", "project=core", deps)
         self.assertEqual(result.payload, {"nodes": []})
@@ -60,6 +61,48 @@ class KnowledgeRouteTests(TestCase):
         result = handle_get("/api/knowledge/timeline", "project=core&limit=bad", deps)
         self.assertEqual(result.payload, {"timeline": [{"type": "document"}]})
         knowledge.timeline.assert_called_once_with(project="core", limit=100)
+
+    def test_document_detail_is_project_scoped_and_missing_document_is_404(self):
+        knowledge, _, _, deps = self.dependencies()
+        knowledge.get_document.return_value = {"id": "doc-1", "project": "core", "content": "Source text"}
+        result = handle_get("/api/knowledge/documents/doc-1", "project=core", deps)
+        self.assertEqual(result.payload["document"]["content"], "Source text")
+        knowledge.get_document.assert_called_once_with("doc-1", project="core", owner="")
+        knowledge.get_document.side_effect = KeyError("not found")
+        result = handle_get("/api/knowledge/documents/missing", "project=core", deps)
+        self.assertEqual(result.status, HTTPStatus.NOT_FOUND)
+
+    def test_document_delete_requires_matching_project_record(self):
+        knowledge, _, _, deps = self.dependencies(owner="installation-owner")
+        knowledge.delete_document.return_value = {"deleted": True, "id": "doc-1"}
+        result = handle_delete("/api/knowledge/documents/doc-1", "project=core", deps)
+        self.assertEqual(result.payload, {"deleted": True, "id": "doc-1"})
+        knowledge.delete_document.assert_called_once_with("doc-1", project="core", owner="installation-owner")
+        knowledge.delete_document.return_value = {"deleted": False}
+        result = handle_delete("/api/knowledge/documents/doc-1", "project=other", deps)
+        self.assertEqual(result.status, HTTPStatus.NOT_FOUND)
+        self.assertEqual(result.payload, {"error": "Knowledge document not found."})
+        self.assertIsNone(handle_delete("/api/knowledge/documents/", "", deps))
+
+    def test_document_update_is_project_scoped_and_validates_missing_records(self):
+        knowledge, _, _, deps = self.dependencies({
+            "project": " core ", "title": " Revised title ", "content": " Revised body ",
+            "embedding_provider": " local-hash ",
+        }, owner="installation-owner")
+        knowledge.update_document.return_value = {"id": "doc-1", "title": "Revised title"}
+        result = handle_put("/api/knowledge/documents/doc-1", deps)
+        self.assertEqual((result.status, result.payload), (HTTPStatus.OK, {"document": {"id": "doc-1", "title": "Revised title"}}))
+        knowledge.update_document.assert_called_once_with(
+            "doc-1", "Revised title", " Revised body ", project="core", embedding_provider="local-hash",
+            owner="installation-owner",
+        )
+        knowledge.update_document.side_effect = KeyError("not found")
+        result = handle_put("/api/knowledge/documents/missing", deps)
+        self.assertEqual((result.status, result.payload), (HTTPStatus.NOT_FOUND, {"error": "Knowledge document not found."}))
+        knowledge.update_document.side_effect = ValueError("Document content is required.")
+        result = handle_put("/api/knowledge/documents/doc-1", deps)
+        self.assertEqual((result.status, result.payload), (HTTPStatus.BAD_REQUEST, {"error": "Document content is required."}))
+        self.assertIsNone(handle_put("/api/knowledge/documents/", deps))
 
     def test_ingest_normalization_and_validation(self):
         knowledge, _, _, deps = self.dependencies({
@@ -72,7 +115,17 @@ class KnowledgeRouteTests(TestCase):
         self.assertEqual((result.payload, result.status), ({"document": {"id": "d1"}}, HTTPStatus.CREATED))
         knowledge.ingest_text.assert_called_once_with(
             "Title", "Body", project="default", source="manual", source_path="p",
-            metadata={}, embedding_provider="local-hash",
+            metadata={}, embedding_provider="local-hash", owner="",
+        )
+        scoped_knowledge, _, _, scoped_deps = self.dependencies(
+            {"title": "Scoped", "content": "Owner data", "project": "core"},
+            owner="installation-owner",
+        )
+        scoped_knowledge.ingest_text.return_value = {"id": "scoped-doc"}
+        handle_post("/api/knowledge/ingest", scoped_deps)
+        scoped_knowledge.ingest_text.assert_called_once_with(
+            "Scoped", "Owner data", project="core", source="manual", source_path="",
+            metadata={}, embedding_provider="", owner="installation-owner",
         )
         knowledge.ingest_text.side_effect = ValueError("Document content is required.")
         result = handle_post("/api/knowledge/ingest", deps)
@@ -100,10 +153,10 @@ class KnowledgeRouteTests(TestCase):
                 result = handle_post(f"/api/knowledge/{path}", deps)
                 self.assertEqual((result.payload, result.status), (expected, status))
         knowledge.semantic_search.assert_called_once_with(
-            "local", project="core", limit=10, embedding_provider="hash"
+            "local", project="core", limit=10, embedding_provider="hash", owner=""
         )
         knowledge.hybrid_search.assert_called_once_with(
-            "local", project="core", limit=10, embedding_provider="hash"
+            "local", project="core", limit=10, embedding_provider="hash", owner=""
         )
         knowledge.synthesize.assert_called_once_with(
             "local", project="core", limit=8, embedding_provider="hash"
@@ -180,12 +233,12 @@ class KnowledgeRouteTests(TestCase):
         })
         media.ingest_bytes.assert_called_once_with(
             b"hello", filename="note.txt", project="core", source="chat-attachment",
-            source_path="note.txt", metadata={"mime_type": "text/plain"},
+            source_path="note.txt", metadata={"mime_type": "text/plain"}, owner="",
         )
         knowledge.ingest_text.assert_called_once_with(
             title="note.txt", content="Evidence", project="core", source="chat-attachment",
             source_path="note.txt", metadata={"asset_id": "a1", "mime_type": "text/plain"},
-            embedding_provider="hash",
+            embedding_provider="hash", owner="",
         )
 
     def test_upload_office_fallback_and_no_text(self):
@@ -208,9 +261,13 @@ class KnowledgeRouteTests(TestCase):
 
     def test_contract_routes_are_handled_and_unknown_paths_are_not(self):
         _, _, _, deps = self.dependencies()
+        deps.knowledge.get_document.return_value = {"id": "fixture"}
+        deps.knowledge.delete_document.return_value = {"deleted": True}
         for route in contract()["routes"]:
             with self.subTest(route=route):
                 result = (handle_get(route["path"], "", deps) if route["method"] == "GET"
+                          else handle_delete(route["path"], "", deps) if route["method"] == "DELETE"
+                          else handle_put(route["path"], deps) if route["method"] == "PUT"
                           else handle_post(route["path"], deps))
                 self.assertIsNotNone(result)
         self.assertIsNone(handle_get("/api/other", "", deps))
@@ -233,6 +290,30 @@ class KnowledgeRouteTests(TestCase):
                     document = json.load(response)["document"]
                 with urlopen(f"{base}/api/knowledge/documents", timeout=10) as response:
                     self.assertIn(document["id"], {item["id"] for item in json.load(response)["documents"]})
+                with urlopen(f"{base}/api/knowledge/documents/{document['id']}?project=default", timeout=10) as response:
+                    detail = json.load(response)["document"]
+                    self.assertEqual(detail["id"], document["id"])
+                    self.assertEqual(detail["content"], "Local research note.")
+                update = Request(
+                    f"{base}/api/knowledge/documents/{document['id']}",
+                    data=json.dumps({"project": "default", "title": "Revised note", "content": "Updated local evidence."}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="PUT",
+                )
+                with urlopen(update, timeout=10) as response:
+                    self.assertEqual(response.status, HTTPStatus.OK)
+                    updated = json.load(response)["document"]
+                self.assertEqual(updated["id"], document["id"])
+                self.assertEqual(updated["title"], "Revised note")
+                with urlopen(f"{base}/api/knowledge/documents/{document['id']}?project=default", timeout=10) as response:
+                    detail = json.load(response)["document"]
+                    self.assertEqual(detail["content"], "Updated local evidence.")
+                with urlopen(f"{base}/api/knowledge/search?project=default&q=Updated%20local", timeout=10) as response:
+                    self.assertTrue(json.load(response)["results"])
+                delete = Request(f"{base}/api/knowledge/documents/{document['id']}?project=default", method="DELETE")
+                with urlopen(delete, timeout=10) as response:
+                    self.assertTrue(json.load(response)["deleted"])
+                with urlopen(f"{base}/api/knowledge/documents", timeout=10) as response:
+                    self.assertNotIn(document["id"], {item["id"] for item in json.load(response)["documents"]})
 
                 body = (
                     b'--test\r\nContent-Disposition: form-data; name="file"; filename="note.md"\r\n'

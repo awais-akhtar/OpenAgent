@@ -13,7 +13,7 @@ from openagent.adaptive_engine.k3_execution.video_input import K3VideoInput
 
 
 class PublisherStreamCancellationTests(unittest.TestCase):
-    def test_streamed_recovery_accepts_and_honors_request_cancellation(self):
+    def test_streamed_recovery_cancelled_before_first_advance_never_starts_worker(self):
         provider = NativePublisherProvider()
         observed = {"started": False}
 
@@ -31,7 +31,7 @@ class PublisherStreamCancellationTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionCancelled, "request cancelled"):
             next(stream)
 
-        self.assertTrue(observed["started"])
+        self.assertFalse(observed["started"])
         self.assertTrue(provider._stream_lock.acquire(timeout=1))
         provider._stream_lock.release()
 
@@ -91,7 +91,9 @@ class PublisherStreamCancellationTests(unittest.TestCase):
         def cancelled():
             nonlocal checks
             checks+=1
-            return checks>=2
+            # First poll is the pre-worker guard, second permits the initial
+            # queued event, and the next poll cancels before another dispatch.
+            return checks>=3
 
         def run(_messages,*,emit,**_options):
             for index in range(8):
@@ -107,6 +109,44 @@ class PublisherStreamCancellationTests(unittest.TestCase):
             next(stream)
         self.assertTrue(provider._stream_lock.acquire(timeout=1))
         provider._stream_lock.release()
+
+    def test_transport_event_cancels_worker_while_consumer_is_suspended(self):
+        provider = NativePublisherProvider()
+        caller = threading.get_ident()
+        worker_cancelled = threading.Event()
+        callback_threads = []
+
+        class TransportCancellation:
+            def __init__(self):
+                self.worker_event = threading.Event()
+
+            def __call__(self):
+                callback_threads.append(threading.get_ident())
+                return self.worker_event.is_set()
+
+        signal = TransportCancellation()
+
+        def run(_messages, *, emit, cancelled, **_options):
+            emit(StreamChunk(provider.id, 'model', 'first', False, {}))
+            deadline = threading.Event()
+            while not cancelled() and not deadline.wait(0.01):
+                pass
+            worker_cancelled.set()
+            raise ExecutionCancelled('transport event reached backend worker')
+
+        provider._run = run
+        stream = provider._stream_run(
+            [{'role': 'user', 'content': 'prompt'}], model='model', cancelled=signal)
+        try:
+            self.assertEqual(next(stream).content, 'first')
+            # The consumer is paused at yield and cannot poll the callback.
+            # The backend must observe only the transport-owned Event.
+            signal.worker_event.set()
+            self.assertTrue(worker_cancelled.wait(1))
+            self.assertTrue(callback_threads)
+            self.assertEqual(set(callback_threads), {caller})
+        finally:
+            stream.close()
 
     def test_stream_forwards_queue_timeout_to_execution_admission(self):
         provider = NativePublisherProvider()

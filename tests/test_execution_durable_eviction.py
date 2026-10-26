@@ -107,6 +107,14 @@ class DurableEvictionTests(unittest.TestCase):
             service.generate(restored, [2], max_new_tokens=1)
             self.assertEqual(service.history(restored), before+(2, 3))
 
+    def test_stop_prefix_does_not_match_across_prompt_generation_boundary(self):
+        service = self.service()
+        session = service.open_session()
+        result = service.generate(session, [1], max_new_tokens=2,
+                                  stop_prefixes=((1, 3),))
+        self.assertEqual(result.token_ids, (3, 3))
+        self.assertEqual(result.finish_reason, 'length')
+
     def test_failed_persistence_keeps_live_session(self):
         service = self.service()
         session = service.open_session()

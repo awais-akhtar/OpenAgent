@@ -6,6 +6,7 @@ This NumPy implementation is a diagnostic baseline, not native execution.
 from dataclasses import dataclass
 from threading import RLock
 from types import MappingProxyType, SimpleNamespace
+import math
 
 import numpy as np
 
@@ -309,12 +310,19 @@ class IndependentInklingDecoder:
             shared += a[7][expert] @ activated
         return routed + shared, gammas
 
-    def forward(self, token_ids, *, attention_mask=None, position_ids=None, logits_to_keep=0, use_cache=True):
+    def forward(self, token_ids, *, attention_mask=None, position_ids=None, logits_to_keep=0,
+                use_cache=True, inputs_embeds=None):
         with self._lock:
             ids, pending = self._prepare(token_ids, attention_mask, position_ids, use_cache)
             start = self.position if use_cache else 0
             c, w = self.config, self.weights
             b, t = ids.shape
+            embedded = None
+            if inputs_embeds is not None:
+                embedded = np.asarray(inputs_embeds)
+                if (embedded.shape != (b, t, c['hidden_size']) or embedded.dtype != np.float32 or
+                        not np.isfinite(embedded).all()):
+                    raise ValueError('finite post-embedding-normalized Inkling reference embeddings required')
             selection = logits_selection(logits_to_keep, t)
             hidden = np.empty((b, t, c['hidden_size']), np.float32)
             routing = np.zeros((b, t, len(self.geometry), c['n_routed_experts'] + c['n_shared_experts']), np.float32)
@@ -322,7 +330,8 @@ class IndependentInklingDecoder:
             for batch in range(b):
                 for j, token in enumerate(ids[batch]):
                     pos = start + j
-                    x = rms(w[GLOBAL_NAMES[0]][token], w[GLOBAL_NAMES[1]], eps)
+                    x = (rms(w[GLOBAL_NAMES[0]][token], w[GLOBAL_NAMES[1]], eps)
+                         if embedded is None else embedded[batch, j].copy())
                     for i, g in enumerate(self.geometry):
                         a = [w.get(f'model.layers.{i}.{name}') for name in LAYER_NAMES]
                         keys, values, kc, vc, ac, mc = self._views(pending[i][batch], g)
@@ -366,3 +375,148 @@ class IndependentInklingDecoder:
             if use_cache:
                 self._cache, self.position = pending, start + t
             return result
+
+
+def _media_factors(value):
+    factors=[];divisor=2
+    while divisor*divisor<=value:
+        while value%divisor==0:
+            factors.append(divisor);value//=divisor
+        divisor+=1
+    if value>1:factors.append(value)
+    return tuple(reversed(factors))
+
+
+def _media_scales(config):
+    """Independent Inkling HMLP geometry planner used only by the NumPy oracle."""
+    patch=config['patch_size'];temporal=config['temporal_patch_size']
+    channels=config.get('n_channels',config.get('num_channels',3))
+    layers=config.get('n_layers',config.get('num_hidden_layers'))
+    scales=[(1,1,1,channels)];spatial=1;time=1
+    for factor in _media_factors(patch):
+        spatial*=factor
+        scales.append((1,spatial,spatial,64*math.ceil(spatial*spatial*channels/64)))
+    for factor in _media_factors(temporal):
+        time*=factor
+        scales.append((time,spatial,spatial,64*math.ceil(time*spatial*spatial*channels/64)))
+    reduction=np.asarray([t*h*w for t,h,w,_ in scales],dtype=np.float64)
+    ideal=np.linspace(0.0,math.log(patch**2*temporal*channels),layers+1)
+    cost=np.abs(ideal[:,None]-np.log(reduction)[None,:])
+    if layers>=len(scales):
+        chosen=np.argmin(cost,axis=1)
+    else:
+        # Deterministic rectangular minimum assignment; independent Hungarian
+        # implementation keeps the reference free of the production planner.
+        rows,cols=cost.shape;u=np.zeros(rows+1);v=np.zeros(cols+1)
+        match=np.zeros(cols+1,dtype=np.int64);prior=np.zeros(cols+1,dtype=np.int64)
+        for row in range(1,rows+1):
+            match[0]=row;col=0;distance=np.full(cols+1,np.inf);used=np.zeros(cols+1,bool)
+            while True:
+                used[col]=True;active=int(match[col]);delta=np.inf;next_col=0
+                for candidate in range(1,cols+1):
+                    if used[candidate]:continue
+                    value=cost[active-1,candidate-1]-u[active]-v[candidate]
+                    if value<distance[candidate]:distance[candidate]=value;prior[candidate]=col
+                    if distance[candidate]<delta:delta=distance[candidate];next_col=candidate
+                for candidate in range(cols+1):
+                    if used[candidate]:u[match[candidate]]+=delta;v[candidate]-=delta
+                    else:distance[candidate]-=delta
+                col=next_col
+                if match[col]==0:break
+            while col:
+                previous=int(prior[col]);match[col]=match[previous];col=previous
+        chosen=np.empty(rows,dtype=np.int64)
+        for col in range(1,cols+1):
+            if match[col]:chosen[match[col]-1]=col-1
+    chosen[0]=0;chosen[-1]=len(scales)-1
+    result=tuple(scales[int(index)] for index in chosen)
+    if any(any(after[i]%before[i] or after[i]<before[i] for i in range(3))
+           for before,after in zip(result,result[1:])):
+        raise ValueError('independent HMLP scales do not fold integrally')
+    return result
+
+
+class IndependentInklingMediaEncoder:
+    """Independent NumPy HMLP/dMel implementation for multimodal comparisons.
+
+    Inputs are the exact processor outputs accepted by the production Inkling
+    wrapper. The class does not call the native media library or its helpers.
+    """
+    implementation='numpy-inkling-hmlp-dmel-reference'
+
+    def __init__(self,vision_config,audio_config,tensors,*,text_hidden,max_bytes):
+        if type(max_bytes) is not int or max_bytes<=0:
+            raise ValueError('positive independent media reference budget required')
+        self.vision=dict(vision_config);self.audio=dict(audio_config);self.hidden=text_hidden
+        v=self.vision;a=self.audio
+        if (v.get('vision_encoder_type','hmlp')!='hmlp' or
+                v.get('use_vision_norm',True) is not True or a.get('use_audio_norm',True) is not True):
+            raise ValueError('unsupported Inkling reference media tower policy')
+        scales=_media_scales(v);self.scales=scales;self.layers=[];shapes={}
+        for index,(before,after) in enumerate(zip(scales,scales[1:])):
+            temporal=after[0]//before[0];spatial=after[1]//before[1]
+            output=text_hidden if index==len(scales)-2 else after[3]
+            prefix=f'model.vision_tower.encoder_layers.{index}.'
+            shapes[prefix+'projection.weight']=(output,before[3]*temporal*spatial**2)
+            normalize=index<len(scales)-2
+            if normalize:shapes[prefix+'layer_norm.weight']=(output,)
+            self.layers.append((prefix,temporal,spatial,normalize))
+        shapes['model.vision_tower.final_norm.weight']=(text_hidden,)
+        bins=a['n_mel_bins'];vocabulary=a['mel_vocab_size']
+        shapes['model.audio_tower.embed_audio_tokens.embed_audio_tokens.weight']=(bins*vocabulary,text_hidden)
+        shapes['model.audio_tower.norm.weight']=(text_hidden,)
+        if set(tensors)!=set(shapes):
+            raise ValueError('independent Inkling media reference requires the complete tower inventory')
+        amount=sum(math.prod(shape)*4 for shape in shapes.values())
+        if amount>max_bytes:raise MemoryError('independent media weights exceed reference budget')
+        from .independent_media_math import NumpyMediaMath
+        self.math=NumpyMediaMath(max_attention_bytes=max_bytes)
+        self.weights={}
+        for name,shape in shapes.items():
+            value=np.asarray(tensors[name])
+            if value.shape!=shape or value.dtype.kind!='f' or not np.isfinite(value).all():
+                raise ValueError('invalid independent Inkling media tensor: '+name)
+            self.weights[name]=np.array(value,dtype=np.float32,order='C',copy=True)
+        self.max_bytes=max_bytes
+
+    def vision_features(self,pixel_values):
+        source=np.asarray(pixel_values);v=self.vision
+        expected=(v['temporal_patch_size'],v['patch_size'],v['patch_size'],
+                  v.get('n_channels',v.get('num_channels',3)))
+        if (source.ndim!=5 or source.shape[1:]!=expected or source.dtype!=np.float32 or
+                not 0<source.shape[0]<=65536 or not np.isfinite(source).all()):
+            raise ValueError('Inkling reference requires bounded processor patch tensors')
+        x=np.array(source,dtype=np.float32,order='C',copy=True)
+        if x.nbytes*3>self.max_bytes:raise MemoryError('independent vision reference staging exceeds budget')
+        for prefix,temporal,spatial,normalize in self.layers:
+            batch,time,height,width,channels=x.shape
+            if temporal>1 or spatial>1:
+                x=x.reshape(batch,time//temporal,temporal,height//spatial,spatial,
+                            width//spatial,spatial,channels)
+                x=np.ascontiguousarray(x.transpose(0,1,3,5,2,4,6,7)).reshape(
+                    batch,time//temporal,height//spatial,width//spatial,-1)
+            x=self.math.linear(x,self.weights[prefix+'projection.weight'])
+            if normalize:
+                x=self.math.activation(self.math.norm(x,self.weights[prefix+'layer_norm.weight'],rms=True),kind='gelu')
+        x=self.math.norm(x,self.weights['model.vision_tower.final_norm.weight'],rms=True)
+        return x.reshape(source.shape[0],self.hidden)
+
+    def audio_features(self,audio_input_ids,mask=None):
+        ids=np.asarray(audio_input_ids);bins=self.audio['n_mel_bins'];vocabulary=self.audio['mel_vocab_size']
+        if ids.ndim not in (2,3) or ids.shape[-1]!=bins or ids.dtype.kind not in 'iu':
+            raise ValueError('Inkling reference requires discrete dMel input IDs')
+        if mask is not None:
+            mask=np.asarray(mask)
+            if mask.shape!=ids.shape[:-1] or not np.isin(mask,[0,1]).all():
+                raise ValueError('Inkling reference audio frame mask differs')
+            ids=ids[mask.astype(bool)]
+        else:ids=ids.reshape(-1,bins)
+        if not ids.size or np.any(ids<0) or np.any(ids>=vocabulary):
+            raise ValueError('Inkling reference audio IDs exceed admitted codebooks')
+        table=self.weights['model.audio_tower.embed_audio_tokens.embed_audio_tokens.weight']
+        result=np.empty((ids.shape[0],self.hidden),np.float32)
+        for row in range(ids.shape[0]):
+            for column in range(self.hidden):
+                result[row,column]=np.float32(sum(float(table[b*vocabulary+int(ids[row,b]),column])
+                                                   for b in range(bins)))
+        return self.math.norm(result,self.weights['model.audio_tower.norm.weight'],rms=True)

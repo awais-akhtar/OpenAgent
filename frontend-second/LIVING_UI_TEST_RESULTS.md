@@ -1,5 +1,50 @@
 # Living UI test results
 
+## Current release verification — 2026-10-25
+
+### Latest complete rerun — 2026-10-25
+
+- `.venv\\Scripts\\python.exe -m unittest discover -s tests -v`: **2,035 passed, 97 skipped**, 818.142 seconds, exit code 0. A preceding run exposed one Phase 1 observation-verifier ordering regression; after fixing only validation order, the Phase 1 closure/receipt tests passed and the full suite passed.
+- `npm run check`: **PASS**. `npm test -- --reporter=dot`: **180/180 across 22 files**.
+- `npm run build`: **PASS** to isolated `frontend-second/dist`; the safe-build check confirmed `../web` was unchanged and `public/demo` fixtures were absent. Vite reported its existing Monaco chunk-size advisory.
+- `npm run test:e2e -- --workers=1 --retries=0`: **229/229 passed**, exit code 0, 7.1 minutes. The initial run had one stale accessible-name assertion; it now checks the real disabled `Add files` control and its explanatory title. The focused case and final complete run passed.
+- `npm run test:real-python`: **36 workflows / 368 HTTP responses / 0 Demo fixture requests**, PASS against the actual isolated Python server and actual React UI. Added CodeQ Monaco create/save/rename/delete with fresh authenticated backend reads. Calendar create/edit/delete, availability scope and reminder acknowledgement also passed with a timezone/DST-safe test appointment. External providers remained disabled.
+- `.venv\\Scripts\\python.exe -m unittest tests.test_codebase_missing_file_route -v`: **1/1 passed**. A removed CodeQ file now maps `FileNotFoundError` to HTTP 404, while malformed/path-boundary errors retain 400 semantics.
+- Broader focused Python regression `.venv\\Scripts\\python.exe -m unittest tests.test_codebase_missing_file_route tests.test_codebase_agent tests.test_server -v`: **54/54 passed**.
+- One scraper Results assertion failed during an earlier concurrent run; it passed isolated and in the final full run. Earlier full-Python discovery totals below are historical and were not rerun during this incremental change.
+
+### Latest rerun after Security Audit wiring — 2026-10-24
+
+- `npm run check`: **PASS**; `npm test -- --run`: **179/179** in 22 files; isolated `npm run build`: **PASS**. Build output remains in `dist/`, `../web` is unchanged, and `public/demo` fixtures are not packaged.
+- `npm run test:e2e -- --workers=1 --retries=0`: **229/229 passed**, exit code 0, 8.4 minutes. The added media deletion cases passed at both desktop sizes and themes, including the protected Voice-reference error.
+- `npm run test:real-python`: **35 workflows / 349 Python HTTP responses / zero Demo fixture requests**, PASS. Files coverage included React upload/delete, `media:read`-only denial (403), removal from fresh Python listing and stored-byte cleanup. It also includes scoped default-project audit events with `security:admin`, HTTP 403 for `security:read`, and confirmation that private audit metadata is not rendered. Temporary DB and synthetic credentials; external providers disabled.
+- `.venv\\Scripts\\python.exe -m unittest discover -s tests -v`: **1,957 passed, 96 skipped** in 777.569 seconds, exit code 0. Focused media route/storage/auth-policy/server regressions: **33/33 passed**.
+- `npm run verify:production-live`: **PASS**; 12 API calls safely stubbed as 503, zero Demo fixture requests, zero page errors. This is a production-mode boundary test, not backend integration.
+- Focused Python security regressions: **2/2 passed** for admin-scoped audit filtering and audit route query contract.
+- The installed UI root was updated from the isolated build with a full rollback copy at `C:\Users\awais\AppData\Local\OpenAgent\ui-backups\20261024-214047-security-audit\ui`. All 32 build files match by SHA-256; no Demo fixture JSON was installed; the user data directory remains present. The existing local server was not restarted. Chrome loaded the installed Security route, made the expected project-scoped GET, rendered one `.app-shell`, and had zero page/console errors. The current local owner context returned the actual default-project audit feed.
+- Live server Python integration status: the running process was left intact. The isolated React-to-Python test server used the current source and a temporary database. No production backend process restart or deployed auth matrix is claimed.
+
+Commands run against the current working tree:
+
+- `npm run check` — **PASS** (TypeScript project check).
+- `npm test -- --reporter=dot` — **PASS**, 179 tests in 22 files. Includes CodeQ saved-preview restore and stale-process clearing, plus Web Scraper cancel-race status handling.
+- Earlier runs are superseded by the 229-case desktop Playwright run above.
+- Models benchmark history regression: Live uses persisted Python measurements from the existing Setup activity tab; Demo shows a truthful no-measurements state with zero API calls. Final real Python smoke verified the authenticated endpoint under a read-only `local_ai:read` credential; no benchmark was executed.
+- `npm run build` — **PASS**, isolated output at `frontend-second/dist`; the build script verified `../web` unchanged and excluded `public/demo` fixtures. Existing Monaco worker/editor chunk-size warning remains.
+- `.venv\\Scripts\\python.exe -m unittest discover -s tests -v` — latest run **PASS**, 1,957 tests, 96 skipped, 777.569 seconds, exit code 0.
+- `python -m unittest tests.test_desktop tests.test_desktop_ui_startup -v` — **PASS**, 34/34. Covers healthy saved-instance reuse, stale and non-loopback URL rejection, inaccessible lock handling and startup error reporting. The Codex sandbox denied access to the existing AppData runtime lock; default installed-user lock behavior was not verified. Temporary-runtime tests did not touch user data.
+- `.venv\\Scripts\\python.exe -m unittest tests.test_finetune_routes tests.test_vision_modules.TestFineTuningManager tests.test_science_routes tests.test_science tests.test_science_hardening tests.test_science_end_to_end -v` — **PASS**, 60 focused backend tests after the Fine-tuning and Scientific AI changes.
+- `.venv\\Scripts\\python.exe -m unittest tests.test_scraper_routes tests.test_vision_modules.TestWebScraper -v` — **PASS**, 22/22. `npm test -- --run tests/backend-wiring.test.tsx` — **PASS**, 43/43 after adding the Live cancellation race response case.
+- Earlier smoke verification, superseded by the 35-workflow run above: **33 workflows / 337 responses** before the Security Audit success/denial workflows were added.
+- Latest installed executable smoke: `openagent-desktop.exe --no-open --host 127.0.0.1 --port 8878 --data-dir <temporary>` served `/api/health`, `/`, `app.js`, and `styles.css` with HTTP 200; Chrome rendered `.app-shell` (`Home · OpenAgent`) with zero page errors. A dedicated temporary `OPENAGENT_RUNTIME_DIR` was used after the existing default lock could not be acquired; no existing user data or lock was changed.
+- Current-source Windows install/upgrade verification (24 October): `installers/windows/install.ps1` completed a clean install and a repeat upgrade in `.qa/release-install-20261024-current` (Python 3.14.3, OpenAgent 0.13.0). A synthetic file under the install's `data/` retained SHA-256 `6DAE77CB065DA1E7DBEF5A7DA85D007572034A03734C14C8FC9B1354F860CCD8` across upgrade. The installed venv launched the packaged `ui/` via `--ui-root` on a separate loopback port; `/api/health`, `/`, and every referenced JavaScript/CSS asset returned HTTP 200. Chrome rendered `Home · OpenAgent`, one `.app-shell`, and no page/console errors. Screenshot: `.qa/desktop-final-20261024/installed-clean-upgrade.png`. The user's existing installation was left running and unchanged.
+- Focused Personal Context regressions: `.venv\Scripts\python.exe -m unittest tests.test_vision_modules.TestDigitalTwin tests.test_twin_routes -v` — **PASS 14/14**; `npm test -- --reporter=dot tests/backend-wiring.test.tsx` — **PASS 39/39**. The smoke includes source-to-inferred-topic attribution and verifies prompt/context is not returned.
+- Installed executable: `C:\\Users\\awais\\AppData\\Local\\OpenAgent\\.venv\\Scripts\\openagent-desktop.exe` served the current React UI and `/api/health` with HTTP 200 on loopback using disposable temp data. The 32 installed UI files match `frontend-second/dist` hashes; a rollback copy is preserved as `ui.pre-live-guide-20261024`. Chrome rendered Voice and the Live Integration Guide with zero page errors, zero startup alerts, no Demo export action and zero fixture requests. No installed user data was opened; the separate clean install/upgrade check passed as recorded above, while launching the user's Start Menu shortcut and default runtime-lock contention remain unverified.
+
+The current route registry contains 680 declared method/path entries across 49 groups, read from `openagent.routes.route_contracts()`. The audit inventory records declarations and source candidates; it does not treat them as proof that each operation is wired or successful.
+
+This verification does not certify all 23 workspaces or every visible control. The interaction-state coverage report and master gap file continue to list incomplete/unverified capabilities. Milestone A and overall production acceptance remain open.
+
 ## Latest verified continuation — 2026-10-18 (Calendar card fidelity)
 
 - Corrected a real CSS reset mismatch in src/app.css: React's calendar event cards had text-width buttons, noncanonical padding/border treatment and a 1 px placement offset. They now follow the approved HTML geometry and button border behavior; canonical source remains unchanged.

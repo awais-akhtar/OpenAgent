@@ -1,11 +1,8 @@
-"""A12: Unified Inference Execution Path
-Phase 1B Speedup - Single code path for all 9 models.
+"""Retired Phase 1B routing/placement scaffold.
 
-Creates UnifiedInferenceExecution class to replace model-specific
-forward paths. All models (Qwen, GLM, Inkling, K3, DeepSeek, Mixtral, OLMoE)
-route through this unified path.
-
-Target: 0.50+ tok/s (Phase 1B)
+``TieredExpertStore`` remains a small explicit-path component utility. The
+``UnifiedInferenceExecution`` facade is not a model executor and fails closed;
+production generation uses exact family adapters through ``UniversalEngine``.
 """
 
 import asyncio
@@ -53,7 +50,9 @@ class TieredExpertStore:
         heat_threshold: int = 100,
     ):
         self.model_path = Path(model_path)
-        self.learning_cache_path = learning_cache_path or (Path.home() / '.openagent_usage')
+        # No shared default: routing history is persisted only to an explicit,
+        # caller-owned path so separate checkpoints never share a file.
+        self.learning_cache_path = Path(learning_cache_path) if learning_cache_path is not None else None
         self.max_ram_experts = max_ram_experts
         self.heat_threshold = heat_threshold
 
@@ -71,6 +70,8 @@ class TieredExpertStore:
 
     def _load_learning_cache(self):
         """Load .openagent_usage file (routing history from previous runs)."""
+        if self.learning_cache_path is None:
+            return
         try:
             if self.learning_cache_path.exists():
                 with open(self.learning_cache_path, 'r') as f:
@@ -139,7 +140,13 @@ class TieredExpertStore:
 
     def record_placement_hit(self, expert_id: str, tier: str):
         """Record successful load from tier (for future optimization)."""
-        pass  # Placeholder for metrics
+        if tier not in {"vram", "ram", "disk"}:
+            raise ValueError("placement tier must be vram, ram, or disk")
+        with self._lock:
+            counts = getattr(self, "placement_hits", None)
+            if counts is None:
+                counts = self.placement_hits = {"vram": 0, "ram": 0, "disk": 0}
+            counts[tier] += 1
 
     def pin_to_ram(self, expert_id: str, data: bytes):
         """Manually pin expert to RAM (called during prefetch)."""
@@ -160,6 +167,8 @@ class TieredExpertStore:
 
     def save_learning_cache(self):
         """Persist routing history for next session."""
+        if self.learning_cache_path is None:
+            raise RuntimeError("tiered store has no explicit learning-cache path")
         with self._lock:
             try:
                 self.learning_cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,49 +243,9 @@ class UnifiedInferenceExecution:
         Returns:
             (logits, metadata)
         """
-        start_time = time.perf_counter()
-
-        # Step 1: Route (which experts fire for this batch)
-        if self.router is None:
-            raise RuntimeError("Router not configured")
-
-        routing_decisions = self.router(input_tokens, batch_size)  # [{layer, experts, positions}]
-
-        # Step 2: Batch-Union (deduplicate expert loads)
-        unique_experts_per_layer = self._deduplicate_routing(routing_decisions)
-
-        # Step 3: Place (decide where each expert lives)
-        placements = {}
-        for layer_id, expert_ids in unique_experts_per_layer.items():
-            placements[layer_id] = self.expert_store.get_placement(expert_ids, layer_id)
-
-        # Step 4: Overlap (prefetch next layer while computing current)
-        # (This is simplified; real implementation would interleave)
-
-        # Step 5: Learn (track routing history)
-        for layer_id, expert_ids in unique_experts_per_layer.items():
-            if layer_id not in self.routing_history:
-                self.routing_history[layer_id] = {}
-            for expert_id in expert_ids:
-                self.routing_history[layer_id][expert_id] = \
-                    self.routing_history[layer_id].get(expert_id, 0) + 1
-
-        # Compute layer (stub - would call actual model)
-        logits = self._compute_forward(placements, routing_decisions, input_tokens)
-
-        end_time = time.perf_counter()
-        forward_ms = (end_time - start_time) * 1000
-
-        metadata = {
-            'forward_ms': forward_ms,
-            'tok_per_sec': len(input_tokens) / (end_time - start_time),
-            'routing_decisions': len(routing_decisions),
-            'placements': {str(k): {str(eid): p.tier for eid, p in v.items()}
-                          for k, v in placements.items()},
-        }
-
-        self.batch_count += 1
-        return logits, metadata
+        raise RuntimeError(
+            "UnifiedInferenceExecution is a retired routing/placement scaffold and "
+            "does not execute model tensors; use AdaptiveExecutionEngine.open_universal_model()")
 
     def _deduplicate_routing(self, routing_decisions: List[RoutingDecision]) -> Dict[int, List[str]]:
         """
@@ -303,19 +272,10 @@ class UnifiedInferenceExecution:
         routing_decisions: List[RoutingDecision],
         input_tokens: List[int],
     ) -> List[float]:
-        """
-        Compute forward pass using unified path.
-
-        1. Load experts from placements (VRAM/RAM/disk)
-        2. Route through experts
-        3. Aggregate outputs
-
-        This is a stub that would be replaced with actual model computation.
-        """
-        # Placeholder: return dummy logits
-        vocab_size = self.model_config.get('vocab_size', 50000)
-        logits = [0.0] * vocab_size
-        return logits
+        """Reject the retired zero-logit implementation at every entry point."""
+        raise RuntimeError(
+            "no model tensor executor is bound to UnifiedInferenceExecution; "
+            "use the exact family adapter registered with UniversalEngine")
 
     def record_routing(self, routing_decisions: List[RoutingDecision]):
         """Record routing decisions for learning cache."""

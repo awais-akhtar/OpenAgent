@@ -33,6 +33,8 @@ def parser():
     source.add_argument('--token-ids', help='JSON array of vocabulary token IDs')
     result.add_argument('--tokenizer', type=Path, help='Local tokenizer JSON; defaults to checkpoint/tokenizer.json')
     result.add_argument('--context', type=positive, required=True)
+    result.add_argument('--expert-storage', choices=('auto','resident-fp32','packed-mxfp4'),
+                        default='auto', help='K3 expert representation; auto retains packed MXFP4 sources')
     result.add_argument('--max-tokens', type=positive, default=32)
     result.add_argument('--prefill-chunk', type=positive, default=32)
     result.add_argument('--temperature', type=float, default=0.0)
@@ -239,8 +241,9 @@ class PublisherSession:
         directory = _path(args.checkpoint).resolve(strict=True)
         if not directory.is_dir():
             raise ValueError('local checkpoint directory required')
-        if not bf16 and any(getattr(args,name+'_library',None) is None for name in ('kimi','attention','operators','mxfp4')):
-            raise ValueError('native K3 requires all four explicit prebuilt libraries')
+        if not bf16 and any(getattr(args,name+'_library',None) is None
+                            for name in ('kimi','attention','operators')):
+            raise ValueError('native K3 requires explicit recurrence, attention and operator libraries')
         libraries = {name: None if getattr(args,name+'_library',None) is None else _local_file(getattr(args,name+'_library'))
                      for name in ('kimi','attention','operators','mxfp4')}
         tokenizer_path = _local_file(args.tokenizer or directory / 'tokenizer.json')
@@ -261,12 +264,20 @@ class PublisherSession:
         # route to be verified before weights, providers, or native libraries
         # are materialized; a valid publisher payload seal alone is not P02
         # source/backend/format admission.
-        from .source_scope import require_source_family_backend_admission
+        from .publisher_checkpoint.k3_adapter import k3_route_identity, k3_source_format
         route_backend = ('fla' if bf16 and args.fla_version is not None else
                          'device' if bf16 else 'native')
-        require_source_family_backend_admission(
-            family='kimi-k3', model_type='kimi_k3', backend=route_backend,
-            arithmetic='bf16' if bf16 else 'fp32-approximate')
+        route_arithmetic = 'bf16' if bf16 else 'fp32-approximate'
+        source_format = k3_source_format(self._checkpoint)
+        packed_storage = (source_format == 'MXFP4' if args.expert_storage == 'auto'
+                          else args.expert_storage == 'packed-mxfp4')
+        expert_format = ('e2m1-low-first-e8m0-g32' if packed_storage else 'fp32')
+        if packed_storage and source_format != 'MXFP4':
+            raise ValueError('packed K3 expert storage requires a compressed MXFP4 checkpoint')
+        k3_route_identity(self._checkpoint, backend=route_backend,
+                          arithmetic=route_arithmetic, expert_format=expert_format)
+        if packed_storage and not bf16 and libraries['mxfp4'] is None:
+            raise ValueError('native packed K3 expert storage requires an explicit MXFP4 library')
         self._vocabulary = self._checkpoint.config['text_config']['vocab_size']
         if type(self._vocabulary) is not int or self._vocabulary <= 0:
             raise ValueError('positive publisher vocabulary required')
@@ -305,16 +316,18 @@ class PublisherSession:
             vision_options['sharded_projections']=tuple(sorted(native_projection_bank.sources))
         payload = self._checkpoint.load_k3_execution_payload(capacity=args.context,
             max_weight_bytes=budgets['resident'], max_chunk_bytes=budgets['chunk'],
-            expert_format='e2m1-low-first-e8m0-g32', use_expert_provider=True,
-            max_expert_bytes=budgets['expert'], max_mapped_bytes=budgets['mapped'],
+            expert_format=expert_format, use_expert_provider=packed_storage,
+            max_expert_bytes=budgets['expert'] if packed_storage else None,
+            max_mapped_bytes=budgets['mapped'] if packed_storage else None,
             projection_epsilon=args.projection_epsilon, l2_epsilon=args.l2_epsilon,
-            rotary_mode='publisher-none', **vision_options)
+            rotary_mode='publisher-none', source_backend=route_backend,
+            source_arithmetic=route_arithmetic, **vision_options)
         if type(payload) is not K3ExecutionPayload:
             raise ValueError('exact publisher K3ExecutionPayload required')
         if payload.expert_provider is not None:
             self._owned.callback(payload.expert_provider.close)
-        if payload.unsupported or payload.expert_provider is None:
-            raise ValueError('supported publisher payload with leased expert provider required')
+        if payload.unsupported or (packed_storage and payload.expert_provider is None):
+            raise ValueError('supported publisher payload with its admitted expert owner required')
         self._gaps = [asdict(gap) for gap in payload.execution_gaps]
         self._config_sha256 = payload.config_sha256
         _check_cancelled(cancelled)
@@ -722,12 +735,14 @@ class PublisherSession:
                     raise MemoryError('restored token history exceeds admission')
                 rng=np.random.default_rng();rng.bit_generator.state=copy.deepcopy(boundary.rng_state)
                 logits=boundary.next_logits;generated=list(boundary.generated_ids)
+                recovered_token_count=len(generated)
                 stops=set(boundary.stop_token_ids)
                 stop_prefixes=tuple(boundary.stop_prefixes)
                 if not self._stops<=stops:raise ValueError('recovery omitted configured EOS boundaries')
                 finish='length';added=[]
                 if emit is not None:emit(dict(event='recovered',position=self._model.position,
-                    text=self._tokenizer.decode(generated,skip_special_tokens=False),recovered=True))
+                    token_ids=list(generated),text=self._tokenizer.decode(generated,skip_special_tokens=False),
+                    stop_prefixes=[list(prefix) for prefix in stop_prefixes],recovered=True))
                 class RequestCancellation:
                     def is_set(self):return bool(cancelled is not None and cancelled())
                 for _ in range(max_tokens):
@@ -768,8 +783,10 @@ class PublisherSession:
                     finish=('eos' if generated[-1] in self._stops else
                             'stop_prefix' if prefix_stopped else 'stop_token')
                 result=dict(schema='openagent.publisher-k3-recovery.v1',generated_ids=generated,
-                    resumed_ids=added,prompt_ids=list(boundary.prompt_ids),position=self._model.position,
+                    resumed_ids=added,recovered_token_count=recovered_token_count,
+                    prompt_ids=list(boundary.prompt_ids),position=self._model.position,
                     text=self._tokenizer.decode(generated,skip_special_tokens=False),finish_reason=finish,
+                    stop_prefixes=[list(prefix) for prefix in stop_prefixes],
                     execution_scope=boundary.execution_scope,media_metadata=list(boundary.media_metadata),
                     recovered=True,config_sha256=self._config_sha256,numerical_parity_verified=False,
                     platform_certified=False)
@@ -844,9 +861,10 @@ def main(argv=None):
         print('Generation cancelled', file=sys.stderr)
         return 130
     except (ValueError, RuntimeError, OSError, ImportError, KeyError, MemoryError, ArithmeticError) as error:
+        from .failure_reporting import failure_detail
         if args.stream:
-            emit(dict(event='failed', error=str(error)))
-        print(str(error), file=sys.stderr)
+            emit(dict(event='failed', error=failure_detail(error)))
+        print(failure_detail(error), file=sys.stderr)
         return 1
 
 

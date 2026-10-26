@@ -22,6 +22,14 @@ class MultimodalSessionExecutor:
             frozenset(('pixel_values','audio_input_ids','audio_input_ids_mask')))
         if type(decoder) is Glm5MultimodalDecoder:
             self._fields=frozenset(('pixel_values','image_grid_thw','pixel_values_videos','video_grid_thw'))
+        from .phase1_a04_media_lifecycle import FamilyMediaLifecycle
+        family = {
+            Qwen35MultimodalDecoder: 'qwen35',
+            Qwen4MultimodalDecoder: 'qwen4',
+            InklingMultimodalDecoder: 'inkling',
+            Glm5MultimodalDecoder: 'glm5-next',
+        }[type(decoder)]
+        self._media_lifecycle=FamilyMediaLifecycle(family)
 
     def __getattr__(self,name): return getattr(self.decoder,name)
 
@@ -39,6 +47,9 @@ class MultimodalSessionExecutor:
             # close remains retryable, but must never leave the decoder open to
             # service requests while resource destruction is pending.
             self._closed=True
+            media_lifecycle=getattr(self,'_media_lifecycle',None)
+            if media_lifecycle is not None:
+                media_lifecycle.close()
             closer=getattr(self.decoder,'close',None)
             if callable(closer):
                 closer()
@@ -182,9 +193,45 @@ class MultimodalSessionExecutor:
                 detached=None
                 raise
             callback=None if cancel is None else cancel.is_set
+            media_types=[]
+            if 'pixel_values' in owned:
+                media_types.append('image')
+            if 'pixel_values_videos' in owned:
+                media_types.append('video')
+            if 'audio_input_ids' in owned:
+                media_types.append('audio')
+            frame_id=None
+            primary=None
             try:
+                frame_id=self._media_lifecycle.admit_processed(
+                    tuple(media_types),input_byte_count=used)
+                self._media_lifecycle.on_stream_chunk(frame_id)
                 result=self.decoder.forward(token_ids,cancelled=callback,**owned)
                 boundary()
+                rows=self._rows(result)
+                boundary()
+                self._media_lifecycle.complete(frame_id)
+            except BaseException as error:
+                primary=error
+                if frame_id is not None:
+                    is_cancelled=False
+                    if cancel is not None:
+                        try:
+                            is_cancelled=bool(cancel.is_set())
+                        except BaseException as cancellation_error:
+                            from .failure_reporting import add_failure_note,failure_summary
+                            add_failure_note(error,
+                                'media cancellation observer failed: '+failure_summary(cancellation_error))
+                    try:
+                        if is_cancelled:
+                            from .failure_reporting import failure_detail
+                            self._media_lifecycle.cancel(frame_id,failure_detail(error))
+                        else:
+                            self._media_lifecycle.error(frame_id,error)
+                    except BaseException as cleanup:
+                        from .failure_reporting import add_failure_note,failure_summary
+                        add_failure_note(error,'media lifecycle error cleanup failed: '+failure_summary(cleanup))
+                raise
             finally:
                 # The decoder consumes these arrays synchronously. Release the
                 # temporary ownership even when a family-specific tower/text path
@@ -196,8 +243,14 @@ class MultimodalSessionExecutor:
                 chunks=None
                 chunk=None
                 detached=None
-            rows=self._rows(result)
-            boundary()
+                if frame_id is not None:
+                    try:
+                        self._media_lifecycle.release(frame_id)
+                    except BaseException as cleanup:
+                        if primary is None:
+                            raise
+                        from .failure_reporting import add_failure_note,failure_summary
+                        add_failure_note(primary,'media lifecycle frame release failed: '+failure_summary(cleanup))
             return rows
 
 __all__=['MultimodalSessionExecutor']

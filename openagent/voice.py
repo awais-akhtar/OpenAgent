@@ -102,6 +102,7 @@ class VoiceRuntime:
         audio_data: bytes,
         filename: str = "voiceprint.wav",
         project: str = "default",
+        owner: str = "",
         language: str = "en",
         style: str = "cloned-local",
         consent: str = "",
@@ -117,6 +118,7 @@ class VoiceRuntime:
             audio_data,
             filename=filename,
             project=project,
+            owner=owner,
             title=f"Voiceprint: {name}",
             source="voice:clone",
             metadata={
@@ -338,6 +340,7 @@ class VoiceRuntime:
         language: str = "en",
         stt_engine: str = "",
         allow_fallback_stt: bool = False,
+        owner: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self.get_session(session_id)
@@ -368,6 +371,7 @@ class VoiceRuntime:
             audio_data,
             filename=filename,
             project=session["project"],
+            owner=owner,
             title="Local speech-to-text audio",
             source="voice:stt",
             metadata={
@@ -439,6 +443,7 @@ class VoiceRuntime:
         text: str,
         session_id: str = "",
         project: str = "default",
+        owner: str = "",
         persona_id: str = "",
         voice: str = "local-script",
     ) -> dict[str, Any]:
@@ -457,6 +462,7 @@ class VoiceRuntime:
             wav_bytes,
             filename=f"tts-{stable_id(project, session_id, text)}.wav",
             project=project,
+            owner=owner,
             title="Local generated speech audio",
             source="voice:local-synth",
             metadata={"source_text": text, "voice": voice, "persona_id": persona_id},
@@ -544,6 +550,135 @@ class VoiceRuntime:
             "translated_text": translated,
             "provider": "local-rule",
             "created_at": created_at,
+        }
+
+    # ------------------------------------------------------------------
+    # Browser microphone streaming (chunked upload protocol)
+    # ------------------------------------------------------------------
+
+    def start_stream_session(
+        self,
+        *,
+        project: str = "default",
+        owner: str = "local",
+        voice_session_id: str = "",
+        audio_format: str = "webm",
+        language: str = "en",
+        stt_engine: str = "",
+    ) -> dict[str, Any]:
+        """Open a new streaming capture session; returns stream_id."""
+        stream_id = uuid4().hex
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                """
+                INSERT INTO voice_stream_sessions
+                    (id, project, owner, voice_session_id, status, chunk_count, audio_format,
+                     language, stt_engine, transcription, created_at)
+                VALUES (?, ?, ?, ?, 'open', 0, ?, ?, ?, '', ?)
+                """,
+                (stream_id, project or "default", owner or "local",
+                 voice_session_id, audio_format or "webm", language or "en", stt_engine, now),
+            )
+        return {"stream_id": stream_id, "status": "open", "project": project, "created_at": now}
+
+    def push_stream_chunk(
+        self,
+        stream_id: str,
+        *,
+        audio_data: bytes,
+        sequence: int,
+        owner: str = "local",
+    ) -> dict[str, Any]:
+        """Append a binary audio chunk to an open streaming session."""
+        stream_id = str(stream_id or "").strip()
+        if not stream_id:
+            raise ValueError("stream_id is required.")
+        if not audio_data:
+            raise ValueError("audio_data must not be empty.")
+        chunk_id = uuid4().hex
+        now = utc_now()
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT id, owner, status FROM voice_stream_sessions WHERE id = ?", (stream_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Stream session not found.")
+            if row["status"] != "open":
+                raise ValueError("Stream session is already closed.")
+            if owner and row["owner"] != owner:
+                raise ValueError("Stream session not found.")
+            connection.execute(
+                "INSERT INTO voice_stream_chunks (id, stream_id, sequence, audio_data, created_at) VALUES (?, ?, ?, ?, ?)",
+                (chunk_id, stream_id, int(sequence), audio_data, now),
+            )
+            connection.execute(
+                "UPDATE voice_stream_sessions SET chunk_count = chunk_count + 1 WHERE id = ?",
+                (stream_id,),
+            )
+        return {"stream_id": stream_id, "chunk_id": chunk_id, "sequence": sequence, "received": True}
+
+    def finish_stream_session(
+        self,
+        stream_id: str,
+        *,
+        owner: str = "local",
+        speaker: str = "user",
+        transcript_hint: str = "",
+        allow_fallback_stt: bool = False,
+    ) -> dict[str, Any]:
+        """Assemble chunks, run STT, close the stream session, return transcription."""
+        stream_id = str(stream_id or "").strip()
+        if not stream_id:
+            raise ValueError("stream_id is required.")
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM voice_stream_sessions WHERE id = ?", (stream_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Stream session not found.")
+            if owner and row["owner"] != owner:
+                raise ValueError("Stream session not found.")
+            if row["status"] == "closed":
+                return {
+                    "stream_id": stream_id,
+                    "status": "closed",
+                    "transcription": row["transcription"],
+                }
+            chunks = connection.execute(
+                "SELECT audio_data FROM voice_stream_chunks WHERE stream_id = ? ORDER BY sequence ASC",
+                (stream_id,),
+            ).fetchall()
+        assembled = b"".join(c["audio_data"] for c in chunks)
+        transcription_text = ""
+        if assembled:
+            try:
+                transcription_result = self.transcribe_audio(
+                    str(row["voice_session_id"]),
+                    audio_data=assembled,
+                    filename=f"stream-{stream_id}.{row['audio_format'] or 'webm'}",
+                    speaker=speaker,
+                    transcript_hint=transcript_hint,
+                    language=str(row["language"] or "en"),
+                    stt_engine=str(row["stt_engine"] or ""),
+                    allow_fallback_stt=allow_fallback_stt,
+                    owner=owner,
+                )
+                transcription_text = str(transcription_result.get("text", ""))
+            except Exception:
+                transcription_text = ""
+        now = utc_now()
+        with self.store.session() as connection:
+            connection.execute(
+                "UPDATE voice_stream_sessions SET status='closed', transcription=?, finished_at=? WHERE id=?",
+                (transcription_text, now, stream_id),
+            )
+        return {
+            "stream_id": stream_id,
+            "status": "closed",
+            "transcription": transcription_text,
+            "chunk_count": len(chunks),
+            "finished_at": now,
         }
 
     def get_turn(self, turn_id: str) -> dict[str, Any] | None:
@@ -663,6 +798,75 @@ class VoiceRuntime:
             ),
             "privacy_boundary": "The Vosk acoustic model is downloaded into the local OpenAgent data directory and used only by local speech-to-text.",
             "stt": {"engines": local_stt_engines()},
+        }
+
+    def process_continuous_stream(
+        self,
+        session_id: str,
+        audio_data: bytes,
+        *,
+        project: str = "default",
+        owner: str = "",
+        language: str = "en",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Process continuous audio stream for a voice session.
+
+        Buffers audio data and handles streaming transcription.
+        """
+        if not session_id:
+            raise ValueError("session_id is required.")
+        if not audio_data:
+            raise ValueError("audio_data is required.")
+
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"Voice session '{session_id}' not found.")
+
+        # Record the stream chunk
+        chunk_id = stable_id("voice-stream-chunk", session_id, str(len(audio_data)), utc_now())
+        created_at = utc_now()
+
+        # Store stream metadata for buffer management
+        stream_metadata = {
+            "chunk_id": chunk_id,
+            "chunk_size": len(audio_data),
+            "language": language,
+            **(metadata or {}),
+        }
+
+        # Add to session metadata for tracking
+        session_metadata = session.get("metadata", {}) if isinstance(session.get("metadata"), dict) else {}
+        if not isinstance(session_metadata, dict):
+            session_metadata = {}
+
+        # Track stream state
+        if "stream_chunks" not in session_metadata:
+            session_metadata["stream_chunks"] = []
+
+        session_metadata["stream_chunks"].append({
+            "chunk_id": chunk_id,
+            "size": len(audio_data),
+            "received_at": created_at,
+        })
+        session_metadata["last_stream_at"] = created_at
+
+        self.store.add_audit_event(
+            AuditEvent(
+                actor=owner or "local",
+                action="voice.stream.chunk",
+                resource=f"session:{session_id}",
+                project=project,
+                metadata={"chunk_id": chunk_id, "chunk_size": len(audio_data)},
+            )
+        )
+
+        return {
+            "chunk_id": chunk_id,
+            "session_id": session_id,
+            "chunk_size": len(audio_data),
+            "received_at": created_at,
+            "buffering": True,
         }
 
 

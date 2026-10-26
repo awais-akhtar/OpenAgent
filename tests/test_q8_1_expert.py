@@ -13,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 
 from openagent.adaptive_engine import q8_1_expert as scalar
+from openagent.adaptive_engine import q8_0_expert as q8_0
 from openagent.adaptive_engine import native_q8_1_expert as native
 from openagent.adaptive_engine.expert_kernels import (
     ExpertKernelRegistry, MappingPayloadSource, NumPyRoutedSwiGLUBackend,
@@ -91,6 +92,19 @@ class Q8_1Tests(unittest.TestCase):
         for shape in ((1, 31), (0, 32)):
             with self.assertRaises(ValueError):
                 scalar.pack_matrix(np.zeros(shape))
+
+    def test_vectorized_packer_matches_legacy_scalar_bytes(self):
+        rng = np.random.default_rng(811)
+        for block_count in (1, 2, 64):
+            for matrix in (rng.normal(0, .1, (5, 96)), np.zeros((2, 64)),
+                           np.full((3, 32), np.nextafter(np.float16(0), np.float16(1)))):
+                encoded = q8_0.pack_matrix(matrix, block_count=block_count)
+                expected = bytearray(len(encoded) // 34 * 36)
+                for index, offset in enumerate(range(0, len(encoded), 34)):
+                    delta, *codes = struct.unpack_from("<e32b", encoded, offset)
+                    total = np.float16(delta * sum(codes))
+                    struct.pack_into("<ee32b", expected, index * 36, delta, float(total), *codes)
+                self.assertEqual(scalar.pack_matrix(matrix, block_count=block_count), bytes(expected))
 
     def test_malformed_metadata_lengths_and_overflow_release(self):
         payload = scalar.pack_expert(*[np.full((32, 32), .1)] * 3)

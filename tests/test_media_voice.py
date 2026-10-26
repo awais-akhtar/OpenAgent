@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import struct
+import http.client
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -12,6 +14,7 @@ import zipfile
 from openagent.media import MediaManager, _try_ocr
 from openagent.process_policy import ProcessResult
 from openagent.storage import OpenAgentStore
+from openagent.server import build_http_server
 from openagent.voice import (
     VOSK_SMALL_EN_MODEL,
     VoiceRuntime,
@@ -25,6 +28,78 @@ from openagent.voice import (
 
 
 class MediaAndVoiceTests(unittest.TestCase):
+    def test_media_asset_delete_removes_stored_copy_analyses_and_derived_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            media = MediaManager(store)
+            asset = media.ingest_bytes(
+                b"private chat attachment contents", filename="private.txt", project="default", source="chat",
+            )
+            stored_path = Path(asset["stored_path"])
+            self.assertTrue(stored_path.is_file())
+            self.assertEqual(len(media.analyses(project="default", asset_id=asset["id"])), 1)
+            self.assertTrue(any(event["metadata"].get("asset_id") == asset["id"] for event in store.list_events(project="default")))
+
+            self.assertIsNone(media.delete_asset(asset["id"], project="other"))
+            self.assertIsNotNone(media.get_asset(asset["id"]))
+            deleted = media.delete_asset(asset["id"], project="default")
+
+            self.assertEqual(deleted["id"], asset["id"])
+            self.assertTrue(deleted["stored_bytes_removed"])
+            self.assertFalse(deleted["cleanup_pending"])
+            self.assertFalse(stored_path.exists())
+            self.assertIsNone(media.get_asset(asset["id"]))
+            self.assertEqual(media.analyses(project="default", asset_id=asset["id"]), [])
+            self.assertFalse(any(event["metadata"].get("asset_id") == asset["id"] for event in store.list_events(project="default")))
+            self.assertTrue(any(event["action"] == "media.delete" for event in store.list_audit_events(project="default")))
+
+    def test_media_asset_delete_refuses_voice_references_and_recovers_staged_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            media = MediaManager(store)
+            voice = VoiceRuntime(store)
+            asset = media.ingest_bytes(b"voice audio", filename="voice.wav", project="default", source="voice")
+            session = voice.create_session(project="default", mode="transcription")
+            voice.add_transcript(session["id"], text="fixture transcript", audio_asset_id=asset["id"])
+            with self.assertRaisesRegex(ValueError, "still used by a saved Voice"):
+                media.delete_asset(asset["id"], project="default")
+            self.assertTrue(Path(asset["stored_path"]).is_file())
+
+            # Simulate a crash after the atomic rename but before database commit.
+            staged = media.assets_root / f".pending-delete-{asset['id']}"
+            os.replace(asset["stored_path"], staged)
+            recovered = MediaManager(store)
+            self.assertFalse(staged.exists())
+            self.assertTrue(Path(asset["stored_path"]).is_file())
+            self.assertIsNotNone(recovered.get_asset(asset["id"]))
+
+    def test_voice_tts_audio_is_returned_by_real_local_http_route(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            voice = VoiceRuntime(store)
+            script = voice.synthesize_text(text="HTTP playback fixture", project="default")
+            server = build_http_server("127.0.0.1", 0, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                connection.request(
+                    "GET",
+                    f"/api/voice/assets/{script['audio_asset_id']}/content?project=default",
+                )
+                response = connection.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "audio/wav")
+                self.assertEqual(int(response.getheader("Content-Length", "0")), len(body))
+                self.assertGreater(len(body), 44)
+                self.assertEqual(body[:4], b"RIFF")
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def test_tesseract_ocr_uses_bounded_process_policy(self) -> None:
         completed = ProcessResult(("tesseract",), 0, "bounded local text", "", False, False)
         with patch("openagent.media.shutil.which", return_value="tesseract"), patch(
@@ -79,6 +154,22 @@ class MediaAndVoiceTests(unittest.TestCase):
             audit_actions = {event["action"] for event in store.list_audit_events(project="core", limit=20)}
             self.assertIn("media.ingest", audit_actions)
             self.assertIn("media.analyze", audit_actions)
+
+    def test_audio_asset_read_is_project_scoped_and_hash_verified(self) -> None:
+        with TemporaryDirectory() as tmp:
+            media = MediaManager(OpenAgentStore(tmp))
+            wav = synthesize_tone_wav("safe local playback fixture")
+            asset = media.ingest_bytes(wav, filename="fixture.wav", project="core")
+            read_asset = media.read_audio_asset(asset["id"], project="core")
+            self.assertIsNotNone(read_asset)
+            assert read_asset is not None
+            self.assertEqual(read_asset[0]["id"], asset["id"])
+            self.assertEqual(read_asset[1], wav)
+            self.assertIsNone(media.read_audio_asset(asset["id"], project="other"))
+            non_audio = media.ingest_bytes(b"text", filename="fixture.txt", project="core")
+            self.assertIsNone(media.read_audio_asset(non_audio["id"], project="core"))
+            Path(asset["stored_path"]).write_bytes(b"tampered")
+            self.assertIsNone(media.read_audio_asset(asset["id"], project="core"))
 
     def test_voice_sessions_transcripts_tts_translation_and_audit(self) -> None:
         with TemporaryDirectory() as tmp:

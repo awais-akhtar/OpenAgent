@@ -4,10 +4,12 @@ import ctypes as C
 import _ctypes
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import threading
 import weakref
 import numpy as np
+from uuid import uuid4
 
 from .independent_glm5_next import IndependentGlm5NextTextDecoder
 from .native_library_identity import NativeLibraryIdentity, release_finalizer
@@ -15,6 +17,14 @@ from .native_library_identity import NativeLibraryIdentity, release_finalizer
 
 class Buffer(C.Structure):
     _fields_ = [("p", C.POINTER(C.c_float)), ("n", C.c_uint64)]
+
+
+@dataclass(frozen=True)
+class NativeGlm5NextSnapshot:
+    """Exact-instance capability for a complete GLM5 physical cache image."""
+    owner: object
+    key: str
+    position: int
 
 
 def buffer(array):
@@ -29,8 +39,15 @@ class NativeGlm5NextTextDecoder(IndependentGlm5NextTextDecoder):
     implementation = "c-glm5-next-text-resident-fp32"
     native_range_execution = True
 
-    def __init__(self, config, tensors, *, library, max_tokens=256, max_bytes=512*1024*1024,expert_provider=None):
+    def __init__(self, config, tensors, *, library, max_tokens=256, max_bytes=512*1024*1024,
+                 max_snapshots=4, expert_provider=None):
+        if type(max_snapshots) is not int or not 1 <= max_snapshots <= 64:
+            raise ValueError("bounded native GLM5 snapshot count required")
         super().__init__(config, tensors, max_tokens=max_tokens, max_bytes=max_bytes,_omit_experts=expert_provider is not None)
+        self.max_snapshots = max_snapshots
+        self._snapshot_owner = object()
+        self._snapshots = {}
+        self._snapshot_bytes = 0
         self._expert_provider=expert_provider;self._expert_error=None;self._executing=False;self._active_cancel=None
         if expert_provider is not None:
             from .glm5_publisher_experts import Glm5PublisherExperts
@@ -51,8 +68,9 @@ class NativeGlm5NextTextDecoder(IndependentGlm5NextTextDecoder):
             try:
                 self.close()
             except BaseException as cleanup:
-                primary.cleanup = self.close
-                primary.add_note('GLM native construction cleanup retained: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'GLM native construction cleanup retained: ')
             raise
 
     def _bind_native(self,max_tokens):
@@ -154,6 +172,8 @@ class NativeGlm5NextTextDecoder(IndependentGlm5NextTextDecoder):
             if not self._closed:
                 self._closed = True
                 super().reset()
+                self._snapshots.clear()
+                self._snapshot_bytes = 0
                 self._weight_buffers = None
                 self._embedding = self._norm = self._head = Buffer()
                 self.weights = {}
@@ -171,6 +191,51 @@ class NativeGlm5NextTextDecoder(IndependentGlm5NextTextDecoder):
         with self._lock:
             self._check_open()
             super().reset()
+
+    def snapshot(self):
+        """Capture all KDA/DSA state before a later continuation mutates it."""
+        with self._lock:
+            self._check_open()
+            if len(self._snapshots) >= self.max_snapshots:
+                raise MemoryError("native GLM5 snapshot inventory exhausted")
+            cache = super().cache
+            extent = (0 if cache is None else
+                      sum(array.nbytes for pair in cache for array in pair))
+            if self._resident_bytes + self._snapshot_bytes + extent > self.max_bytes:
+                raise MemoryError("native GLM5 snapshot exceeds aggregate decoder budget")
+            receipt = NativeGlm5NextSnapshot(self._snapshot_owner, uuid4().hex, self.position)
+            self._snapshots[receipt.key] = (receipt, cache, extent, receipt.position)
+            self._snapshot_bytes += extent
+            return receipt
+
+    def _snapshot_entry(self, receipt):
+        if (type(receipt) is not NativeGlm5NextSnapshot or
+                receipt.owner is not self._snapshot_owner):
+            raise ValueError("foreign native GLM5 snapshot")
+        entry = self._snapshots.get(receipt.key)
+        if entry is None or entry[0] is not receipt or receipt.position != entry[3]:
+            raise ValueError("released or forged native GLM5 snapshot")
+        return entry
+
+    def restore(self, receipt):
+        with self._lock:
+            self._check_open()
+            _, cache, extent, saved_position = self._snapshot_entry(receipt)
+            current = (0 if self._cache is None else
+                       sum(array.nbytes for pair in self._cache for array in pair))
+            if self._resident_bytes + self._snapshot_bytes + current + extent > self.max_bytes:
+                raise MemoryError("native GLM5 restore staging exceeds aggregate decoder budget")
+            staged = None if cache is None else tuple(
+                tuple(array.copy() for array in pair) for pair in cache)
+            self._cache = staged
+            self.position = saved_position
+
+    def release_snapshot(self, receipt):
+        with self._lock:
+            self._check_open()
+            entry = self._snapshot_entry(receipt)
+            del self._snapshots[receipt.key]
+            self._snapshot_bytes -= entry[2]
 
     def _step(self, token, position, cache_buffers, hidden, logits,*,cancelled=None,embedding=None,
               routing_logits=None,routing_weights=None):

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 import re
-from typing import Any
-from urllib.parse import parse_qs
+from typing import Any, Callable
+from urllib.parse import parse_qs, unquote
 
 from ..knowledge import KnowledgeEngine
 from ..media import MediaManager
@@ -19,12 +19,18 @@ ROUTE_GROUP = "knowledge"
 ROUTES = (
     ("GET", "/api/knowledge/status"),
     ("GET", "/api/knowledge/documents"),
+    ("GET", "/api/knowledge/documents/{document_id}"),
     ("GET", "/api/knowledge/search"),
     ("GET", "/api/knowledge/graph"),
     ("GET", "/api/knowledge/tags"),
     ("GET", "/api/knowledge/timeline"),
+    ("GET", "/api/knowledge/collections"),
     ("POST", "/api/knowledge/ingest"),
     ("POST", "/api/knowledge/upload"),
+    ("POST", "/api/knowledge/collections/{collection_name}/rename"),
+    ("PUT", "/api/knowledge/documents/{document_id}"),
+    ("DELETE", "/api/knowledge/documents/{document_id}"),
+    ("DELETE", "/api/knowledge/collections/{collection_name}"),
     ("POST", "/api/knowledge/semantic-search"),
     ("POST", "/api/knowledge/hybrid-search"),
     ("POST", "/api/knowledge/synthesize"),
@@ -47,6 +53,7 @@ class KnowledgeRouteDependencies:
     headers: Any
     read_body: Any
     upload_limit_bytes: int
+    auth_scope_owner: Callable[[], str] = lambda: ""
 
 
 def _first(params: dict[str, list[str]], key: str) -> str | None:
@@ -71,8 +78,16 @@ def _parse_bool(value: object, *, default: bool) -> bool:
     return bool(value)
 
 
+def _knowledge_document_id(path: str) -> str | None:
+    prefix = "/api/knowledge/documents/"
+    if not path.startswith(prefix):
+        return None
+    document_id = unquote(path.removeprefix(prefix)).strip()
+    return document_id if document_id and "/" not in document_id else None
+
+
 def handle_get(path: str, query: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult | None:
-    if path not in {item for method, item in ROUTES if method == "GET"}:
+    if path not in {item for method, item in ROUTES if method == "GET"} and _knowledge_document_id(path) is None:
         return None
     params = parse_qs(query)
     project = _first(params, "project") or "default"
@@ -80,28 +95,47 @@ def handle_get(path: str, query: str, deps: KnowledgeRouteDependencies) -> JsonR
         return JsonRouteResult(deps.knowledge.status(project=project))
     if path == "/api/knowledge/documents":
         limit = _parse_int(_first(params, "limit"), default=100)
-        return JsonRouteResult({"documents": deps.knowledge.list_documents(project=project, limit=limit)})
+        owner = deps.auth_scope_owner()
+        return JsonRouteResult({"documents": deps.knowledge.list_documents(project=project, limit=limit, owner=owner)})
+    document_id = _knowledge_document_id(path)
+    if document_id is not None:
+        owner = deps.auth_scope_owner()
+        try:
+            return JsonRouteResult({"document": deps.knowledge.get_document(document_id, project=project, owner=owner)})
+        except KeyError:
+            return JsonRouteResult({"error": "Knowledge document not found."}, HTTPStatus.NOT_FOUND)
     if path == "/api/knowledge/search":
         search_query = _first(params, "q") or ""
         mode = _first(params, "mode") or "fts"
+        owner = deps.auth_scope_owner()
         results = (
-            deps.knowledge.semantic_search(search_query, project=project)
+            deps.knowledge.semantic_search(search_query, project=project, owner=owner)
             if mode == "semantic"
-            else deps.knowledge.search(search_query, project=project)
+            else deps.knowledge.search(search_query, project=project, owner=owner)
         )
         return JsonRouteResult({"results": results})
     if path == "/api/knowledge/graph":
         return JsonRouteResult(deps.knowledge.graph(project=project))
+    if path == "/api/knowledge/collections":
+        return JsonRouteResult({"collections": deps.knowledge.list_collections(project=project, owner=deps.auth_scope_owner())})
     limit = _parse_int(_first(params, "limit"), default=100)
     if path == "/api/knowledge/tags":
         return JsonRouteResult({"tags": deps.knowledge.tags(project=project, limit=limit)})
     return JsonRouteResult({"timeline": deps.knowledge.timeline(project=project, limit=limit)})
 
 
+def _is_collection_rename(path: str) -> bool:
+    return (
+        path.startswith("/api/knowledge/collections/")
+        and path.endswith("/rename")
+        and path != "/api/knowledge/collections//rename"
+    )
+
+
 def handle_post(path: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult | None:
     if path == "/api/knowledge/upload":
         return _handle_upload(deps)
-    if path not in {item for method, item in ROUTES if method == "POST"}:
+    if path not in {item for method, item in ROUTES if method == "POST"} and not _is_collection_rename(path):
         return None
     payload = deps.read_json()
     if path == "/api/embeddings":
@@ -132,6 +166,7 @@ def handle_post(path: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult 
                 source_path=str(payload.get("source_path", "")).strip(),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
                 embedding_provider=str(payload.get("embedding_provider", "")).strip(),
+                owner=deps.auth_scope_owner(),
             )
         except ValueError as exc:
             return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -142,6 +177,7 @@ def handle_post(path: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult 
             str(payload.get("query", "")).strip(), project=project,
             limit=_parse_int(str(payload.get("limit", "10")), default=10),
             embedding_provider=str(payload.get("embedding_provider", "")).strip(),
+            owner=deps.auth_scope_owner(),
         )
         return JsonRouteResult({"results": results})
     if path == "/api/knowledge/synthesize":
@@ -153,11 +189,70 @@ def handle_post(path: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult 
         return JsonRouteResult(result, HTTPStatus.CREATED)
     if path == "/api/knowledge/compress":
         return JsonRouteResult(deps.knowledge.compress_memory(project=project), HTTPStatus.CREATED)
+    # collection rename
+    rename_prefix = "/api/knowledge/collections/"
+    rename_suffix = "/rename"
+    if path.startswith(rename_prefix) and path.endswith(rename_suffix):
+        cname = unquote(path.removeprefix(rename_prefix).removesuffix(rename_suffix)).strip()
+        if not cname or "/" in cname:
+            return JsonRouteResult({"error": "collection name is required."}, HTTPStatus.BAD_REQUEST)
+        project = str(payload.get("project", "default")).strip() or "default"
+        new_name = str(payload.get("new_name", "")).strip()
+        try:
+            return JsonRouteResult(deps.knowledge.update_collection(cname, project=project, owner=deps.auth_scope_owner(), new_name=new_name))
+        except KeyError:
+            return JsonRouteResult({"error": "Collection not found."}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
     replay = deps.knowledge.create_replay(
         project=project, label=str(payload.get("label", "Replay")).strip() or "Replay",
         query=str(payload.get("query", "")).strip(),
     )
     return JsonRouteResult({"replay": replay}, HTTPStatus.CREATED)
+
+
+def handle_delete(path: str, query: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult | None:
+    # collection delete
+    coll_prefix = "/api/knowledge/collections/"
+    if path.startswith(coll_prefix):
+        cname = unquote(path.removeprefix(coll_prefix)).strip().strip("/")
+        if not cname or "/" in cname:
+            return JsonRouteResult({"error": "collection name is required."}, HTTPStatus.BAD_REQUEST)
+        project = _first(parse_qs(query), "project") or "default"
+        try:
+            return JsonRouteResult(deps.knowledge.delete_collection(cname, project=project, owner=deps.auth_scope_owner()))
+        except KeyError:
+            return JsonRouteResult({"error": "Collection not found."}, HTTPStatus.NOT_FOUND)
+    document_id = _knowledge_document_id(path)
+    if document_id is None:
+        return None
+    project = _first(parse_qs(query), "project") or "default"
+    result = deps.knowledge.delete_document(document_id, project=project, owner=deps.auth_scope_owner())
+    if not result.get("deleted"):
+        return JsonRouteResult({"error": "Knowledge document not found."}, HTTPStatus.NOT_FOUND)
+    return JsonRouteResult(result)
+
+
+def handle_put(path: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult | None:
+    document_id = _knowledge_document_id(path)
+    if document_id is None:
+        return None
+    payload = deps.read_json()
+    project = str(payload.get("project", "default")).strip() or "default"
+    try:
+        document = deps.knowledge.update_document(
+            document_id,
+            str(payload.get("title", "")).strip(),
+            str(payload.get("content", "")),
+            project=project,
+            embedding_provider=str(payload.get("embedding_provider", "")).strip(),
+            owner=deps.auth_scope_owner(),
+        )
+    except KeyError:
+        return JsonRouteResult({"error": "Knowledge document not found."}, HTTPStatus.NOT_FOUND)
+    except ValueError as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+    return JsonRouteResult({"document": document})
 
 
 def _parse_multipart_parts(body: bytes, boundary: bytes) -> list[dict[str, object]]:
@@ -234,6 +329,7 @@ def _handle_upload(deps: KnowledgeRouteDependencies) -> JsonRouteResult:
     asset = deps.media.ingest_bytes(
         content, filename=filename, project=project, source="chat-attachment",
         source_path=filename, metadata={"mime_type": content_type_hint} if content_type_hint else {},
+        owner=deps.auth_scope_owner(),
     )
     analysis = asset.get("analysis") if isinstance(asset.get("analysis"), dict) else {}
     text_content = str(analysis.get("extracted_text", "")).strip()
@@ -248,6 +344,7 @@ def _handle_upload(deps: KnowledgeRouteDependencies) -> JsonRouteResult:
             source_path=filename,
             metadata={"asset_id": asset.get("id", ""), "mime_type": asset.get("mime_type", "")},
             embedding_provider=embedding_provider,
+            owner=deps.auth_scope_owner(),
         )
     attachment = {
         "id": asset.get("id", ""), "name": filename, "filename": filename,

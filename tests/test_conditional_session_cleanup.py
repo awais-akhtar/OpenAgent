@@ -10,6 +10,7 @@ import weakref
 import numpy as np
 
 from openagent.adaptive_engine.native_conditional_cli import PublisherSession
+from openagent.adaptive_engine.failure_reporting import failure_detail, retain_cleanup_failure
 from openagent.adaptive_engine.inkling_multimodal import InklingMultimodalDecoder
 from openagent.adaptive_engine.native_family_cli import PublisherSession as NativeFamilySession
 from openagent.adaptive_engine.publisher_media_processor import PublisherMediaProcessor
@@ -42,6 +43,49 @@ class _UnprintableFailure(RuntimeError):
 
 
 class ConditionalSessionCleanupTest(unittest.TestCase):
+    def test_user_facing_failure_detail_is_bounded_and_unprintable_safe(self):
+        self.assertEqual(failure_detail(ValueError('useful diagnostic')),
+                         'useful diagnostic')
+        self.assertEqual(failure_detail(_UnprintableFailure()),
+                         '_UnprintableFailure: failure details omitted')
+        self.assertEqual(len(failure_detail(ValueError('x' * 32), limit=8)), 8)
+
+    def test_conditional_close_safely_records_unprintable_secondary_cleanup(self):
+        session = object.__new__(PublisherSession)
+        session._lock = threading.RLock()
+        session._request_active = False
+        session._closed = False
+
+        class Owner:
+            def __init__(self, failure):
+                self.failure = failure
+                self.calls = 0
+
+            def close(self):
+                self.calls += 1
+                raise self.failure
+
+        first = Owner(ValueError('first owner failed'))
+        second = Owner(_UnprintableFailure())
+        session.service = first
+        session.processor = second
+
+        with self.assertRaisesRegex(ValueError, 'first owner failed') as caught:
+            session.close()
+
+        self.assertEqual((first.calls, second.calls), (1, 1))
+        self.assertTrue(any('_UnprintableFailure: failure details omitted' in note
+                            for note in caught.exception.__notes__))
+
+    def test_cleanup_retry_registration_never_formats_failure_objects(self):
+        primary = ValueError('construction failed')
+        retry = lambda: None
+        failure = _UnprintableFailure()
+        retain_cleanup_failure(primary, retry, failure, 'cleanup retained: ')
+        self.assertIs(primary.cleanup, retry)
+        self.assertTrue(any('_UnprintableFailure: failure details omitted' in note
+                            for note in primary.__notes__))
+
     def test_v41_reset_preserves_first_owner_error_if_later_failures_are_unprintable(self):
         class ResetOwner:
             def __init__(self, failure):

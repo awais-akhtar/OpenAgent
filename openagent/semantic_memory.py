@@ -243,13 +243,121 @@ class SemanticMemoryManager:
             row = connection.execute("SELECT * FROM vector_collections WHERE id = ?", (collection_id,)).fetchone()
         return collection_row(row) if row else None
 
-    def collections(self, *, project: str = "default") -> list[dict[str, Any]]:
+    def collections(self, *, project: str = "default", include_archived: bool = False) -> list[dict[str, Any]]:
+        clauses = ["project = ?"]
+        params: list[Any] = [project]
+        if not include_archived:
+            clauses.append("archived = 0")
         with self.store.session() as connection:
             rows = connection.execute(
-                "SELECT * FROM vector_collections WHERE project = ? ORDER BY updated_at DESC",
-                (project,),
+                f"SELECT * FROM vector_collections WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC",
+                tuple(params),
             ).fetchall()
         return [collection_row(row) for row in rows]
+
+    def set_collection_archived(
+        self,
+        name: str,
+        *,
+        archived: bool,
+        project: str = "default",
+    ) -> dict[str, Any]:
+        """Archive or restore a collection without removing its vectors or identity."""
+        name = name.strip()
+        project = project.strip() or "default"
+        if not name:
+            raise ValueError("Collection name is required.")
+        now = utc_now()
+        with self.store.session() as connection:
+            current = connection.execute(
+                "SELECT id FROM vector_collections WHERE project = ? AND name = ?",
+                (project, name),
+            ).fetchone()
+            if current is None:
+                raise KeyError(name)
+            connection.execute(
+                "UPDATE vector_collections SET archived = ?, archived_at = ?, updated_at = ? "
+                "WHERE id = ? AND project = ?",
+                (1 if archived else 0, now if archived else "", now, current["id"], project),
+            )
+            row = connection.execute(
+                "SELECT * FROM vector_collections WHERE id = ? AND project = ?",
+                (current["id"], project),
+            ).fetchone()
+        self.store.add_audit_event(AuditEvent(
+            actor="semantic-memory",
+            action="vector.collection.archive" if archived else "vector.collection.restore",
+            resource=f"collection:{current['id']}",
+            project=project,
+            metadata={"name": name},
+        ))
+        return collection_row(row)
+
+    def rename_collection(self, name: str, *, new_name: str, project: str = "default") -> dict[str, Any]:
+        """Rename a semantic vector collection without changing its identity or records."""
+        name = name.strip()
+        new_name = new_name.strip()
+        project = project.strip() or "default"
+        if not name or not new_name or name == new_name:
+            raise ValueError("A different, non-empty collection name is required.")
+        now = utc_now()
+        with self.store.session() as connection:
+            current = connection.execute(
+                "SELECT id FROM vector_collections WHERE project = ? AND name = ?",
+                (project, name),
+            ).fetchone()
+            if current is None:
+                raise KeyError(name)
+            duplicate = connection.execute(
+                "SELECT 1 FROM vector_collections WHERE project = ? AND name = ? AND id <> ?",
+                (project, new_name, current["id"]),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("A collection with that name already exists in this project.")
+            connection.execute(
+                "UPDATE vector_collections SET name = ?, updated_at = ? WHERE id = ? AND project = ?",
+                (new_name, now, current["id"], project),
+            )
+            row = connection.execute("SELECT * FROM vector_collections WHERE id = ?", (current["id"],)).fetchone()
+        self.store.add_audit_event(AuditEvent(
+            actor="semantic-memory", action="vector.collection.rename",
+            resource=f"collection:{current['id']}", project=project,
+            metadata={"old_name": name, "new_name": new_name},
+        ))
+        return collection_row(row)
+
+    def delete_collection(self, name: str, *, project: str = "default") -> dict[str, Any]:
+        """Delete a semantic collection and its vectors within the explicit project."""
+        name = name.strip()
+        project = project.strip() or "default"
+        if not name:
+            raise ValueError("Collection name is required.")
+        with self.store.session() as connection:
+            row = connection.execute(
+                "SELECT id FROM vector_collections WHERE project = ? AND name = ?",
+                (project, name),
+            ).fetchone()
+            if row is None:
+                raise KeyError(name)
+            collection_id = str(row["id"])
+            count = int(connection.execute(
+                "SELECT count(*) FROM vector_records WHERE collection_id = ? AND project = ?",
+                (collection_id, project),
+            ).fetchone()[0])
+            connection.execute(
+                "DELETE FROM vector_records WHERE collection_id = ? AND project = ?",
+                (collection_id, project),
+            )
+            connection.execute(
+                "DELETE FROM vector_collections WHERE id = ? AND project = ?",
+                (collection_id, project),
+            )
+        self.store.add_audit_event(AuditEvent(
+            actor="semantic-memory", action="vector.collection.delete",
+            resource=f"collection:{collection_id}", project=project,
+            metadata={"name": name, "records_removed": count},
+        ))
+        return {"deleted": True, "name": name, "collection_id": collection_id, "records_removed": count}
 
     def upsert_vector_record(
         self,
@@ -560,6 +668,8 @@ def collection_row(row: Any) -> dict[str, Any]:
         "metadata": json.loads(row["metadata_json"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "archived": bool(row["archived"]) if "archived" in row.keys() else False,
+        "archived_at": str(row["archived_at"] or "") if "archived_at" in row.keys() else "",
     }
 
 

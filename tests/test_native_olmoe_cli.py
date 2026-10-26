@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from openagent.adaptive_engine.native_olmoe_cli import main
+from openagent.adaptive_engine.native_olmoe_cli import build_parser, main
 from openagent.adaptive_engine.olmoe import OlmoeModel
 from tests.test_native_segment_executor import build_executor
 from tests.test_olmoe_batch import checkpoint
@@ -36,6 +36,15 @@ class NativeOperatorTests(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err):
             code = main(args)
         return code, out.getvalue(), err.getvalue()
+
+    def test_dense_decoder_budgets_are_explicit_and_sufficient_by_default(self):
+        args = build_parser().parse_args([
+            str(self.root), str(self.path), "--library", str(self.library),
+            "--token-ids", "[1]"])
+        self.assertEqual(args.resident_mib, 4096)
+        self.assertEqual(args.transfer_mib, 4096)
+        self.assertEqual(args.staging_mib, 4096)
+        self.assertEqual(args.conversion_mib, 4096)
 
     def test_real_native_generation_matches_independent_numpy_model(self):
         prompt = [1, 3]

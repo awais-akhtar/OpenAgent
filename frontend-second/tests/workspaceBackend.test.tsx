@@ -3,10 +3,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CalendarScreen, CodeQScreen, FilesScreen, KnowledgeScreen, ResearchScreen } from '../src/screens/WorkspaceScreens';
 import { useWorkspaceState } from '../src/state';
+import { demoProvider } from '../src/demo/provider';
 
 vi.mock('@monaco-editor/react', () => ({ default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => <textarea aria-label="Code editor" value={value} onChange={event => onChange(event.target.value)} /> }));
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); useWorkspaceState.getState().setDataMode('live'); });
+afterEach(() => { cleanup(); vi.useRealTimers(); window.localStorage.removeItem('oa-second-codeq-live-preview:p1'); vi.unstubAllGlobals(); useWorkspaceState.getState().setDataMode('live'); });
 
 function renderScreen(ui: React.ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
@@ -29,6 +30,7 @@ describe('workspace backend integrations', () => {
       if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'start_process') return json({ run: { id: 'ide-run-1' }, result: { id: 'preview-process-1', status: 'running' } }, 201);
       if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'process_status') return json({ run: { id: 'ide-run-1' }, result: { id: 'preview-process-1', status: 'running', exit_code: null } });
       if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'inspect_logs') return json({ run: { id: 'ide-run-1' }, result: { id: 'preview-process-1', stdout: 'Local: http://localhost:5173/' } });
+      if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'probe_local_url') return json({ result: { url: 'http://localhost:5173/', reachable: true, http_status: 200, content_type: 'text/html', redirect: false } });
       if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'stop_process') return json({ run: { id: 'ide-run-1' }, result: { id: 'preview-process-1', status: 'exited', exit_code: 0 } });
       return json({ error: `Unexpected request ${method} ${url}` }, 404);
     }));
@@ -37,7 +39,8 @@ describe('workspace backend integrations', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this command/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Start preview' }));
     await screen.findByRole('link', { name: 'http://localhost:5173/' });
-    expect(screen.getByText(/Preview URL reported by the process/)).toBeVisible();
+    expect(await screen.findByText(/Preview is ready/)).toBeVisible();
+    expect(calls.find(call => call.body?.tool === 'probe_local_url')?.body).toMatchObject({ arguments: { url: 'http://localhost:5173/' }, approved: false });
     expect(calls.find(call => call.body?.tool === 'start_process')?.body).toMatchObject({ arguments: { command: ['npm', 'run', 'dev', '--', '--host', '127.0.0.1'] }, approved: true });
     fireEvent.click(screen.getByRole('tab', { name: 'Preview' }));
     expect(await screen.findByRole('link', { name: 'http://localhost:5173/' })).toBeVisible();
@@ -49,6 +52,106 @@ describe('workspace backend integrations', () => {
     expect(await screen.findByText('Preview process stopped by the backend.')).toBeInTheDocument();
     cleanup();
     useWorkspaceState.getState().setDataMode('demo');
+  });
+  it('restores a saved Live preview for the same project and clears a stale process id', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    window.localStorage.setItem('oa-second-codeq-live-preview:p1', 'preview-process-restored');
+    const calls: Array<{ tool: string; project: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', name: 'Project One' } });
+      if (url.endsWith('/api/codebase/projects/p1/tools')) {
+        const tool = String(body?.tool ?? ''); calls.push({ tool, project: 'p1' });
+        const args = body?.arguments as Record<string, unknown> | undefined;
+        if (tool === 'process_status' && args?.process_id === 'preview-process-restored') return json({ result: { id: 'preview-process-restored', status: 'running', exit_code: null } });
+        if (tool === 'inspect_logs' && args?.process_id === 'preview-process-restored') return json({ result: { id: 'preview-process-restored', stdout: 'Local: http://127.0.0.1:5173/' } });
+        if (tool === 'probe_local_url') return json({ result: { url: 'http://127.0.0.1:5173/', reachable: false, http_status: null, error: 'ConnectionRefusedError: local preview is not responding' } });
+        if (tool === 'stop_process') return json({ result: { id: 'preview-process-restored', status: 'exited', exit_code: 0 } });
+      }
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+    renderScreen(<CodeQScreen/>);
+    expect(await screen.findByRole('link', { name: 'http://127.0.0.1:5173/' })).toBeVisible();
+    expect(calls.some(call => call.tool === 'start_process')).toBe(false);
+    expect(calls).toEqual(expect.arrayContaining([{ tool: 'process_status', project: 'p1' }, { tool: 'inspect_logs', project: 'p1' }]));
+    expect(window.localStorage.getItem('oa-second-codeq-live-preview:p1')).toBe('preview-process-restored');
+  });
+  it('shows a real not-ready response and recovers after a manual readiness retry', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    window.localStorage.setItem('oa-second-codeq-live-preview:p1', 'preview-process-warming');
+    let probes = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', name: 'Project One' } });
+      if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'process_status') return json({ result: { id: 'preview-process-warming', status: 'running', exit_code: null } });
+      if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'inspect_logs') return json({ result: { id: 'preview-process-warming', stdout: 'Local: http://localhost:5173/' } });
+      if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'probe_local_url') {
+        probes += 1;
+        return json({ result: probes === 1
+          ? { url: 'http://localhost:5173/', reachable: false, http_status: 503, redirect: false }
+          : { url: 'http://localhost:5173/', reachable: true, http_status: 200, content_type: 'text/html', redirect: false } });
+      }
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+    renderScreen(<CodeQScreen/>);
+    expect(await screen.findByText(/Preview responded with HTTP 503/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry preview readiness check' }));
+    expect(await screen.findByText(/Preview is ready/)).toBeVisible();
+    expect(probes).toBe(2);
+  });
+  it('stops and forgets a preview when CodeQ is left, while reload restoration remains covered separately', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    const calls: Array<{ tool: string; processId: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      const args = body?.arguments as Record<string, unknown> | undefined;
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', name: 'Project One' } });
+      if (url.endsWith('/api/codebase/projects/p1/tools')) {
+        const tool = String(body?.tool ?? '');
+        const processId = String(args?.process_id ?? '');
+        calls.push({ tool, processId });
+        if (tool === 'start_process') return json({ result: { id: 'preview-process-leave' } }, 201);
+        if (tool === 'process_status') return json({ result: { id: processId, status: 'running', exit_code: null } });
+        if (tool === 'inspect_logs') return json({ result: { id: processId, stdout: '' } });
+        if (tool === 'stop_process') return json({ result: { id: processId, status: 'exited', exit_code: 0 } });
+      }
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+    renderScreen(<CodeQScreen/>);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /I reviewed this command/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start preview' }));
+    await waitFor(() => expect(window.localStorage.getItem('oa-second-codeq-live-preview:p1')).toBe('preview-process-leave'));
+    cleanup();
+    await waitFor(() => expect(calls).toContainEqual({ tool: 'stop_process', processId: 'preview-process-leave' }));
+    await waitFor(() => expect(window.localStorage.getItem('oa-second-codeq-live-preview:p1')).toBeNull());
+  });
+  it('clears a stale restored Live preview id when the backend reports it missing', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    window.localStorage.setItem('oa-second-codeq-live-preview:p1', 'preview-process-stale');
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', name: 'Project One' } });
+      if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'process_status') return json({ error: 'managed process not found' }, 404);
+      if (url.endsWith('/api/codebase/projects/p1/tools') && body?.tool === 'inspect_logs') return json({ error: 'managed process not found' }, 404);
+      return json({ error: `Unexpected request ${url}` }, 404);
+    }));
+    renderScreen(<CodeQScreen/>);
+    expect(await screen.findByText('The saved preview process is no longer available. Start a new preview when ready.')).toBeVisible();
+    expect(window.localStorage.getItem('oa-second-codeq-live-preview:p1')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Start preview' })).toBeDisabled();
   });
   it('keeps project-only acceptance criteria out of CodeQ until a real project is open', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('/api/codebase/projects?') ? json({ projects: [] }) : json({ error: 'unavailable' }, 503)));
@@ -278,8 +381,8 @@ describe('workspace backend integrations', () => {
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', source_path: 'D:/outside/source', workspace: { workspace_path: 'D:/openagent/data/workspaces/p1' } } });
+      if (url.endsWith('/api/terminal/runs') && init?.method === 'POST') return json({ run: { id: 't1', command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: ' M file.txt' }] } }, 202);
       if (url.includes('/api/terminal/runs') && !url.includes('/api/terminal/runs/')) return json({ runs: [] });
-      if (url.endsWith('/api/terminal/stream') && init?.method === 'POST') return json({ run: { id: 't1', command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: ' M file.txt' }] } }, 201);
       if (url.endsWith('/api/terminal/runs/t1')) return json({ run: { id: 't1', command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: ' M file.txt' }] } });
       return json({ error: `Unexpected request ${url}` }, 404);
     });
@@ -289,8 +392,8 @@ describe('workspace backend integrations', () => {
     fireEvent.change(await screen.findByRole('textbox', { name: 'Terminal command' }), { target: { value: 'git status --short' } });
     expect(screen.getByText('Allowlisted command · no approval required.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Run command' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/terminal/stream'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('"approved":false') })));
-    const terminalRequest = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/api/terminal/stream') && init?.method === 'POST');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/terminal/runs'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('"approved":false') })));
+    const terminalRequest = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/api/terminal/runs') && init?.method === 'POST');
     expect(JSON.parse(String(terminalRequest?.[1]?.body))).toMatchObject({ command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', approved: false });
     expect(await screen.findByRole('log', { name: 'Terminal run output' })).toHaveTextContent('M file.txt');
   });
@@ -301,8 +404,8 @@ describe('workspace backend integrations', () => {
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: { workspace_path: 'D:/openagent/data/workspaces/p1' } } });
+      if (url.endsWith('/api/terminal/runs') && init?.method === 'POST') return json({ run: { id: 't2', command: ['echo', 'hello'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: 'hello' }] } }, 202);
       if (url.includes('/api/terminal/runs') && !url.includes('/api/terminal/runs/')) return json({ runs: [] });
-      if (url.endsWith('/api/terminal/stream') && init?.method === 'POST') return json({ run: { id: 't2', command: ['echo', 'hello'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: 'hello' }] } }, 201);
       if (url.endsWith('/api/terminal/runs/t2')) return json({ run: { id: 't2', command: ['echo', 'hello'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: 'hello' }] } });
       return json({ error: `Unexpected request ${url}` }, 404);
     });
@@ -311,11 +414,40 @@ describe('workspace backend integrations', () => {
     fireEvent.click(await screen.findByRole('tab', { name: /Terminal/ }));
     fireEvent.change(await screen.findByRole('textbox', { name: 'Terminal command' }), { target: { value: 'echo hello' } });
     expect(screen.getByRole('button', { name: 'Run command' })).toBeDisabled();
-    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/api/terminal/stream'), expect.anything());
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/api/terminal/runs') && init?.method === 'POST')).toBe(false);
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Run command' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/terminal/stream'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('"approved":true') })));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/terminal/runs'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('"approved":true') })));
     expect(await screen.findByText('hello')).toBeVisible();
+  });
+
+  it('shows incrementally polled Live terminal output and requests owner-scoped cancellation', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    let status = 'running';
+    const calls: Array<{ path: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost');
+      const method = String(init?.method ?? 'GET');
+      calls.push({ path: `${url.pathname}${url.search}`, method });
+      if (url.pathname === '/api/codebase/projects') return json({ projects: [{ id: 'p1', name: 'Project One' }] });
+      if (url.pathname === '/api/codebase/projects/p1/tree') return json({ entries: [] });
+      if (url.pathname === '/api/codebase/projects/p1') return json({ project: { id: 'p1', workspace: { workspace_path: 'D:/openagent/data/workspaces/p1' } } });
+      if (url.pathname === '/api/terminal/runs' && method === 'GET') return json({ runs: [] });
+      if (url.pathname === '/api/terminal/runs' && method === 'POST') return json({ run: { id: 'terminal-1', command: ['python', '--version'], cwd: 'D:/openagent/data/workspaces/p1', status, exit_code: -1, events: [] } }, 202);
+      if (url.pathname === '/api/terminal/runs/terminal-1' && method === 'GET') return json({ run: { id: 'terminal-1', command: ['python', '--version'], cwd: 'D:/openagent/data/workspaces/p1', status, exit_code: status === 'cancelled' ? 130 : -1, events: [{ id: 'event-1', stream: 'stdout', chunk: 'Python 3.14.3\\n' }], cancel_requested: status === 'running' } });
+      if (url.pathname === '/api/terminal/runs/terminal-1' && method === 'DELETE') { status = 'cancelled'; return json({ run: { id: 'terminal-1', status, exit_code: 130 }, cancel_requested: true }); }
+      return json({ error: `Unexpected request ${method} ${url.pathname}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CodeQScreen/>);
+    fireEvent.click(await screen.findByRole('tab', { name: /Terminal/ }));
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Terminal command' }), { target: { value: 'python --version' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run command' }));
+    await waitFor(() => expect(calls).toContainEqual({ path: '/api/terminal/runs', method: 'POST' }));
+    expect(await screen.findByRole('log', { name: 'Terminal run output' })).toHaveTextContent('Python 3.14.3');
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(calls).toContainEqual({ path: '/api/terminal/runs/terminal-1', method: 'DELETE' }));
+    expect(await screen.findByText(/cancelled/)).toBeVisible();
   });
 
   it('runs Git status only on refresh against the CodeQ sandbox path', async () => {
@@ -484,6 +616,21 @@ describe('workspace backend integrations', () => {
     expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ filename: 'brief.pdf', content_base64: 'cGRm', project: 'default' });
   });
 
+  it('rejects legacy Office binaries before uploading them as document text', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/documents/library')) return json({ items: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<FilesScreen/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Document filters and actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import documents' }));
+    fireEvent.change(screen.getByLabelText('Choose document to import'), { target: { files: [new File(['binary'], 'old.doc', { type: 'application/msword' })] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Legacy Office files cannot be safely extracted/);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/documents/import'))).toBe(false);
+  });
+
   it('submits actual knowledge search queries and renders returned evidence', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -568,6 +715,93 @@ describe('workspace backend integrations', () => {
     expect(body.get('project')).toBe('default');
   });
 
+  it('opens and deletes an indexed Knowledge source through project-scoped Live routes', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    let deleted = false;
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET'); calls.push({ url, method });
+      if (url.includes('/api/knowledge/status')) return json({ documents: deleted ? 0 : 1, chunks: deleted ? 0 : 1 });
+      if (url.endsWith('/api/knowledge/documents?project=default&limit=100')) return json({ documents: deleted ? [] : [{ id: 'source-1', title: 'Incident guide', source: 'manual' }] });
+      if (url.endsWith('/api/knowledge/documents/source-1?project=default') && method === 'GET') return json({ document: { id: 'source-1', project: 'default', title: 'Incident guide', source: 'manual', created_at: '2026-10-23T10:00:00Z', tags: ['operations'], chunks: [{ id: 'chunk-1' }], content: 'Persisted source body from the backend.' } });
+      if (url.endsWith('/api/knowledge/documents/source-1?project=default') && method === 'DELETE') { deleted = true; return json({ deleted: true, document_id: 'source-1', chunks: 1 }); }
+      if (url.endsWith('/api/knowledge/tags')) return json({ tags: [] });
+      if (url.endsWith('/api/knowledge/timeline')) return json({ timeline: [] });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<KnowledgeScreen/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Incident guide' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Incident guide' });
+    expect(await within(dialog).findByText('Persisted source body from the backend.')).toBeVisible();
+    expect(within(dialog).getByText('operations')).toBeVisible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete source' }));
+    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Incident guide' })).not.toBeInTheDocument());
+    expect(calls.some(call => call.method === 'GET' && call.url.endsWith('/api/knowledge/documents/source-1?project=default'))).toBe(true);
+    expect(calls.some(call => call.method === 'DELETE' && call.url.endsWith('/api/knowledge/documents/source-1?project=default'))).toBe(true);
+    expect(await screen.findByRole('status')).toHaveTextContent('Indexed source and its retrieval chunks were deleted');
+  });
+
+  it('edits a Live Knowledge source through the scoped update route and keeps its identity', async () => {
+    let title = 'Incident guide';
+    let content = 'Persisted source body from the backend.';
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET');
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      calls.push({ url, method, body });
+      if (url.includes('/api/knowledge/status')) return json({ documents: 1, chunks: 1 });
+      if (url.endsWith('/api/knowledge/documents?project=default&limit=100')) return json({ documents: [{ id: 'source-1', title, source: 'manual' }] });
+      if (url.endsWith('/api/knowledge/documents/source-1?project=default') && method === 'GET') return json({ document: { id: 'source-1', project: 'default', title, source: 'manual', created_at: '2026-10-23T10:00:00Z', tags: ['operations'], chunks: [{ id: 'chunk-1' }], content } });
+      if (url.endsWith('/api/knowledge/documents/source-1') && method === 'PUT') { title = String(body?.title); content = String(body?.content); return json({ document: { id: 'source-1', project: 'default', title, source: 'manual', tags: ['revised'], chunks: [{ id: 'chunk-2' }], content } }); }
+      if (url.endsWith('/api/knowledge/tags')) return json({ tags: [] });
+      if (url.endsWith('/api/knowledge/timeline')) return json({ timeline: [] });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<KnowledgeScreen/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Incident guide' }));
+    const details = await screen.findByRole('dialog', { name: 'Incident guide' });
+    await within(details).findByText('Persisted source body from the backend.');
+    expect(within(details).getByRole('button', { name: 'Edit source' })).toBeEnabled();
+    fireEvent.click(within(details).getByRole('button', { name: 'Edit source' }));
+    const edit = await screen.findByRole('dialog', { name: 'Edit knowledge source' });
+    fireEvent.change(within(edit).getByRole('textbox', { name: 'Knowledge source title' }), { target: { value: 'Updated incident guide' } });
+    fireEvent.change(within(edit).getByRole('textbox', { name: 'Knowledge source text' }), { target: { value: 'Revised searchable evidence.' } });
+    fireEvent.click(within(edit).getByRole('button', { name: 'Save source' }));
+    await waitFor(() => expect(calls.some(call => call.method === 'PUT')).toBe(true));
+    expect(calls.find(call => call.method === 'PUT')).toMatchObject({
+      url: '/api/knowledge/documents/source-1',
+      body: { project: 'default', title: 'Updated incident guide', content: 'Revised searchable evidence.' },
+    });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Updated incident guide' })).toBeVisible());
+    expect(await screen.findByText('Revised searchable evidence.')).toBeVisible();
+    expect(calls.some(call => call.method === 'PUT' && !call.body?.project)).toBe(false);
+  });
+
+  it('deletes a selected Live workspace note through its explicit project scope', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    let deleted = false;
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET'); calls.push({ url, method });
+      if (url.includes('/api/documents/library')) return json({ documents: [] });
+      if (url.startsWith('/api/workspace/items?project=default&kind=note&limit=500')) return json({ items: deleted ? [] : [{ id: 'workspace-note-1', kind: 'note', title: 'Release note', content: 'Local project record', metadata: { workspace_type: 'note' }, updated_at: '2026-10-23T10:00:00Z' }] });
+      if (url.endsWith('/api/workspace/items/workspace-note-1?project=default') && method === 'DELETE') { deleted = true; return json({ deleted: true, item_id: 'workspace-note-1' }); }
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<FilesScreen/>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Notes', exact: true }));
+    const noteRow = await screen.findByRole('button', { name: /Release note/ });
+    fireEvent.click(noteRow);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete note' }));
+    await waitFor(() => expect(deleted).toBe(true));
+    expect(calls.some(call => call.method === 'DELETE' && call.url.endsWith('/api/workspace/items/workspace-note-1?project=default'))).toBe(true);
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Release note/ })).not.toBeInTheDocument());
+  });
+
   it('shows backend graph, timeline, tags and RAG index details and requests an index sync', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -619,6 +853,159 @@ describe('workspace backend integrations', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/calendar/events'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('Planning session') })));
     expect(createdBody).toMatchObject({ title: 'Planning session', description: 'Quarterly planning', location: 'Room 4', attendees: ['alex@example.test', 'sam@example.test'], reminders: [30], all_day: true, rrule: 'FREQ=WEEKLY', project: 'default' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('acknowledges Live due reminders and removes them only after backend confirmation', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    let due = [{ reminder_id: 'reminder-live-1', event_id: 'event-1', event_title: 'Planning review', trigger_at: '2026-10-24T09:00:00Z' }];
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET');
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      calls.push({ url, method, body });
+      if (url.includes('/api/calendar/reminders') && method === 'GET') return json({ reminders: due });
+      if (url.endsWith('/api/calendar/reminders/reminder-live-1/acknowledge') && method === 'POST') { due = []; return json({ acknowledged: true, reminder_id: 'reminder-live-1' }); }
+      if (url.includes('/api/calendar/events')) return json({ events: [] });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    }));
+    renderScreen(<CalendarScreen/>);
+    fireEvent.click(screen.getByText('Calendar tools', { exact: true }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Reminders' }));
+    expect(await screen.findByText('Planning review')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() => expect(screen.queryByText('Planning review')).not.toBeInTheDocument());
+    expect(calls.find(call => call.method === 'POST')).toMatchObject({ url: expect.stringContaining('/api/calendar/reminders/reminder-live-1/acknowledge'), body: { project: 'default' } });
+    expect(await screen.findByText('No reminders are due right now.')).toBeVisible();
+  });
+
+  it('keeps failed Live reminder acknowledgement visible with an error', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/calendar/reminders') && String(init?.method ?? 'GET') === 'GET') return json({ reminders: [{ reminder_id: 'reminder-fail', event_title: 'Keep this reminder', trigger_at: 'now' }] });
+      if (url.endsWith('/api/calendar/reminders/reminder-fail/acknowledge')) return json({ error: 'Reminder service unavailable' }, 503);
+      if (url.includes('/api/calendar/events')) return json({ events: [] });
+      return json({ error: 'Unexpected request' }, 404);
+    }));
+    renderScreen(<CalendarScreen/>);
+    fireEvent.click(screen.getByText('Calendar tools', { exact: true }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Reminders' }));
+    expect(await screen.findByText('Keep this reminder')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Reminder service unavailable');
+    expect(screen.getByText('Keep this reminder')).toBeVisible();
+  });
+
+  it('dismisses Demo reminders locally without making backend requests', async () => {
+    useWorkspaceState.getState().setDataMode('demo');
+    window.localStorage.removeItem('oa-second-demo-calendar-dismissed-reminders');
+    const hash = 'BDCF0F5E24121A94C562B524EF49AB2F9B8582ED5F083B79045AE3C01AAC6CE1';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/demo/reference-fixtures.json')) return json({ sourceSha256: hash, data: { topLevel: {}, advanced: {} } });
+      if (url.endsWith('/demo/approved-shell-fixtures.json')) return json({ sourceSha256: hash, data: {} });
+      throw new Error(`Unexpected Demo request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await demoProvider.reset();
+    renderScreen(<CalendarScreen/>);
+    fireEvent.click(screen.getByText('Calendar tools', { exact: true }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Reminders' }));
+    const reminderSection = screen.getByRole('heading', { name: 'Due reminders' }).closest('section');
+    expect(reminderSection).not.toBeNull();
+    const dismiss = (await screen.findAllByRole('button', { name: 'Dismiss' }))[0];
+    const firstTitle = dismiss.closest('article')?.querySelector('strong')?.textContent;
+    expect(firstTitle).toBeTruthy();
+    fireEvent.click(dismiss);
+    await waitFor(() => expect(within(reminderSection!).queryByText(firstTitle!)).not.toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/'))).toBe(false);
+  });
+
+  it('edits and deletes a Live calendar event through the scoped API', async () => {
+    const start = new Date(); start.setHours(14, 0, 0, 0); if (start <= new Date()) start.setDate(start.getDate() + 1);
+    const end = new Date(start.getTime() + 60 * 60_000);
+    let event = { id: 'calendar-edit-1', title: 'Review block', starts_at: start.toISOString(), ends_at: end.toISOString(), project: 'default', attendees: ['Alex'], reminders: [15] };
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET');
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      calls.push({ url, method, body });
+      if (url.includes('/api/calendar/events/calendar-edit-1') && method === 'PATCH') { event = { ...event, ...body } as typeof event; return json({ event }); }
+      if (url.includes('/api/calendar/events/calendar-edit-1') && method === 'DELETE') return json({ deleted: true, id: event.id });
+      if (url.includes('/api/calendar/events')) return json({ events: [event] });
+      if (url.includes('/api/calendar/calendars')) return json({ calendars: [] });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    renderScreen(<CalendarScreen/>);
+    fireEvent.click(await waitFor(() => {
+      const row = document.querySelector('.calendar-upcoming-row');
+      if (!(row instanceof HTMLButtonElement)) throw new Error('Calendar event row not rendered');
+      return row;
+    }));
+    const details = await screen.findByRole('dialog', { name: 'Review block' });
+    fireEvent.click(within(details).getByRole('button', { name: 'Edit' }));
+    const edit = await screen.findByRole('dialog', { name: 'Edit calendar event' });
+    fireEvent.change(within(edit).getByLabelText('Title'), { target: { value: 'Review block revised' } });
+    fireEvent.click(within(edit).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(calls.some(call => call.method === 'PATCH' && call.url.includes('/api/calendar/events/calendar-edit-1'))).toBe(true));
+    expect(calls.find(call => call.method === 'PATCH')?.body).toMatchObject({ title: 'Review block revised', attendees: ['Alex'], reminders: [15] });
+    expect(await screen.findByText('Calendar event updated.')).toBeVisible();
+    fireEvent.click(await waitFor(() => {
+      const row = Array.from(document.querySelectorAll('.calendar-upcoming-row')).find(item => item.textContent?.includes('Review block revised'));
+      if (!(row instanceof HTMLButtonElement)) throw new Error('Updated calendar event row not rendered');
+      return row;
+    }));
+    const revised = await screen.findByRole('dialog', { name: 'Review block revised' });
+    fireEvent.click(within(revised).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(calls.some(call => call.method === 'DELETE' && call.url.includes('/api/calendar/events/calendar-edit-1?project=default'))).toBe(true));
+    expect(vi.mocked(window.confirm)).toHaveBeenCalledWith('Delete "Review block revised"?');
+  });
+
+  it('edits one Live recurring occurrence without changing its series', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T08:00:00.000Z'));
+    const occurrenceStart = new Date(Date.now() + 2 * 60 * 60_000);
+    const occurrenceEnd = new Date(occurrenceStart.getTime() + 60 * 60_000);
+    const recurrenceId = occurrenceStart.toISOString();
+    const masterStart = new Date(occurrenceStart.getTime() - 24 * 60 * 60_000);
+    const masterEnd = new Date(masterStart.getTime() + 60 * 60_000);
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = String(init?.method ?? 'GET');
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+      calls.push({ url, method, body });
+      if (url.includes('/api/calendar/events') && method === 'GET') return json({ events: [{
+        id: 'series-1', title: 'Daily stand-up', starts_at: masterStart.toISOString(), ends_at: masterEnd.toISOString(),
+        rrule: 'FREQ=DAILY', project: 'default', reminders: [15],
+        occurrences: [{ starts_at: occurrenceStart.toISOString(), ends_at: occurrenceEnd.toISOString(), recurrence_id: recurrenceId }],
+      }] });
+      if (url.endsWith('/api/calendar/events/series-1/override') && method === 'POST') return json({ override: { id: 'override-1', title: 'Daily stand-up moved' } }, 201);
+      if (url.includes('/api/calendar/calendars')) return json({ calendars: [] });
+      return json({ error: `Unexpected request ${method} ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CalendarScreen/>);
+    const row = await waitFor(() => {
+      const upcoming = document.querySelector('.calendar-upcoming-row');
+      if (!(upcoming instanceof HTMLButtonElement)) throw new Error('Recurring occurrence was not rendered in upcoming events');
+      return upcoming;
+    });
+    fireEvent.click(row);
+    const details = await screen.findByRole('dialog', { name: 'Daily stand-up' });
+    fireEvent.click(within(details).getByRole('button', { name: 'Edit this occurrence' }));
+    const edit = await screen.findByRole('dialog', { name: 'Edit event occurrence' });
+    expect(within(edit).getByRole('status')).toHaveTextContent('This change applies to this date only');
+    expect(within(edit).queryByLabelText('Repeat')).not.toBeInTheDocument();
+    fireEvent.change(within(edit).getByLabelText('Title'), { target: { value: 'Daily stand-up moved' } });
+    fireEvent.click(within(edit).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/api/calendar/events/series-1/override'))).toBe(true));
+    expect(calls.find(call => call.method === 'POST' && call.url.endsWith('/override'))?.body).toMatchObject({
+      project: 'default', recurrence_id: recurrenceId, title: 'Daily stand-up moved',
+    });
+    expect(calls.some(call => call.method === 'PATCH' && call.url.includes('/api/calendar/events/series-1'))).toBe(false);
+    expect(await screen.findByText('Calendar occurrence updated.')).toBeVisible();
   });
 
   it('registers a CalDAV provider, confirms network sync, and resolves real backend conflict records', async () => {
@@ -793,11 +1180,42 @@ describe('workspace backend integrations', () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/research/sessions/s-cancel/checkpoints'), expect.anything());
   });
 
-  it('filters backend research sources and keeps clearly local per-source note drafts', async () => {
+  it('loads durable Research activity for a completed session when its event stream was missed', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/research/sessions?')) return json({ sessions: [{ id: 's-finished', project: 'default', query: 'Completed before opening Activity', status: 'completed' }] });
+      if (url.endsWith('/api/research/sessions/s-finished/report')) return json({ session_id: 's-finished', status: 'completed', report: 'Persisted final report.', sources: [] });
+      if (url.endsWith('/api/research/sessions/s-finished/checkpoints')) return json({ checkpoints: [
+        { id: 4, stage: 'planning', progress: 10, message: 'Planning research strategy.' },
+        { id: 5, stage: 'completed', progress: 100, message: 'Research report completed.' },
+      ] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<ResearchScreen/>);
+    await screen.findByText('Persisted final report.');
+    fireEvent.click(screen.getByRole('button', { name: 'More research panels' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Activity' }));
+    const activity = await screen.findByRole('log');
+    await waitFor(() => expect(activity).toHaveTextContent('Planning research strategy.'));
+    expect(activity).toHaveTextContent('Research report completed.');
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/research/sessions/s-finished/checkpoints'), expect.anything());
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/research/sessions/s-finished/stream'))).toBe(false);
+  });
+
+  it('filters backend research sources and saves selected-source notes to the session API', async () => {
+    const savedNotes: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('/api/research/sessions?')) return json({ sessions: [{ id: 's1', query: 'Battery materials', status: 'completed' }] });
       if (url.endsWith('/api/research/sessions/s1/report')) return json({ report: 'Report from backend', sources: [{ id: 'a', title: 'Cathode paper', url: 'https://example.test/a' }, { id: 'b', title: 'Anode paper', url: 'https://example.test/b' }] });
+      if (url.endsWith('/api/research/sessions/s1/source-notes?project=default')) return json({ notes: savedNotes });
+      if (url.endsWith('/api/research/sessions/s1/source-notes/b') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const note = { session_id: 's1', source_key: 'b', content: String(body.content ?? ''), updated_at: '2026-10-24T12:00:00Z' };
+        if (note.content) savedNotes.splice(0, savedNotes.length, note); else savedNotes.length = 0;
+        return json({ note });
+      }
       return json({ error: `Unexpected request ${url}` }, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -810,8 +1228,62 @@ describe('workspace backend integrations', () => {
     const note = screen.getByRole('textbox', { name: 'Local source note' });
     fireEvent.change(note, { target: { value: 'Review this citation' } });
     expect(note).toHaveValue('Review this citation');
-    expect(screen.getByText(/Draft held locally in this screen/)).toBeVisible();
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('note'))).toBe(false);
+    expect(screen.getByText(/Notes are saved with this research session/)).toBeVisible();
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes('/source-notes/') && init?.method === 'POST')).toBe(false);
+    const saveButton = screen.getByRole('button', { name: 'Save source note' });
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    fireEvent.click(saveButton);
+    expect(await screen.findAllByText('Source note saved to this Research session.')).toHaveLength(2);
+    const save = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/source-notes/b') && init?.method === 'POST');
+    expect(JSON.parse(String(save?.[1]?.body))).toEqual({ project: 'default', content: 'Review this citation' });
+    expect(savedNotes).toEqual([{ session_id: 's1', source_key: 'b', content: 'Review this citation', updated_at: '2026-10-24T12:00:00Z' }]);
+  });
+
+  it('clears source selection and stream state when deleting the selected Research session', async () => {
+    useWorkspaceState.getState().setDataMode('live');
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    let sessions = [
+      { id: 's1', project: 'default', query: 'First run', status: 'completed' },
+      { id: 's2', project: 'default', query: 'Second run', status: 'completed' },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/research/sessions?')) return json({ sessions });
+      if (url.endsWith('/api/research/sessions/s1/report')) return json({ report: 'First report', sources: [{ id: 'src-first', title: 'First source' }] });
+      if (url.endsWith('/api/research/sessions/s2/report')) return json({ report: 'Second report', sources: [{ id: 'src-second', title: 'Second source' }] });
+      if (url.endsWith('/api/research/sessions/s1/delete') && init?.method === 'POST') {
+        sessions = sessions.filter(session => session.id !== 's1');
+        return json({ deleted: true });
+      }
+      if (url.includes('/source-notes?')) return json({ notes: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<ResearchScreen/>);
+    expect(await screen.findByText('First report')).toBeVisible();
+    fireEvent.click(screen.getByText('New research', { exact: true }));
+    fireEvent.click(screen.getAllByRole('tab', { name: 'Sources' })[0]);
+    fireEvent.click((await screen.findAllByRole('button', { name: /First source/ }))[0]);
+    const saveNote = screen.getByRole('button', { name: 'Save source note' });
+    await waitFor(() => expect(saveNote).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('Session'), { target: { value: 's2' } });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/research/sessions/s2/source-notes?project=default'))).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Loading notes for this research session…')).not.toBeInTheDocument());
+    expect(saveNote).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Session'), { target: { value: 's1' } });
+    await waitFor(() => expect(screen.getByLabelText('Session')).toHaveValue('s1'));
+    fireEvent.click((await screen.findAllByRole('button', { name: /First source/ }))[0]);
+    await waitFor(() => expect(saveNote).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await screen.findAllByText('Research session deleted.');
+    await waitFor(() => expect(screen.getByLabelText('Session')).toHaveValue('s2'));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/research/sessions/s2/report'))).toBe(true);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/research/sessions/s2/source-notes?project=default'))).toBe(true));
+    await waitFor(() => expect(screen.queryByText('Loading notes for this research session…')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Save source note' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save source note' }));
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes('/source-notes/src-first') && init?.method === 'POST')).toBe(false);
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/api/research/sessions/s1/delete') && init?.method === 'POST')).toBe(true);
   });
 
   it('uses backend retry, branch, archive, restore and delete actions for research sessions', async () => {

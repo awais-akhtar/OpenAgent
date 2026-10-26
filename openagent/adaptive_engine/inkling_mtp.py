@@ -298,19 +298,33 @@ class InklingMTP:
             finally:
                 self._release_internal_snapshot(rollback,primary)
 
-    def draft(self,shifted_ids,previous_hidden,*,cancelled=None):
-        if self._device:return self._draft_device(shifted_ids,previous_hidden,cancelled=cancelled)
+    def draft(self,shifted_ids,previous_hidden,*,cancelled=None,rng=None,
+              temperature=1.0,return_distributions=False):
+        """Run the admitted MTP stages, optionally sampling each proposal.
+
+        ``rng`` is the proposal stream owned by the caller.  When supplied it
+        controls the actual token fed into every subsequent MTP stage; the
+        returned distributions are the exact full-vocabulary q distributions
+        used to draw those tokens.
+        """
+        if (type(temperature) not in (int,float) or not np.isfinite(temperature)
+                or temperature<=0 or type(return_distributions) is not bool):
+            raise ValueError('positive finite MTP sampling temperature and explicit distribution mode required')
+        if rng is not None and not callable(getattr(rng,'choice',None)):
+            raise TypeError('owned proposal random generator required')
+        if self._device:return self._draft_device(shifted_ids,previous_hidden,cancelled=cancelled,
+            rng=rng,temperature=float(temperature),return_distributions=return_distributions)
         with self._lock:
             self._check();ids=np.asarray(shifted_ids);hidden=np.asarray(previous_hidden)
             width=self._config['hidden_size'];vocabulary=self._config['unpadded_vocab_size'] or self._config['vocab_size']
-            if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=vocabulary):
+            if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=self._config['vocab_size']):
                 raise ValueError('shifted unpadded batch-one MTP ids required')
             if hidden.shape!=(*ids.shape,width) or hidden.dtype!=np.float32 or not np.isfinite(hidden).all():
                 raise ValueError('aligned FP32 target hidden states required')
             resident=sum(value.nbytes for value in self.weights.values())
             if resident+hidden.nbytes*12+vocabulary*8*self.depth>self.max_work_bytes:
                 raise MemoryError('MTP projection and candidate staging exceeds admission')
-            rollback=self.snapshot(_internal=True);tokens=[];logits=[];self._busy=True;primary=None
+            rollback=self.snapshot(_internal=True);tokens=[];logits=[];distributions=[];self._busy=True;primary=None
             try:
                 ids=np.array(ids,dtype=np.int64,order='C',copy=True)
                 for index,stage in enumerate(self.stages):
@@ -327,10 +341,15 @@ class InklingMTP:
                     if self.chain_norm: hidden=self.ops.norm(hidden,self.weights['shared_post_norm.weight'],rms=True,epsilon=eps)
                     scaled=np.ascontiguousarray(hidden[:,-1:]/np.float32(self._config['logits_mup_width_multiplier']))
                     row=self.ops.linear(scaled,self._globals['lm_head.weight'][:vocabulary])[0,0]
-                    token=int(np.argmax(row));tokens.append(token);logits.append(row)
+                    scaled_logits=row.astype(np.float64)/float(temperature)
+                    scaled_logits-=np.max(scaled_logits)
+                    probabilities=np.exp(scaled_logits);probabilities/=probabilities.sum()
+                    token=(int(np.argmax(row)) if rng is None else int(rng.choice(len(probabilities),p=probabilities)))
+                    tokens.append(token);logits.append(row);distributions.append(probabilities)
                     ids=np.concatenate((ids[:,1:],np.array([[token]],np.int64)),axis=1)
                 if cancelled is not None and cancelled(): raise InterruptedError('Inkling MTP cancelled before commit')
-                return tuple(tokens),np.stack(logits)
+                result=(tuple(tokens),np.stack(logits))
+                return result+(np.stack(distributions),) if return_distributions else result
             except BaseException as error:
                 primary=error
                 self._restore_stages(self._receipt(rollback),error)
@@ -338,7 +357,8 @@ class InklingMTP:
             finally:
                 self._busy=False;self._release_internal_snapshot(rollback,primary)
 
-    def _draft_device(self,shifted_ids,previous_hidden,*,cancelled=None):
+    def _draft_device(self,shifted_ids,previous_hidden,*,cancelled=None,rng=None,
+                      temperature=1.0,return_distributions=False):
         from contextlib import nullcontext
         from .device_publisher_projections import device_projection
         from .device_logits import device_logits
@@ -348,7 +368,7 @@ class InklingMTP:
         with self._lock:
             self._check();ids=np.asarray(shifted_ids);source=np.asarray(previous_hidden)
             c=self.backbone.config;h=c['hidden_size'];vocab=c['unpadded_vocab_size'] or c['vocab_size']
-            if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=vocab):
+            if ids.ndim!=2 or ids.shape[0]!=1 or not ids.shape[1] or ids.dtype.kind not in 'iu' or np.any(ids<0) or np.any(ids>=c['vocab_size']):
                 raise ValueError('shifted unpadded batch-one device MTP IDs required')
             if source.shape!=(*ids.shape,h) or source.dtype!=np.float32 or not np.isfinite(source).all():
                 raise ValueError('aligned finite FP32 device MTP target hidden required')
@@ -356,7 +376,7 @@ class InklingMTP:
             if resident+source.nbytes*16+c['vocab_size']*8*self.depth>self.max_work_bytes:
                 raise MemoryError('complete device MTP staging exceeds work admission')
             if event.is_set():raise InterruptedError('device Inkling MTP cancelled')
-            rollback=self.snapshot(_internal=True);self._busy=True;tokens=[];logits=[];primary=None
+            rollback=self.snapshot(_internal=True);self._busy=True;tokens=[];logits=[];distributions=[];primary=None
             torch=self.backbone.torch
             provider=self.backbone.projection_provider
             try:
@@ -381,10 +401,17 @@ class InklingMTP:
                         rows=device_logits(torch,hidden[:,-1:]/c['logits_mup_width_multiplier'],
                             self.backbone.weights['lm_head.weight'],max_device_bytes=self.max_work_bytes-resident,
                             max_host_bytes=c['vocab_size']*4,cancel=event)
-                        row=rows[0,0,:vocab];token=int(np.argmax(row));tokens.append(token);logits.append(row.copy())
+                        row=rows[0,0,:vocab]
+                        # device_logits returns owned host NumPy rows after
+                        # completing the accelerator projection.
+                        scaled=np.asarray(row,dtype=np.float64)/temperature
+                        scaled-=np.max(scaled);probabilities=np.exp(scaled);probabilities/=probabilities.sum()
+                        token=(int(np.argmax(scaled)) if rng is None else int(rng.choice(len(probabilities),p=probabilities)))
+                        tokens.append(token);logits.append(np.array(row,dtype=np.float32,copy=True));distributions.append(probabilities)
                         ids=np.concatenate((ids[:,1:],np.array([[token]],np.int64)),axis=1)
                     if event.is_set():raise InterruptedError('device Inkling MTP cancelled before commit')
-                    return tuple(tokens),np.stack(logits)
+                    result=(tuple(tokens),np.stack(logits))
+                    return result+(np.stack(distributions),) if return_distributions else result
             except BaseException as error:
                 primary=error
                 self._restore_stages(self._receipt(rollback),error)

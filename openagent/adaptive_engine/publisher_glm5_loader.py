@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from .publisher_checkpoint.storage import snapshot
-from .publisher_family_contracts import component_contract
+from .publisher_family_contracts import component_contract,is_mtp_tensor_name
 from .independent_glm5_next import Glm5NextTextContract,tensor_layout
 from .publisher_tensor_reader import PublisherTensorReader,TensorSlice
 from .publisher_weight_mapping import WeightBinding,materialize,expert_bindings
@@ -76,7 +76,7 @@ def admit_publisher_glm5_inventory(inventory,components,*,backend='native'):
         if name in scales:continue
         if record.dtype not in ('F32','F16','BF16','F8_E4M3'):
             raise ValueError('unsupported original GLM component source dtype: '+name)
-        if name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
+        if is_mtp_tensor_name(name):
             # GLM MTP tensors used to be counted as owned auxiliary data but
             # were never bound to a draft executor.  Do not admit that
             # incomplete inventory as a runnable GLM5 checkpoint.
@@ -248,7 +248,9 @@ def load_publisher_glm5_text_decoder(directory,*,library,expert_library,context_
                 raise primary
         try: cleanup()
         except BaseException as failure:
-            error.cleanup=cleanup;error.add_note('GLM checkpoint owner cleanup remains pending: '+str(failure))
+            from .failure_reporting import retain_cleanup_failure
+            retain_cleanup_failure(error,cleanup,failure,
+                'GLM checkpoint owner cleanup remains pending: ')
         raise
     finally: reader.close()
 

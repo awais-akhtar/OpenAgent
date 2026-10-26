@@ -14,12 +14,13 @@ from .expert_kernels import (
     _finite_array, _finite_matrix, _lease, _validate_routes,
 )
 from .q5_0_expert import _detach_borrowed_frames
-from .q8_0_expert import _positive, _shapes, pack_matrix as pack_q8_0
+from .q8_0_expert import _positive, _shapes
 
 DTYPE = "q8_1"
 BLOCK_BYTES = 36
 BLOCK_WIDTH = 32
 _RECORD = struct.Struct("<ee32b")
+_PACK_RECORD = np.dtype([("scale", "<f2"), ("total", "<f2"), ("codes", "i1", (32,))], align=False)
 
 
 def payload_size(hidden_size, intermediate_size):
@@ -28,16 +29,44 @@ def payload_size(hidden_size, intermediate_size):
 
 
 def pack_matrix(matrix, *, block_count=64):
-    """Use the Q8_0 independent rounding policy, plus half-rounded code sum."""
-    encoded = pack_q8_0(matrix, block_count=block_count)
-    result = bytearray(len(encoded) // 34 * BLOCK_BYTES)
-    for index, offset in enumerate(range(0, len(encoded), 34)):
-        delta, *codes = struct.unpack_from("<e32b", encoded, offset)
-        with np.errstate(over="ignore"):
-            total = np.float16(delta * sum(codes))
-        if not np.isfinite(total):
-            raise ValueError("Q8_1 sum exceeds binary16 range")
-        _RECORD.pack_into(result, index * BLOCK_BYTES, delta, float(total), *codes)
+    """Return bounded Q8_1 records using Q8_0 codes and half-rounded sums."""
+    _positive(block_count, "block_count")
+    a = np.asarray(matrix)
+    if a.ndim != 2 or a.dtype.kind not in "iuf":
+        raise ValueError("weights must be real matrices")
+    rows, cols = a.shape
+    _positive(rows, "rows")
+    _positive(cols, "columns")
+    if cols % BLOCK_WIDTH:
+        raise ValueError("Q8_1 row widths must be multiples of 32")
+    result = bytearray(rows * cols // BLOCK_WIDTH * BLOCK_BYTES)
+    offset = 0
+    for row in a:
+        for start in range(0, cols, block_count * BLOCK_WIDTH):
+            with np.errstate(over="ignore", invalid="ignore"):
+                values = row[start:start + block_count * BLOCK_WIDTH].astype(np.float32).reshape(-1, 32)
+            if not np.isfinite(values).all():
+                raise ValueError("weights must be finite and representable as float32")
+            maxima = np.max(np.abs(values), axis=1)
+            with np.errstate(over="ignore", under="ignore"):
+                scales = (maxima / np.float32(127)).astype("<f2")
+            if not np.isfinite(scales).all():
+                raise ValueError("Q8_1 scale exceeds binary16 range")
+            scales[(maxima != 0) & (scales == 0)] = np.nextafter(np.float16(0), np.float16(1))
+            divisor = scales.astype(np.float32)
+            divisor[divisor == 0] = 1
+            codes = np.clip(np.rint(values / divisor[:, None]), -127, 127).astype(np.int8)
+            with np.errstate(over="ignore", invalid="ignore"):
+                totals = (scales.astype(np.float32) * codes.astype(np.int32).sum(axis=1)).astype("<f2")
+            if not np.isfinite(totals).all():
+                raise ValueError("Q8_1 sum exceeds binary16 range")
+            records = np.empty(len(values), dtype=_PACK_RECORD)
+            records["scale"] = scales
+            records["total"] = totals
+            records["codes"] = codes
+            packed = records.tobytes()
+            result[offset:offset + len(packed)] = packed
+            offset += len(packed)
     return bytes(result)
 
 

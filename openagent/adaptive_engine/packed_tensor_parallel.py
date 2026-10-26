@@ -40,9 +40,10 @@ class PackedFP8TensorParallelProjections(TensorParallelProjections):
         return min(self.provider.tile_rows(source),limit(self.provider.tensor_shapes[source][1])) if callable(limit) else self.provider.tile_rows(source)
 
     def __init__(self, *, provider, kernel, checkpoint_identity, group, device,
-                 torch_version, max_bytes):
+                 torch_version, max_bytes, collective_timeout_seconds=120):
         super().__init__(group=group,device=device,torch_version=torch_version,
-                         max_bytes=max_bytes,dtype='float32')
+                         max_bytes=max_bytes,dtype='float32',
+                         collective_timeout_seconds=collective_timeout_seconds)
         if (getattr(provider,'format',None) != self.provider_format or
                 not callable(getattr(provider,'lease',None)) or
                 not callable(getattr(kernel,'matvec',None))):

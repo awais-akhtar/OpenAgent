@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import hashlib
+import threading
 import time
 from typing import Any
 from uuid import uuid4
@@ -24,7 +25,9 @@ from .expert_store import DiskExpertStore, ExpertRegion, routed_swiglu
 from .expert_runtime import SparseExpertManifest, SparseExpertRuntime
 from .scheduler import DeadlineBatchScheduler, InferenceRequest, RequestPhase, RequestPriority
 from .universal_engine import UniversalEngine, ModelRoute, UniversalSession
-from .phase1b_adapter import wrap_universal_session_with_phase1b
+from .session_optimizer import Phase1BOptimizedSession, wrap_universal_session_with_phase1b
+from .universal_adapters import register_production_universal_adapters
+from .failure_reporting import add_failure_note, failure_detail
 
 
 MODEL_ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -89,6 +92,12 @@ class AdaptiveExecutionEngine:
         # One shared lifecycle/dispatch boundary; family implementations are
         # registered as exact adapters rather than reimplementing serving logic.
         self.universal = UniversalEngine()
+        # Every verified-admitted checkpoint identity gets its exact opener and
+        # route resolver; registration failure is a startup failure.
+        self.universal_model_types = register_production_universal_adapters(self.universal)
+        self.phase1b_root = self.runtime_root / "phase1b"
+        self._phase1b_sessions: dict[int, Phase1BOptimizedSession] = {}
+        self._phase1b_lock = threading.RLock()
         self.initialize()
 
     def register_universal_adapter(self, model_type: str, opener, *, route_resolver=None) -> None:
@@ -96,32 +105,50 @@ class AdaptiveExecutionEngine:
         self.universal.register(model_type, opener, route_resolver=route_resolver)
 
     def open_universal_model(self, model_directory, *, route: ModelRoute | None = None,
-                             **options) -> UniversalSession:
-        """Open any registered family through the common lifecycle boundary.
+                             phase1b: bool = True, hot_budget_bytes: int | None = None,
+                             **options) -> UniversalSession | Phase1BOptimizedSession:
+        """Open any admitted checkpoint through the common lifecycle boundary.
 
-        BUG-01 FIX: This is the production entry point. All admitted routes must call
-        this path, not any alternate admission. Fail startup if no adapters registered.
-
-        PHASE 1B: Automatically wraps session with speedup optimizations:
-        - JIT weight pinning
-        - Batch-union deduplication
-        - Lookahead prefetch
-        - Advanced async I/O
-        - Learning cache
-
-        Speedup: 10-50x faster (>0.50 tok/s target)
+        ``options`` are passed unchanged to the family adapter and are part of
+        warm-session identity.  ``phase1b`` and ``hot_budget_bytes`` configure
+        only the Phase 1B facade and never reach adapter admission.  Warm
+        reuse returns the same facade, so one base session has one owner.
         """
+        if type(phase1b) is not bool:
+            raise TypeError("phase1b must be a boolean")
+        if (hot_budget_bytes is not None and
+                (type(hot_budget_bytes) is not int or hot_budget_bytes < 0)):
+            raise ValueError("hot_budget_bytes must be a non-negative integer or None")
+        if not phase1b and hot_budget_bytes is not None:
+            raise ValueError("hot_budget_bytes requires phase1b=True")
         if not self.universal.registered_model_types():
             raise RuntimeError("no universal adapters registered; cannot open model")
-
-        # Open base session
         session = self.universal.open(model_directory, route=route, **options)
-
-        # Wrap with Phase 1B optimizations
-        model_family = options.get('model_family', 'qwen3.5')
-        session = wrap_universal_session_with_phase1b(session, model_family=model_family)
-
-        return session
+        if not phase1b:
+            return session
+        with self._phase1b_lock:
+            existing = self._phase1b_sessions.get(id(session))
+            if existing is not None and existing.base_session is session and not existing.status()["phase1b"]["closed"]:
+                if existing.hot_budget_bytes != hot_budget_bytes:
+                    raise ValueError(
+                        "warm Phase 1B session was opened with a different hot_budget_bytes value")
+                return existing
+            try:
+                wrapped = wrap_universal_session_with_phase1b(
+                    session, cache_root=self.phase1b_root, hot_budget_bytes=hot_budget_bytes)
+            except BaseException as primary:
+                # Adapter construction has succeeded at this point, so a
+                # facade-construction error must not orphan its native owner.
+                try:
+                    session.close()
+                except BaseException as cleanup:
+                    from .failure_reporting import retain_cleanup_failure
+                    retain_cleanup_failure(
+                        primary, session.close, cleanup,
+                        "Phase 1B facade construction cleanup remains retryable: ")
+                raise
+            self._phase1b_sessions[id(session)] = wrapped
+            return wrapped
 
     def initialize(self) -> None:
         with self.store.session() as connection:
@@ -940,17 +967,37 @@ class AdaptiveExecutionEngine:
 
     def close(self) -> None:
         primary = None
+        # Phase 1B facades save learned routes and then close their base
+        # session; a facade that fails stays registered for a close retry.
+        with self._phase1b_lock:
+            facades = list(self._phase1b_sessions.items())
+        for key, facade in facades:
+            try:
+                facade.close()
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+                else:
+                    add_failure_note(primary, "additional Phase 1B close failure: " +
+                                     failure_detail(error))
+                continue
+            with self._phase1b_lock:
+                if self._phase1b_sessions.get(key) is facade:
+                    del self._phase1b_sessions[key]
         try:
             self.universal.close_all()
         except BaseException as error:
-            primary = error
+            if primary is None:
+                primary = error
+            else:
+                add_failure_note(primary, "universal engine close failure: " + failure_detail(error))
         try:
             self.direct.close()
         except BaseException as error:
             if primary is None:
                 primary = error
             else:
-                primary.add_note("direct runtime close failure: " + repr(error))
+                add_failure_note(primary, "direct runtime close failure: " + failure_detail(error))
         if primary is not None:
             raise primary
 

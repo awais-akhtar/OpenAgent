@@ -431,12 +431,18 @@ class SparseExpertRuntime:
             "tokens": 0,
             "layer_calls": 0,
             "expert_calls": 0,
+            # Distinct experts each call actually leased; equals expert_calls
+            # for single-token calls and is smaller when a batch shares experts.
+            "unique_expert_loads": 0,
+            "batched_expert_calls": 0,
+            "batched_unique_expert_loads": 0,
             "compute_seconds": 0.0,
             "layers": defaultdict(lambda: {"calls": 0, "expert_calls": 0, "seconds": 0.0}),
         }
         self._lock = threading.Lock()
         self._adaptive_pins: set[str] = set()
         self._closed = False
+        self._route_trace: list[tuple[str, list[list[str]]]] | None = None
         self._closing = False
 
     @staticmethod
@@ -486,6 +492,7 @@ class SparseExpertRuntime:
         )
         elapsed = time.perf_counter() - started
         selected = [expert_id for expert_id, _ in routes]
+        self._trace(layer_id, [selected])
         self.predictor.observe(layer_id, selected)
         predictions = self.predictor.predict(layer_id, selected, limit=2)
         self.store.prefetch_many(self.key(layer_id, expert_id) for expert_id in predictions)
@@ -497,6 +504,7 @@ class SparseExpertRuntime:
             self._stats["tokens"] += 1
             self._stats["layer_calls"] += 1
             self._stats["expert_calls"] += len(routes)
+            self._stats["unique_expert_loads"] += len(set(selected))
             self._stats["compute_seconds"] += elapsed
         return output
 
@@ -533,6 +541,7 @@ class SparseExpertRuntime:
         )
         elapsed = time.perf_counter() - started
         expert_calls = sum(len(routes) for routes in normalized)
+        self._trace(layer_id, [[expert_id for expert_id, _ in routes] for routes in normalized])
         for routes in normalized:
             selected = [expert_id for expert_id, _ in routes]
             self.predictor.observe(layer_id, selected)
@@ -543,11 +552,77 @@ class SparseExpertRuntime:
             record["calls"] += len(normalized)
             record["expert_calls"] += expert_calls
             record["seconds"] += elapsed
+            unique = len({expert_id for routes in normalized for expert_id, _ in routes})
             self._stats["tokens"] += len(normalized)
             self._stats["layer_calls"] += len(normalized)
             self._stats["expert_calls"] += expert_calls
+            self._stats["unique_expert_loads"] += unique
+            self._stats["batched_expert_calls"] += expert_calls
+            self._stats["batched_unique_expert_loads"] += unique
             self._stats["compute_seconds"] += elapsed
         return output
+
+    def start_route_trace(self) -> None:
+        """Record every executed route row until ``stop_route_trace``."""
+        with self._lock:
+            self._route_trace = []
+
+    def stop_route_trace(self) -> list[tuple[str, list[list[str]]]]:
+        """Return the exact (layer, per-token expert IDs) rows executed while tracing."""
+        with self._lock:
+            trace, self._route_trace = self._route_trace, None
+        return trace or []
+
+    def _trace(self, layer_id: str, rows: list[list[str]]) -> None:
+        with self._lock:
+            if self._route_trace is not None:
+                self._route_trace.append((layer_id, [list(row) for row in rows]))
+
+    def record_external_routes(self, layer_id: str, route_rows: Sequence[Sequence[str]], *,
+                               elapsed: float = 0.0, prefetch: bool = True) -> None:
+        """Account routes that an external kernel executed through this store.
+
+        Native segment executors lease experts from ``self.store`` directly and
+        apply them in C.  Recording their exact per-row selections keeps route
+        learning, lookahead read-ahead and batch-union counters identical to
+        ``execute``/``execute_batch`` without re-running any arithmetic.
+        """
+        self._check_open()
+        layer = self.layers.get(layer_id)
+        if layer is None:
+            raise KeyError(layer_id)
+        rows = [[str(expert_id) for expert_id in row] for row in route_rows]
+        if not rows:
+            raise ValueError("at least one routed row is required")
+        for row in rows:
+            if len(row) > layer.experts_used:
+                raise ValueError("router selected more experts than the manifest permits")
+            for expert_id in row:
+                if expert_id not in layer.regions:
+                    raise KeyError(expert_id)
+        if type(elapsed) not in (int, float) or elapsed < 0:
+            raise ValueError("elapsed seconds must be non-negative")
+        expert_calls = sum(len(row) for row in rows)
+        unique = len({expert_id for row in rows for expert_id in row})
+        self._trace(layer_id, rows)
+        for row in rows:
+            self.predictor.observe(layer_id, row)
+            if prefetch:
+                predictions = self.predictor.predict(layer_id, row, limit=2)
+                self.store.prefetch_many(self.key(layer_id, expert_id) for expert_id in predictions)
+        with self._lock:
+            record = self._stats["layers"][layer_id]
+            record["calls"] += len(rows)
+            record["expert_calls"] += expert_calls
+            record["seconds"] += elapsed
+            self._stats["tokens"] += len(rows)
+            self._stats["layer_calls"] += len(rows)
+            self._stats["expert_calls"] += expert_calls
+            self._stats["unique_expert_loads"] += unique
+            if len(rows) > 1:
+                self._stats["batched_expert_calls"] += expert_calls
+                self._stats["batched_unique_expert_loads"] += unique
+            self._stats["compute_seconds"] += elapsed
 
     def pin_hot(self, layer_id: str, *, limit: int, load: bool = False) -> list[str]:
         self._check_open()

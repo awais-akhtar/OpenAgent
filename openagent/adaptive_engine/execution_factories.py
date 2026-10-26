@@ -1,7 +1,10 @@
 """Explicit construction of native sessions from admitted local payloads."""
 from dataclasses import dataclass, replace
 from contextlib import contextmanager
+import hashlib
+import json
 from pathlib import Path
+import threading
 
 from .execution_service import ExecutionLimits, NativeExecutionService
 from .failure_reporting import add_failure_note, failure_summary
@@ -109,10 +112,23 @@ def create_public_k3_execution_service(payload, libraries, *, runtime_library,
     """Construct original native K3, then serve its complete public range."""
     if any(options.get(name) is not None for name in ('arithmetic','fla_policy')):
         raise ValueError('the public native K3 factory requires its counted CPU arithmetic')
-    from .source_scope import require_source_family_backend_admission
-    require_source_family_backend_admission(
+    from .publisher_checkpoint import K3ExecutionPayload
+    from .publisher_checkpoint.k3_adapter import require_k3_payload_admission
+    if type(payload) is not K3ExecutionPayload:
+        raise ValueError('prepared K3 execution payload required')
+    require_k3_payload_admission(payload)
+    persisted_format = ('float32' if payload.config.expert_format == 'fp32'
+                        else 'mxfp4-e2m1-g32-ue8m0'
+                        if payload.config.expert_format == 'e2m1-low-first-e8m0-g32'
+                        else None)
+    if (payload.source_format not in ('F32','BF16','MXFP4') or
+            persisted_format is None or payload.persisted_format != persisted_format):
+        raise ValueError('K3 payload is missing its exact source/persisted format binding')
+    from .source_scope import require_source_matrix_admission
+    require_source_matrix_admission(
         family='kimi-k3', model_type='kimi_k3', backend='public-range',
-        arithmetic='fp32-approximate')
+        arithmetic='fp32-approximate', source_format=payload.source_format,
+        persisted_format=persisted_format)
     backing=create_k3_execution_service(payload,libraries,runtime_max_bytes=runtime_max_bytes,
         max_sessions=2*max_sessions,**options)
     backing.publisher_payload=payload
@@ -438,6 +454,174 @@ def open_native_family_public_directory_service(directory, *, runtime_library,
         raise
 
 
+@dataclass(frozen=True)
+class _KimiLinearServiceSnapshot:
+    identity: str
+    token_ids: tuple[int, ...]
+    position: int
+    physical_state: object
+
+
+class _KimiLinearServiceExecutor:
+    """Bind Kimi's physical decoder cache to the shared service contract."""
+
+    def __init__(self, decoder, *, identity):
+        self._decoder = decoder
+        self.identity = identity
+        self.config = decoder.config
+        self._token_ids = ()
+        self._lock = threading.RLock()
+
+    @property
+    def position(self):
+        return self._decoder.position
+
+    def reset(self):
+        with self._lock:
+            self._decoder.reset()
+            self._token_ids = ()
+
+    def snapshot(self):
+        with self._lock:
+            physical = self._decoder.snapshot()
+            if physical[0] != len(self._token_ids):
+                raise RuntimeError('Kimi Linear physical cache differs from service token history')
+            return _KimiLinearServiceSnapshot(
+                self.identity, self._token_ids, physical[0], physical)
+
+    def restore(self, snapshot):
+        with self._lock:
+            if (type(snapshot) is not _KimiLinearServiceSnapshot or
+                    snapshot.identity != self.identity or
+                    type(snapshot.token_ids) is not tuple or
+                    any(type(token) is not int or
+                        not 0 <= token < self.config.vocab_size
+                        for token in snapshot.token_ids) or
+                    type(snapshot.position) is not int or
+                    snapshot.position != len(snapshot.token_ids) or
+                    type(snapshot.physical_state) is not tuple or
+                    len(snapshot.physical_state) != 2 or
+                    snapshot.physical_state[0] != snapshot.position):
+                raise ValueError('foreign or malformed Kimi Linear service snapshot')
+            self._decoder.restore(snapshot.physical_state)
+            self._token_ids = snapshot.token_ids
+
+    def forward(self, token_ids):
+        with self._lock:
+            tokens = tuple(token_ids)
+            logits = self._decoder.forward(tokens)
+            self._token_ids += tokens
+            return logits
+
+    def close(self):
+        with self._lock:
+            self._decoder.close()
+
+
+def open_native_kimi_linear_directory_service(directory, *, library,
+        max_weight_bytes, runtime_max_bytes, context_tokens,
+        max_new_tokens=256, max_sessions=1, prefill_chunk_tokens=32,
+        max_snapshots_per_session=4, max_logit_buffer_bytes=256*1024**2,
+        max_total_model_bytes=None):
+    """Open the exact standalone Kimi Linear CPU route from a local checkpoint.
+
+    The source admission is checked before library resolution or config/tensor
+    materialization. Each session gets an independent decoder/cache owner;
+    NativeExecutionService uses the decoder's validated physical restore
+    boundary for cancellation and replay recovery.
+    """
+    from .source_scope import require_checkpoint_inventory_admission
+    inventory = require_checkpoint_inventory_admission(
+        directory, family='kimi-k3', model_type='kimi_linear', backend='native',
+        arithmetic='fp32-approximate', max_metadata_bytes=max_weight_bytes)
+    if any(type(value) is not int or value <= 0 for value in
+           (max_weight_bytes, runtime_max_bytes, context_tokens, max_new_tokens,
+            max_sessions, prefill_chunk_tokens, max_snapshots_per_session,
+            max_logit_buffer_bytes)):
+        raise ValueError('positive complete Kimi Linear service admission required')
+    if max_new_tokens > context_tokens:
+        raise ValueError('Kimi Linear generation limit exceeds admitted context')
+    if not 1 <= max_snapshots_per_session <= 62 or not 1 <= prefill_chunk_tokens <= 4096:
+        raise ValueError('Kimi Linear snapshot/prefill bounds exceeded')
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError('local Kimi Linear checkpoint directory required')
+    from .native_checkpoint import _pairs
+    from .publisher_media_files import read_regular
+    import json
+    raw = read_regular(root/'config.json', max_bytes=min(max_weight_bytes, 1024**2))
+    if len(raw) > 1024**2:
+        raise MemoryError('Kimi Linear config exceeds service metadata admission')
+    config = json.loads(raw, object_pairs_hook=_pairs,
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    if type(config) is not dict or config.get('model_type') != 'kimi_linear':
+        raise ValueError('exact standalone Kimi Linear checkpoint identity required')
+    from .native_kimi import NativeKimiLinearDecoder
+    expected = NativeKimiLinearDecoder.validate_config(
+        config, capacity=context_tokens, max_bytes=runtime_max_bytes)
+    library_path = Path(library).resolve(strict=True)
+    if not library_path.is_file():
+        raise ValueError('explicit local Kimi Linear kernel library required')
+    library_stat = library_path.stat()
+    library_identity = (library_stat.st_dev, library_stat.st_ino,
+                        library_stat.st_size, library_stat.st_mtime_ns)
+    identity_payload = json.dumps({
+        'route': ['kimi-k3', 'kimi_linear', 'native', 'fp32-approximate'],
+        'root': str(root), 'config_sha256': inventory.config_sha256,
+        'files': sorted((name, list(stamp)) for name, stamp in inventory.files.items()),
+        'library': str(library_path), 'library_stat': library_identity,
+    }, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    service_identity = 'kimi-linear:' + hashlib.sha256(identity_payload).hexdigest()
+    from .executor_budget import BudgetedExecutorFactory
+    limits = ExecutionLimits(expected['vocab_size'], context_tokens,
+        max_new_tokens, max_sessions, prefill_chunk_tokens,
+        max_snapshots_per_session, max_logit_buffer_bytes=max_logit_buffer_bytes)
+
+    def freeze(value):
+        if hasattr(value, 'items'):
+            return tuple(sorted((key, freeze(item)) for key, item in value.items()))
+        if isinstance(value, (tuple, list)):
+            return tuple(freeze(item) for item in value)
+        return value
+
+    def create_executor():
+        current_library_stat = library_path.stat()
+        if (current_library_stat.st_dev, current_library_stat.st_ino,
+                current_library_stat.st_size, current_library_stat.st_mtime_ns) != library_identity:
+            raise ValueError('Kimi Linear native library changed after service admission')
+        inventory.assert_unchanged()
+        decoder = NativeKimiLinearDecoder.from_checkpoint(
+            root, library=library_path, capacity=context_tokens,
+            max_bytes=runtime_max_bytes)
+        try:
+            inventory.assert_unchanged()
+            current_library_stat = library_path.stat()
+            if (current_library_stat.st_dev, current_library_stat.st_ino,
+                    current_library_stat.st_size, current_library_stat.st_mtime_ns) != library_identity:
+                raise ValueError('Kimi Linear native library changed during service construction')
+            return _KimiLinearServiceExecutor(decoder, identity=service_identity)
+        except BaseException as error:
+            try:
+                decoder.close()
+            except BaseException as cleanup_error:
+                add_failure_note(error, 'Kimi Linear decoder cleanup pending: ' + failure_summary(cleanup_error))
+            raise
+
+    def validate_executor(executor):
+        actual = {name: getattr(executor.config, name)
+                  for name in executor.config._fields}
+        if freeze(actual) != freeze(expected):
+            raise ValueError('Kimi Linear checkpoint config changed after service admission')
+
+    executor_bytes = runtime_max_bytes
+    total_bytes = (executor_bytes*max_sessions if max_total_model_bytes is None
+                   else max_total_model_bytes)
+    factory = BudgetedExecutorFactory(create_executor,
+        executor_bytes=executor_bytes, max_total_bytes=total_bytes,
+        max_executors=max_sessions, validate=validate_executor)
+    return NativeExecutionService(factory, limits, factory_cleanup=factory.retry_cleanup)
+
+
 def create_k3_execution_service(payload, libraries, *, runtime_max_bytes,
                                 max_new_tokens=256, max_sessions=1,
                                 prefill_chunk_tokens=512, expert_provider=None, routing=None,
@@ -459,13 +643,21 @@ def create_k3_execution_service(payload, libraries, *, runtime_max_bytes,
     if type(payload) is not K3ExecutionPayload or type(payload.config) is not K3Config:
         raise ValueError('prepared K3 execution payload required')
     require_k3_payload_admission(payload)
-    from .source_scope import require_source_family_backend_admission
     route_backend = ('fla' if fla_policy is not None else
                     'device' if arithmetic is not None else 'native')
     route_arithmetic = 'bf16' if arithmetic is not None else 'fp32-approximate'
-    require_source_family_backend_admission(
+    from .source_scope import require_source_matrix_admission
+    persisted_format = ('float32' if payload.config.expert_format == 'fp32'
+                        else 'mxfp4-e2m1-g32-ue8m0'
+                        if payload.config.expert_format == 'e2m1-low-first-e8m0-g32'
+                        else None)
+    if (payload.source_format not in ('F32', 'BF16', 'MXFP4') or
+            persisted_format is None or payload.persisted_format != persisted_format):
+        raise ValueError('K3 payload is missing its exact source/persisted format binding')
+    require_source_matrix_admission(
         family='kimi-k3', model_type='kimi_k3', backend=route_backend,
-        arithmetic=route_arithmetic)
+        arithmetic=route_arithmetic, source_format=payload.source_format,
+        persisted_format=persisted_format)
     if type(libraries) is not K3Libraries:
         raise ValueError('explicit K3 library inventory required')
     if type(runtime_max_bytes) is not int or runtime_max_bytes <= 0:
@@ -1806,6 +1998,7 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
                               max_expert_bytes, max_projection_bytes,
                               compressed_ids=None, tokenizer=None,
                               max_new_tokens=256, prefill_chunk_tokens=32,
+                              max_snapshot_bytes=16*1024**2,
                               projection_backend=None, sharded_projections=(),
                               bf16_projection_max_bytes=None, distributed=None,
                               max_metadata_bytes=256*1024**2,
@@ -1838,6 +2031,16 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
                 arithmetic='publisher-bf16-fp8-fp4',
                 source_format=source_format,
                 persisted_format=persisted_format)
+    # This public factory can be reached without PublisherSession. Bind the
+    # route decision to the complete checkpoint header inventory here, before
+    # opening the checkpoint or materializing any execution/provider state.
+    from .source_scope import require_checkpoint_inventory_admission
+    require_checkpoint_inventory_admission(
+        directory, family='deepseek-v41', model_type='deepseek_v41',
+        backend=('distributed' if distributed is not None else
+                 'device' if device is not None else 'native'),
+        arithmetic='publisher-bf16-fp8-fp4',
+        max_metadata_bytes=max_metadata_bytes)
     from .publisher_checkpoint.service import PublisherCheckpoint
     from .publisher_checkpoint.v41_adapter import load_v41
     from .v41_execution.publisher_arithmetic import NativePublisherV41Arithmetic
@@ -1881,6 +2084,7 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
         ('arithmetic_max_bytes', arithmetic_max_bytes),
         ('max_expert_bytes', max_expert_bytes),
         ('max_projection_bytes', max_projection_bytes),
+        ('max_snapshot_bytes', max_snapshot_bytes),
         ('max_metadata_bytes',max_metadata_bytes),('max_engram_bytes',max_engram_bytes),
     ):
         if type(value) is not int or value <= 0:
@@ -1955,7 +2159,8 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
             from .publisher_checkpoint.v41_provider import V41FP4ProjectionProvider
             fp4_rows=own(V41FP4ProjectionProvider(checkpoint,max_projection_bytes=max_projection_bytes))
         limits = ExecutionLimits(payload.profile.vocabulary, payload.profile.context,
-                                 max_new_tokens, 1, prefill_chunk_tokens)
+                                 max_new_tokens, 1, prefill_chunk_tokens,
+                                 max_checkpoint_buffer_bytes=max_snapshot_bytes)
     except BaseException as error:
         try:
             cleanup()
@@ -2029,167 +2234,217 @@ def open_publisher_v41_service(directory, *, execution_library=None, mxfp4_libra
 # NATIVE FAMILY FACTORIES — A02/A03 PHASE 1 CLOSURE
 # ============================================================================
 
-def create_qwen35_native_session(model_path, config_path, *,
-                                 max_new_tokens=256,
-                                 max_snapshot_bytes=16 * 1024 * 1024):
-    """A02: Load Qwen3.5-MoE from native checkpoint and prepare for generation.
-    
-    Route: qwen3.5/qwen3_5_moe/native/fp32/float32/float32
-    Chain: config → native_checkpoint.read_native_text_checkpoint → 
-           NativeQwen35TextDecoder → Qwen35CacheRecovery → factory → CLI
+def _create_admitted_native_text_service(model_path, config_path, *, family,
+                                         model_type, library, max_weight_bytes,
+                                         max_bytes, max_new_tokens,
+                                         max_snapshot_bytes, context_key,
+                                         loader_options=None):
+    """Build a single-session service over fresh, exact-route native decoders.
+
+    The SafeTensors header inventory is admitted before opening the native
+    library. ``load_native_text_decoder`` then repeats the exact family
+    inventory gate before reading any tensor payload and binds each decoder to
+    the checkpoint snapshot. A new mutable decoder is constructed after each
+    session close; a closed decoder is never reused.
     """
-    from pathlib import Path
-    from .native_checkpoint import read_native_text_checkpoint
-    from .native_qwen35 import NativeQwen35TextDecoder
-    from .qwen35_cache_recovery import Qwen35CacheRecovery
     import json
-    
-    model_path = Path(model_path).resolve(strict=True)
-    config_path = Path(config_path).resolve(strict=True)
-    
-    config = json.loads(config_path.read_text(encoding='utf-8'))
-    if config.get('model_type') != 'qwen3_5_moe':
-        raise ValueError(f"config.model_type must be 'qwen3_5_moe'")
-    
-    weights = read_native_text_checkpoint(model_path, family='qwen3.5')
-    decoder = NativeQwen35TextDecoder(weights, config)
-    cache = Qwen35CacheRecovery()
-    
-    vocab_size = config.get('vocab_size', 128000)
-    context = config.get('max_position_embeddings', 8192)
-    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
-    
-    def create_executor():
+    from pathlib import Path
+    from .native_checkpoint import load_native_text_decoder
+    from .source_scope import require_checkpoint_inventory_admission
+
+    root = Path(model_path).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("native text factory requires a checkpoint directory")
+    canonical_config = (root / "config.json").resolve(strict=True)
+    selected_config = Path(config_path).resolve(strict=True)
+    if selected_config != canonical_config:
+        raise ValueError("config_path must be this checkpoint's canonical config.json")
+    try:
+        config = json.loads(canonical_config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("native text factory config is not valid JSON") from error
+    if type(config) is not dict or config.get("model_type") != model_type:
+        raise ValueError("native text factory requires exact model_type " + model_type)
+    for name, value in (("max_weight_bytes", max_weight_bytes),
+                        ("max_bytes", max_bytes),
+                        ("max_new_tokens", max_new_tokens),
+                        ("max_snapshot_bytes", max_snapshot_bytes)):
+        if type(value) is not int or value <= 0:
+            raise ValueError(name + " must be a positive bounded integer")
+    library_path = Path(library).resolve(strict=True)
+    if not library_path.is_file():
+        raise ValueError("an explicit local native decoder library is required")
+    preflight = require_checkpoint_inventory_admission(
+        root, family=family, model_type=model_type, backend="native",
+        arithmetic="fp32", persisted_format="float32")
+
+    context = config.get(context_key)
+    vocabulary = config.get("vocab_size")
+    if type(context) is not int or context <= 0 or type(vocabulary) is not int or vocabulary <= 0:
+        raise ValueError("native text config must declare positive context and vocabulary sizes")
+    if max_new_tokens > context:
+        raise ValueError("generation limit exceeds the checkpoint context")
+    options = dict(loader_options or {})
+
+    def load_decoder():
+        preflight.assert_unchanged()
+        decoder = load_native_text_decoder(
+            root, model_type=model_type, library=library_path,
+            max_weight_bytes=max_weight_bytes, max_bytes=max_bytes,
+            **options)
+        try:
+            preflight.assert_unchanged()
+        except BaseException as primary:
+            close = getattr(decoder, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    from .failure_reporting import retain_cleanup_failure
+                    retain_cleanup_failure(primary, close, cleanup,
+                                           "changed-checkpoint decoder cleanup remains retryable: ")
+            raise
         return decoder
-    
-    return NativeExecutionService(create_executor, limits)
+
+    pending = [load_decoder()]
+
+    def create_executor():
+        if pending:
+            return pending.pop()
+        return load_decoder()
+
+    def cleanup_unclaimed_decoder():
+        if pending:
+            pending[0].close()
+            pending.clear()
+
+    limits = ExecutionLimits(
+        vocabulary, context, max_new_tokens, 1, 256,
+        max_checkpoint_buffer_bytes=max_snapshot_bytes)
+    return NativeExecutionService(create_executor, limits,
+                                  factory_cleanup=cleanup_unclaimed_decoder)
 
 
-def create_qwen4_native_session(model_path, config_path, *,
-                                max_new_tokens=256,
+def create_qwen35_native_session(model_path, config_path, *, library,
+                                 max_weight_bytes=128 * 1024**3,
+                                 max_bytes=4 * 1024**3, max_new_tokens=256,
+                                 max_snapshot_bytes=16 * 1024 * 1024):
+    """A02: create an exact native service for a Qwen3.5 text-only checkpoint.
+
+    Multimodal ``qwen3_5_moe`` wrappers must use the conditional publisher
+    factory; this resident text owner admits only ``qwen3_5_moe_text``.
+    """
+    return _create_admitted_native_text_service(
+        model_path, config_path, family="qwen35", model_type="qwen3_5_moe_text",
+        library=library, max_weight_bytes=max_weight_bytes, max_bytes=max_bytes,
+        max_new_tokens=max_new_tokens, max_snapshot_bytes=max_snapshot_bytes,
+        context_key="max_position_embeddings",
+        loader_options={"context_tokens": _read_factory_context(model_path, config_path,
+                                                                 "qwen3_5_moe_text"),
+                        "max_snapshots": 4})
+
+
+def create_qwen4_native_session(model_path, config_path, *, library,
+                                max_weight_bytes=128 * 1024**3,
+                                max_bytes=4 * 1024**3, max_new_tokens=256,
                                 max_snapshot_bytes=16 * 1024 * 1024):
-    """A02: Load Qwen4-Exp from native checkpoint. QSA+gated attention cache."""
-    from pathlib import Path
-    from .native_checkpoint import read_native_text_checkpoint
-    from .native_qwen4 import NativeQwen4TextDecoder
-    from .qwen4_cache_recovery import Qwen4CacheRecovery
-    import json
-    
-    model_path = Path(model_path).resolve(strict=True)
-    config_path = Path(config_path).resolve(strict=True)
-    
-    config = json.loads(config_path.read_text(encoding='utf-8'))
-    if config.get('model_type') != 'qwen4_exp':
-        raise ValueError(f"config.model_type must be 'qwen4_exp'")
-    
-    weights = read_native_text_checkpoint(model_path, family='qwen4')
-    decoder = NativeQwen4TextDecoder(weights, config)
-    cache = Qwen4CacheRecovery()
-    
-    vocab_size = config.get('vocab_size', 152064)
-    context = config.get('max_position_embeddings', 32768)
-    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
-    
-    def create_executor():
-        return decoder
-    
-    return NativeExecutionService(create_executor, limits)
+    """A02: create an exact native service for a Qwen4-Exp text checkpoint."""
+    return _create_admitted_native_text_service(
+        model_path, config_path, family="qwen4", model_type="qwen4_exp_text",
+        library=library, max_weight_bytes=max_weight_bytes, max_bytes=max_bytes,
+        max_new_tokens=max_new_tokens, max_snapshot_bytes=max_snapshot_bytes,
+        context_key="max_position_embeddings")
 
 
-def create_glm5_native_session(model_path, config_path, *,
-                               max_new_tokens=256,
+def create_glm5_native_session(model_path, config_path, *, library,
+                               max_weight_bytes=128 * 1024**3,
+                               max_bytes=4 * 1024**3, max_new_tokens=256,
                                max_snapshot_bytes=16 * 1024 * 1024):
-    """A02: Load GLM5-Next from native checkpoint. Shared expert banks."""
-    from pathlib import Path
-    from .native_checkpoint import read_native_text_checkpoint
-    from .native_glm5_next import NativeGLM5NextTextDecoder
-    import json
-    
-    model_path = Path(model_path).resolve(strict=True)
-    config_path = Path(config_path).resolve(strict=True)
-    
-    config = json.loads(config_path.read_text(encoding='utf-8'))
-    if config.get('model_type') != 'glm5_next':
-        raise ValueError(f"config.model_type must be 'glm5_next'")
-    
-    weights = read_native_text_checkpoint(model_path, family='glm5-next')
-    decoder = NativeGLM5NextTextDecoder(weights, config)
-    
-    vocab_size = config.get('vocab_size', 150000)
-    context = config.get('seq_length', 8192)
-    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
-    
-    def create_executor():
-        return decoder
-    
-    return NativeExecutionService(create_executor, limits)
+    """A02: create an exact native GLM5-Next text service with its shared banks."""
+    context = _read_factory_context(model_path, config_path, "glm5_next_text",
+                                    candidates=("seq_length", "max_position_embeddings"))
+    return _create_admitted_native_text_service(
+        model_path, config_path, family="glm5-next", model_type="glm5_next_text",
+        library=library, max_weight_bytes=max_weight_bytes, max_bytes=max_bytes,
+        max_new_tokens=max_new_tokens, max_snapshot_bytes=max_snapshot_bytes,
+        context_key="seq_length" if _factory_config_has(model_path, "seq_length") else
+                    "max_position_embeddings",
+        loader_options={"context_tokens": context})
 
 
-def create_glm_dsa_native_session(model_path, config_path, *,
-                                  max_new_tokens=256,
+def create_glm_dsa_native_session(model_path, config_path, *, library,
+                                  max_weight_bytes=128 * 1024**3,
+                                  max_bytes=4 * 1024**3, max_new_tokens=256,
                                   max_snapshot_bytes=16 * 1024 * 1024):
-    """A02: Load GLM-DSA from native checkpoint. Dynamic activation routing."""
-    from pathlib import Path
-    from .native_checkpoint import read_native_text_checkpoint
-    from .native_glm_dsa import NativeGLMDSATextDecoder
-    from .native_glm_dsa_cache import GLMDSACacheRecovery
+    """A02: create an exact native GLM-MoE-DSA service with bounded recovery."""
+    context_key = ("max_seq_len" if _factory_config_has(model_path, "max_seq_len")
+                   else "max_position_embeddings")
+    return _create_admitted_native_text_service(
+        model_path, config_path, family="glm-dsa", model_type="glm_moe_dsa",
+        library=library, max_weight_bytes=max_weight_bytes, max_bytes=max_bytes,
+        max_new_tokens=max_new_tokens, max_snapshot_bytes=max_snapshot_bytes,
+        context_key=context_key, loader_options={"max_snapshots": 4})
+
+
+def _read_factory_context(model_path, config_path, model_type, *,
+                          candidates=("max_position_embeddings",)):
     import json
-    
-    model_path = Path(model_path).resolve(strict=True)
-    config_path = Path(config_path).resolve(strict=True)
-    
-    config = json.loads(config_path.read_text(encoding='utf-8'))
-    if config.get('model_type') != 'glm_dsa':
-        raise ValueError(f"config.model_type must be 'glm_dsa'")
-    
-    weights = read_native_text_checkpoint(model_path, family='glm-dsa')
-    decoder = NativeGLMDSATextDecoder(weights, config)
-    cache = GLMDSACacheRecovery()
-    
-    vocab_size = config.get('vocab_size', 65024)
-    context = config.get('max_seq_len', 4096)
-    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
-    
-    def create_executor():
-        return decoder
-    
-    return NativeExecutionService(create_executor, limits)
+    from pathlib import Path
+    root = Path(model_path).resolve(strict=True)
+    config_file = (root / "config.json").resolve(strict=True)
+    if Path(config_path).resolve(strict=True) != config_file:
+        raise ValueError("config_path must be this checkpoint's canonical config.json")
+    config = json.loads(config_file.read_text(encoding="utf-8"))
+    if type(config) is not dict or config.get("model_type") != model_type:
+        raise ValueError("native text factory requires exact model_type " + model_type)
+    for name in candidates:
+        value = config.get(name)
+        if type(value) is int and value > 0:
+            return value
+    raise ValueError("native text config lacks a supported context field")
+
+
+def _factory_config_has(model_path, name):
+    import json
+    from pathlib import Path
+    config = json.loads((Path(model_path).resolve(strict=True) / "config.json").read_text(
+        encoding="utf-8"))
+    return name in config
 
 
 def create_deepseek_v41_native_session(model_path, config_path, *,
+                                       execution_library, mxfp4_library, fp8_library,
+                                       context_tokens, max_weight_bytes,
+                                       runtime_max_bytes, arithmetic_max_bytes,
+                                       max_expert_bytes, max_projection_bytes,
                                        max_new_tokens=256,
-                                       max_snapshot_bytes=16 * 1024 * 1024):
-    """A02: Load DeepSeek-V4.1 native (BF16 only; FP8/FP4 need device backend)."""
+                                       max_snapshot_bytes=16 * 1024 * 1024,
+                                       **service_options):
+    """A02: create the admitted three-bank V4.1 service through its bank owner.
+
+    V4.1 is not a generic resident text decoder. This wrapper delegates to the
+    checkpoint/bank factory that validates BF16/FP8/FP4 as one exact route.
+    """
     from pathlib import Path
-    from .native_checkpoint import read_native_text_checkpoint
     import json
-    
     model_path = Path(model_path).resolve(strict=True)
     config_path = Path(config_path).resolve(strict=True)
-    
+    if not model_path.is_dir():
+        raise ValueError("DeepSeek V4.1 factory requires a checkpoint directory")
+    if config_path != (model_path / "config.json").resolve(strict=True):
+        raise ValueError("config_path must be this checkpoint's canonical config.json")
     config = json.loads(config_path.read_text(encoding='utf-8'))
-    if config.get('model_type') != 'deepseek_v41':
-        raise ValueError(f"config.model_type must be 'deepseek_v41'")
-    
-    quant_method = config.get('quantization_config', {}).get('quant_method')
-    if quant_method not in (None, 'bfloat16', 'bf16'):
-        raise ValueError("DeepSeek V4.1 native: BF16 only; use device for FP8/FP4")
-    
-    weights = read_native_text_checkpoint(model_path, family='deepseek-v41')
-    
-    if config.get('architecture') == 'deepseek_moe':
-        from .native_deepseek_v41_mhc import NativeDeepSeekV41MoE as Decoder
-    else:
-        from .native_deepseek_v41_quant import NativeDeepSeekV41Quantized as Decoder
-    
-    decoder = Decoder(weights, config)
-    
-    vocab_size = config.get('vocab_size', 128256)
-    context = config.get('max_position_embeddings', 4096)
-    limits = ExecutionLimits(vocab_size, context, max_new_tokens, 1, 256)
-    
-    def create_executor():
-        return decoder
-    
-    return NativeExecutionService(create_executor, limits)
+    if type(config) is not dict or config.get("model_type") != "deepseek_v41":
+        raise ValueError("exact DeepSeek V4.1 model_type required")
+    return open_publisher_v41_service(
+        model_path, execution_library=execution_library,
+        mxfp4_library=mxfp4_library, fp8_library=fp8_library,
+        context_tokens=context_tokens, max_weight_bytes=max_weight_bytes,
+        runtime_max_bytes=runtime_max_bytes,
+        arithmetic_max_bytes=arithmetic_max_bytes,
+        max_expert_bytes=max_expert_bytes,
+        max_projection_bytes=max_projection_bytes,
+        max_new_tokens=max_new_tokens,
+        max_snapshot_bytes=max_snapshot_bytes,
+        **service_options)
 

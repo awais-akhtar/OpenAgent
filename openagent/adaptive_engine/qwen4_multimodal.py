@@ -106,8 +106,9 @@ class Qwen4MultimodalDecoder:
         except BaseException as primary:
             try:self.close()
             except BaseException as cleanup:
-                primary.cleanup=self.close
-                primary.add_note('Qwen4 inventory admission cleanup remains pending: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'Qwen4 inventory admission cleanup remains pending: ')
             raise
         try:
             if (native_expert_max_bytes+native_ple_max_bytes+getattr(expert_provider,'max_bytes',0)
@@ -159,11 +160,14 @@ class Qwen4MultimodalDecoder:
             for name,array in sorted(self.auxiliary.items()):
                 digest.update(name.encode());digest.update(memoryview(array).cast('B'))
             self.identity='openagent-qwen4-media-v1:'+digest.hexdigest()
-            self.text.identity+=':wrapper:'+self.identity
+            if segment_runtime_library is None:
+                self.text.identity+=':wrapper:'+self.identity
         except BaseException as primary:
             try:self.close()
             except BaseException as cleanup:
-                primary.cleanup=self.close;primary.add_note('Qwen4 native component cleanup retained: '+repr(cleanup))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,cleanup,
+                    'Qwen4 native component cleanup retained: ')
             raise
 
     @property
@@ -317,7 +321,9 @@ class Qwen4MultimodalDecoder:
                     self.text.release_snapshot(inner)
                 except BaseException as cleanup:
                     self._orphaned_snapshots.append(inner)
-                    primary.add_note('unpublished media snapshot cleanup retained for close: '+repr(cleanup))
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(primary,'unpublished media snapshot cleanup retained for close: '+
+                        failure_summary(cleanup))
                 raise
 
     def _snapshot(self,receipt):

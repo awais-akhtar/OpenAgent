@@ -212,6 +212,11 @@ class OlmoeModel:
     correctness and evidence over native-kernel throughput.
     """
 
+    # Working-memory admission for decoding one dense source matrix
+    # (``_read_float_matrix`` charges 12 bytes per element).  Callers loading
+    # large vocabularies pass an explicit ``max_matrix_decode_bytes``.
+    _matrix_decode_bytes = 1024 * 1024 * 1024
+
     def __init__(
         self,
         model_directory: str | Path,
@@ -225,7 +230,12 @@ class OlmoeModel:
         prefetch_depth: int = 8,
         kernels=None,
         preferred_kernel: str | None = None,
+        max_matrix_decode_bytes: int | None = None,
     ) -> None:
+        if max_matrix_decode_bytes is not None:
+            if type(max_matrix_decode_bytes) is not int or max_matrix_decode_bytes <= 0:
+                raise ValueError("max_matrix_decode_bytes must be a positive integer")
+            self._matrix_decode_bytes = max_matrix_decode_bytes
         self.root = Path(model_directory).resolve(strict=True)
         self.config = OlmoeConfig.read(self.root)
         self.manifest = SparseExpertManifest.read(manifest) if isinstance(manifest, (str, Path)) else manifest
@@ -243,11 +253,20 @@ class OlmoeModel:
                 or layer.intermediate_size != self.config.intermediate_size
                 or layer.experts_used != self.config.num_experts_per_tok
                 or set(layer.regions) != {str(i) for i in range(self.config.num_experts)}
-                or layer.dtype not in {"int8-row", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32"}
+                or layer.dtype not in {"float32", "int8-row", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32"}
             ):
                 raise ValueError(f"expert manifest layer {index} does not match OLMoE config")
             if any(not region.sha256 for region in layer.regions.values()):
                 raise ValueError("OLMoE expert regions require SHA-256 content hashes")
+        # This independently callable decoder also backs the production
+        # model_gateway direct provider; the native CLI's planner is not its
+        # admission boundary. Bind every selected manifest format to the
+        # complete dense tensor header inventory before reading any weights.
+        from .source_scope import require_checkpoint_inventory_admission
+        for persisted_format in sorted({layer.dtype for layer in self.manifest.layers}):
+            require_checkpoint_inventory_admission(
+                self.root, family='olmoe', model_type='olmoe', backend='native',
+                arithmetic='fp32', persisted_format=persisted_format)
         self.context_tokens = self.config.max_position_embeddings if context_tokens is None else context_tokens
         if (type(self.context_tokens) is not int or self.context_tokens <= 0
                 or self.context_tokens > self.config.max_position_embeddings):
@@ -296,7 +315,9 @@ class OlmoeModel:
         )
 
     def _tensor(self, name: str, shape: tuple[int, ...]) -> np.ndarray:
-        value = _read_float_matrix(self._index, name)
+        # Borrowed by NativeOlmoeEdge/OlmoeSegmentEngine, which are not subclasses.
+        value = _read_float_matrix(self._index, name, max_bytes=getattr(
+            self, "_matrix_decode_bytes", OlmoeModel._matrix_decode_bytes))
         if value.shape != shape:
             raise ValueError(f"tensor {name} has shape {value.shape}; expected {shape}")
         flat = value.reshape(-1)

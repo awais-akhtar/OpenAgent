@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+from threading import Event, Timer, get_ident
+from types import SimpleNamespace
+import time
 import unittest
 from unittest.mock import patch
 
@@ -45,6 +48,101 @@ class FakeDirectHardware:
 
 
 class ModelGatewayTests(unittest.TestCase):
+    def test_nonstreaming_native_completion_receives_cancellation_and_never_falls_back(self) -> None:
+        from openagent.adaptive_engine.execution_service import ExecutionCancelled
+
+        class NativeProvider:
+            id = "native-publisher"
+            local = True
+            default_model = "fixture"
+
+            def __init__(self):
+                self.received_cancel = None
+
+            def available(self):
+                return True
+
+            def complete(self, _messages, *, model=None, cancelled=None):
+                self.received_cancel = cancelled
+                cancellation_event.set()
+                if cancelled is not None and cancelled():
+                    raise ExecutionCancelled("native completion cancelled")
+                return SimpleNamespace(
+                    provider=self.id,
+                    model=model or self.default_model,
+                    content="unexpected",
+                    metadata={},
+                )
+
+        gateway = ModelGateway()
+        native = NativeProvider()
+        cancellation_event = Event()
+        gateway.providers[native.id] = native
+        fallback_calls = []
+        gateway.select_fallback = lambda _provider_id: fallback_calls.append(True) or gateway.providers["local"]
+        with self.assertRaisesRegex(ExecutionCancelled, "native completion cancelled"):
+            gateway.complete(
+                [{"role": "user", "content": "cancel this unique completion"}],
+                provider_id=native.id,
+                cancelled=cancellation_event.is_set,
+            )
+
+        self.assertTrue(callable(native.received_cancel))
+        self.assertEqual(fallback_calls, [])
+
+    def test_stream_cancellation_is_not_treated_as_provider_failure(self) -> None:
+        from openagent.adaptive_engine.execution_service import ExecutionCancelled
+
+        class Provider:
+            id = "local"
+            local = True
+            default_model = "fixture"
+
+            def stream_complete(self, _messages, *, model=None):
+                yield StreamChunk(self.id, model or self.default_model, "hidden", False, {})
+
+        gateway = ModelGateway()
+        provider = Provider()
+        fallback_calls = []
+        checks = iter((False, True))
+        gateway.select_provider = lambda *_args, **_kwargs: provider
+        gateway.select_fallback = lambda provider_id: fallback_calls.append(provider_id)
+
+        with self.assertRaises(ExecutionCancelled):
+            next(gateway.stream_complete(
+                [{"role": "user", "content": "cancellation must not fallback"}],
+                cancelled=lambda: next(checks, True),
+            ))
+
+        self.assertEqual(fallback_calls, [])
+
+    def test_stream_forwards_transport_cancellation_signal_to_native_provider(self) -> None:
+        class NativeProvider:
+            id = "native-publisher"
+            local = True
+            default_model = "fixture"
+
+            def __init__(self):
+                self.signal = None
+
+            def stream_complete(self, _messages, *, model=None, cancelled=None):
+                self.signal = cancelled
+                yield StreamChunk(self.id, model or self.default_model, "", True, {})
+
+        gateway = ModelGateway()
+        provider = NativeProvider()
+        gateway.select_provider = lambda *_args, **_kwargs: provider
+
+        def signal():
+            return False
+
+        chunks = list(gateway.stream_complete(
+            [{"role": "user", "content": "native cancellation"}], cancelled=signal,
+        ))
+
+        self.assertIs(provider.signal, signal)
+        self.assertTrue(chunks[-1].done)
+
     def test_auto_openvino_route_reports_the_resident_model_identity(self) -> None:
         class Provider:
             id = "openvino-direct"
@@ -225,6 +323,37 @@ class ModelGatewayTests(unittest.TestCase):
 
         self.assertEqual(source.closed, 1)
 
+    def test_text_stream_cleanup_summary_never_calls_hostile_repr(self) -> None:
+        from openagent.model_gateway import _closing_provider_stream
+
+        class UnprintableCleanupError(Exception):
+            def __repr__(self):
+                raise AssertionError("cleanup repr must not run")
+
+        class Source:
+            def __init__(self):
+                self.read = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if not self.read:
+                    self.read = True
+                    return StreamChunk("fixture", "model", "partial", False, {})
+                raise RuntimeError("primary provider stream error")
+
+            def close(self):
+                raise UnprintableCleanupError()
+
+        stream = _closing_provider_stream(Source())
+        self.assertEqual(next(stream).content, "partial")
+        with self.assertRaisesRegex(RuntimeError, "primary provider stream error") as caught:
+            next(stream)
+        self.assertTrue(any(
+            "UnprintableCleanupError: failure details omitted" in note
+            for note in getattr(caught.exception, "__notes__", ())))
+
     def test_openai_compatible_stream_close_releases_sse_response_iterator(self) -> None:
         from openagent.model_gateway import OpenAICompatibleProvider
 
@@ -255,6 +384,129 @@ class ModelGatewayTests(unittest.TestCase):
             stream.close()
 
         self.assertEqual(source.closed, 1)
+
+    def test_ollama_vision_stream_uses_image_payload_and_cancellation(self) -> None:
+        from openagent.model_gateway import OllamaProvider
+
+        cancellation = Event()
+        captured = {}
+        source = iter((
+            {"message": {"content": "vision"}, "done": False},
+            {"message": {"content": ""}, "done": True},
+        ))
+
+        def fake_stream(url, payload, *, headers, cancelled=None):
+            captured.update(url=url, payload=payload, headers=headers, cancelled=cancelled)
+            return source
+
+        provider = OllamaProvider()
+        provider.base_url = "http://127.0.0.1:11434"
+        with patch.object(provider, "resolve_vision_model", return_value="vision-model"), patch(
+            "openagent.model_gateway.stream_json_lines", side_effect=fake_stream,
+        ):
+            chunks = list(provider.stream_complete_vision(
+                [{"role": "user", "content": "describe"}], b"image-data",
+                media_type="image/png", cancelled=cancellation.is_set,
+            ))
+
+        self.assertEqual([chunk.content for chunk in chunks], ["vision", ""])
+        self.assertTrue(chunks[-1].done)
+        self.assertEqual(captured["cancelled"], cancellation.is_set)
+        sent = captured["payload"]["messages"][-1]
+        self.assertEqual(sent["content"], "describe")
+        self.assertEqual(sent["images"], ["aW1hZ2UtZGF0YQ=="])
+
+    def test_openai_vision_stream_uses_multimodal_payload_and_cancellation(self) -> None:
+        from openagent.model_gateway import OpenAICompatibleProvider
+
+        cancellation = Event()
+        captured = {}
+        source = iter((
+            {"choices": [{"delta": {"content": "vision"}}]},
+            {"done": True},
+        ))
+
+        def fake_stream(url, payload, *, headers, cancelled=None):
+            captured.update(url=url, payload=payload, headers=headers, cancelled=cancelled)
+            return source
+
+        provider = OpenAICompatibleProvider()
+        provider.base_url = "https://provider.example/v1"
+        provider.api_key = "secret"
+        with patch.object(provider, "require_configured"), patch(
+            "openagent.model_gateway.stream_sse_json", side_effect=fake_stream,
+        ):
+            chunks = list(provider.stream_complete_vision(
+                [{"role": "user", "content": "describe"}], b"image-data",
+                media_type="image/png", cancelled=cancellation.is_set,
+            ))
+
+        self.assertEqual([chunk.content for chunk in chunks], ["vision", ""])
+        self.assertTrue(chunks[-1].done)
+        self.assertEqual(captured["cancelled"], cancellation.is_set)
+        part = captured["payload"]["messages"][-1]["content"][1]
+        self.assertEqual(part["type"], "image_url")
+        self.assertTrue(part["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_model_stream_reader_closes_transport_when_cancellation_arrives_without_chunks(self) -> None:
+        from openagent.adaptive_engine.execution_service import ExecutionCancelled
+        from openagent.model_gateway import _stream_model_lines
+
+        cancellation = Event()
+        started = Event()
+        transport_cancelled = Event()
+        callback_threads = []
+        consumer_thread = get_ident()
+
+        def check_cancelled():
+            callback_threads.append(get_ident())
+            return cancellation.is_set()
+
+        def blocking_fetch(_url, *, cancelled, **_kwargs):
+            started.set()
+            while not cancelled():
+                time.sleep(0.005)
+            transport_cancelled.set()
+            raise InterruptedError("cancelled test transport")
+
+        timer = Timer(0.05, cancellation.set)
+        timer.start()
+        try:
+            with patch("openagent.model_gateway.EgressClient.fetch", side_effect=blocking_fetch):
+                with self.assertRaises(ExecutionCancelled):
+                    next(_stream_model_lines(
+                        "https://provider.example/stream", {}, headers={},
+                        cancelled=check_cancelled,
+                    ))
+        finally:
+            timer.cancel()
+
+        self.assertTrue(started.is_set())
+        self.assertTrue(transport_cancelled.wait(timeout=1.0))
+        self.assertTrue(transport_cancelled.is_set())
+        self.assertTrue(callback_threads)
+        self.assertEqual(set(callback_threads), {consumer_thread})
+
+    def test_gateway_passes_disconnect_signal_into_ollama_vision_transport(self) -> None:
+        cancellation = Event()
+        captured = {}
+
+        def fake_stream(self, _messages, _image, *, media_type, model=None,
+                        max_output_tokens=None, cancelled=None):
+            captured["cancelled"] = cancelled
+            yield StreamChunk(self.id, model or "vision-model", "", True, {"modality": "vision"})
+
+        gateway = ModelGateway()
+        with patch("openagent.model_gateway.OllamaProvider.available", return_value=True), patch(
+            "openagent.model_gateway.OllamaProvider.resolve_vision_model", return_value="vision-model",
+        ), patch("openagent.model_gateway.OllamaProvider.stream_complete_vision", fake_stream):
+            chunks = list(gateway.stream_complete_vision(
+                [{"role": "user", "content": "describe"}], b"image-data",
+                media_type="image/png", provider_id="ollama", cancelled=cancellation.is_set,
+            ))
+
+        self.assertTrue(chunks[-1].done)
+        self.assertEqual(captured["cancelled"], cancellation.is_set)
 
     def test_auto_route_uses_any_installed_ollama_model_before_fallback(self) -> None:
         captured: dict[str, object] = {}

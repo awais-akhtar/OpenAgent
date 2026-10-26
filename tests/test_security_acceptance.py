@@ -72,6 +72,10 @@ class ProtectedApiAcceptanceTests(unittest.TestCase):
                 self.assertTrue({"alpha", "beta"}.issubset(
                     {event["project"] for event in payload["events"]}
                 ))
+                scoped_status, scoped_payload = get("/api/audit?project=alpha&limit=10", admin_token)
+                self.assertEqual(scoped_status, 200)
+                self.assertEqual({event["project"] for event in scoped_payload["events"]}, {"alpha"})
+                self.assertEqual({event["resource"] for event in scoped_payload["events"]}, {"alpha-secret"})
             finally:
                 server.shutdown()
                 server.server_close()
@@ -176,7 +180,7 @@ class EgressNegativeAcceptanceTests(unittest.TestCase):
         self.assertEqual(required_scope_for_path("/api/document", "POST"), "docs:write")
         self.assertEqual(required_scope_for_path("/api/security/egress/requests", "GET"), "security:read")
         self.assertEqual(required_scope_for_path("/api/security/egress/resolve", "POST"), "security:admin")
-        self.assertIsNone(required_scope_for_path("/health", "GET"))
+        self.assertEqual(required_scope_for_path("/health", "GET"), "production:read")
 
 
 if __name__ == "__main__":

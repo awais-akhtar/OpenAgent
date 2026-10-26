@@ -21,6 +21,8 @@ test('command palette keyboard flow filters and navigates locally', async ({ pag
   });
   await page.goto('/?view=home');
 
+  await expect(page.locator('#content h1').first()).toHaveText('Welcome to OpenAgent');
+  await expect(page.getByRole('button', { name: 'Open command palette' })).toBeVisible();
   await page.keyboard.press('Control+k');
   const palette = page.getByRole('dialog', { name: 'Search OpenAgent' });
   await expect(palette).toBeVisible();

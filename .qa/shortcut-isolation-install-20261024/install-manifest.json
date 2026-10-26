@@ -1,0 +1,10 @@
+{
+  "data_dir": "D:\\openagent\\.qa\\shortcut-isolation-install-20261024\\data",
+  "product": "OpenAgent",
+  "version": "0.13.0",
+  "ui_root": "D:\\openagent\\.qa\\shortcut-isolation-install-20261024\\ui",
+  "installed_at": "2026-10-24T20:01:48.0087899+00:00",
+  "ui_source": "frontend-second/dist",
+  "python": "3.14.3",
+  "source": "D:\\openagent"
+}

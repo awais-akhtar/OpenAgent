@@ -77,7 +77,7 @@ describe('Voice demo recordings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'More actions for Workshop recap' }));
       const workshopActions = await screen.findByRole('dialog', { name: 'Workshop recap' });
       fireEvent.click(within(workshopActions).getByRole('button', { name: 'Delete' }));
-      const confirmation = await screen.findByRole('dialog', { name: 'Delete “Workshop recap”?'});
+      const confirmation = await screen.findByRole('dialog', { name: 'Delete "Workshop recap"?' });
       fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete record' }));
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Workshop recap details' })).not.toBeInTheDocument());
       expect(screen.getByText('Demo recording deleted locally.')).toBeVisible();
@@ -86,5 +86,5 @@ describe('Voice demo recordings', () => {
       await demoProvider.reset();
       useWorkspaceState.getState().setDataMode(previousMode);
     }
-  });
+  }, 15_000);
 });

@@ -171,7 +171,7 @@ def pack_safetensors_directory_int8(
     iq3_grid=None,
     max_conversion_bytes: int = 1024*1024*1024,
 ) -> SparseExpertManifest:
-    """Quantize mapped F16/BF16/F32 experts to row INT8/INT4 or block Q8/Q4.
+    """Preserve FP32 or quantize mapped floating experts to an admitted format.
 
     Source shards are indexed by reading only their SafeTensors headers. One
     projection is materialized at a time, keeping conversion memory bounded by
@@ -181,7 +181,7 @@ def pack_safetensors_directory_int8(
 
     if type(max_conversion_bytes) is not int or max_conversion_bytes <= 0:
         raise ValueError('positive expert conversion working-memory limit required')
-    if dtype not in {"int8-row", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32", "e8-lattice-caller-v1", "iq3-format6-98-v1"}:
+    if dtype not in {"float32", "int8-row", "int2-row", "int3-grouped-g64", "int4-row", "int4-grouped-g64", "mxfp4-e2m1-g32-ue8m0", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "fp8-e4m3-b128-f32", "e8-lattice-caller-v1", "iq3-format6-98-v1"}:
         raise ValueError("unsupported expert packing dtype")
     if dtype == "e8-lattice-caller-v1":
         from .e8_lattice_expert import LatticeContract
@@ -267,7 +267,9 @@ def pack_safetensors_directory_int8(
                             )
                         if not np.isfinite(matrix).all():
                             raise ValueError(f"tensor {name} must contain only finite weights")
-                        if dtype == "iq3-format6-98-v1":
+                        if dtype == "float32":
+                            raw = np.asarray(matrix, dtype="<f4").tobytes(order="C")
+                        elif dtype == "iq3-format6-98-v1":
                             from .iq3_lattice import encode_iq3
                             raw = encode_iq3(matrix, grid=iq3_grid,
                                              max_bytes=max_conversion_bytes).tobytes()
@@ -324,7 +326,7 @@ def pack_safetensors_directory_int8(
                             scale = np.maximum(row_max, np.float32(1e-12)) / np.float32(127.0)
                             q = np.clip(np.rint(matrix / scale[:, None]), -128, 127).astype(np.int8)
                             raw = q.tobytes(order="C")
-                        if dtype not in {"q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "mxfp4-e2m1-g32-ue8m0", "fp8-e4m3-b128-f32", "e8-lattice-caller-v1", "iq3-format6-98-v1"}:
+                        if dtype not in {"float32", "q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1", "mxfp4-e2m1-g32-ue8m0", "fp8-e4m3-b128-f32", "e8-lattice-caller-v1", "iq3-format6-98-v1"}:
                             scales.append(scale.astype("<f4", copy=False))
                         _write_all(writer,raw)
                         digest.update(raw)

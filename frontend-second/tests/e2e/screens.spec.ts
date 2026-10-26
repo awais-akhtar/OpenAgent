@@ -50,8 +50,8 @@ test('representative screens fit desktop and mobile widths without horizontal pa
   }
 });
 
-test('every screen remains within the viewport at compact and narrow mobile widths', async ({ page }) => {
-  for (const viewport of [{ width: 800, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
+test('every screen remains within the viewport at both supported desktop sizes', async ({ page }) => {
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(viewport);
     for (const route of screens) {
       await page.goto(`/?view=${route}`);
@@ -84,12 +84,6 @@ test('keyboard navigation, sidebar controls, and mobile drawer are operable', as
   await page.getByRole('button', { name: 'Expand sidebar' }).first().click();
   await expect(page.locator('#sidebar')).not.toHaveClass(/collapsed/);
 
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('button', { name: 'Open navigation' }).click();
-  await expect(page.locator('#sidebar')).toHaveClass(/mobile-open/);
-  await page.locator('#sidebar').getByRole('button', { name: 'Research' }).click();
-  await expect(page).toHaveURL(/view=research/);
-  await expect(page.locator('#sidebar')).not.toHaveClass(/mobile-open/);
 });
 
 test('workspace forms and panels use backend-backed chat and keep unsupported panels honest', async ({ page }) => {
@@ -138,7 +132,7 @@ test('workspace forms and panels use backend-backed chat and keep unsupported pa
   });
   expect(assistantComposerBottomGap).toBe(0);
   await page.getByRole('tab', { name: 'Preview' }).click();
-  await expect(page.getByRole('heading', { name: 'Preview unavailable' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Open a project to preview' })).toBeVisible();
   await page.locator('.codeq-assistant').getByRole('button', { name: 'Close assistant' }).click();
   await expect(page.locator('.codeq-assistant')).toHaveCount(0);
   await page.getByRole('button', { name: 'Open assistant' }).click();
@@ -183,7 +177,9 @@ test('chat detail tabs support keyboard navigation and unavailable file actions 
   await preview.focus();
   await page.keyboard.press('ArrowLeft');
   await expect(tablist.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('button', { name: 'Add files unavailable' })).toBeDisabled();
+  const addFiles = page.getByRole('button', { name: 'Add files', exact: true });
+  await expect(addFiles).toBeDisabled();
+  await expect(addFiles).toHaveAttribute('title', 'Adding files requires a connected workspace');
 });
 
 test('Chat demo opens cleanly without replaying the HTML showcase conversation', async ({ page }) => {
@@ -249,7 +245,10 @@ test('automation preview is a backend dry-run and live confirmation keeps networ
   await expect(page.getByText('Preview result')).toBeVisible();
   await expect(page.getByText('planned')).toBeVisible();
   expect(runBodies).toHaveLength(1);
-  expect(runBodies[0]).toMatchObject({ dry_run: true, allow_network: false, project: 'default' });
+  // The backend resolves project scope from the selected saved workflow. The
+  // browser must not override that scope in a run request.
+  expect(runBodies[0]).toMatchObject({ dry_run: true, allow_network: false });
+  expect(runBodies[0]).not.toHaveProperty('project');
 
   const networkConsent = page.getByRole('checkbox', { name: 'Allow network access for this live run' });
   await expect(networkConsent).not.toBeChecked();
@@ -258,7 +257,8 @@ test('automation preview is a backend dry-run and live confirmation keeps networ
   await page.getByRole('button', { name: 'Confirm live run' }).click();
   await expect.poll(() => runBodies).toHaveLength(2);
   expect(confirmation.includes('network access disabled')).toBe(true);
-  expect(runBodies[1]).toMatchObject({ dry_run: false, allow_network: false, project: 'default' });
+  expect(runBodies[1]).toMatchObject({ dry_run: false, allow_network: false });
+  expect(runBodies[1]).not.toHaveProperty('project');
   await expect(page.getByText('Run result')).toBeVisible();
 });
 

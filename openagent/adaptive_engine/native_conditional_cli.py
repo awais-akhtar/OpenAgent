@@ -219,7 +219,9 @@ class PublisherSession(ClosedSetScoringMixin):
                     pending[0]();pending.pop(0)
             try:cleanup_session()
             except BaseException as failure:
-                error.cleanup=cleanup_session;error.add_note('conditional session cleanup remains pending: '+str(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,cleanup_session,failure,
+                    'conditional session cleanup remains pending: ')
             raise
 
     def _artifacts_unchanged(self):
@@ -409,6 +411,9 @@ class PublisherSession(ClosedSetScoringMixin):
             boundary=self.service.restore_generation_checkpoint(self.session_id,source,max_bytes=max_bytes,
                 cancel=cancel,application_identity=self.checkpoint_identity)
             generated_events=[]
+            if emit is not None:
+                emit(dict(event='recovered',token_ids=[],text='',
+                    stop_prefixes=[list(prefix) for prefix in boundary.stop_prefixes],recovered=True))
             def event(value):
                 if emit is not None and value.get('event')=='generation.token':
                     generated_events.append(value['token_id'])
@@ -421,6 +426,7 @@ class PublisherSession(ClosedSetScoringMixin):
             generated=list(result.token_ids)
             return dict(generated_ids=generated,text=self.tokenizer.decode(generated,skip_special_tokens=True),
                 family=self.family,checkpoint_identity=self.checkpoint_identity,finish_reason=result.finish_reason,
+                stop_prefixes=[list(prefix) for prefix in boundary.stop_prefixes],
                 context_tokens=result.context_tokens,numerical_parity_verified=False,platform_certified=False)
 
     def run_checkpoint_file(self,args,destination,*,max_bytes,emit=None,cancelled=None):
@@ -500,9 +506,10 @@ class PublisherSession(ClosedSetScoringMixin):
                     setattr(self,attribute,None)
             if errors:
                 primary=errors[0][1]
+                from .failure_reporting import add_failure_note, failure_summary
                 for name,error in errors[1:]:
-                    if hasattr(primary,'add_note'):
-                        primary.add_note('conditional '+name+' cleanup also failed: '+repr(error))
+                    add_failure_note(primary,'conditional '+name+
+                        ' cleanup also failed: '+failure_summary(error))
                 raise primary
             self.tokenizer=self.session_id=None
 

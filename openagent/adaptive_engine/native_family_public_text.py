@@ -80,10 +80,13 @@ class NativeFamilyPublicTextDecoder:
                 max_transfer_bytes=self._transfer_limit,max_snapshot_bytes=snapshot_bytes,
                 max_snapshots=max_snapshots+2)
             self._stream_wire=self.family=='glm5_next_text' and self.owner.layer_ranges_enabled
+            self.routing_observation_supported=self.owner.routing_observation_supported
         except BaseException as error:
             try:self.close()
             except BaseException as failure:
-                error.cleanup=self.close;error.add_note('native public text cleanup retained: '+str(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,self.close,failure,
+                    'native public text cleanup retained: ')
             raise
 
     @property
@@ -122,11 +125,14 @@ class NativeFamilyPublicTextDecoder:
 
     @_exclusive
     def forward(self,ids,*,use_cache=True,inputs_embeds=None,cancelled=None,
-                attention_mask=None,position_ids=None):
+                attention_mask=None,position_ids=None,capture_routing=False):
         with self._lock:
             self._check();values=np.asarray(ids)
-            if type(use_cache) is not bool or attention_mask is not None or position_ids is not None:
+            if (type(use_cache) is not bool or type(capture_routing) is not bool or
+                    attention_mask is not None or position_ids is not None):
                 raise ValueError('contiguous native public publisher text transaction required')
+            if capture_routing and not self.routing_observation_supported:
+                raise ValueError('this native public family has no executed route observation implementation')
             if values.ndim!=2 or values.shape[0]!=1 or values.dtype.kind not in 'iu' or not values.size:
                 raise ValueError('batch-one native publisher text IDs required')
             width=self.owner.hidden_size;vocab=self.owner.vocabulary
@@ -142,7 +148,7 @@ class NativeFamilyPublicTextDecoder:
                 raise MemoryError('complete native publisher output exceeds admission')
             logits=np.empty((1,values.size,vocab),np.float32)
             hidden=np.empty((1,values.size,width),np.float32)
-            receipt=self.execution.snapshot();primary=None
+            receipt=self.execution.snapshot();primary=None;route_chunks=[]
             try:
                 if not use_cache:self.execution.reset()
                 rows=self.execution.max_prefill_tokens
@@ -154,23 +160,51 @@ class NativeFamilyPublicTextDecoder:
                         for stream in range(self.owner.streams):
                             wire[:,stream*width:(stream+1)*width]=incoming
                         incoming=wire
-                    chunk_logits,chunk_hidden=self.execution.forward(
+                    executed=self.execution.forward(
                         tuple(int(token) for token in values[0,begin:end]),cancel=_Cancellation(cancelled),
-                        inputs_embeds=incoming,return_hidden=True)
+                        inputs_embeds=incoming,return_hidden=True,capture_routes=capture_routing,
+                        route_width=((self.contract.n_routed_experts if self.family=='glm5_next_text' else
+                                      self.contract['n_routed_experts']+self.contract['n_shared_experts'])
+                                     if capture_routing else None))
+                    if capture_routing:
+                        chunk_logits,chunk_hidden,chunk_routes=executed
+                        route_chunks.append(chunk_routes)
+                    else:
+                        chunk_logits,chunk_hidden=executed
                     if self._stream_wire:chunk_hidden=self.owner.final_hidden(chunk_hidden)
                     logits[0,begin:end]=chunk_logits;hidden[0,begin:end]=chunk_hidden
                 if not use_cache:self.execution.restore(receipt)
-                return SimpleNamespace(logits=logits,last_hidden_state=hidden,position=start+values.size)
+                result={'logits':logits,'last_hidden_state':hidden,'position':start+values.size}
+                if capture_routing:
+                    result['routing_weights']=np.concatenate(route_chunks,axis=0)[None]
+                return SimpleNamespace(**result)
             except BaseException as error:
                 primary=error
                 try:self.execution.restore(receipt)
-                except BaseException as failure:error.add_note('native public text rollback failed: '+str(failure))
+                except BaseException as failure:
+                    from .failure_reporting import add_failure_note, failure_summary
+                    add_failure_note(error,'native public text rollback failed: '+failure_summary(failure))
                 raise
             finally:
                 try:self.execution.release_snapshot(receipt)
                 except BaseException as failure:
-                    if primary is not None:primary.add_note('native text snapshot cleanup retained: '+str(failure))
-                    else:raise
+                    if primary is not None:
+                        from .failure_reporting import add_failure_note, failure_summary
+                        add_failure_note(primary,'native text snapshot cleanup retained: '+failure_summary(failure))
+                    else:
+                        # Snapshot disposal is part of request commit: callers
+                        # must not see a failed request while the native KV
+                        # state silently remains advanced. Keep the still-owned
+                        # receipt for executor cleanup retry and restore it
+                        # before propagating the disposal failure.
+                        try:
+                            self.execution.restore(receipt)
+                        except BaseException as rollback:
+                            from .failure_reporting import add_failure_note, failure_summary
+                            add_failure_note(failure,
+                                'native text state rollback after snapshot cleanup failure failed: '+
+                                failure_summary(rollback))
+                        raise
 
     @_exclusive
     def snapshot(self):self._check();return self.execution.snapshot()
@@ -184,7 +218,10 @@ class NativeFamilyPublicTextDecoder:
     def write_cache(self,output,*,max_bytes):self._check();return self.execution.write_cache(output,max_bytes=max_bytes)
     @_exclusive
     def restore_cache(self,source,*,max_bytes):self._check();return self.execution.restore_cache(source,max_bytes=max_bytes)
-    def status(self):return dict(self.execution.status(),implementation=self.implementation,family=self.family)
+    def status(self):
+        with self._lock:
+            self._check()
+            return dict(self.execution.status(),implementation=self.implementation,family=self.family)
     @_exclusive
     def close(self):
         with self._lock:

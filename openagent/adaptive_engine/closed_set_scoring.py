@@ -2,6 +2,8 @@
 from contextlib import contextmanager
 import math
 
+from .failure_reporting import add_failure_note, failure_detail
+
 
 class ClosedSetScoringMixin:
     """Expose target-model option likelihoods without sampling or committing."""
@@ -120,13 +122,18 @@ class ClosedSetScoringMixin:
                 except BaseException as error:
                     cleanup = error
                     if primary is not None:
-                        primary.add_note('scoring prefix rollback failed: ' + repr(error))
+                        add_failure_note(primary, 'scoring prefix rollback failed: ' +
+                                         failure_detail(error))
                 try:
                     self.service.release_snapshot(self.session_id, boundary)
                 except BaseException as error:
                     if cleanup is None:
                         cleanup = error
+                        if primary is not None:
+                            add_failure_note(primary,
+                                'scoring prefix snapshot release failed: ' + failure_detail(error))
                     else:
-                        cleanup.add_note('scoring prefix snapshot release failed: ' + repr(error))
+                        add_failure_note(primary or cleanup,
+                            'scoring prefix snapshot release failed: ' + failure_detail(error))
                 if primary is None and cleanup is not None:
                     raise cleanup

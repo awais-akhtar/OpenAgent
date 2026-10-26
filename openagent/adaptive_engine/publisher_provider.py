@@ -12,7 +12,7 @@ from ..model_gateway import BaseProvider, ModelResult, StreamChunk, ProviderConf
 from .admission_scheduler import AdmissionScheduler, AdmissionRejected, AdmissionTimedOut
 from .session_recovery import _path
 from .native_library_identity import _stamp
-from .failure_reporting import add_failure_note, failure_summary
+from .failure_reporting import add_failure_note, failure_detail, failure_summary
 
 
 def _metadata(path,max_bytes):
@@ -29,6 +29,56 @@ def _fields(pairs):
             raise ValueError('duplicate native provider configuration field: '+key)
         result[key] = value
     return result
+
+
+def parse_publisher_operator(family, argv):
+    """Parse stored operator arguments exactly as the gateway admits them.
+
+    Shared by ``NativePublisherProvider`` and the universal production
+    adapters so both entrypoints select the same operator module and apply
+    the same help/prompt/media/context rejections.
+    """
+    if type(argv) is not list or any(type(arg) is not str or not arg or '\0' in arg for arg in argv):
+        raise ProviderConfigurationError('stored operator arguments must be nonempty strings')
+    if any(arg in ('-h', '--help', '--prompt', '--prompt-text', '--token-ids') or
+            arg.startswith(('--prompt=', '--prompt-text=', '--token-ids=')) for arg in argv):
+        raise ProviderConfigurationError('stored operator arguments cannot contain help or prompt inputs')
+    if family == 'deepseek_v41':
+        from . import publisher_v41_cli as operator
+    elif family=='kimi_k3':
+        from . import publisher_k3_cli as operator
+    elif family in ('qwen3_5_moe','qwen4_exp','inkling_mm_model') or (family=='glm5_next' and
+            any(arg=='--media-library' or arg.startswith('--media-library=') for arg in argv)):
+        from . import native_conditional_cli as operator
+    else:
+        from . import native_family_cli as operator
+    parser = operator.parser()
+    def reject(message):
+        raise ProviderConfigurationError(message)
+    parser.error = reject
+    # Prompt tokens are supplied after rendering, never from stored argv.
+    family_args = [] if family in ('deepseek_v41','kimi_k3') else ['--family',family]
+    args = parser.parse_args([*argv,*family_args,'--token-ids','[]'])
+    if any(getattr(args,name,None) for name in ('image','audio_wav','video_manifest')):
+        raise ProviderConfigurationError('gateway requests cannot use stored media inputs')
+    if getattr(args, 'max_tokens', 0) > getattr(args, 'context', 0):
+        raise ProviderConfigurationError('generation exceeds configured native context')
+    return operator, args
+
+
+def publisher_operator_backend(family, args):
+    """Return the exact P02 backend selected by parsed operator arguments."""
+    if family == 'deepseek_v41':
+        return 'device' if getattr(args, 'device', None) is not None else 'native'
+    if family == 'kimi_k3':
+        bf16 = getattr(args, 'arithmetic_device', None) is not None
+        return 'fla' if bf16 and getattr(args, 'fla_version', None) is not None else 'device' if bf16 else 'native'
+    if (getattr(args,'segment_runtime_library',None) is not None or
+            getattr(args,'public_runtime_library',None) is not None):
+        return 'public-range'
+    if getattr(args,'device',None) is not None or getattr(args,'text_device',None) is not None:
+        return 'device'
+    return 'native'
 
 
 class NativePublisherProvider(BaseProvider):
@@ -56,6 +106,9 @@ class NativePublisherProvider(BaseProvider):
         # both active and pending work so overload is observable and finite.
         self._request_admission = AdmissionScheduler(max_active=1, max_bytes=1, max_waiting=64)
         self._request_local = threading.local()
+        from .phase1_a04_media_lifecycle import FamilyMediaLifecycleRegistry
+        self._media_lifecycle_registry = FamilyMediaLifecycleRegistry(
+            max_frames_per_family=8)
 
     @staticmethod
     def _require_source_route(config, args, root):
@@ -93,9 +146,10 @@ class NativePublisherProvider(BaseProvider):
         if source_family is not None:
             from .source_scope import require_checkpoint_inventory_admission
             model_type=family
-            backend=('public-range' if getattr(args,'segment_runtime_library',None) is not None else
-                     'device' if (getattr(args,'device',None) is not None or
-                                  getattr(args,'text_device',None) is not None) else 'native')
+            # Shared with the universal adapters: native_family_cli selects
+            # public-range with --public-runtime-library and the conditional
+            # CLI with --segment-runtime-library; both must gate that row.
+            backend=publisher_operator_backend(family, args)
             maximum=getattr(args,'metadata_mib',None)
             if type(maximum) is not int or maximum<=0:
                 maximum=getattr(args,'staging_mib',None)
@@ -194,13 +248,13 @@ class NativePublisherProvider(BaseProvider):
             try:
                 self._session.close()
             except BaseException as error:
-                self._cleanup_error = str(error)
+                self._cleanup_error = failure_detail(error)
                 raise
             self._session = None
         if self._construction_cleanup is not None:
             try:self._construction_cleanup()
             except BaseException as error:
-                self._cleanup_error=str(error)
+                self._cleanup_error=failure_detail(error)
                 raise
             self._construction_cleanup=None
         self._loaded_at = self._last_used = None
@@ -235,7 +289,7 @@ class NativePublisherProvider(BaseProvider):
                 try:cleanup()
                 except BaseException as failure:
                     self._construction_cleanup=cleanup
-                    self._cleanup_error=str(failure)
+                    self._cleanup_error=failure_detail(failure)
                     add_failure_note(primary, 'gateway retains failed construction cleanup: '+failure_summary(failure))
                 else:primary.cleanup=None
             raise
@@ -244,8 +298,23 @@ class NativePublisherProvider(BaseProvider):
         # Wake bounded-queue waiters before waiting for the live session owner.
         self._request_admission.close()
         with self._lifecycle_lock(cancelled):
-            self._release_session()
-            self._closed = True
+            primary = None
+            try:
+                self._release_session()
+            except BaseException as error:
+                primary = error
+            finally:
+                self._closed = True
+                try:
+                    self._media_lifecycle_registry.close()
+                except BaseException as cleanup:
+                    if primary is None:
+                        primary = cleanup
+                    else:
+                        add_failure_note(primary,
+                            'publisher media registry close failed: '+failure_summary(cleanup))
+            if primary is not None:
+                raise primary
 
     def unload(self, cancelled=None):
         with self._lifecycle_lock(cancelled):
@@ -362,30 +431,7 @@ class NativePublisherProvider(BaseProvider):
 
     @staticmethod
     def _operator(config):
-        if any(arg in ('-h', '--help', '--prompt', '--prompt-text', '--token-ids') or
-                arg.startswith(('--prompt=', '--prompt-text=', '--token-ids=')) for arg in config['argv']):
-            raise ProviderConfigurationError('stored operator arguments cannot contain help or prompt inputs')
-        if config['family'] == 'deepseek_v41':
-            from . import publisher_v41_cli as operator
-        elif config['family']=='kimi_k3':
-            from . import publisher_k3_cli as operator
-        elif config['family'] in ('qwen3_5_moe','qwen4_exp','inkling_mm_model') or (config['family']=='glm5_next' and
-                any(arg=='--media-library' or arg.startswith('--media-library=') for arg in config['argv'])):
-            from . import native_conditional_cli as operator
-        else:
-            from . import native_family_cli as operator
-        parser = operator.parser()
-        def reject(message):
-            raise ProviderConfigurationError(message)
-        parser.error = reject
-        # Prompt tokens are supplied after rendering, never from stored argv.
-        family_args = [] if config['family'] in ('deepseek_v41','kimi_k3') else ['--family',config['family']]
-        args = parser.parse_args([*config['argv'],*family_args,'--token-ids','[]'])
-        if any(getattr(args,name,None) for name in ('image','audio_wav','video_manifest')):
-            raise ProviderConfigurationError('gateway requests cannot use stored media inputs')
-        if getattr(args, 'max_tokens', 0) > getattr(args, 'context', 0):
-            raise ProviderConfigurationError('generation exceeds configured native context')
-        return operator, args
+        return parse_publisher_operator(config['family'], config['argv'])
 
     def available(self):
         if self._closed or self._cleanup_error is not None:
@@ -446,8 +492,10 @@ class NativePublisherProvider(BaseProvider):
             # operations; checking only their conjunction creates a teardown
             # window in which a warm session can be unloaded while the worker
             # is still unwinding.
-            if (stream_thread is not None and
-                    stream_thread is not threading.current_thread()) or self._stream_lock.locked():
+            current_thread = threading.current_thread()
+            owns_stream = (stream_thread is current_thread and self._stream_lock.locked())
+            if ((stream_thread is not None and stream_thread is not current_thread) or
+                    (self._stream_lock.locked() and not owns_stream)):
                 raise ProviderUnavailableError('cannot unload while a native stream worker owns the session')
             yield
         finally:
@@ -505,9 +553,10 @@ class NativePublisherProvider(BaseProvider):
                 self._request_local.queue_position = previous_queue_position
 
     def complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=(),
-                 cancelled=None, queue_timeout=None):
+                 stop_sequences=(), cancelled=None, queue_timeout=None):
         return self._run(messages, model=model, max_output_tokens=max_output_tokens,
-                         stop_prefixes=stop_prefixes,cancelled=cancelled,
+                         stop_prefixes=stop_prefixes, stop_sequences=stop_sequences,
+                         cancelled=cancelled,
                          queue_timeout=queue_timeout)
 
     def score_options(self, prompt, options, *, model=None, normalize='mean', cancelled=None):
@@ -564,7 +613,7 @@ class NativePublisherProvider(BaseProvider):
                 try:
                     self._session = self._construct_session(operator, args, cancelled)
                 except (ValueError, OSError, MemoryError, RuntimeError, ImportError) as error:
-                    raise ProviderUnavailableError('native scoring session could not load: '+str(error)) from error
+                    raise ProviderUnavailableError('native scoring session could not load: '+failure_detail(error)) from error
                 self._session_key = key
                 self._loaded_at = started
                 self._last_used = time.monotonic()
@@ -610,7 +659,7 @@ class NativePublisherProvider(BaseProvider):
                 messages=[{'role': 'user', 'content': content}],
                 add_generation_prompt=True, **config.get('template_variables', {}))
         except TemplateError as error:
-            raise ProviderConfigurationError('native Brio prompt template could not render: '+str(error)) from error
+            raise ProviderConfigurationError('native Brio prompt template could not render: '+failure_detail(error)) from error
         if NativePublisherProvider._utf8_size(prompt, label='rendered Brio prompt') > 2 * 1024**2:
             raise ProviderConfigurationError('rendered Brio prompt exceeds 2 MiB')
         return prompt
@@ -762,7 +811,7 @@ class NativePublisherProvider(BaseProvider):
                 try:
                     self._session = self._construct_session(operator, args, cancelled)
                 except (ValueError, OSError, MemoryError, RuntimeError, ImportError) as error:
-                    raise ProviderUnavailableError('native scoring session could not load: '+str(error)) from error
+                    raise ProviderUnavailableError('native scoring session could not load: '+failure_detail(error)) from error
                 self._session_key = key
                 self._loaded_at = started
                 self._last_used = time.monotonic()
@@ -842,10 +891,11 @@ class NativePublisherProvider(BaseProvider):
             raise ProviderConfigurationError('positive integer vision output limit required')
 
     def stream_complete_vision(self, messages, image, *, media_type='image/png', model=None,
-                               max_output_tokens=None, stop_prefixes=()):
+                               max_output_tokens=None, stop_prefixes=(), cancelled=None):
         self._validate_vision_input(image, media_type, max_output_tokens)
         return self._stream_run(messages, model=model, image=image,
-                                max_output_tokens=max_output_tokens, stop_prefixes=stop_prefixes)
+                                max_output_tokens=max_output_tokens, stop_prefixes=stop_prefixes,
+                                cancelled=cancelled)
 
     @staticmethod
     def _validate_decoded_media(items,max_output_tokens):
@@ -861,6 +911,12 @@ class NativePublisherProvider(BaseProvider):
             for frame in frames:
                 if getattr(frame,'n_frames',1)!=1:
                     raise ProviderConfigurationError('animated media requires explicitly selected decoded frames')
+                dtype = getattr(frame, 'dtype', None)
+                if (getattr(frame, 'ndim', None) == 1 and
+                        getattr(dtype, 'kind', None) == 'f'):
+                    raise ProviderConfigurationError(
+                        'waveform media is not admitted by the decoded-media gateway: '
+                        'family-specific sampling-rate and placeholder-order contracts are required')
                 try:
                     width,height=_dimensions(frame)
                 except (TypeError, ValueError, AttributeError, OverflowError) as error:
@@ -871,6 +927,27 @@ class NativePublisherProvider(BaseProvider):
         return tuple(items),total
 
     @staticmethod
+    def _validate_media_modality_order(family, items):
+        """Reject cross-modality publisher batches before model construction.
+
+        The pinned publisher processor has no cross-modality placeholder
+        ordering contract. K3 consumes one typed, ordered media sequence and
+        can safely mix stills with its explicitly timestamped video inputs;
+        the other processor path accepts one modality per request. Enforce
+        that restriction at the serving boundary, before a warm session is
+        loaded or any media is dispatched.
+        """
+        if family == 'kimi_k3' or items is None:
+            return
+        from .publisher_media_inputs import PublisherVideoInput
+        modalities = {('video' if type(item) is PublisherVideoInput else 'image')
+                      for item in items}
+        if len(modalities) > 1:
+            raise ProviderConfigurationError(
+                'publisher processors require one media modality per request; '
+                'mixed image/video placeholder ordering is not admitted')
+
+    @staticmethod
     def _validate_stop_prefixes(value):
         if (type(value) not in (tuple, list) or len(value)>64 or
                 any(type(prefix) not in (tuple, list) or not prefix or len(prefix)>128 or
@@ -879,6 +956,68 @@ class NativePublisherProvider(BaseProvider):
                 len({tuple(prefix) for prefix in value}) != len(value)):
             raise ProviderConfigurationError('bounded unique stop-prefix inventory required')
         return tuple(tuple(prefix) for prefix in value)
+
+    @classmethod
+    def _encode_stop_sequences(cls, tokenizer, value):
+        """Convert bounded API text stops with the active checkpoint tokenizer."""
+        if (type(value) not in (tuple, list) or len(value) > 4 or
+                any(type(item) is not str or not item or
+                    cls._utf8_size(item, label='stop sequence') > 4096
+                    for item in value)):
+            raise ProviderConfigurationError('bounded nonempty UTF-8 stop sequence list required')
+        encoded = []
+        for item in value:
+            ids = tokenizer.encode(item, add_special_tokens=False).ids
+            if (type(ids) not in (list, tuple) or not ids or len(ids) > 128 or
+                    any(type(token) is not int or not 0 <= token < 2**31 for token in ids)):
+                raise ProviderConfigurationError('stop sequence must encode to 1..128 valid token IDs')
+            prefix = tuple(ids)
+            if prefix not in encoded:
+                encoded.append(prefix)
+        return tuple(encoded)
+
+    @staticmethod
+    def _parse_stop_prefix_arguments(value):
+        if type(value) not in (tuple, list) or len(value) > 64:
+            raise ProviderConfigurationError('bounded stop-prefix arguments required')
+        prefixes = []
+        for raw in value:
+            if type(raw) is not str or not raw:
+                raise ProviderConfigurationError('stop prefixes require comma-separated token IDs')
+            try:
+                parts = raw.split(',')
+                if any(not part.strip() for part in parts):
+                    raise ValueError('empty stop token')
+                prefix = tuple(int(part.strip()) for part in parts)
+            except ValueError as error:
+                raise ProviderConfigurationError(
+                    'stop prefixes require comma-separated token IDs') from error
+            if (not prefix or len(prefix) > 128 or
+                    any(token < 0 or token >= 2**31 for token in prefix)):
+                raise ProviderConfigurationError('stop prefix token inventory exceeds admission')
+            prefixes.append(prefix)
+        if len(set(prefixes)) != len(prefixes):
+            raise ProviderConfigurationError('unique stop-prefix arguments required')
+        return tuple(prefixes)
+
+    @staticmethod
+    def _strip_terminal_stop_prefix(token_ids, prefixes):
+        ids = tuple(token_ids)
+        for prefix in sorted(prefixes, key=len, reverse=True):
+            if len(ids) >= len(prefix) and ids[-len(prefix):] == prefix:
+                return ids[:-len(prefix)], True
+        return ids, False
+
+    @classmethod
+    def _matched_stop_sequence(cls, token_ids, tokenizer, stop_sequences):
+        """Return the request text whose encoded tokens terminate generation."""
+        ids = tuple(token_ids)
+        for text in stop_sequences:
+            encoded = tokenizer.encode(text, add_special_tokens=False).ids
+            prefix = tuple(encoded)
+            if prefix and len(ids) >= len(prefix) and ids[-len(prefix):] == prefix:
+                return text
+        return None
 
     @staticmethod
     def _utf8_size(value, *, label):
@@ -1080,71 +1219,157 @@ class NativePublisherProvider(BaseProvider):
                 except ExecutionCancelled:
                     raise
                 except (ValueError,OSError,MemoryError,RuntimeError,ImportError) as error:
-                    raise ProviderUnavailableError('recovery session could not load: '+str(error)) from error
+                    raise ProviderUnavailableError('recovery session could not load: '+failure_detail(error)) from error
                 self._session_key=key;self._loaded_at=started;self._last_used=time.monotonic()
             tokenizer = self._session.tokenizer
-            prior='';emitted='';stopped=False;stop_match=None;token_history=[]
-            def recovery_cancelled():
-                return (cancelled is not None and cancelled()) or stopped
-            def event(row):
-                nonlocal prior,emitted,stopped,stop_match,token_history
-                if row.get('event')=='recovered':
-                    prior=row['text'];emitted=prior
-                    recovered_ids=row.get('token_ids', ())
-                    if type(recovered_ids) in (list, tuple):
-                        token_history.extend(int(token) for token in recovered_ids)
+            emitted='';stopped=False;stop_start_index=None;token_history=[]
+            visible_ids=[];pending_stop=[];recovered_token_count=0
+            skip_special=config['family']!='kimi_k3'
+
+            def consume_token(token):
+                """Hold possible stop prefixes in token space, including across restore."""
+                nonlocal stopped,stop_start_index
+                index=len(token_history)
+                token_history.append(token)
+                if stopped:
                     return
-                if row.get('event')!='tokens' or emit is None:return
-                text=row['text']
-                if text.endswith('\ufffd'):return
+                pending_stop.append((token,index))
+                while pending_stop:
+                    candidate=tuple(value for value,_ in pending_stop)
+                    if candidate in stop_prefixes:
+                        stop_start_index=len(token_history)-len(candidate)
+                        stopped=True;pending_stop.clear()
+                        return
+                    if any(prefix[:len(candidate)]==candidate for prefix in stop_prefixes):
+                        return
+                    value,value_index=pending_stop.pop(0)
+                    if value_index>=recovered_token_count:
+                        visible_ids.append(value)
+
+            def publish_visible(row_tokens):
+                nonlocal emitted
+                if emit is None:
+                    return
+                text=tokenizer.decode(visible_ids,skip_special_tokens=skip_special)
+                if text.endswith('\ufffd'):
+                    return
                 if not text.startswith(emitted):
                     raise ProviderUnavailableError('recovery tokenizer changed streamed prefix')
                 delta=text[len(emitted):]
+                if delta:
+                    emit(StreamChunk(self.id,config['model'],delta,False,
+                        dict(network=False,offline=True,recovered=True,committed=False,
+                             token_ids=list(row_tokens))))
+                    emitted=text
+
+            def recovery_cancelled():
+                # The decoder already owns and enforces the persisted stop
+                # policy. Treating a matched stop as cancellation turns a
+                # normal finish into ExecutionCancelled on its next poll.
+                return cancelled is not None and cancelled()
+            def event(row):
+                nonlocal emitted,recovered_token_count,stop_prefixes
+                if row.get('event')=='recovered':
+                    recovered_text=row.get('text','')
+                    recovered_ids=row.get('token_ids', ())
+                    if (type(recovered_text) is not str or type(recovered_ids) not in (list,tuple) or
+                            any(type(token) is not int or token<0 for token in recovered_ids)):
+                        raise ProviderUnavailableError('recovery boundary lacks its token history')
+                    if 'stop_prefixes' in row:
+                        persisted=self._validate_stop_prefixes(row['stop_prefixes'])
+                        if stop_prefixes and stop_prefixes!=persisted:
+                            raise ProviderConfigurationError('recovery stop-prefix policy differs from the checkpoint')
+                        stop_prefixes=persisted
+                    recovered_token_count=len(recovered_ids)
+                    for token in recovered_ids:
+                        consume_token(token)
+                    return
+                if row.get('event')!='tokens':return
                 token_ids=row.get('token_ids', ())
                 if type(token_ids) not in (list, tuple) or any(type(token) is not int for token in token_ids):
                     raise ProviderUnavailableError('recovery token event lacks an integer token inventory')
-                token_history.extend(token_ids)
-                matched=next((prefix for prefix in stop_prefixes
-                              if len(token_history)>=len(prefix) and
-                              tuple(token_history[-len(prefix):])==prefix),None)
-                if matched is not None:
-                    # The stop boundary is defined in token space.  The
-                    # decoded suffix may occupy a different number of
-                    # characters, so remove it only when the decoder exposes
-                    # the exact suffix; otherwise the final consistency check
-                    # below prevents publication of an untrimmed boundary.
-                    suffix = text[len(emitted):]
-                    decoded_stop = tokenizer.decode(list(matched), skip_special_tokens=False)
-                    if decoded_stop and suffix.endswith(decoded_stop):
-                        delta = delta[:-len(decoded_stop)]
-                    elif not decoded_stop:
-                        delta = ''
-                    stopped=True;stop_match=matched
-                if delta:emit(StreamChunk(self.id,config['model'],delta,False,
-                    dict(network=False,offline=True,recovered=True,committed=False,
-                         token_ids=list(row['token_ids']))))
-                emitted=text
+                for token in token_ids:
+                    consume_token(token)
+                publish_visible(token_ids)
             try:
                 if config['family']=='kimi_k3':
                     output=self._session.resume_generation(source,checkpoint_max_bytes=checkpoint_max_bytes,
                         max_tokens=min(max_output_tokens,args.max_tokens),checkpoint_sink=checkpoint_sink,
-                        emit=event,cancelled=recovery_cancelled)
+                        emit=event if emit is not None else None,cancelled=recovery_cancelled)
                 else:
                     output=self._session.resume_generation(source,max_bytes=checkpoint_max_bytes,
                         max_new_tokens=min(max_output_tokens,args.max_tokens),checkpoint_sink=checkpoint_sink,
                         max_checkpoint_bytes=checkpoint_max_bytes if checkpoint_sink is not None else 0,
-                        emit=event,cancelled=recovery_cancelled)
-                content=output['text']
-                if not content.startswith(prior) or (not stopped and not content.startswith(emitted)):
-                    raise ProviderUnavailableError('final recovery output changed its captured prefix')
-                if stopped and stop_match is not None:
-                    decoded_stop = tokenizer.decode(list(stop_match), skip_special_tokens=False)
-                    if decoded_stop and content.endswith(decoded_stop):
-                        content=content[:-len(decoded_stop)]
+                        emit=event if emit is not None else None,cancelled=recovery_cancelled)
+                generated_ids=output.get('generated_ids')
+                if (type(generated_ids) not in (list,tuple) or
+                        any(type(token) is not int or token<0 for token in generated_ids)):
+                    raise ProviderUnavailableError('final recovery output lacks generated token IDs')
+                if emit is not None and tuple(generated_ids)!=tuple(token_history):
+                    raise ProviderUnavailableError('final recovery token inventory differs from captured events')
+                if 'stop_prefixes' in output:
+                    persisted=self._validate_stop_prefixes(output['stop_prefixes'])
+                    if stop_prefixes and stop_prefixes!=persisted:
+                        raise ProviderUnavailableError('final recovery stop-prefix policy changed')
+                    stop_prefixes=persisted
+                if config['family']=='kimi_k3':
+                    output_base=output.get('recovered_token_count',recovered_token_count)
+                    if (type(output_base) is not int or output_base<0 or
+                            output_base>len(generated_ids) or
+                            (emit is not None and output_base!=recovered_token_count)):
+                        raise ProviderUnavailableError('K3 recovery boundary token count differs')
+                    recovered_token_count=output_base
+                    if stop_start_index is None:
+                        visible_history,stopped_at_boundary=self._strip_terminal_stop_prefix(
+                            generated_ids,stop_prefixes)
+                    else:
+                        visible_history=tuple(generated_ids[:stop_start_index])
+                        stopped_at_boundary=True
+                    resumed_ids=output.get('resumed_ids')
+                    if (type(resumed_ids) not in (list,tuple) or
+                            any(type(token) is not int or token<0 for token in resumed_ids)):
+                        raise ProviderUnavailableError('K3 recovery output lacks continuation token IDs')
+                    if tuple(generated_ids[recovered_token_count:])!=tuple(resumed_ids):
+                        raise ProviderUnavailableError('K3 continuation IDs differ from restored token history')
+                    content_ids=(visible_history[recovered_token_count:]
+                        if len(visible_history)>=recovered_token_count else ())
+                    stopped=stopped or stopped_at_boundary
+                elif config['family']=='deepseek_v41':
+                    recovered_token_count=output.get('recovered_token_count')
+                    resumed_ids=output.get('resumed_ids')
+                    terminal_start=output.get('terminal_stop_start')
+                    if (type(recovered_token_count) is not int or recovered_token_count<0 or
+                            recovered_token_count>len(generated_ids) or
+                            type(resumed_ids) not in (list,tuple) or
+                            any(type(token) is not int or token<0 for token in resumed_ids) or
+                            tuple(generated_ids[recovered_token_count:])!=tuple(resumed_ids) or
+                            (terminal_start is not None and type(terminal_start) is not int)):
+                        raise ProviderUnavailableError('V4.1 recovery continuation inventory differs')
+                    if stop_start_index is not None:
+                        terminal_start=stop_start_index
+                    if terminal_start is None:
+                        visible_history,stopped=self._strip_terminal_stop_prefix(generated_ids,stop_prefixes)
+                    else:
+                        visible_history=tuple(generated_ids[:max(0,terminal_start)])
+                        stopped=True
+                    content_ids=(visible_history[recovered_token_count:]
+                        if len(visible_history)>=recovered_token_count else ())
+                else:
+                    if stop_start_index is None:
+                        content_ids,stopped=self._strip_terminal_stop_prefix(generated_ids,stop_prefixes)
+                    else:
+                        content_ids=tuple(generated_ids[:stop_start_index]);stopped=True
+                # A stop sequence can begin in the restored history. In that
+                # case the visible history is shorter than its old boundary;
+                # no token from that sequence belongs in this continuation.
+                pending_stop.clear()
+                content=tokenizer.decode(list(content_ids),skip_special_tokens=skip_special)
+                if emit is not None and not content.startswith(emitted):
+                    raise ProviderUnavailableError('final recovery output differs from token-level stream')
                 if emit is not None and len(content)>len(emitted):
                     emit(StreamChunk(self.id,config['model'],content[len(emitted):],False,
                         dict(network=False,offline=True,recovered=True,committed=True)))
-                return ModelResult(self.id,config['model'],content[len(prior):],
+                return ModelResult(self.id,config['model'],content,
                     dict(network=False,offline=True,recovered=True,family=config['family'],runtime=output,
                         resident_session_reused=reused,numerical_parity_verified=False,platform_certified=False))
             except ExecutionCancelled:
@@ -1152,11 +1377,138 @@ class NativePublisherProvider(BaseProvider):
             except (ValueError,OSError,MemoryError,RuntimeError,ArithmeticError) as error:
                 try:self._release_session()
                 except Exception as cleanup:add_failure_note(error, 'recovery session release failed: '+failure_summary(cleanup))
-                raise ProviderUnavailableError('native recovery failed: '+str(error)) from error
+                raise ProviderUnavailableError('native recovery failed: '+failure_detail(error)) from error
 
     def _run(self, messages, *, model=None, emit=None, cancelled=None, image=None,
-             max_output_tokens=None,media_items=None,stop_prefixes=(),
+             max_output_tokens=None,media_items=None,stop_prefixes=(),stop_sequences=(),
              checkpoint_sink=None,checkpoint_max_bytes=None,queue_timeout=None):
+        """Track media through the production publisher request boundary.
+
+        Conditional decoder executors have their own processor-array lifecycle,
+        but K3 and V4.1 use different owners. Keeping this wrapper at the shared
+        serving boundary gives every publisher family the same terminal
+        cleanup contract without imposing one family's media representation on
+        another family's decoder.
+        """
+        if image is None and media_items is None:
+            return self._run_impl(
+                messages, model=model, emit=emit, cancelled=cancelled,
+                image=image, max_output_tokens=max_output_tokens,
+                media_items=media_items, stop_prefixes=stop_prefixes,
+                stop_sequences=stop_sequences, checkpoint_sink=checkpoint_sink,
+                checkpoint_max_bytes=checkpoint_max_bytes,
+                queue_timeout=queue_timeout)
+
+        from .execution_service import ExecutionCancelled
+        config = self._configuration()
+        family = {
+            'qwen3_5_moe': 'qwen35',
+            'qwen4_exp': 'qwen4',
+            'glm5_next': 'glm5-next',
+            'inkling_mm_model': 'inkling',
+            'kimi_k3': 'kimi-k3',
+            'deepseek_v41': 'deepseek-v41',
+        }.get(config.get('family'))
+        if family is None:
+            raise ProviderConfigurationError(
+                'selected publisher family has no admitted media lifecycle')
+        if image is not None:
+            if type(image) is not bytes or not image:
+                raise ProviderConfigurationError('encoded image bytes required for media lifecycle')
+            media_types = ['vision' if family == 'deepseek-v41' else 'image']
+            input_bytes = len(image)
+        else:
+            items, input_bytes = self._validate_decoded_media(
+                media_items, max_output_tokens)
+            # Reject unsupported cross-modality combinations before creating
+            # lifecycle state. K3 is the only publisher consumer with an
+            # explicit shared image/video ordering contract.
+            self._validate_media_modality_order(config['family'], items)
+            from .k3_execution.video_input import K3VideoInput
+            from .publisher_media_inputs import PublisherVideoInput
+            media_types = []
+            for item in items:
+                media_type = ('video' if type(item) in
+                              (K3VideoInput, PublisherVideoInput) else
+                              'vision' if family == 'deepseek-v41' else 'image')
+                if media_type not in media_types:
+                    media_types.append(media_type)
+        lifecycle = self._media_lifecycle_registry.enable(family)
+        frame_id = lifecycle.admit_processed(
+            tuple(media_types), input_byte_count=input_bytes)
+        primary = None
+        def record_media_dispatch():
+            # The lifecycle counts consumed media chunks, not generated text
+            # events. Video containers can contain several independently
+            # dispatched frames; preserve that count at the native call edge.
+            count = 1
+            if media_items is not None:
+                from .k3_execution.video_input import K3VideoInput
+                from .publisher_media_inputs import PublisherVideoInput
+                count = sum(
+                    len(item.frames) if type(item) in
+                    (K3VideoInput, PublisherVideoInput) else 1
+                    for item in media_items)
+            for _ in range(count):
+                lifecycle.on_stream_chunk(frame_id)
+
+        try:
+            result = self._run_impl(
+                messages, model=model, emit=emit,
+                cancelled=cancelled, image=image,
+                max_output_tokens=max_output_tokens, media_items=media_items,
+                stop_prefixes=stop_prefixes, stop_sequences=stop_sequences,
+                checkpoint_sink=checkpoint_sink,
+                checkpoint_max_bytes=checkpoint_max_bytes,
+                queue_timeout=queue_timeout,
+                _media_chunk_callback=record_media_dispatch)
+        except BaseException as error:
+            primary = error
+            try:
+                is_cancelled = isinstance(error, ExecutionCancelled)
+                if not is_cancelled and callable(cancelled):
+                    try:
+                        is_cancelled = bool(cancelled())
+                    except BaseException as cancellation_error:
+                        add_failure_note(error,
+                            'media cancellation observer failed: '+failure_summary(cancellation_error))
+                if is_cancelled:
+                    lifecycle.cancel(frame_id, str(error) or 'cancelled')
+                else:
+                    lifecycle.error(frame_id, error)
+            except BaseException as cleanup:
+                add_failure_note(error,
+                    'publisher media lifecycle terminal cleanup failed: '+failure_summary(cleanup))
+            try:
+                lifecycle.release(frame_id)
+            except BaseException as cleanup:
+                add_failure_note(error,
+                    'publisher media lifecycle release failed: '+failure_summary(cleanup))
+            raise
+        try:
+            lifecycle.complete(frame_id)
+        except BaseException as error:
+            primary = error
+            try:
+                lifecycle.error(frame_id, error)
+            except BaseException as cleanup:
+                add_failure_note(error,
+                    'publisher media lifecycle completion cleanup failed: '+failure_summary(cleanup))
+            raise
+        finally:
+            try:
+                lifecycle.release(frame_id)
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                add_failure_note(primary,
+                    'publisher media lifecycle release failed: '+failure_summary(cleanup))
+        return result
+
+    def _run_impl(self, messages, *, model=None, emit=None, cancelled=None, image=None,
+             max_output_tokens=None,media_items=None,stop_prefixes=(),stop_sequences=(),
+             checkpoint_sink=None,checkpoint_max_bytes=None,queue_timeout=None,
+             _media_chunk_callback=None):
         from .execution_service import ExecutionCancelled
         if image is not None and media_items is not None:
             raise ProviderConfigurationError('one encoded image or decoded media sequence required')
@@ -1169,6 +1521,11 @@ class NativePublisherProvider(BaseProvider):
             # the media input objects own their detached pixel/frame buffers.
             media_items = tuple(media_items)
         stop_prefixes = self._validate_stop_prefixes(stop_prefixes)
+        if (type(stop_sequences) not in (tuple, list) or len(stop_sequences) > 4 or
+                any(type(item) is not str or not item or
+                    self._utf8_size(item, label='stop sequence') > 4096
+                    for item in stop_sequences)):
+            raise ProviderConfigurationError('bounded nonempty UTF-8 stop sequence list required')
         if (max_output_tokens is not None and
                 (type(max_output_tokens) is not int or max_output_tokens <= 0)):
             raise ProviderConfigurationError('positive integer output limit required')
@@ -1197,6 +1554,7 @@ class NativePublisherProvider(BaseProvider):
             self._lifetime_seconds = config.get('max_resident_seconds')
             if model is not None and model != config['model']:
                 raise ProviderConfigurationError('requested model differs from configured native checkpoint')
+            self._validate_media_modality_order(config['family'], media_items)
             operator, args = self._operator(config)
             rendered_messages = [{'role': item['role'], 'content': item['content']} for item in messages]
             if image is not None or media_items is not None:
@@ -1255,7 +1613,7 @@ class NativePublisherProvider(BaseProvider):
                     messages=rendered_messages,
                     add_generation_prompt=True, **config.get('template_variables', {}))
             except TemplateError as error:
-                raise ProviderConfigurationError('native chat template could not render: '+str(error)) from error
+                raise ProviderConfigurationError('native chat template could not render: '+failure_detail(error)) from error
             if self._utf8_size(prompt, label='rendered native prompt') > 2*1024**2:
                 raise ProviderConfigurationError('rendered native prompt exceeds 2 MiB')
             key = self._residency_key(config, args)
@@ -1268,12 +1626,13 @@ class NativePublisherProvider(BaseProvider):
                 except ExecutionCancelled:
                     raise
                 except (ValueError, OSError, MemoryError, RuntimeError, ImportError) as error:
-                    raise ProviderUnavailableError('native session could not load: '+str(error)) from error
+                    raise ProviderUnavailableError('native session could not load: '+failure_detail(error)) from error
                 self._session_key = key
                 self._loaded_at = loading_started
                 self._last_used = time.monotonic()
             tokenizer = self._session.tokenizer
             prompt_ids = tokenizer.encode(prompt, add_special_tokens=False).ids
+            encoded_stops = self._encode_stop_sequences(tokenizer, stop_sequences)
             if image is not None or media_items is not None:
                 marker_ids = tokenizer.encode(config['image_placeholder'], add_special_tokens=False).ids
                 expected_media=1 if image is not None else sum(type(item) is not PublisherVideoInput for item in media_items)
@@ -1288,16 +1647,42 @@ class NativePublisherProvider(BaseProvider):
                 if hasattr(args,'prompt_text'):
                     args.prompt_text = prompt
             args.token_ids = json.dumps(prompt_ids)
+            configured_prefixes = (stop_prefixes if stop_prefixes else
+                self._parse_stop_prefix_arguments(getattr(args, 'stop_prefix', ()) or ()))
+            stop_prefixes = tuple(dict.fromkeys((*configured_prefixes, *encoded_stops)))
+            if len(stop_prefixes) > 64:
+                raise ProviderConfigurationError('combined stop-prefix inventory exceeds admission')
             if stop_prefixes:
                 args.stop_prefix = [','.join(str(token) for token in prefix)
                                     for prefix in stop_prefixes]
-            generated, emitted = [], ''
+            emitted = ''
+            generated_visible = []
+            pending_stop = []
+            stopped_by_prefix = False
             def on_event(event):
-                nonlocal emitted
+                nonlocal emitted, stopped_by_prefix
                 if emit is None or event.get('event') != 'tokens':
                     return
-                generated.extend(event['token_ids'])
-                text = tokenizer.decode(generated, skip_special_tokens=config['family'] != 'kimi_k3')
+                token_ids = event.get('token_ids')
+                if type(token_ids) not in (list, tuple):
+                    raise ProviderUnavailableError('native token event has no token-ID sequence')
+                for token in token_ids:
+                    if stopped_by_prefix:
+                        break
+                    if type(token) is not int or token < 0:
+                        raise ProviderUnavailableError('native token event contains an invalid token ID')
+                    pending_stop.append(token)
+                    while pending_stop:
+                        candidate = tuple(pending_stop)
+                        if candidate in stop_prefixes:
+                            pending_stop.clear()
+                            stopped_by_prefix = True
+                            break
+                        if any(prefix[:len(candidate)] == candidate for prefix in stop_prefixes):
+                            break
+                        generated_visible.append(pending_stop.pop(0))
+                text = tokenizer.decode(generated_visible,
+                    skip_special_tokens=config['family'] != 'kimi_k3')
                 # Incomplete UTF-8 tokens may temporarily decode to replacement
                 # characters. Hold them until a later token completes the bytes.
                 if text.endswith('\ufffd'):
@@ -1313,6 +1698,9 @@ class NativePublisherProvider(BaseProvider):
                                  'queue_wait_seconds', 0.0)*1000))))
                     emitted = text
             try:
+                if _media_chunk_callback is not None and (
+                        image is not None or media_items is not None):
+                    _media_chunk_callback()
                 if media_items is None and checkpoint_sink is None:
                     output = self._session.run(args, emit=on_event if emit is not None else None,cancelled=cancelled)
                 elif config['family']!='kimi_k3':
@@ -1331,12 +1719,32 @@ class NativePublisherProvider(BaseProvider):
                     self._release_session()
                 except Exception as cleanup_error:
                     raise ProviderUnavailableError(
-                        'native decoder failed: '+str(error)+'; cleanup failed: '+str(cleanup_error)) from error
-                raise ProviderUnavailableError('native decoder failed: '+str(error)) from error
+                        'native decoder failed: '+failure_detail(error)+'; cleanup failed: '+failure_detail(cleanup_error)) from error
+                raise ProviderUnavailableError('native decoder failed: '+failure_detail(error)) from error
             content = output.get('text')
-            if type(content) is not str:
+            stopped_by_prefix = False
+            if stop_prefixes:
+                generated_ids = output.get('generated_ids')
+                if (type(generated_ids) not in (list, tuple) or
+                        any(type(token) is not int or token < 0 for token in generated_ids)):
+                    raise ProviderUnavailableError('native output has no valid generated-token sequence')
+                visible_ids, stopped_by_prefix = self._strip_terminal_stop_prefix(
+                    generated_ids, stop_prefixes)
+                content = tokenizer.decode(visible_ids,
+                    skip_special_tokens=config['family'] != 'kimi_k3')
+            elif type(content) is not str:
                 content = tokenizer.decode(output['generated_ids'])
-            if not content.strip():
+            matched_stop_sequence = (self._matched_stop_sequence(
+                output.get('generated_ids', ()), tokenizer, stop_sequences)
+                if stopped_by_prefix else None)
+            if matched_stop_sequence is not None:
+                # Preserve the exact user-visible stop cause for API adapters.
+                # The generation engine's generic "stop" reason also covers
+                # EOS and checkpoint-configured token stops.
+                output = dict(output)
+                output['finish_reason'] = 'stop_sequence'
+                output['stop_sequence'] = matched_stop_sequence
+            if not content.strip() and not stopped_by_prefix:
                 raise ProviderUnavailableError('native decoder returned no text')
             if emit is not None:
                 if not content.startswith(emitted):
@@ -1362,13 +1770,14 @@ class NativePublisherProvider(BaseProvider):
                      queue_position=getattr(self._request_local, 'queue_position', 0)))
 
     def stream_complete(self, messages, *, model=None, max_output_tokens=None, stop_prefixes=(),
-                        cancelled=None, queue_timeout=None):
+                        stop_sequences=(), cancelled=None, queue_timeout=None):
         return self._stream_run(messages, model=model, max_output_tokens=max_output_tokens,
-                                stop_prefixes=stop_prefixes, cancelled=cancelled,
+                                stop_prefixes=stop_prefixes, stop_sequences=stop_sequences,
+                                cancelled=cancelled,
                                 queue_timeout=queue_timeout)
 
     def _stream_run(self, messages, *, model=None, image=None, max_output_tokens=None,media_items=None,
-                    stop_prefixes=(),
+                    stop_prefixes=(), stop_sequences=(),
                     checkpoint_sink=None,checkpoint_max_bytes=None,recovery_source=None,
                     cancelled=None, queue_timeout=None):
         from .execution_service import ExecutionCancelled
@@ -1397,8 +1806,23 @@ class NativePublisherProvider(BaseProvider):
             # worker observes only the event set by that consumer, avoiding
             # cross-thread callback reentry and thread-affinity surprises.
             return bool(cancelled())
+        # A transport-owned Event is different from an arbitrary predicate:
+        # it is safe for the backend worker to observe directly. This matters
+        # while the consumer is suspended at ``yield`` (for example, blocked
+        # writing an SSE frame), when it cannot poll the callback and set the
+        # local stop flag itself. Never invoke a user callback on the worker.
+        worker_cancel_event = getattr(cancelled, 'worker_event', None)
+        if not isinstance(worker_cancel_event, threading.Event):
+            worker_cancel_event = None
         def is_cancelled():
-            return stopped.is_set()
+            return stopped.is_set() or (worker_cancel_event is not None and
+                                        worker_cancel_event.is_set())
+        # Do not allocate a worker or enter model loading when cancellation
+        # was already signalled before the stream was first advanced. This
+        # check stays on the consumer thread; later cancellations continue to
+        # flow through `stopped` to the worker at its normal safe points.
+        if request_cancelled():
+            raise ExecutionCancelled('native stream request cancelled before worker startup')
         def put(item):
             while not stopped.is_set():
                 try:
@@ -1416,7 +1840,7 @@ class NativePublisherProvider(BaseProvider):
                 else:
                     result = self._run(messages, model=model, emit=put, cancelled=is_cancelled,
                         image=image, max_output_tokens=max_output_tokens,media_items=media_items,
-                        stop_prefixes=stop_prefixes,
+                        stop_prefixes=stop_prefixes, stop_sequences=stop_sequences,
                         checkpoint_sink=checkpoint_sink,checkpoint_max_bytes=checkpoint_max_bytes,
                         queue_timeout=queue_timeout)
                 # This terminal event is delivered only after the request

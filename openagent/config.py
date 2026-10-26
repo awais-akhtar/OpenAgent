@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
+import json
 import os
 from pathlib import Path
 import sys
@@ -156,6 +157,25 @@ def web_root() -> Path:
         # Fail visibly with build instructions when source React assets are not
         # compiled. Never silently downgrade a production desktop to legacy web.
         return modern_source / "dist"
+
+    # Installed releases keep the approved React build beside the private
+    # virtual environment (normally %LOCALAPPDATA%\\OpenAgent\\ui). Prefer
+    # the installer's recorded location over sys.prefix/web, which can contain
+    # an older or partial package-data copy. This also repairs launches from
+    # stale shortcuts that do not pass --ui-root.
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        manifest_path = Path(local_app_data) / "OpenAgent" / "install-manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+            configured_ui = str(manifest.get("ui_root", "")).strip()
+        except (OSError, json.JSONDecodeError, AttributeError):
+            configured_ui = ""
+        if configured_ui:
+            installed_ui = Path(configured_ui).expanduser()
+            if (installed_ui / "index.html").is_file():
+                return installed_ui
+
     candidates = [
         Path(__file__).resolve().parent / "web",
         Path(sys.prefix) / "web",

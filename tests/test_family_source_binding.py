@@ -9,7 +9,9 @@ from openagent.adaptive_engine.family_source_binding import (
     bind_decoder_to_snapshot, require_decoder_snapshot,
 )
 from openagent.adaptive_engine.native_glm5_next import NativeGlm5NextTextDecoder
-from openagent.adaptive_engine.native_family_public_adapters import NativeFamilyPublicAdapters
+from openagent.adaptive_engine.native_family_public_adapters import (
+    FamilyModelDescriptor, NativeFamilyPublicAdapters, _verify_family_abi_layouts,
+)
 from openagent.adaptive_engine.native_qwen4 import NativeQwen4TextDecoder
 from openagent.adaptive_engine.native_qwen4_public_adapters import NativeQwen4PublicAdapters
 from openagent.adaptive_engine.segment_edge_adapters import NativeOlmoePublicAdapters
@@ -23,6 +25,47 @@ from openagent.adaptive_engine.qwen4_public_adapters import NativeQwen4PublicAda
 
 
 class FamilySourceBindingTests(unittest.TestCase):
+    def test_family_public_abi_probe_requires_exact_nested_record_layouts(self):
+        import ctypes as C
+        from openagent.adaptive_engine.native_inkling import Config, Layer, Tensor
+
+        records=((1,FamilyModelDescriptor),(2,Tensor),(3,Config),(4,Layer))
+        expected={number:[C.sizeof(record),len(record._fields_)]+[
+            getattr(record,name).offset for name,_ in record._fields_]
+            for number,record in records}
+
+        class Probe:
+            argtypes=None
+            restype=None
+
+            def __init__(self, mutate=None):
+                self.mutate=mutate
+
+            def __call__(self, number, output, capacity):
+                values=list(expected[number])
+                if self.mutate is not None:
+                    values=self.mutate(number,values)
+                if len(values)>capacity:
+                    return len(values)
+                for index,value in enumerate(values):
+                    output[index]=value
+                return len(values)
+
+        valid=Probe()
+        _verify_family_abi_layouts(valid)
+        self.assertEqual(valid.restype,C.c_size_t)
+        self.assertEqual(valid.argtypes,[C.c_uint32,C.POINTER(C.c_uint64),C.c_size_t])
+
+        mutations=(
+            lambda number,values: values[:-1] if number==1 else values,
+            lambda number,values: [values[0],values[1]+1,*values[2:]] if number==2 else values,
+            lambda number,values: [values[0]+1,*values[1:]] if number==3 else values,
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(
+                    ValueError,'native family descriptor ABI layout differs'):
+                _verify_family_abi_layouts(Probe(mutate))
+
     def test_qwen4_range_adapter_does_not_inherit_mixtral_source_identity(self):
         self.assertEqual(NativeQwen4RangePublicAdapters._source_route_identity,
                          ('qwen4', 'qwen4_exp_text'))

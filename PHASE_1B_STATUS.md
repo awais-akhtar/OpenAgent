@@ -1,5 +1,8 @@
 # Phase 1B Status Report
 
+> Historical subsystem report, not a Phase 1/P15 closure certificate. See
+> [PHASE_1_ACTIVE_TODO.md](PHASE_1_ACTIVE_TODO.md) for the current audit.
+
 **Date:** 2026-10-20  
 **Status:** ✅ **COMPLETE AND INTEGRATED**
 

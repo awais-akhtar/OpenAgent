@@ -5,10 +5,16 @@ Implements 2+ layer prefetch to hide I/O latency.
 Learning cache persists routing history for improved placement next session.
 
 Target: 71%+ prefetch hit rate
+
+NOT IN THE PRODUCTION PATH: the production Phase 1B mechanisms are
+``expert_store.DiskExpertStore`` / ``expert_runtime.SparseExpertRuntime``
+bound by ``phase1b_adapter.Phase1BOptimizedSession``.  This module is an
+experimental component library; its threads own an explicit stop event and
+a joined shutdown, and it never fabricates expert payloads.
 """
 
-import asyncio
 import json
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -65,7 +71,7 @@ class LookaheadPrefetcher:
         self.batch_size = batch_size
 
         # Prefetch state
-        self.prefetch_queue = asyncio.Queue()
+        self.prefetch_queue = queue.Queue(maxsize=256)
         self.pending_prefetches = {}  # {(layer, expert): Future}
         self.prefetch_thread = None
         self.stop_prefetch = threading.Event()
@@ -82,8 +88,10 @@ class LookaheadPrefetcher:
         if self.prefetch_thread is not None:
             return
 
+        self.stop_prefetch.clear()
         self.prefetch_thread = threading.Thread(
             target=self._prefetch_loop,
+            name="openagent-lookahead-prefetch",
             daemon=True,
         )
         self.prefetch_thread.start()
@@ -92,26 +100,31 @@ class LookaheadPrefetcher:
     def stop_prefetch_thread(self):
         """Gracefully stop prefetch thread."""
         self.stop_prefetch.set()
-        if self.prefetch_thread:
-            self.prefetch_thread.join(timeout=2.0)
+        thread = self.prefetch_thread
+        if thread is None:
+            return
+        try:
+            self.prefetch_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        thread.join(timeout=5.0)
+        if thread.is_alive():
+            raise RuntimeError("prefetch thread did not stop")
+        self.prefetch_thread = None
 
     def _prefetch_loop(self):
         """Background thread: predict and load experts."""
-        try:
-            while not self.stop_prefetch.is_set():
-                try:
-                    request = self.prefetch_queue.get(timeout=1.0)
-                    if request is None:
-                        break
-
-                    # Load experts for this layer
-                    self._prefetch_layer(request)
-
-                except asyncio.QueueEmpty:
-                    pass
-
-        except Exception as e:
-            logger.error(f"Prefetch thread error: {e}")
+        while not self.stop_prefetch.is_set():
+            try:
+                request = self.prefetch_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if request is None:
+                break
+            try:
+                self._prefetch_layer(request)
+            except Exception as e:
+                logger.error(f"Prefetch layer error: {e}")
 
     def _prefetch_layer(self, request: PrefetchRequest):
         """Prefetch all experts for a layer."""
@@ -195,7 +208,7 @@ class LookaheadPrefetcher:
 
                 try:
                     self.prefetch_queue.put_nowait(request)
-                except:
+                except queue.Full:
                     logger.warning(f"Prefetch queue full for layer offset {layer_offset}")
 
     def record_hit(self, layer_id: int, expert_ids: Set[str]):
@@ -259,7 +272,8 @@ class LearningCache:
     """
 
     def __init__(self, cache_file: Path = None):
-        self.cache_file = cache_file or (Path.home() / '.openagent_usage')
+        # Persist only to an explicit caller-owned file (never a shared home file).
+        self.cache_file = Path(cache_file) if cache_file is not None else None
         self.routing_history = {}  # {layer_id: {expert_id: count}}
         self.total_forwards = 0
         self._lock = threading.RLock()
@@ -268,6 +282,8 @@ class LearningCache:
 
     def _load_cache(self):
         """Load routing history from previous session."""
+        if self.cache_file is None:
+            return
         try:
             if self.cache_file.exists():
                 with open(self.cache_file, 'r') as f:
@@ -329,6 +345,8 @@ class LearningCache:
 
     def save(self):
         """Persist routing history to disk."""
+        if self.cache_file is None:
+            raise RuntimeError("learning cache has no explicit persistence path")
         with self._lock:
             try:
                 self.cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -387,28 +405,11 @@ class PrefetchAndLearnExecutor:
         input_tokens: List[int],
         current_layer: int,
     ) -> Tuple[List[float], Dict]:
-        """Forward with prefetch and learning."""
-        # Step 1: Predict next layers
-        predictions = self.prefetcher.predict_next_experts(input_tokens, current_layer)
-
-        # Step 2: Queue prefetch
-        self.prefetcher.queue_prefetch(predictions)
-
-        # Step 3: Do actual forward (can happen in parallel with prefetch)
-        # ... actual model computation ...
-
-        # Step 4: Record routing for learning
-        routing = self._get_routing(current_layer)  # Placeholder
-        self.learning_cache.record_routing(routing)
-
-        # Metadata
-        metadata = {
-            'prefetch_hit_rate': self.prefetcher.get_hit_rate(),
-            'learning_cache_size': len(self.learning_cache.routing_history),
-        }
-
-        return None, metadata  # Placeholder
+        """Reject the retired placeholder forward before it queues prefetch work."""
+        raise RuntimeError(
+            "PrefetchAndLearnExecutor does not execute model tensors; "
+            "use the production family session and its observed route trace")
 
     def _get_routing(self, layer_id: int) -> List[Dict]:
-        """Get routing decisions (stub)."""
-        return [{'layer_id': layer_id, 'expert_ids': []}]
+        """Reject fabricated empty routing rows; callers must supply real traces."""
+        raise RuntimeError("routing decisions are unavailable without a production route trace")

@@ -10,6 +10,29 @@ from types import MappingProxyType
 import hashlib
 import json
 
+INKLING_MTP_TENSOR_PREFIXES = (
+    'mtp.', 'model.mtp.', 'model.language_model.mtp.', 'chain_norm.')
+
+
+def is_mtp_tensor_name(name):
+    """Recognize MTP banks across top-level and per-layer tensor namespaces.
+
+    Publisher checkpoints do not use one universal prefix: some put draft
+    weights below ``model.layers.*.mtp_block``. Check path components rather
+    than only leading prefixes so unsupported-family loaders cannot mistake
+    such a bank for an ordinary transformer layer.
+    """
+    if type(name) is not str:
+        return False
+    if name.startswith(INKLING_MTP_TENSOR_PREFIXES):
+        return True
+    for component in name.lower().replace('/', '.').split('.'):
+        normalized = component.replace('-', '_')
+        if (normalized.startswith('mtp') or normalized.startswith(('nextn',
+                                                            'next_token', 'nexttoken'))):
+            return True
+    return False
+
 @dataclass(frozen=True)
 class PublisherVariant:
     repository: str
@@ -184,14 +207,19 @@ def partition_weights(tensors,components):
                       'model.language_model.output.weight',
                       'model.language_model.shared_head.weight'):
             retain(text,'lm_head.weight',value)
-        elif name.startswith(('mtp.','model.mtp.','model.language_model.mtp.')):
+        elif is_mtp_tensor_name(name):
             retain(auxiliary,name,value)
         elif name.startswith(('model.language_model.visual.',
                               'model.language_model.vision_tower.',
                               'model.language_model.video_tower.')):
-            retain(vision,name,value)
+            # The conditional inventory admits these publisher aliases after
+            # canonicalizing ``model.language_model.`` to ``model.``.  Pass
+            # that same canonical name to the media executor: unlike text,
+            # media encoders require an exact tensor-name set and do not run
+            # through the text weight mapper.
+            retain(vision,'model.'+name[len('model.language_model.'):],value)
         elif name.startswith('model.language_model.audio_tower.'):
-            retain(audio,name,value)
+            retain(audio,'model.'+name[len('model.language_model.'):],value)
         elif name.startswith(('model.language_model.', 'language_model.')):
             prefix = 'model.language_model.' if name.startswith('model.language_model.') else 'language_model.'
             destination='model.'+name[len(prefix):]
@@ -242,4 +270,5 @@ def partition_weights(tensors,components):
         raise ValueError('publisher checkpoint is missing its output head')
     return text,vision,audio,auxiliary
 
-__all__=['PublisherVariant','PublisherComponents','PUBLISHER_VARIANTS','component_contract','partition_weights']
+__all__=['PublisherVariant','PublisherComponents','PUBLISHER_VARIANTS',
+         'component_contract','partition_weights','is_mtp_tensor_name']

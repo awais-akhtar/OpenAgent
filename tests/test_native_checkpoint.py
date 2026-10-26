@@ -34,15 +34,16 @@ class NativeCheckpointTests(unittest.TestCase):
         self.addCleanup(admission.stop)
 
     def test_candidate_tuple_is_rejected_by_production_admission(self):
-        from openagent.adaptive_engine.source_scope import source_matrix_row
-        row = source_matrix_row(family='olmoe', model_type='olmoe',
-            backend='public-range', arithmetic='fp32', source_format='F32',
-            persisted_format='float32')
-        self.assertEqual(row['admission'], 'candidate-unverified')
+        from openagent.adaptive_engine.source_scope import source_matrix_rows
+        # Pick an exact generated tuple that remains provisional. Verified
+        # routes are added explicitly as their source chains are established.
+        row = next(row for row in source_matrix_rows()
+                   if row['admission'] != 'verified-admitted')
+        self.assertNotEqual(row['admission'], 'verified-admitted')
         with self.assertRaisesRegex(ValueError, 'not admitted'):
-            _require_source_matrix_admission(family='olmoe',
-                model_type='olmoe', backend='public-range', arithmetic='fp32',
-                source_format='F32', persisted_format='float32')
+            _require_source_matrix_admission(**{
+                key: row[key] for key in ('family', 'model_type', 'backend',
+                    'arithmetic', 'source_format', 'persisted_format')})
 
     def test_public_family_text_loader_seals_loaded_decoder_to_exact_checkpoint(self):
         self.config('glm5_next_text')
@@ -184,12 +185,16 @@ class NativeCheckpointTests(unittest.TestCase):
                 load_native_text_decoder(self.root, model_type=identity, library=library,
                     max_weight_bytes=1024, context_tokens=7)
                 self.assertEqual(factory.call_args.kwargs[keyword], 7)
-        for identity in ('deepseek_v4', 'kimi_linear'):
-            with self.assertRaisesRegex(ValueError, 'restricted without a complete'):
-                load_native_text_decoder(self.root, model_type=identity, library=library,
-                    max_weight_bytes=1024, context_tokens=7)
+        with self.assertRaisesRegex(ValueError, 'restricted without a complete'):
+            load_native_text_decoder(self.root, model_type='deepseek_v4',
+                library=library, max_weight_bytes=1024, context_tokens=7)
+        # Kimi Linear is supported only through its exact standalone native
+        # route. A mismatched checkpoint must fail at its identity validator.
+        with self.assertRaisesRegex(ValueError, 'exact official Kimi Linear identity'):
+            load_native_text_decoder(self.root, model_type='kimi_linear',
+                library=library, max_weight_bytes=1024, context_tokens=7)
         with patch('openagent.adaptive_engine.native_checkpoint.read_native_text_checkpoint', side_effect=AssertionError):
-            with self.assertRaisesRegex(ValueError, 'restricted without a complete'):
+            with self.assertRaisesRegex(ValueError, 'requires explicit context_tokens'):
                 load_native_text_decoder(self.root, model_type='kimi_linear', library=library,
                     max_weight_bytes=1024)
             for context in (True, 0, -1):

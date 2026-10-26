@@ -201,15 +201,20 @@ class NativeOlmoePublicAdapters:
 
     def _create_edge(self, budget):
         from .native_olmoe_segments import NativeOlmoeEdge
-        return NativeOlmoeEdge(self.root, self.kernel, budget, max_bytes=self.staging_bytes)
+        return NativeOlmoeEdge(self.root, self.kernel, budget, max_bytes=self.staging_bytes,
+                               max_conversion_bytes=self.conversion_bytes)
     def __init__(self, runtime_library, *, kernel_library, model_directory, manifest,
                  segment_id="openagent-olmoe-streamed", edge_id="openagent-olmoe-edge",
                  expert_cache_bytes, max_staging_bytes, max_snapshot_bytes,
-                 max_batch_rows=32, tokenizer_path=None, max_resource_bytes=None):
+                 max_batch_rows=32, tokenizer_path=None, max_resource_bytes=None,
+                 max_conversion_bytes=None):
         self.root = Path(model_directory).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("allowed checkpoint directory required")
         self.staging_bytes = _integer(max_staging_bytes, "max_staging_bytes", maximum=(1 << 63)-1)
+        self.conversion_bytes = _integer(
+            self.staging_bytes if max_conversion_bytes is None else max_conversion_bytes,
+            "max_conversion_bytes", maximum=(1 << 63)-1)
         from .expert_runtime import SparseExpertManifest
         self.manifest = SparseExpertManifest.read(manifest) if isinstance(manifest, (str, Path)) else copy.deepcopy(manifest)
         if not isinstance(self.manifest, SparseExpertManifest):
@@ -575,7 +580,10 @@ class NativeOlmoePublicAdapters:
                     any(request.reserved) or
                     not request.input or not request.output or
                     request.input_bytes != request.rows * edge.config.hidden_size * 4 or
-                    request.capacity < request.rows * edge.config.vocab_size * 4):
+                    # The public ABI defines logits_capacity in float
+                    # elements (unlike input_bytes); the C registry enforces
+                    # the same unit before dispatching this callback.
+                    request.capacity < request.rows * edge.config.vocab_size):
                 raise ValueError("invalid counted native logits request")
             if _cancel_requested(request.cancel, request.cancel_data):
                 raise RuntimeError("logit generation cancelled")

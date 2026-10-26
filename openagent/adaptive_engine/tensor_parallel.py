@@ -7,11 +7,46 @@ Neither arithmetic policy is a claim of publisher numerical equivalence.
 """
 from dataclasses import dataclass
 from contextlib import closing, contextmanager
+from datetime import timedelta
 import hashlib
 import math
 import threading
 
 import numpy as np
+
+
+MAX_COLLECTIVE_TIMEOUT_SECONDS = 300
+
+
+def configured_group_timeout_seconds(group):
+    """Read the timeout attached to a caller-owned c10d process group.
+
+    Torch exposes this through ProcessGroup.options._timeout across the
+    supported c10d releases. Refuse groups whose timeout cannot be inspected;
+    otherwise local consensus collectives can inherit an unbounded caller
+    policy without this engine knowing it.
+    """
+    try:
+        timeout = group.options._timeout
+    except BaseException as failure:
+        raise ValueError('distributed process group must expose its operation timeout') from failure
+    if not isinstance(timeout, timedelta):
+        raise ValueError('distributed process group must use a finite timedelta timeout')
+    seconds = timeout.total_seconds()
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('distributed process group timeout must be finite and positive')
+    return seconds
+
+
+def require_group_timeout(group, maximum_seconds):
+    if (type(maximum_seconds) not in (int, float) or
+            not math.isfinite(maximum_seconds) or
+            not 1 <= maximum_seconds <= MAX_COLLECTIVE_TIMEOUT_SECONDS):
+        raise ValueError('collective timeout admission must be between one and 300 seconds')
+    actual = configured_group_timeout_seconds(group)
+    if actual > maximum_seconds:
+        raise ValueError('caller-owned process group timeout exceeds collective timeout admission')
+    return actual
 
 
 def _safe_agreement_descriptor(value, *, max_nodes=4096, max_depth=16):
@@ -188,7 +223,8 @@ class TensorParallelProjections:
     boundary_observation_supported=True
 
     def __init__(self, *, group, device, torch_version, max_bytes,
-                 dtype='float32', bank_format='dense'):
+                 dtype='float32', bank_format='dense',
+                 collective_timeout_seconds=120):
         import torch
         import torch.distributed as distributed
         if str(torch.__version__) != torch_version:
@@ -202,6 +238,7 @@ class TensorParallelProjections:
         if (type(bank_format) is not str or
                 bank_format not in ('dense', 'bf16', 'fp8', 'fp4')):
             raise ValueError('explicit distributed projection bank format required')
+        actual_timeout = require_group_timeout(group, collective_timeout_seconds)
         self.torch, self.distributed, self.group = torch, distributed, group
         self.device = torch.device(device)
         backend = str(distributed.get_backend(group)).lower()
@@ -219,6 +256,8 @@ class TensorParallelProjections:
         self.rank = distributed.get_rank(group)
         self.world_size = distributed.get_world_size(group)
         self.dtype_name, self.bank_format, self.max_bytes = dtype, bank_format, max_bytes
+        self.collective_timeout_seconds = float(collective_timeout_seconds)
+        self.process_group_timeout_seconds = actual_timeout
         self.dtype = getattr(torch, dtype)
         self._shards, self._pins = {}, {}
         self._lock = threading.RLock()
@@ -284,6 +323,7 @@ class TensorParallelProjections:
     def identity(self):
         payload = (self.world_size, self.dtype_name, self.bank_format, self.backend, self.torch_version,
                    self.device.type, 'fp32-partial-sum-row-gather-precision-v2',
+                   self.collective_timeout_seconds,
                    tuple((name, self._pins[name]) for name in sorted(self._pins)))
         return hashlib.sha256(repr(payload).encode('utf-8')).hexdigest()
 
@@ -348,11 +388,19 @@ class TensorParallelProjections:
             raise RuntimeError('rank projection schedules or policies differ; bank quarantined')
 
     def _collective(self, operation, *args, **kwargs):
-        """Run a transport collective and quarantine this bank on failure."""
+        """Wait a bounded interval for tensor collectives and quarantine on failure."""
         if self._closed or self._poisoned:
             raise RuntimeError('distributed projection bank is closed or rank state is uncertain')
         try:
-            return getattr(self.distributed,operation)(*args,**kwargs)
+            kwargs['async_op'] = True
+            work = getattr(self.distributed,operation)(*args,**kwargs)
+            wait = getattr(work, 'wait', None)
+            if not callable(wait):
+                raise RuntimeError('distributed asynchronous collective returned no wait handle')
+            completed = wait(timedelta(seconds=self.collective_timeout_seconds))
+            if completed is False:
+                raise TimeoutError('distributed projection collective timed out')
+            return work
         except BaseException:
             self._poisoned=True;self._closed=True
             raise

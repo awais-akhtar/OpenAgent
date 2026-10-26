@@ -121,7 +121,9 @@ class LeasePool:
                         if primary is not None:
                             primary.add_note('buffer disposal requires retry; reservation retained: '+str(failure))
                         else:
-                            raise RuntimeError('buffer disposal requires retry; reservation retained') from failure
+                            detail = ('escaped buffer view prevents disposal' if isinstance(failure, BufferError)
+                                      else 'buffer disposal failed')
+                            raise RuntimeError(detail + '; retry required and reservation retained') from failure
                     else:
                         buffer=None
                 if buffer is None:

@@ -11,6 +11,73 @@ from openagent.workflows import WorkflowEngine
 
 
 class ChatAndWorkflowTests(unittest.TestCase):
+    def test_multiple_image_attachments_are_rejected_before_turn_persistence(self) -> None:
+        attachments = [
+            {"id": "image-one", "media_type": "image"},
+            {"id": "image-two", "media_type": "image"},
+        ]
+
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            service = ChatService(store, ModelGateway())
+
+            with self.assertRaisesRegex(ValueError, "one image attachment per turn"):
+                service.send("Compare these", attachments=attachments)
+            self.assertEqual(store.list_conversations(), [])
+
+            stream = service.stream("Compare these", attachments=attachments)
+            with self.assertRaisesRegex(ValueError, "one image attachment per turn"):
+                next(stream)
+            self.assertEqual(store.list_conversations(), [])
+
+    def test_text_attachment_stream_passes_disconnect_cancellation_to_completion(self) -> None:
+        from openagent.adaptive_engine.execution_service import ExecutionCancelled
+
+        class Gateway:
+            def __init__(self):
+                self.cancel_callback = None
+
+            def select_provider(self, *_args, **_kwargs):
+                return object()
+
+            def complete(self, _messages, **options):
+                self.cancel_callback = options.get("cancelled")
+                raise ExecutionCancelled("native completion cancelled")
+
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            gateway = Gateway()
+            service = ChatService(store, gateway)
+            service._resolve_attachments = lambda attachments, **_kwargs: list(attachments or [])
+            service._attachment_context = lambda _attachments, **_kwargs: "<attached_evidence>notes</attached_evidence>"
+            service._vision_attachment = lambda _attachments, **_kwargs: None
+
+            def cancellation():
+                return False
+
+            events = service.stream(
+                "summarize the notes", attachments=[{"id": "notes", "media_type": "text"}],
+                cancelled=cancellation,
+            )
+            self.assertEqual(next(events)["type"], "conversation")
+            self.assertEqual(next(events)["type"], "status")
+            with self.assertRaisesRegex(ExecutionCancelled, "native completion cancelled"):
+                next(events)
+
+            self.assertIs(gateway.cancel_callback, cancellation)
+            messages = store.list_chat_messages(store.list_conversations()[0]["id"])
+            self.assertEqual([message["role"] for message in messages], ["user"])
+
+    def test_chat_stream_cancellation_is_checked_before_persisting_turn(self) -> None:
+        from openagent.adaptive_engine.execution_service import ExecutionCancelled
+
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            service = ChatService(store, ModelGateway())
+            with self.assertRaises(ExecutionCancelled):
+                next(service.stream("cancel before start", cancelled=lambda: True))
+            self.assertEqual(store.list_conversations(), [])
+
     def test_chat_stream_preserves_generation_error_and_notes_close_failure(self) -> None:
         class BrokenStream:
             def __init__(self):
@@ -37,6 +104,9 @@ class ChatAndWorkflowTests(unittest.TestCase):
             def __init__(self):
                 self.stream = BrokenStream()
 
+            def select_provider(self, *_args, **_kwargs):
+                return object()
+
             def stream_complete(self, *_args, **_kwargs):
                 return self.stream
 
@@ -55,6 +125,19 @@ class ChatAndWorkflowTests(unittest.TestCase):
             "chat provider stream cleanup failed: RuntimeError" in note
             for note in getattr(caught.exception, "__notes__", ())
         ))
+
+    def test_invalid_provider_is_rejected_before_chat_turn_is_persisted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            service = ChatService(store, ModelGateway())
+
+            with self.assertRaisesRegex(ValueError, "Unknown model provider"):
+                service.send("hello", provider="not-a-provider")
+            events = service.stream("hello", provider="not-a-provider")
+            with self.assertRaisesRegex(ValueError, "Unknown model provider"):
+                next(events)
+
+            self.assertEqual(store.list_conversations(), [])
 
     def test_recent_history_limit_keeps_latest_messages_in_chronological_order(self) -> None:
         with TemporaryDirectory() as tmp:

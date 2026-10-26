@@ -29,8 +29,9 @@ test('Home project picker and attachment affordance are complete in demo mode wi
   await researchProject.click();
   await expect(picker).toBeHidden();
   await expect(page.getByRole('status').filter({ hasText: 'Live project scope is unchanged' })).toBeVisible();
-  await page.getByRole('button', { name: 'Attach a file' }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'File attachment is a design-only control.' })).toBeVisible();
+  const demoAttachment = page.getByRole('button', { name: 'Attachments require Live mode' });
+  await expect(demoAttachment).toBeDisabled();
+  await expect(demoAttachment).toHaveAttribute('title', /Demo never uploads files/);
 
   await page.getByRole('button', { name: 'View projects' }).click();
   picker = page.getByRole('dialog', { name: 'Choose workspace' });
@@ -46,7 +47,7 @@ test('Home project picker and attachment affordance are complete in demo mode wi
   expect(apiRequests).toEqual([]);
 });
 
-test('Home project and attachment controls state their live-mode limitations', async ({ page }) => {
+test('Home project picker states its Live limitation while file upload is available', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?view=home');
   await page.getByRole('button', { name: 'View projects' }).click();
@@ -55,7 +56,9 @@ test('Home project and attachment controls state their live-mode limitations', a
   await expect(dialog.getByText(/does not provide a confirmed project-switch operation/i)).toBeVisible();
   await expect(dialog.getByRole('button', { name: /New project/ })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Close' }).click();
-  await expect(page.getByRole('button', { name: 'Attach a file unavailable' })).toBeDisabled();
+  const attachment = page.getByRole('button', { name: 'Attach a file' });
+  await expect(attachment).toBeEnabled();
+  await expect(attachment).toHaveAttribute('title', 'Upload files to attach in Chat');
 });
 
 test('All Tools desktop labels, group hierarchy and card affordances match the approved screen', async ({ page }, testInfo) => {
@@ -70,9 +73,9 @@ test('All Tools desktop labels, group hierarchy and card affordances match the a
         await page.getByRole('button', { name: theme === 'dark' ? 'Switch to dark theme' : 'Switch to light theme' }).click();
       }
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-      await expect(page.getByText('22 existing feature views')).toBeVisible();
+      await expect(page.getByText('26 existing feature views')).toBeVisible();
       await expect(page.getByRole('button', { name: /Personal assistant Tasks, goals and priorities/ })).toBeVisible();
-      await expect(page.locator('.p-tool-link svg.lucide-arrow-right')).toHaveCount(22);
+      await expect(page.locator('.p-tool-link svg.lucide-arrow-right')).toHaveCount(26);
       const sectionWeight = await page.locator('.p-section-heading h2').first().evaluate(element => getComputedStyle(element).fontWeight);
       expect(Number(sectionWeight), 'category heading weight').toBeGreaterThanOrEqual(600);
       await page.mouse.move(0, 0);

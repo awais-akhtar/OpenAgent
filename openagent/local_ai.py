@@ -1341,6 +1341,46 @@ class LocalAIInfrastructure:
             "created_at": created_at,
         }
 
+    def benchmark_history(self, *, model_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        """Return recorded local benchmark measurements without prompt or output text."""
+        bounded_limit = max(1, min(int(limit), 200))
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if model_id.strip():
+            clauses.append("b.model_id = ?")
+            parameters.append(model_id.strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(bounded_limit)
+        with self.store.session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT b.id, b.model_id, m.name AS model_name, m.provider,
+                       b.prompt_tokens, b.output_tokens, b.duration_ms,
+                       b.tokens_per_second, b.hardware_json, b.created_at
+                FROM model_benchmarks AS b
+                LEFT JOIN local_models AS m ON m.id = b.model_id
+                {where}
+                ORDER BY b.created_at DESC, b.id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "model_id": row["model_id"],
+                "model": row["model_name"] or row["model_id"],
+                "provider": row["provider"] or "Not reported",
+                "prompt_tokens": int(row["prompt_tokens"]),
+                "output_tokens": int(row["output_tokens"]),
+                "duration_ms": float(row["duration_ms"]),
+                "tokens_per_second": float(row["tokens_per_second"]),
+                "hardware": json.loads(row["hardware_json"] or "{}"),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def plan_cluster(self, *, name: str, model_id: str, nodes: int = 1) -> dict[str, Any]:
         model = self.get_model(model_id)
         if model is None:

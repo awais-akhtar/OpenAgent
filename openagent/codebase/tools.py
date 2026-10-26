@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+from http.client import HTTPConnection, HTTPSConnection, HTTPException
 from urllib.parse import urlparse
 from typing import Any, Callable
 from uuid import uuid4
@@ -44,7 +45,7 @@ class ToolPolicy:
     """Classify tool operations before they reach a workspace backend."""
 
     def classify(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if tool in {"list_directory", "read_file", "read_files", "grep", "search_symbol", "find_references", "project_map", "git_status", "git_diff", "git_log", "process_status", "inspect_logs"}:
+        if tool in {"list_directory", "read_file", "read_files", "grep", "search_symbol", "find_references", "project_map", "git_status", "git_diff", "git_log", "process_status", "inspect_logs", "probe_local_url"}:
             return {"risk": 0, "label": "automatic", "reason": "read-only workspace operation"}
         if tool == "install_dependency":
             raw_command = arguments.get("command", [])
@@ -291,6 +292,51 @@ class CodebaseTools:
 
     def tool_inspect_logs(self, process_id: str, limit: int = 100_000) -> dict[str, Any]:
         return self._redact_result(self.sandbox.process_logs(self.workspace_id, process_id, limit=limit))
+
+    def tool_probe_local_url(self, url: str, process_id: str) -> dict[str, Any]:
+        """Check readiness for a loopback HTTP(S) service without following redirects."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        if (len(raw) > 2048 or parsed.scheme not in {"http", "https"} or host not in {"127.0.0.1", "localhost", "::1"}
+                or parsed.username is not None or parsed.password is not None):
+            raise ValueError("preview readiness checks only allow HTTP(S) loopback URLs")
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError as exc:
+            raise ValueError("preview URL has an invalid port") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError("preview URL has an invalid port")
+        process = self.sandbox.process_status(self.workspace_id, str(process_id or ""))
+        if process.get("status") != "running":
+            return {"url": raw, "reachable": False, "http_status": None, "error": "preview process is not running"}
+        logs = self.sandbox.process_logs(self.workspace_id, str(process_id), limit=100_000)
+        reported_urls = {
+            candidate.rstrip(".,;")
+            for candidate in re.findall(r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):\d+(?:/[^\s)]*)?", f"{logs.get('stdout', '')}\n{logs.get('stderr', '')}", flags=re.IGNORECASE)
+        }
+        if raw not in reported_urls:
+            raise PermissionError("readiness checks are limited to loopback URLs reported by this running preview process")
+        target = parsed.path or "/"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        connection_class = HTTPSConnection if parsed.scheme == "https" else HTTPConnection
+        connection = connection_class(host, port, timeout=1.5)
+        try:
+            connection.request("HEAD", target, headers={"User-Agent": "OpenAgent-CodeQ-Readiness/1.0", "Connection": "close"})
+            response = connection.getresponse()
+            status = int(response.status)
+            return {
+                "url": raw,
+                "reachable": 200 <= status < 300,
+                "http_status": status,
+                "content_type": str(response.getheader("Content-Type", ""))[:160],
+                "redirect": status in {301, 302, 303, 307, 308},
+            }
+        except (OSError, HTTPException) as exc:
+            return {"url": raw, "reachable": False, "http_status": None, "error": f"{type(exc).__name__}: local preview is not responding"}
+        finally:
+            connection.close()
 
     def tool_browser_inspect(self, url: str, actions: list[dict[str, Any]] | None = None, timeout_seconds: int = 120) -> dict[str, Any]:
         parsed = urlparse(url)

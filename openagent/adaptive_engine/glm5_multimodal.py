@@ -80,12 +80,15 @@ class Glm5MultimodalDecoder:
                 self.session=self.text;self.implementation='torch-glm5-next-conditional-fp32';self.native_range_execution=False
             digest=hashlib.sha256((self.components.identity+self.session.identity+self.vision.identity).encode())
             for name,value in sorted(auxiliary.items()): digest.update(name.encode());digest.update(memoryview(value).cast('B'))
-            self.identity='openagent-glm5-conditional-v1:'+digest.hexdigest();self.session.identity=self.identity
+            self.identity='openagent-glm5-conditional-v1:'+digest.hexdigest()
+            if segment_runtime_library is None:self.session.identity=self.identity
             inventory.assert_unchanged()
         except BaseException as error:
             try: self.close()
             except BaseException as failure:
-                error.cleanup=self.close;error.add_note('GLM conditional cleanup remains pending: '+str(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(error,self.close,failure,
+                    'GLM conditional cleanup remains pending: ')
             raise
         finally: reader.close()
 
@@ -205,7 +208,9 @@ class Glm5MultimodalDecoder:
                 except BaseException as error: errors.append(error)
             if errors:
                 failure=RuntimeError('GLM conditional cleanup remains pending')
-                for error in errors: failure.add_note(str(error))
+                from .failure_reporting import add_failure_note, failure_summary
+                for error in errors:
+                    add_failure_note(failure,failure_summary(error))
                 raise failure from errors[0]
             self.auxiliary.clear();self._closed=True
 

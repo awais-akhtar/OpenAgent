@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import base64
+import hashlib
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import parse_qs
@@ -26,6 +27,7 @@ ROUTES = (
     ("GET", "/api/science/tools"),
     ("GET", "/api/science/memory"),
     ("GET", "/api/science/experiments"),
+    ("GET", "/api/science/executions"),
     ("GET", "/api/science/materials/datasets"),
     ("GET", "/api/science/materials/catalog"),
     ("POST", "/api/science/run"),
@@ -74,6 +76,10 @@ def handle_get(path: str, query: str, deps: ScienceRouteDependencies) -> JsonRou
         if deps.service is None:
             return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
         return JsonRouteResult({"experiments": deps.service.list_experiment_proposals(project=project)})
+    if path == "/api/science/executions":
+        if deps.service is None:
+            return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
+        return JsonRouteResult({"executions": deps.service.list_execution_results(project=project)})
     if path == "/api/science/materials/datasets":
         if deps.service is None:
             return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -143,7 +149,14 @@ def handle_post(path: str, deps: ScienceRouteDependencies) -> JsonRouteResult | 
                 memory_limit_mb=min(16_384, max(32, int(payload.get("memory_limit_mb", 512)))),
                 retries=min(3, max(0, int(payload.get("retries", 0)))),
             )
-            return JsonRouteResult({"execution": record.to_dict()}, HTTPStatus.CREATED)
+            result = record.to_dict()
+            if deps.service is not None:
+                result = deps.service.save_execution_result(
+                    project=project,
+                    result=result,
+                    code_sha256=hashlib.sha256(code.encode("utf-8")).hexdigest(),
+                )
+            return JsonRouteResult({"execution": result}, HTTPStatus.CREATED)
         if path == "/api/science/memory":
             if deps.service is None:
                 return JsonRouteResult({"error": "Scientific persistence is unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE)

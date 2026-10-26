@@ -1,15 +1,12 @@
-"""A15: Model Integration + API Endpoints
-Phase 1B Speedup - Wire all 9 models through unified path, expose metrics.
+"""Retired A15 API scaffold.
 
-Adapts all model families to use UnifiedInferenceExecution.
-Exposes /api/adaptive-engine/* endpoints for monitoring and control.
-
-Target: All 9 models through unified path, >0.50 tok/s
+This module has no production session wiring. Its status methods report that
+state explicitly, and its generation entrypoint refuses placeholder inference.
+Production serving is exposed by the application routes and UniversalEngine.
 """
 
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Any
-import psutil
 import logging
 import time
 from pathlib import Path
@@ -213,40 +210,21 @@ class AdaptiveEngineAPI:
         self.model_adapters = {}
 
     def get_placement(self) -> Dict:
-        """Get current expert placement (VRAM/RAM/disk)."""
-        return {
-            'layer_0': {
-                'expert_0': 'RAM',
-                'expert_1': 'DISK',
-                'expert_2': 'VRAM',
-            },
-            'layer_1': {
-                'expert_0': 'DISK',
-                'expert_1': 'RAM',
-            },
-            'note': 'Real implementation would query expert_store',
-        }
+        """Return an explicit empty observation until a production owner is attached."""
+        return {'layers': {}, 'observed': False,
+                'reason': 'legacy A15 facade has no production expert-store owner'}
 
     def get_routing_heat(self) -> Dict:
         """Which experts are firing most."""
-        return {
-            'layer_0': {
-                'expert_0': 1250,
-                'expert_1': 987,
-                'expert_2': 654,
-            },
-            'note': 'Fire counts from learning cache',
-        }
+        return {'layers': {}, 'observed': False,
+                'reason': 'legacy A15 facade has no production route-trace source'}
 
     def get_learning_stats(self) -> Dict:
         """Learning cache statistics."""
-        return {
-            'batches_processed': 1024,
-            'hot_experts_pinned': 48,
-            'disk_reads_saved': 15234,
-            'prefetch_hit_rate': 0.71,
-            'avg_batch_size': 8,
-        }
+        return {'observed': False, 'batches_processed': None,
+                'hot_experts_pinned': None, 'disk_reads_saved': None,
+                'prefetch_hit_rate': None, 'avg_batch_size': None,
+                'reason': 'legacy A15 facade has no production learning-cache owner'}
 
     def get_session_metrics(self, session_id: str) -> Dict:
         """Metrics for a specific session."""
@@ -259,54 +237,50 @@ class AdaptiveEngineAPI:
         return metrics or {'error': 'Family not found'}
 
     def get_hardware_plan(self) -> Dict:
-        """Hardware detection and optimization plan."""
-        arc_gpu_available = False
+        """Return measured basic host capacity; never invent a tuning plan."""
+        arc_gpu_available = None
         try:
             import torch
-            arc_gpu_available = hasattr(torch, 'xpu') and torch.xpu.is_available()
-        except:
+            arc_gpu_available = bool(hasattr(torch, 'xpu') and torch.xpu.is_available())
+        except ImportError:
             pass
 
-        vm = psutil.virtual_memory()
+        try:
+            import psutil
+            cpu_cores = psutil.cpu_count()
+            ram_available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        except ImportError:
+            cpu_cores = None
+            ram_available_gb = None
 
         return {
-            'cpu_cores': psutil.cpu_count(),
-            'ram_available_gb': vm.available / (1024**3),
-            'disk_paths': ['/primary/models'],
-            'disk_bandwidth_mbps': [500],
+            'cpu_cores': cpu_cores,
+            'ram_available_gb': ram_available_gb,
+            'disk_paths': [],
+            'disk_bandwidth_mbps': None,
             'arc_gpu_detected': arc_gpu_available,
-            'npu_available': arc_gpu_available,
-            'recommendation': {
-                'prefetch_layers': 2,
-                'hot_store_experts': 16,
-                'max_concurrent_reads': 8,
-                'batch_size': 8,
-                'expected_tok_per_sec': 0.50 if arc_gpu_available else 0.15,
-            },
+            'arc_gpu_probe_available': arc_gpu_available is not None,
+            'npu_available': None,
+            'recommendation': None,
+            'observed': cpu_cores is not None and ram_available_gb is not None,
         }
 
     def list_models(self) -> Dict:
         """List all loaded models."""
-        return {
-            'models': [
-                {'family': 'qwen3.5', 'backend': 'cpu'},
-                {'family': 'qwen4', 'backend': 'cpu'},
-                {'family': 'glm5', 'backend': 'arc_gpu'},
-                {'family': 'deepseek_v41', 'backend': 'cpu'},
-            ],
-            'total': 4,
-            'unified_path': True,
-        }
+        return {'models': [], 'total': 0, 'unified_path': False,
+                'observed': False,
+                'reason': 'legacy A15 facade does not own production universal sessions'}
 
     def get_status(self) -> Dict:
         """Overall adaptive engine status."""
         return {
-            'status': 'running',
-            'unified_inference': True,
-            'phase1_complete': True,
-            'speedup_enabled': True,
-            'prefetch_enabled': True,
-            'learning_cache_enabled': True,
+            'status': 'unavailable',
+            'unified_inference': False,
+            'phase1_complete': False,
+            'speedup_enabled': False,
+            'prefetch_enabled': False,
+            'learning_cache_enabled': False,
+            'reason': 'legacy A15 facade is not wired to the production universal engine',
             'timestamp': time.time(),
         }
 
@@ -316,21 +290,7 @@ class AdaptiveEngineAPI:
 # ============================================================================
 
 class AdaptiveEngine:
-    """
-    Complete adaptive engine with all 9 models unified.
-
-    Usage:
-        engine = AdaptiveEngine(model_configs)
-        engine.start()
-
-        # Generate with Qwen3.5 (uses unified path)
-        output = engine.generate('qwen3.5', 'Hello world')
-
-        # Generate with GLM5 (uses same unified path)
-        output = engine.generate('glm5', 'Hello world')
-
-        # All 9 families work through same optimized code path
-    """
+    """Compatibility shell retained only to produce explicit migration errors."""
 
     def __init__(self, model_configs: Dict[str, Dict]):
         self.model_configs = model_configs
@@ -357,46 +317,21 @@ class AdaptiveEngine:
         for family, config in self.model_configs.items():
             adapter_class = adapter_classes.get(family, ModelAdapterBase)
             self.adapters[family] = adapter_class(family, config)
-            logger.info(f"Initialized {family} adapter (unified path)")
+            logger.debug("Created retired A15 configuration shell for %s", family)
 
     def generate(self, family: str, prompt: str, max_tokens: int = 100) -> str:
         """
         Generate text using unified path (all families identical).
         """
-        if family not in self.adapters:
-            raise ValueError(f"Unknown model family: {family}")
-
-        adapter = self.adapters[family]
-
-        start = time.perf_counter()
-
-        # Tokenize prompt (stub)
-        input_tokens = [1, 2, 3]  # Placeholder
-
-        # Forward through unified path
-        logits, metadata = adapter.forward(input_tokens)
-
-        end = time.perf_counter()
-
-        # Record metrics
-        metrics = PerformanceMetrics(
-            session_id=family,
-            model_family=family,
-            backend='cpu',
-            forward_ms=(end - start) * 1000,
-            tokens_generated=1,
-            tokens_per_second=1 / (end - start),
-            timestamp=time.time(),
-        )
-        self.metrics.record_metric(metrics)
-
-        return 'generated text'
+        raise RuntimeError(
+            "legacy A15 generation is disabled: it used placeholder tokenization and "
+            "did not execute model weights; use AdaptiveExecutionEngine.open_universal_model()")
 
     def start(self):
         """Start adaptive engine (initialize prefetch, etc)."""
-        logger.info("Starting adaptive engine")
-        for family, adapter in self.adapters.items():
-            logger.info(f"  {family}: ready")
+        raise RuntimeError(
+            "legacy A15 adapters are configuration shells, not loaded models; "
+            "use AdaptiveExecutionEngine.open_universal_model()")
 
     def stop(self):
         """Stop adaptive engine (save learning cache)."""
@@ -410,16 +345,6 @@ class AdaptiveEngine:
 
 
 if __name__ == '__main__':
-    # Test engine initialization
-    configs = {
-        'qwen3.5': {'vocab_size': 50000},
-        'glm5': {'vocab_size': 50000},
-        'deepseek_v41': {'vocab_size': 50000},
-    }
-
-    engine = AdaptiveEngine(configs)
-    engine.start()
-    print(f"✓ Adaptive engine initialized with {len(engine.adapters)} models")
-    print(f"✓ All models use unified inference path")
-
-    engine.stop()
+    raise SystemExit(
+        "A15 is a retired compatibility scaffold; start the application and "
+        "use its production inference routes backed by UniversalEngine")

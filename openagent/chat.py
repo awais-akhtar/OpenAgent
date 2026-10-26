@@ -63,20 +63,30 @@ class ChatService:
         model: str | None = None,
         allow_external: bool = False,
         attachments: list[dict[str, Any]] | None = None,
+        owner: str = "",
     ) -> dict[str, object]:
-        attachments = self._resolve_attachments(attachments)
+        # Provider names and the local/external boundary are request
+        # validation, not generation failures. Resolve them before writing a
+        # conversation turn so a rejected provider cannot leave a dangling
+        # user message behind.
+        self.gateway.select_provider(provider, allow_external=allow_external)
+        attachments = self._resolve_attachments(attachments, project=project, owner=owner)
         conversation, user_message = self._record_user_message(
             content,
             conversation_id=conversation_id,
             project=project,
             attachments=attachments,
         )
-        messages = self._build_model_messages(conversation["id"], project, query=content, attachments=attachments)
+        messages = self._build_model_messages(
+            conversation["id"], project, query=content, attachments=attachments, owner=owner,
+        )
         effective_attachments = attachments or self._historical_attachments(
             self.store.list_chat_messages(str(conversation["id"]), limit=5000), None,
+            project=project, owner=owner,
         )
         result = self._complete_with_attachments(
-            messages, attachments=effective_attachments, provider=provider, model=model, allow_external=allow_external,
+            messages, attachments=effective_attachments, provider=provider, model=model,
+            allow_external=allow_external, project=project, owner=owner,
         )
         assistant_message = self._record_assistant_message(
             conversation,
@@ -109,8 +119,25 @@ class ChatService:
         model: str | None = None,
         allow_external: bool = False,
         attachments: list[dict[str, Any]] | None = None,
+        cancelled=None,
+        owner: str = "",
     ) -> Iterator[dict[str, object]]:
-        attachments = self._resolve_attachments(attachments)
+        from .adaptive_engine.execution_service import ExecutionCancelled
+
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError("stream cancellation must be callable")
+
+        def check_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise ExecutionCancelled("chat stream request cancelled")
+
+        # This generator is lazy: callers can obtain it before any body runs.
+        # Keep provider validation ahead of the first event and, critically,
+        # ahead of persisting the user's message.
+        check_cancelled()
+        self.gateway.select_provider(provider, allow_external=allow_external)
+        attachments = self._resolve_attachments(attachments, project=project, owner=owner)
+        check_cancelled()
         conversation, user_message = self._record_user_message(
             content,
             conversation_id=conversation_id,
@@ -126,20 +153,28 @@ class ChatService:
             "conversation_id": conversation["id"],
         }
 
-        messages = self._build_model_messages(conversation["id"], project, query=content, attachments=attachments)
+        check_cancelled()
+        messages = self._build_model_messages(
+            conversation["id"], project, query=content, attachments=attachments, owner=owner,
+        )
         effective_attachments = attachments or self._historical_attachments(
             self.store.list_chat_messages(str(conversation["id"]), limit=5000), None,
+            project=project, owner=owner,
         )
-        attachment_context = self._attachment_context(effective_attachments)
-        vision = self._vision_attachment(effective_attachments)
+        attachment_context = self._attachment_context(effective_attachments, project=project, owner=owner)
+        vision = self._vision_attachment(effective_attachments, project=project, owner=owner)
         if attachment_context and vision is None:
+            check_cancelled()
             result = self._complete_with_attachments(
-                messages, attachments=effective_attachments, provider=provider, model=model, allow_external=allow_external,
+                messages, attachments=effective_attachments, provider=provider, model=model,
+                allow_external=allow_external, cancelled=cancelled, project=project, owner=owner,
             )
+            check_cancelled()
             yield {
                 "type": "chunk", "provider": result.provider, "model": result.model,
                 "content": result.content, "done": True, "metadata": result.metadata,
             }
+            check_cancelled()
             assistant_message = self._record_assistant_message(
                 conversation, result.content, provider=result.provider, model=result.model,
                 metadata=result.metadata, project=project,
@@ -155,12 +190,13 @@ class ChatService:
             image, media_type = vision
             response = self.gateway.stream_complete_vision(messages, image,
                 media_type=media_type, provider_id=provider, model=model,
-                allow_external=allow_external)
+                allow_external=allow_external, cancelled=cancelled)
         else:
             response = self.gateway.stream_complete(messages, provider_id=provider,
-                model=model, allow_external=allow_external)
+                model=model, allow_external=allow_external, cancelled=cancelled)
         try:
             for chunk in response:
+                check_cancelled()
                 if chunk.content:
                     parts.append(chunk.content)
                 chunk_provider = chunk.provider
@@ -195,6 +231,7 @@ class ChatService:
                     except BaseException:
                         pass
 
+        check_cancelled()
         assistant_message = self._record_assistant_message(
             conversation,
             "".join(parts),
@@ -322,13 +359,18 @@ class ChatService:
         *,
         query: str = "",
         attachments: list[dict[str, Any]] | None = None,
+        owner: str = "",
     ) -> list[dict[str, str]]:
         snapshot = self.context.snapshot(project=project, limit=40)
         terms = ", ".join(item["term"] for item in snapshot["top_terms"][:8]) or "none yet"
         history = self.store.list_chat_messages(conversation_id, limit=5000)
-        attachment_text = self._attachment_context(attachments)
-        historical_attachments = self._historical_attachments(history, attachments)
-        historical_attachment_text = self._attachment_context(historical_attachments)
+        attachment_text = self._attachment_context(attachments, project=project, owner=owner)
+        historical_attachments = self._historical_attachments(
+            history, attachments, project=project, owner=owner,
+        )
+        historical_attachment_text = self._attachment_context(
+            historical_attachments, project=project, owner=owner,
+        )
         has_file_evidence = bool(attachment_text or historical_attachment_text)
         evidence = self.context.search(query, project=project, limit=6) if query.strip() and not has_file_evidence else []
         evidence_text = "\n".join(
@@ -394,9 +436,12 @@ class ChatService:
         provider: str,
         model: str | None,
         allow_external: bool,
+        cancelled=None,
+        project: str = "default",
+        owner: str = "",
     ) -> ModelResult:
-        vision = self._vision_attachment(attachments)
-        attachment_context = self._attachment_context(attachments)
+        vision = self._vision_attachment(attachments, project=project, owner=owner)
+        attachment_context = self._attachment_context(attachments, project=project, owner=owner)
         if vision is not None:
             image, media_type = vision
             try:
@@ -416,13 +461,21 @@ class ChatService:
                     "content": "Native image understanding was unavailable for this turn. Use the locally extracted "
                     f"image metadata already supplied and explain the exact limitation briefly. Runtime detail: {exc}",
                 }]
-        result = self.gateway.complete(
-            messages, provider_id=provider, model=model, allow_external=allow_external,
-        )
+        completion_options = {
+            "provider_id": provider,
+            "model": model,
+            "allow_external": allow_external,
+        }
+        if cancelled is not None:
+            completion_options["cancelled"] = cancelled
+        result = self.gateway.complete(messages, **completion_options)
         if attachment_context and _denies_attachment_access(result.content):
+            if cancelled is not None and cancelled():
+                from .adaptive_engine.execution_service import ExecutionCancelled
+                raise ExecutionCancelled("chat stream request cancelled")
             return self.gateway.complete(
                 self._attachment_correction(messages), provider_id=provider,
-                model=model, allow_external=allow_external,
+                model=model, allow_external=allow_external, **({"cancelled": cancelled} if cancelled is not None else {}),
             )
         return result
 
@@ -435,12 +488,14 @@ class ChatService:
             "cannot access or process the attachment, and do not ask the user to paste text that is already present.",
         }]
 
-    def _vision_attachment(self, attachments: list[dict[str, Any]] | None) -> tuple[bytes, str] | None:
+    def _vision_attachment(
+        self, attachments: list[dict[str, Any]] | None, *, project: str = "default", owner: str = "",
+    ) -> tuple[bytes, str] | None:
         for item in attachments or []:
             if not isinstance(item, dict) or str(item.get("media_type", "")) != "image":
                 continue
             asset_id = str(item.get("id") or item.get("asset_id") or "").strip()
-            asset = self.media.get_asset(asset_id) if asset_id else None
+            asset = self.media.get_asset(asset_id, project=project, owner=owner) if asset_id else None
             stored_path = str((asset or {}).get("stored_path", ""))
             path = Path(stored_path) if stored_path else None
             if path and path.is_file():
@@ -512,7 +567,21 @@ class ChatService:
             })
         return records[:12]
 
-    def _resolve_attachments(self, attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    def _resolve_attachments(
+        self, attachments: list[dict[str, Any]] | None, *, project: str = "default", owner: str = "",
+    ) -> list[dict[str, Any]]:
+        image_count = sum(
+            1 for item in attachments or []
+            if isinstance(item, dict) and item.get("media_type") == "image"
+        )
+        if image_count > 1:
+            # The gateway's vision contract accepts exactly one image. Do not
+            # silently process only the first image while recording all of
+            # them as part of the user's turn.
+            raise ValueError(
+                "Chat currently supports one image attachment per turn; "
+                "multiple images cannot be sent to the vision provider."
+            )
         resolved = []
         for item in attachments or []:
             if not isinstance(item, dict):
@@ -521,16 +590,16 @@ class ChatService:
             asset_id = str(record.get("id") or record.get("asset_id") or "").strip()
             extracted = str(record.get("extracted_text") or record.get("content") or "").strip()
             if asset_id and not _usable_attachment_text(extracted):
-                asset = self.media.get_asset(asset_id) or {}
+                asset = self.media.get_asset(asset_id, project=project, owner=owner) or {}
                 analyses = self.media.analyses(
-                    project=str(asset.get("project") or "default"), asset_id=asset_id, limit=1,
+                    project=str(asset.get("project") or project), asset_id=asset_id, limit=1, owner=owner,
                 )
                 analysis = analyses[0] if analyses else {}
                 candidate = str(analysis.get("extracted_text", "")).strip()
                 stored_suffix = Path(str(asset.get("stored_path", ""))).suffix.lower()
                 if str(asset.get("media_type", record.get("media_type", ""))) == "document" and not _usable_attachment_text(candidate) and stored_suffix == ".pdf":
                     try:
-                        analysis = self.media.analyze_asset(asset_id)
+                        analysis = self.media.analyze_asset(asset_id, project=project, owner=owner)
                         candidate = str(analysis.get("extracted_text", "")).strip()
                     except (OSError, ValueError):
                         candidate = ""
@@ -542,6 +611,7 @@ class ChatService:
 
     def _historical_attachments(
         self, history: list[dict[str, Any]], current: list[dict[str, Any]] | None,
+        *, project: str = "default", owner: str = "",
     ) -> list[dict[str, Any]]:
         current_ids = {str(item.get("id") or item.get("asset_id") or "") for item in current or [] if isinstance(item, dict)}
         selected = []
@@ -557,12 +627,16 @@ class ChatService:
                 seen.add(asset_id)
                 selected.append(item)
                 if len(selected) >= 3:
-                    return self._resolve_attachments(selected)
-        return self._resolve_attachments(selected)
+                    return self._resolve_attachments(selected, project=project, owner=owner)
+        return self._resolve_attachments(selected, project=project, owner=owner)
 
-    def _attachment_context(self, attachments: list[dict[str, Any]] | None) -> str:
+    def _attachment_context(
+        self, attachments: list[dict[str, Any]] | None, *, project: str = "default", owner: str = "",
+    ) -> str:
         blocks = []
-        for index, item in enumerate(self._resolve_attachments(attachments), start=1):
+        for index, item in enumerate(
+            self._resolve_attachments(attachments, project=project, owner=owner), start=1,
+        ):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or item.get("filename") or f"attachment-{index}")

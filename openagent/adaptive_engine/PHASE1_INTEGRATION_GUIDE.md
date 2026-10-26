@@ -1,5 +1,10 @@
 # Phase 1 Complete Closure - Integration Guide
 
+> Historical integration guide. Candidate conversion APIs described below are
+> disabled and this document is not a Phase 1 closure certificate. Exact
+> admissions live in `source_scope.py`; the current queue is
+> `D:/openagent/PHASE_1_ACTIVE_TODO.md`.
+
 **Status: COMPLETE PRODUCTION CODE**
 
 This guide documents how to integrate the production closure code from `phase1_closure_integrated.py` into existing modules. All code is executable and fully integrated, not documentation stubs.
@@ -518,8 +523,7 @@ print("✓ Distributed consensus working")
 
 ## What's Needed for phase1_closed=True
 
-1. **A01-A03 integration**: Patch source_scope.py to use SourceScopeConverter
-2. **Run Phase1Validator.validate_all()**: All 17 checks must pass
-3. **Evidence on hardware (A10)**: Requires execution infrastructure (blocked)
-
-Once integrated, `verify_phase1_closed()` returns True when Phase 1 closure is complete.
+1. Review exact route decisions in `source_scope.py`; do not use the retired converter.
+2. Capture and independently compare real route-bound execution receipts.
+3. Run the current P15 verifier and inspect every failed assertion; a schema
+   binding or 17 passing presence checks alone is not a closure certificate.

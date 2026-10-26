@@ -260,6 +260,26 @@ class NativeKimiTests(unittest.TestCase):
         model.reset()
         np.testing.assert_array_equal(logits,model.forward(tokens))
 
+    def test_native_decoder_restore_is_atomic_and_round_trips_physical_cache(self):
+        model,_,_ = self.decoder_fixture()
+        model.forward([3,7,2])
+        checkpoint = model.snapshot()
+        model.forward([8,1])
+        model.restore(checkpoint)
+        self.assert_decoder_cache(checkpoint, model.snapshot())
+        self.assertEqual(model.position, 3)
+        before = model.snapshot()
+        malformed_layers = list(checkpoint[1])
+        damaged = list(malformed_layers[0])
+        damaged[0] = np.full_like(damaged[0], np.nan)
+        malformed_layers[0] = tuple(damaged)
+        with self.assertRaisesRegex(ValueError, 'nonfinite state'):
+            model.restore((checkpoint[0], tuple(malformed_layers)))
+        self.assert_decoder_cache(before, model.snapshot())
+        with self.assertRaisesRegex(ValueError, 'snapshot geometry'):
+            model.restore((model.capacity + 1, checkpoint[1]))
+        self.assert_decoder_cache(before, model.snapshot())
+
     def test_decoder_late_failure_rolls_back_every_layer(self):
         model,_,_ = self.decoder_fixture()
         model.forward([4,5])
@@ -416,6 +436,33 @@ class NativeKimiTests(unittest.TestCase):
                 direct = NativeKimiLinearDecoder(config,converted,library=self.path,capacity=32)
                 self.instances.append(direct)
                 np.testing.assert_array_equal(loaded.forward([1,3,4]),direct.forward([1,3,4]))
+                if dtype == 'F32':
+                    from openagent.adaptive_engine.execution_factories import (
+                        open_native_kimi_linear_directory_service)
+                    service = open_native_kimi_linear_directory_service(
+                        root, library=self.path, max_weight_bytes=64*1024**2,
+                        runtime_max_bytes=64*1024**2, max_total_model_bytes=64*1024**2,
+                        context_tokens=32, max_new_tokens=2, max_sessions=1,
+                        prefill_chunk_tokens=8, max_snapshots_per_session=4,
+                        max_logit_buffer_bytes=4096)
+                    session_id = service.open_session()
+                    try:
+                        if os.name == 'nt':
+                            # ctypes keeps the native module mapped after the
+                            # executor closes; this suite's class teardown owns
+                            # the final FreeLibrary call.
+                            self.instances.append(service._sessions[session_id].model._decoder)
+                        initial = service.snapshot(session_id)
+                        generated = service.generate(session_id, [1,3], max_new_tokens=2)
+                        self.assertEqual(len(generated.token_ids), 2)
+                        self.assertEqual(service.status(session_id).context_tokens, 4)
+                        service.restore(session_id, initial)
+                        self.assertEqual(service.status(session_id).context_tokens, 0)
+                        replay = service.generate(session_id, [1,3], max_new_tokens=2)
+                        self.assertEqual(replay.token_ids, generated.token_ids)
+                    finally:
+                        service.close_session(session_id)
+                        service.close()
                 with self.assertRaisesRegex(ValueError,'memory budget'):
                     with patch('openagent.adaptive_engine.source_scope.require_checkpoint_inventory_admission'):
                         NativeKimiLinearDecoder.from_checkpoint(root,library=self.path,capacity=32,max_bytes=1)

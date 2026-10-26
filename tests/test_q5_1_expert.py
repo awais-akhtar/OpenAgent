@@ -83,6 +83,36 @@ class Q5AffineFormatTests(unittest.TestCase):
             errors = np.max(np.abs(original.astype(np.float64) - decoded).reshape(-1, 32), axis=1)
             self.assertTrue(np.all(errors <= bound + 2 * np.finfo(np.float32).eps * np.max(np.abs(blocks), axis=1)))
 
+    def test_vectorized_packer_matches_legacy_scalar_bytes(self):
+        rng = np.random.default_rng(51056)
+        matrix = rng.normal(.1, .2, size=(5, 128)).astype(np.float32)
+        matrix[0, :32] = -2
+        matrix[1, 32:64] = np.linspace(-65504, 65504, 32, dtype=np.float32)
+        matrix[2, 64:96] = 0
+        matrix[3, 96] = np.nextafter(np.float32(0), np.float32(1))
+
+        expected = bytearray()
+        for row in matrix:
+            for start in range(0, matrix.shape[1], 32):
+                block = row[start:start + 32].astype(np.float32)
+                smallest, largest = float(np.min(block)), float(np.max(block))
+                minimum = np.float16(smallest)
+                delta = np.float16((largest - smallest) / 31.0)
+                if smallest == largest:
+                    codes = np.zeros(32, np.uint8)
+                else:
+                    if delta == 0:
+                        delta = np.float16(2 ** -24)
+                    codes = np.clip(np.rint((block.astype(np.float64) - float(minimum))
+                                            / float(delta)), 0, 31).astype(np.uint8)
+                fifth = sum((int(codes[lane]) // 16) << lane for lane in range(32))
+                paired = [int(codes[lane]) % 16 + 16 * (int(codes[lane + 16]) % 16)
+                          for lane in range(16)]
+                expected.extend(struct.pack("<eeI16B", float(delta), float(minimum), fifth, *paired))
+
+        self.assertEqual(pack_matrix(matrix, block_count=1), bytes(expected))
+        self.assertEqual(pack_matrix(matrix, block_count=64), bytes(expected))
+
     def test_reject_nonfinite_metadata_weights_shapes_and_payload_lengths(self):
         for h, i in ((0, 32), (32, -32), (33, 32), (True, 32), (32., 32)):
             with self.assertRaises(ValueError):

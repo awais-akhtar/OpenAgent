@@ -30,8 +30,10 @@ struct se_object {
 static atomic_flag se_guard = ATOMIC_FLAG_INIT;
 static oa_se_segment_adapter segment_adapters[SE_ADAPTERS];
 static oa_se_edge_adapter edge_adapters[SE_ADAPTERS];
+typedef struct {char engine[64];oa_se_route_observer observe;} se_route_observer_entry;
+static se_route_observer_entry route_observers[SE_ADAPTERS];
 static char segment_names[SE_ADAPTERS][64], edge_names[SE_ADAPTERS][64];
-static unsigned segment_count, edge_count, segment_sealed, edge_sealed, object_count;
+static unsigned segment_count, edge_count, route_observer_count, segment_sealed, edge_sealed, object_count;
 static se_object *objects;
 
 #define SE_FIELD(type,name) ((uint64_t)offsetof(type,name))
@@ -317,6 +319,35 @@ int coli_segment_run(void *handle, const oa_se_run *request, char *error, size_t
     }
     status=node->segment->run(node->implementation,request,error,size);
     if(!status) node->position=request->position+request->rows;
+    release(node);return status;
+}
+int coli_segment_route_observer_register(const char *engine,oa_se_route_observer observe) {
+    unsigned i;
+    if(!name_ok(engine,64)||!observe)return -1;
+    lock_registry();
+    for(i=0;i<route_observer_count;i++)if(!strcmp(engine,route_observers[i].engine)) {
+        int same=route_observers[i].observe==observe;unlock_registry();return same?0:-1;
+    }
+    if(route_observer_count>=SE_ADAPTERS){unlock_registry();return -1;}
+    strcpy(route_observers[route_observer_count].engine,engine);
+    route_observers[route_observer_count].observe=observe;
+    ++route_observer_count;unlock_registry();return 0;
+}
+int coli_segment_routes(void *handle,uint32_t rows,uint64_t position,float *output,
+                        size_t capacity,size_t *written,uint32_t *begin,uint32_t *end,
+                        uint32_t *experts,char *error,size_t size) {
+    se_object *node;oa_se_route_observer observe=NULL;unsigned i;int status;
+    if(!rows||!written||!begin||!end||!experts||((!output)&&capacity))
+        return failure(error,size,"invalid route observation request");
+    node=acquire(handle,SE_SESSION,error,size);if(!node)return -1;
+    lock_registry();
+    for(i=0;i<route_observer_count;i++)if(!strcmp(node->segment->engine,route_observers[i].engine)) {
+        observe=route_observers[i].observe;break;
+    }
+    unlock_registry();
+    if(!observe){release(node);return failure(error,size,"segment route observation is unsupported");}
+    status=observe(node->implementation,rows,position,output,capacity,written,
+                   begin,end,experts,error,size);
     release(node);return status;
 }
 int coli_segment_snapshot(void *handle, oa_se_write write, void *user, char *error, size_t size) {

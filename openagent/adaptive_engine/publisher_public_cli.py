@@ -127,17 +127,22 @@ class PublisherSession(_TextPublisherSession):
                 from .k3_execution.exact_admission import load_exact_evidence
                 checkpoint=PublisherCheckpoint.open(root,family=self.family,
                     max_metadata_bytes=args.metadata_mib*mib,max_tensors=args.max_tensors,max_shards=args.max_shards)
-                from .source_scope import require_source_family_backend_admission
-                require_source_family_backend_admission(
-                    family='kimi-k3', model_type='kimi_k3', backend='public-range',
-                    arithmetic='fp32-approximate')
-                packed=checkpoint.config.get('quantization_config',{}).get('quant_method')=='mxfp4'
+                from .publisher_checkpoint.k3_adapter import k3_route_identity, k3_source_format
+                source_format=k3_source_format(checkpoint)
+                packed=(source_format=='MXFP4' if args.expert_storage=='auto'
+                        else args.expert_storage=='packed-mxfp4')
+                expert_format='e2m1-low-first-e8m0-g32' if packed else 'fp32'
+                if packed and source_format!='MXFP4':
+                    raise ValueError('packed K3 expert storage requires a compressed MXFP4 checkpoint')
+                k3_route_identity(checkpoint,backend='public-range',
+                    arithmetic='fp32-approximate',expert_format=expert_format)
                 payload=checkpoint.load_k3_execution_payload(capacity=args.context,
                     max_weight_bytes=args.resident_mib*mib,max_chunk_bytes=args.chunk_mib*mib,
-                    expert_format='e2m1-low-first-e8m0-g32' if packed else 'fp32',
+                    expert_format=expert_format,
                     use_expert_provider=packed,max_expert_bytes=args.expert_mib*mib if packed else None,
                     max_mapped_bytes=args.mapped_mib*mib if packed else None,
-                    projection_epsilon=args.projection_epsilon,l2_epsilon=args.l2_epsilon)
+                    projection_epsilon=args.projection_epsilon,l2_epsilon=args.l2_epsilon,
+                    source_backend='public-range',source_arithmetic='fp32-approximate')
                 if payload.expert_provider is not None:
                     self._resources.callback(payload.expert_provider.close)
                 evidence=None
@@ -176,8 +181,9 @@ class PublisherSession(_TextPublisherSession):
             try:
                 self.close()
             except BaseException as failure:
-                primary.cleanup=self.close
-                primary.add_note('public publisher construction cleanup retained: '+repr(failure))
+                from .failure_reporting import retain_cleanup_failure
+                retain_cleanup_failure(primary,self.close,failure,
+                    'public publisher construction cleanup retained: ')
             raise
 
     def run(self,args,*,emit=None,cancelled=None,checkpoint_sink=None,max_checkpoint_bytes=0):

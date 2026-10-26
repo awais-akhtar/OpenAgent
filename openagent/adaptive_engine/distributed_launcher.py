@@ -8,6 +8,8 @@ from datetime import timedelta
 import math
 import pickle
 
+from .failure_reporting import add_failure_note
+
 
 def _cleanup_failure_message(failures):
     """Build bounded teardown diagnostics without invoking exception __str__."""
@@ -51,7 +53,7 @@ def _worker(rank, world_size, service_factory, root_driver, init_method,
                     except BaseException as error:
                         if driver_error is None:
                             raise
-                        driver_error.add_note(
+                        add_failure_note(driver_error,
                             'ordered rank shutdown failed: '+_cleanup_failure_message((error,)))
         else:
             coordinator.serve()
@@ -61,12 +63,12 @@ def _worker(rank, world_size, service_factory, root_driver, init_method,
     finally:
         failures = []
         if service is None and primary_error is not None:
-            cleanup = getattr(primary_error, 'cleanup', None)
-            if callable(cleanup):
-                try:
+            try:
+                cleanup = getattr(primary_error, 'cleanup', None)
+                if callable(cleanup):
                     cleanup()
-                except BaseException as error:
-                    failures.append(error)
+            except BaseException as error:
+                failures.append(error)
         if service is not None:
             try:
                 service.close()
@@ -85,7 +87,7 @@ def _worker(rank, world_size, service_factory, root_driver, init_method,
         if failures:
             message = _cleanup_failure_message(failures)
             if primary_error is not None:
-                primary_error.add_note('rank shutdown failures: '+message)
+                add_failure_note(primary_error,'rank shutdown failures: '+message)
             else:
                 raise RuntimeError('rank shutdown incomplete: '+message) from failures[0]
 
@@ -105,6 +107,11 @@ def launch_distributed_execution(service_factory, root_driver, *, world_size,
     The rendezvous URL and device assignment are operator supplied. All ranks
     must use compatible partition contracts. This launcher does not shard
     otherwise resident model inventories or certify any accelerator path.
+    Both owned process groups receive the same finite timeout. A peer crash or
+    collective transport failure therefore poisons the job within that bound;
+    ``torch.multiprocessing.spawn`` then terminates remaining workers and
+    returns control to the parent. The launcher does not resume a partially
+    executed request inside a damaged group; recovery requires a fresh epoch.
     """
     if type(world_size) is not int or not 1<=world_size<=64:
         raise ValueError('world_size must contain one to 64 ranks')
@@ -114,8 +121,8 @@ def launch_distributed_execution(service_factory, root_driver, *, world_size,
             not init_method.startswith(('tcp://','file://'))):
         raise ValueError('explicit bounded TCP or file rendezvous URL required')
     if (type(timeout_seconds) not in (int,float) or not math.isfinite(timeout_seconds) or
-            not 1<=timeout_seconds<=3600):
-        raise ValueError('process-group timeout must be between one second and one hour')
+            not 1<=timeout_seconds<=300):
+        raise ValueError('process-group timeout must be between one second and 300 seconds')
     if type(max_control_bytes) is not int or not 4096<=max_control_bytes<=64*1024*1024:
         raise ValueError('bounded distributed control-message budget required')
     if type(max_recovery_boundary_bytes) is not int or max_recovery_boundary_bytes<=0:
