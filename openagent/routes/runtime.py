@@ -49,6 +49,7 @@ from ..documents import DocumentManager
 from .document_routes import DocumentRouteDependencies, handle_get as handle_document_get, handle_post as handle_document_post, handle_put as handle_document_put, handle_patch as handle_document_patch, handle_delete as handle_document_delete
 from ..enterprise import EnterpriseManager
 from ..enterprise_identity import EnterpriseIdentity
+from ..fact_provenance import FactProvenanceService
 from ..fine_tuning import FineTuningManager
 from ..hard_audit import run_hard_audit
 from ..http_security import SlidingWindowRateLimiter, request_rate_class
@@ -107,6 +108,7 @@ from .core_routes import CoreRouteDependencies, handle_get as handle_core_get, h
 from .document_processing_routes import DocumentProcessingRouteDependencies, handle_post as handle_document_processing_post
 from .developer_routes import DeveloperRouteDependencies, handle_get as handle_developer_get, handle_post as handle_developer_post, handle_put as handle_developer_put, handle_delete as handle_developer_delete
 from .draft_routes import DraftRouteDependencies, handle_delete as handle_draft_delete, handle_get as handle_draft_get, handle_post as handle_draft_post, handle_put as handle_draft_put
+from .fact_provenance_routes import FactProvenanceRouteDependencies, handle_get as handle_fact_provenance_get, handle_post as handle_fact_provenance_post
 from .finetune_routes import FineTuneRouteDependencies, handle_get as handle_finetune_get, handle_post as handle_finetune_post
 from .local_ai_routes import LocalAiRouteDependencies, handle_get as handle_local_ai_get, handle_post as handle_local_ai_post
 from .handlers import handler_specs
@@ -467,6 +469,7 @@ def build_http_server(
     calendar_sync = CalendarSyncManager(store, calendar_system)
     digital_twin = DigitalTwin(store)
     vault = EncryptedVault(store)
+    fact_provenance = FactProvenanceService(store)
     backup_restore = BackupRestoreManager(store)
     scraper = WebScraper(store)
     scraper.recover_interrupted_schedules()
@@ -1068,6 +1071,14 @@ def build_http_server(
             read_json=read_json,
         )
 
+    def fact_provenance_route_dependencies(read_json) -> FactProvenanceRouteDependencies:
+        return FactProvenanceRouteDependencies(
+            fact_provenance=fact_provenance,
+            first=first,
+            parse_int=parse_int,
+            read_json=read_json,
+        )
+
     def security_route_dependencies(read_json) -> SecurityRouteDependencies:
         return SecurityRouteDependencies(
             security=security_privacy,
@@ -1313,6 +1324,14 @@ def build_http_server(
             )
             if developer_route is not None:
                 self.send_json(developer_route.payload, status=developer_route.status)
+                return
+            fact_provenance_route = handle_fact_provenance_get(
+                parsed.path,
+                parsed.query,
+                fact_provenance_route_dependencies(self.read_json),
+            )
+            if fact_provenance_route is not None:
+                self.send_json(fact_provenance_route.payload, status=fact_provenance_route.status)
                 return
             security_route = handle_security_get(
                 parsed.path,
@@ -2307,6 +2326,13 @@ def build_http_server(
             )
             if developer_route is not None:
                 self.send_json(developer_route.payload, status=developer_route.status)
+                return
+            fact_provenance_route = handle_fact_provenance_post(
+                parsed.path,
+                fact_provenance_route_dependencies(self.read_json),
+            )
+            if fact_provenance_route is not None:
+                self.send_json(fact_provenance_route.payload, status=fact_provenance_route.status)
                 return
             security_route = handle_security_post(
                 parsed.path,
