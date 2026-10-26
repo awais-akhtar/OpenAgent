@@ -380,16 +380,75 @@ const FineTuningPanel: React.FC = () => {
 };
 
 const UltraModelPanel: React.FC = () => {
-  const [sessions, setSessions] = useState([
-    { id: 'session-1', model: 'Llama-7B', status: 'ready', uptime: '4h 32m' },
-    { id: 'session-2', model: 'Llama-13B', status: 'planning', uptime: '—' },
-  ]);
-  const [readinessChecks] = useState([
-    { name: 'llama-server', status: 'available', via: 'mock', icon: '✓' },
-    { name: 'GGUF Model', status: 'validated', format: 'Q4_K_M', icon: '✓' },
-    { name: 'Process Identity', status: 'tracked', icon: '✓' },
-    { name: 'Manifest Validation', status: 'passed', icon: '✓' },
-  ]);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [status, setStatus] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [serverUrl, setServerUrl] = useState<string>('');
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        // Fetch status to get server info
+        const statusRes = await fetch('/api/ultra-model/status');
+        if (!statusRes.ok) throw new Error('Failed to fetch status');
+        const statusData = await statusRes.json();
+        setStatus(statusData);
+
+        // Extract server URL from status if available
+        if (statusData.server_host && statusData.server_port) {
+          setServerUrl(`${statusData.server_host}:${statusData.server_port}`);
+        }
+
+        // Fetch sessions
+        const sessionsRes = await fetch('/api/ultra-model/sessions');
+        if (!sessionsRes.ok) throw new Error('Failed to fetch sessions');
+        const sessionsData = await sessionsRes.json();
+        setSessions(Array.isArray(sessionsData.sessions) ? sessionsData.sessions : []);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load Ultra Model data');
+        // Show fallback demo data on error
+        setSessions([
+          { id: 'session-1', model: 'Llama-7B', status: 'ready', uptime: '4h 32m' },
+          { id: 'session-2', model: 'Llama-13B', status: 'planning', uptime: '—' },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const readinessChecks = [
+    {
+      name: 'llama-server',
+      status: status?.available ? 'available' : 'unavailable',
+      via: status?.server_host ? 'live' : 'offline',
+      icon: status?.available ? '✓' : '✗'
+    },
+    {
+      name: 'GGUF Model',
+      status: status?.model_validated ? 'validated' : 'pending',
+      format: status?.model_format || 'Q4_K_M',
+      icon: status?.model_validated ? '✓' : '—'
+    },
+    {
+      name: 'Process Identity',
+      status: status?.process_tracked ? 'tracked' : 'pending',
+      icon: status?.process_tracked ? '✓' : '—'
+    },
+    {
+      name: 'Manifest Validation',
+      status: status?.manifest_valid ? 'passed' : 'pending',
+      icon: status?.manifest_valid ? '✓' : '—'
+    },
+  ];
 
   return (
     <div className="panel-container">
@@ -397,8 +456,15 @@ const UltraModelPanel: React.FC = () => {
         <div className="card primary-card">
           <div className="card-header">
             <h3>Ultra Model Status</h3>
-            <div className="status-badge active">Ready</div>
+            <div className={`status-badge ${status?.available ? 'active' : 'warning'}`}>
+              {loading ? 'Checking…' : status?.available ? 'Ready' : 'Offline'}
+            </div>
           </div>
+          {error && (
+            <div className="error-notice" style={{ padding: '12px', color: '#ff6b6b', fontSize: '13px', marginBottom: '12px' }}>
+              ⚠ {error}
+            </div>
+          )}
           <div className="readiness-checklist">
             {readinessChecks.map((check, idx) => (
               <div key={idx} className="check-item">
@@ -421,20 +487,22 @@ const UltraModelPanel: React.FC = () => {
           </div>
           <div className="infra-details">
             <div className="detail-row">
-              <span className="label">Mock Server</span>
-              <span className="value">127.0.0.1:8000</span>
+              <span className="label">Server Address</span>
+              <span className="value" title={serverUrl || 'Connecting…'}>
+                {loading ? 'Connecting…' : serverUrl || 'Not available'}
+              </span>
             </div>
             <div className="detail-row">
               <span className="label">Model Format</span>
-              <span className="value">GGUF</span>
+              <span className="value">{status?.model_format || 'GGUF'}</span>
             </div>
             <div className="detail-row">
               <span className="label">Serve Type</span>
-              <span className="value">llama-server</span>
+              <span className="value">{status?.serve_type || 'llama-server'}</span>
             </div>
             <div className="detail-row">
               <span className="label">Sessions</span>
-              <span className="value">{sessions.length} active</span>
+              <span className="value">{sessions.length} {sessions.length === 1 ? 'active' : 'active'}</span>
             </div>
           </div>
         </div>
@@ -446,31 +514,49 @@ const UltraModelPanel: React.FC = () => {
           <h3>Model Sessions</h3>
           <span className="fixture">{sessions.length} sessions</span>
         </div>
-        <div className="table-like">
-          {sessions.map(session => (
-            <div key={session.id} className="row">
-              <div className="col">
-                <div className="row-label">{session.model}</div>
-                <div className="row-detail">ID: {session.id}</div>
+        {loading ? (
+          <div style={{ padding: '24px', textAlign: 'center', color: '#999' }}>Loading sessions…</div>
+        ) : sessions.length === 0 ? (
+          <div style={{ padding: '24px', textAlign: 'center', color: '#999' }}>No active sessions</div>
+        ) : (
+          <div className="table-like">
+            {sessions.map(session => (
+              <div key={session.id} className="row">
+                <div className="col">
+                  <div className="row-label">{session.model || session.name || 'Unknown Model'}</div>
+                  <div className="row-detail">ID: {session.id}</div>
+                </div>
+                <div className="col">
+                  <span className={`badge ${session.status === 'ready' || session.status === 'active' ? 'success' : 'warning'}`}>
+                    {session.status || 'pending'}
+                  </span>
+                </div>
+                <div className="col">
+                  <div className="row-label">{session.uptime || session.duration || '—'}</div>
+                </div>
               </div>
-              <div className="col">
-                <span className={`badge ${session.status === 'ready' ? 'success' : 'warning'}`}>
-                  {session.status}
-                </span>
-              </div>
-              <div className="col">
-                <div className="row-label">{session.uptime}</div>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
-export const ProductionReadinessPanel: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('voice');
+export const ProductionReadinessPanel: React.FC<{ tab?: string }> = ({ tab }) => {
+  const tabMap: Record<string, string> = {
+    'Voice STT': 'voice',
+    'Auto Scheduling': 'scheduler',
+    'Fine-tuning': 'finetune',
+    'Ultra Model': 'ultramodel',
+  };
+  const [activeTab, setActiveTab] = useState(() => tab ? tabMap[tab] || 'voice' : 'voice');
+
+  useEffect(() => {
+    if (tab) {
+      setActiveTab(tabMap[tab] || 'voice');
+    }
+  }, [tab]);
 
   const tabs = [
     { id: 'voice', label: 'Voice STT', icon: <Mic size={18} />, badge: 2 },
