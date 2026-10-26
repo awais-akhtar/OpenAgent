@@ -74,7 +74,7 @@ class VoiceWebSocketClient {
         }
       };
 
-      this.ws.onerror = (event: Event) => {
+      this.ws.onerror = () => {
         const errorMsg = 'WebSocket error occurred';
         console.error(errorMsg);
         this.onErrorCallback?.(errorMsg);
@@ -153,6 +153,13 @@ class VoiceWebSocketClient {
    */
   onError(callback: (error: string) => void): void {
     this.onErrorCallback = callback;
+  }
+
+  /**
+   * Check if WebSocket is connected
+   */
+  isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   /**
@@ -261,7 +268,7 @@ export const VoiceStreamScreen: React.FC = () => {
    */
   const startStreaming = useCallback(async () => {
     try {
-      if (!clientRef.current?.ws) {
+      if (!clientRef.current?.isConnected()) {
         await initializeWebSocket();
       }
 
