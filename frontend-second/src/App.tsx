@@ -38,7 +38,7 @@ const advanced = [
   ['engine', 'Adaptive engine', Cpu], ['science', 'Scientific AI', FlaskConical], ['twin', 'Personal context', Activity],
   ['vault', 'Vault', LockKeyhole], ['scraper', 'Web scraper', Globe2], ['finetune', 'Fine-tuning', SlidersHorizontal],
   ['gallery', 'Image Studio', Image], ['cookbook', 'Model Cookbook', BookMarked],
-  ['ultramodel', 'Ultra Model', Zap], ['personalos', 'Personal OS', User],
+  ['ultramodel', 'Ultra Model', Zap], ['personalos', 'Personal OS', User], ['readiness', 'Production Readiness', Zap],
 ] as const;
 const titles = new Map<string, string>([...primary, ...advanced].map(([id, name]) => [id, name]));
 titles.set('settings', 'Settings');

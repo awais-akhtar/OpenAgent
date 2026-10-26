@@ -17,6 +17,7 @@ import { demoProvider } from "../demo/provider";
 import type { DemoRecord } from "../demo/types";
 import { ExecutionTrace } from "../components/ExecutionTrace";
 import * as Dialog from "../components/ui/dialog";
+import { ProductionReadinessPanel } from "./ProductionReadinessPanel";
 
 // All operations in this workspace go through one boundary. Demo mode is backed by
 // browser-local fixtures; live mode continues through the authenticated API client.
@@ -66,6 +67,7 @@ const definitions: Record<string, Definition> = {
   cookbook: { title: "Model Cookbook", description: "Host, certify and serve local model builds.", tabs: ["Hosts", "Cached", "Certifications", "Logs"], icon: BookMarked, subject: "Model hosts", note: "Hosted models and certification records require a connected cookbook service." },
   ultramodel: { title: "Ultra Model", description: "Control ultra-scale inference manifests, plans and sessions.", tabs: ["Status", "Manifests", "Plans", "Sessions"], icon: Zap, subject: "Inference sessions", note: "Manifests, routing plans and sessions appear when the ultra-model service is running." },
   personalos: { title: "Personal OS", description: "Manage personal presets, notes, signatures and drafts.", tabs: ["Status", "Presets", "Notes", "Gallery", "Signatures", "Drafts"], icon: UserRound, subject: "Personal workspace", note: "Presets and notes appear when the personal-os service is connected." },
+  readiness: { title: "Production Readiness", description: "Monitor voice STT, autonomous scheduling, fine-tuning, and ultra model infrastructure.", tabs: ["Voice STT", "Auto Scheduling", "Fine-tuning", "Ultra Model"], icon: Zap, subject: "Feature implementation", note: "Real-time status of all production-ready features including live transcription, reminder delivery, training jobs, and model sessions." },
 };
 
 const routeIcons: Record<string, LucideIcon> = {
@@ -73,6 +75,7 @@ const routeIcons: Record<string, LucideIcon> = {
   security: Fingerprint, developer: Braces, engine: Activity, science: Database,
   twin: UserRound, vault: KeyRound, scraper: Globe2, finetune: HardDrive,
   gallery: Image, cookbook: BookMarked, ultramodel: Zap, personalos: UserRound,
+  readiness: Zap,
 };
 
 const securityTabEndpoints: Record<string, Record<string, string> | null> = {
@@ -4047,6 +4050,8 @@ function RouteContent({ route, tab, definition, data, query, onTabChange, demo }
   if (route === "communications") return <CommunicationRecords tab={tab} data={data} demo={demo} />;
 
   if (route === "developer") return <DeveloperResources tab={tab} data={data} demo={demo} />;
+
+  if (route === "readiness") return <ProductionReadinessPanel tab={tab} />;
 
   if (route === "knowledge") return <>
     <section className="demo-feature-hero"><div className="demo-feature-symbol"><BookOpen className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Search · Workspace</span><h2>Knowledge that stays useful</h2><p>Search original sources, maintain collections and inspect citations.</p></div></section>
