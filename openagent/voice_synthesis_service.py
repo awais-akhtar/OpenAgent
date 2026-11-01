@@ -81,7 +81,9 @@ class VoiceSynthesisService:
         return {"voices": ["default", "male", "female"], "current": self.voice}
 
     def set_voice(self, voice: str) -> bool:
-        """Change voice."""
+        """Select a voice, refusing one that is not offered."""
+        if voice not in self.get_available_voices()["voices"]:
+            return False
         self.voice = voice
         logger.info(f"Voice set to: {voice}")
         return True

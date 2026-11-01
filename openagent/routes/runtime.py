@@ -500,7 +500,7 @@ def build_http_server(
     from ..semantic_memory_service import SemanticMemoryService
     from ..vector_embeddings_service import VectorEmbeddingsService
 
-    voice_conversation_manager = VoiceConversationManager()
+    voice_conversation_manager = VoiceConversationManager(state_dir=store.data_dir)
     doc_processor_service = DocumentProcessorService()
     knowledge_graph_service = KnowledgeGraphService()
     embeddings_service = VectorEmbeddingsService()

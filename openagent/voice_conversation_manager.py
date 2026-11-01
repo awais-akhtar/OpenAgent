@@ -34,7 +34,7 @@ class VoiceConversation:
 class VoiceConversationManager:
     """Manage full voice conversations (listen→transcribe→process→respond→speak)."""
 
-    def __init__(self):
+    def __init__(self, state_dir: Path | str | None = None):
         from .voice_transcription_service import VoiceTranscriptionService
         from .voice_synthesis_service import VoiceSynthesisService
 
@@ -42,7 +42,38 @@ class VoiceConversationManager:
         self.synthesizer = VoiceSynthesisService()
         self.conversations: dict[str, VoiceConversation] = {}
         self.conversation_metadata: dict[str, dict[str, Any]] = {}
-        self.state_file = Path("voice_conversations_state.json")
+        # A bare relative name would drop this file into whatever directory the
+        # server was started from, so the caller supplies the data directory.
+        self.state_file = Path(state_dir) / "voice_conversations_state.json" if state_dir else Path("voice_conversations_state.json")
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Restore persisted conversations, keeping each one's project and owner."""
+        if not self.state_file.exists():
+            return
+        try:
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error(f"Failed to load voice conversation state: {exc}")
+            return
+        for conv_id, record in (data.get("conversations") or {}).items():
+            project = str(record.get("project", "default"))
+            owner = str(record.get("owner", "default"))
+            conv = VoiceConversation(conv_id, project, owner)
+            conv.messages = list(record.get("messages") or [])
+            conv.status = str(record.get("status", "active"))
+            conv.created_at = float(record.get("created_at", conv.created_at))
+            self.conversations[conv_id] = conv
+            self.conversation_metadata[conv_id] = {"project": project, "owner": owner}
+
+    def _save_state(self) -> None:
+        """Persist conversations so they survive a restart."""
+        state = {"conversations": {cid: conv.to_dict() for cid, conv in self.conversations.items()}}
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.error(f"Failed to save voice conversation state: {exc}")
 
     def create_conversation(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create new voice conversation."""
@@ -50,6 +81,7 @@ class VoiceConversationManager:
         conv = VoiceConversation(conv_id, project, owner)
         self.conversations[conv_id] = conv
         self.conversation_metadata[conv_id] = {"project": project, "owner": owner}
+        self._save_state()
         logger.info(f"Created voice conversation: {conv_id} (project={project}, owner={owner})")
         return {"conversation_id": conv_id, "status": "ready", "created_at": conv.created_at, "project": project, "owner": owner}
 
@@ -74,6 +106,7 @@ class VoiceConversationManager:
             "text": text,
             "timestamp": time.time()
         })
+        self._save_state()
 
         return {
             "transcription": text,
@@ -102,6 +135,7 @@ class VoiceConversationManager:
             "text": response_text,
             "timestamp": time.time()
         })
+        self._save_state()
 
         return {
             "audio_bytes": audio_bytes,
@@ -159,5 +193,23 @@ class VoiceConversationManager:
         if meta.get("project") != project or meta.get("owner") != owner:
             return False
         self.conversations[conv_id].status = "closed"
+        self._save_state()
         logger.info(f"Closed conversation: {conv_id} (project={project}, owner={owner})")
         return True
+
+    def get_transcription_models(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
+        """List transcription models and which one is selected."""
+        return {"models": self.transcriber.get_available_models(), "current": self.transcriber.model}
+
+    def get_synthesis_voices(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
+        """List synthesis voices and which one is selected."""
+        # The service already reports both, unlike get_available_models().
+        return self.synthesizer.get_available_voices()
+
+    def set_transcription_model(self, model: str, project: str = "default", owner: str = "default") -> bool:
+        """Select a transcription model, returning False when it is unknown."""
+        return self.transcriber.set_model(model)
+
+    def set_synthesis_voice(self, voice: str, project: str = "default", owner: str = "default") -> bool:
+        """Select a synthesis voice, returning False when it is unknown."""
+        return self.synthesizer.set_voice(voice)

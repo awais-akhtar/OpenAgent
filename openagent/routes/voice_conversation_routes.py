@@ -19,6 +19,10 @@ ROUTES = (
     ("POST", "/api/voice/conversations/{id}/respond"),
     ("POST", "/api/voice/conversations/{id}/full-conversation"),
     ("POST", "/api/voice/conversations/{id}/close"),
+    ("GET", "/api/voice/conversation-models"),
+    ("GET", "/api/voice/conversation-voices"),
+    ("POST", "/api/voice/conversation-models/{id}"),
+    ("POST", "/api/voice/conversation-voices/{id}"),
 )
 
 def contract() -> dict[str, Any]:
@@ -45,6 +49,12 @@ def handle_get(path: str, query: str, deps: VoiceConversationRouteDependencies) 
     if path == "/api/voice/conversations":
         return JsonRouteResult({"conversations": deps.manager.list_conversations(project=project, owner=owner)})
 
+    if path == "/api/voice/conversation-models":
+        return JsonRouteResult(deps.manager.get_transcription_models(project=project, owner=owner))
+
+    if path == "/api/voice/conversation-voices":
+        return JsonRouteResult(deps.manager.get_synthesis_voices(project=project, owner=owner))
+
     if path.startswith("/api/voice/conversations/"):
         conv_id = unquote(path.removeprefix("/api/voice/conversations/")).strip()
         conv = deps.manager.get_conversation(conv_id, project=project, owner=owner)
@@ -65,6 +75,18 @@ def handle_post(path: str, deps: VoiceConversationRouteDependencies) -> JsonRout
 
     if path == "/api/voice/conversations":
         return JsonRouteResult(deps.manager.create_conversation(project=project, owner=owner), HTTPStatus.CREATED)
+
+    if path.startswith("/api/voice/conversation-models/"):
+        model = unquote(path.removeprefix("/api/voice/conversation-models/")).strip()
+        if not deps.manager.set_transcription_model(model, project=project, owner=owner):
+            return JsonRouteResult({"error": f"Unknown transcription model: {model}"}, HTTPStatus.BAD_REQUEST)
+        return JsonRouteResult({"model": model, "status": "selected"})
+
+    if path.startswith("/api/voice/conversation-voices/"):
+        voice = unquote(path.removeprefix("/api/voice/conversation-voices/")).strip()
+        if not deps.manager.set_synthesis_voice(voice, project=project, owner=owner):
+            return JsonRouteResult({"error": f"Unknown synthesis voice: {voice}"}, HTTPStatus.BAD_REQUEST)
+        return JsonRouteResult({"voice": voice, "status": "selected"})
 
     if path.startswith("/api/voice/conversations/") and path.endswith("/audio"):
         conv_id = unquote(path.removeprefix("/api/voice/conversations/").removesuffix("/audio")).strip()
