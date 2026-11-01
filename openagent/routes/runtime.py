@@ -972,7 +972,7 @@ def build_http_server(
             read_json=read_json,
         )
 
-    def g25_route_dependencies(read_json) -> G25RouteDependencies:
+    def g25_route_dependencies(read_json, query_owner, payload_owner) -> G25RouteDependencies:
         return G25RouteDependencies(
             doc_processor=doc_processor_service,
             knowledge_graph=knowledge_graph_service,
@@ -981,6 +981,8 @@ def build_http_server(
             memory_service=memory_service,
             embeddings=embeddings_service,
             read_json=read_json,
+            query_owner=query_owner,
+            auth_scope_owner=handler._auth_scope_owner if hasattr(handler, '_auth_scope_owner') else lambda: "local",
         )
 
     def document_processing_route_dependencies(read_json, payload_owner) -> DocumentProcessingRouteDependencies:
@@ -1506,7 +1508,7 @@ def build_http_server(
                 self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
 
-            g25_route = handle_g25_get(parsed.path, parsed.query, g25_route_dependencies(self.read_json))
+            g25_route = handle_g25_get(parsed.path, parsed.query, g25_route_dependencies(self.read_json, self._query_owner, self._payload_owner))
             if g25_route is not None:
                 self.send_json(g25_route.payload, status=g25_route.status)
                 return
@@ -2538,7 +2540,7 @@ def build_http_server(
                 self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
 
-            g25_route = handle_g25_post(parsed.path, g25_route_dependencies(self.read_json))
+            g25_route = handle_g25_post(parsed.path, g25_route_dependencies(self.read_json, self._query_owner, self._payload_owner))
             if g25_route is not None:
                 self.send_json(g25_route.payload, status=g25_route.status)
                 return

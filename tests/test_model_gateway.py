@@ -23,6 +23,7 @@ class FakeDirectHardware:
     def __init__(self) -> None:
         self.loaded = False
         self.load_calls = 0
+        self.device = None
 
     def available(self):
         return True
@@ -36,15 +37,16 @@ class FakeDirectHardware:
     def load_llm(self, path, **kwargs):
         self.loaded = True
         self.load_calls += 1
+        self.device = kwargs["device"]
         return {"status": "resident", "model_id": kwargs["model_id"], "device": kwargs["device"]}
 
     def generate(self, model_id, **kwargs):
-        return {"text": "direct local response", "device": "GPU", "latency_ms": 12.5}
+        return {"text": "direct local response", "device": self.device, "latency_ms": 12.5}
 
     def stream_generate(self, model_id, **kwargs):
         yield {"type": "token", "content": "direct "}
         yield {"type": "token", "content": "stream"}
-        yield {"type": "done", "text": "direct stream", "device": "GPU", "latency_ms": 9.5, "first_token_ms": 2.0, "streamed": True}
+        yield {"type": "done", "text": "direct stream", "device": self.device, "latency_ms": 9.5, "first_token_ms": 2.0, "streamed": True}
 
 
 class ModelGatewayTests(unittest.TestCase):
@@ -550,7 +552,7 @@ class ModelGatewayTests(unittest.TestCase):
     def test_direct_openvino_provider_loads_once_and_serves_without_network(self) -> None:
         client = FakeDirectHardware()
         with tempfile.TemporaryDirectory() as temp, patch.dict(
-            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
+            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=True
         ), patch("openagent.model_gateway.OllamaProvider.available", return_value=False), patch(
             "openagent.model_gateway.LlamaCppProvider.available", return_value=False
         ):
@@ -562,8 +564,10 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertFalse(result.metadata["network"])
         self.assertEqual(second.provider, "openvino-direct")
         self.assertEqual(client.load_calls, 1)
+        self.assertEqual(client.device, "CPU")
         self.assertEqual(gateway.providers["openvino-direct"].device, "CPU")
-        self.assertEqual(runtime_settings_snapshot()["openvino_device"], "CPU")
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(runtime_settings_snapshot()["openvino_device"], "CPU")
 
     def test_direct_openvino_provider_forwards_native_token_stream(self) -> None:
         client = FakeDirectHardware()
