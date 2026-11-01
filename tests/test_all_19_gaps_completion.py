@@ -103,7 +103,8 @@ class AllGapsCompletion(unittest.TestCase):
             )
             calendar_system.deliver_due_notifications.assert_called_once_with(
                 project="default",
-                integration_hub=preferences
+                integration_hub=preferences,
+                owner_initiated=False,
             )
             self.assertTrue(result["notifications_enabled"])
 

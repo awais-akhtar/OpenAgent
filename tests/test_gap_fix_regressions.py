@@ -132,6 +132,8 @@ class GapFixRegressions(unittest.TestCase):
             preferences=Mock()
             calendar.deliver_due_notifications.return_value={"delivered":[],"notifications_enabled":False}
             result=scheduler.run_calendar_due_notifications(project="p",calendar_system=calendar,integration_hub=preferences)
-            calendar.deliver_due_notifications.assert_called_once_with(project="p",integration_hub=preferences)
+            # The worker must deliver non-owner-initiated, so a reminder it has
+            # shown to nobody stays in the owner's due list.
+            calendar.deliver_due_notifications.assert_called_once_with(project="p",integration_hub=preferences,owner_initiated=False)
             self.assertFalse(result["notifications_enabled"])
 
