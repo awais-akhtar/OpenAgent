@@ -97,6 +97,10 @@ SCOPE_CATALOG: tuple[dict[str, str], ...] = (
     {"scope": "codebase:write", "description": "Create and operate isolated software-engineering workspaces"},
     {"scope": "terminal:read", "description": "View safe terminal runs and buffered output"},
     {"scope": "terminal:write", "description": "Run approved safe terminal commands"},
+    {"scope": "g25:read", "description": "Read documents, knowledge graphs, RAG results, reasoning chains, and memory"},
+    {"scope": "g25:write", "description": "Create and modify documents, graphs, memory, and run reasoning"},
+    {"scope": "models:read", "description": "View available models and serving status"},
+    {"scope": "models:write", "description": "Download, launch, stop, and reload models"},
 )
 
 DEFAULT_SCOPES: tuple[str, ...] = tuple(entry["scope"] for entry in SCOPE_CATALOG)
@@ -979,6 +983,10 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/v1/completions", "local_ai:read", "local_ai:admin"),
     ("/v1/messages", "local_ai:read", "local_ai:admin"),
     ("/v1/models", "local_ai:read", "local_ai:admin"),
+    # G25 Advanced Features: document processing, knowledge graph, RAG, reasoning, memory
+    ("/api/g25/", "g25:read", "g25:write"),
+    # Model Serving Routes
+    ("/api/model-serve/", "models:read", "models:write"),
 )
 
 
