@@ -1,5 +1,12 @@
 # COMPREHENSIVE FRONTEND & BACKEND GAP AUDIT
 
+> **Corrected 1 November 2026.** Several entries below claimed "VERIFIED
+> COMPLETE" for modules that no route, test or caller imported, and for model
+> artifacts this checkout does not contain. Those entries now state what is
+> actually wired. Where this file and
+> `frontend-second/FRONTEND_BACKEND_MASTER_GAPS.md` disagree, that file is
+> authoritative — it declares itself the sole frontend/backend gap map.
+
 ## FRONTEND GAPS AUDIT
 
 ### G01: Frontend Code Quality
@@ -56,13 +63,15 @@
 **Result**: READY ✅
 
 ### G04: Voice WebSocket Transport
-**File**: openagent/voice_websocket_transport.py (230 lines)
-**Status**: ✅ VERIFIED COMPLETE
-- VoiceWebSocketSession class
-- Audio frame buffering
-- Session lifecycle management
-- 6 API endpoints
-**Result**: READY ✅
+**File**: openagent/voice_websocket.py
+**Status**: ⚠️ BACKEND ONLY — the gap is the browser transport
+The backend session lifecycle is wired and exercised over real HTTP
+(`/api/voice/websocket/create|chunk|status|finish`). A second file,
+`voice_websocket_transport.py`, was previously listed here as complete with
+"6 API endpoints"; it declared no routes, nothing imported it, and it has been
+removed. Per `frontend-second/FRONTEND_BACKEND_MASTER_GAPS.md`, G04 stays open
+because the browser client is unmounted, which is a frontend gap.
+**Result**: OPEN (frontend transport)
 
 ### G05-G06: Voice Features
 **Status**: ⏳ PENDING - Dependent on G04
@@ -70,13 +79,14 @@
 **Result**: BLOCKED ON REQUIREMENTS
 
 ### G07: Fine-Tuning Service
-**File**: openagent/fine_tuning_service.py (320 lines)
-**Status**: ✅ VERIFIED COMPLETE
-- Real prajjwal1/bert-tiny model (14MB)
-- Checkpoint validation
-- FP32 & BF16 precision
-- 7 API endpoints
-**Result**: READY ✅
+**File**: openagent/fine_tuning.py (`FineTuningManager`)
+**Status**: ⚠️ WIRED, BUT NOT A PRETRAINED-MODEL CLAIM
+The wired manager backs `/api/finetune/*` and its checkpoint save/reload path
+passes under the ML virtualenv. The separate `fine_tuning_service.py` listed
+here before was never imported and has been removed; no pretrained
+bert-tiny run is established by it. Training quality and default-install
+runtime remain open per the master gap map.
+**Result**: OPEN (model/runtime evidence)
 
 ### G08: Autonomous Scheduling
 **File**: openagent/routes/scheduler_routes.py
@@ -106,12 +116,14 @@
 **Result**: READY ✅
 
 ### G14: Document Archive
-**File**: openagent/document_archive.py (60 lines)
-**Status**: ✅ VERIFIED COMPLETE
-- Archive/restore operations
-- Policy-driven access
-- Canonical control
-**Result**: READY ✅
+**File**: openagent/documents.py (`archive_document`)
+**Status**: ⚠️ EDITOR DOCUMENTS ONLY
+`POST /api/document/{doc_id}/archive` and its restore counterpart are declared
+and wired for editor documents. `document_archive.py`, listed here before as
+complete, was never imported and has been removed. The master gap map's open
+item is the *indexed* document archive lifecycle under `/api/knowledge/
+documents/*`, which is not declared and remains a product decision.
+**Result**: OPEN (indexed-document lifecycle)
 
 ### G16: Webhook CRUD
 **File**: openagent/developer.py
@@ -122,13 +134,13 @@
 **Result**: READY ✅
 
 ### G17: Control Inventory
-**File**: openagent/control_inventory.py (120 lines)
-**Status**: ✅ VERIFIED COMPLETE
-- 40+ UI controls cataloged
-- 8 control groups
-- Search & filtering
-- Full discovery API
-**Result**: READY ✅
+**File**: none
+**Status**: ❌ NOT IMPLEMENTED
+`control_inventory.py` was listed here as a complete "full discovery API". It
+declared no route, nothing imported it, and no `/api/*` control-inventory
+endpoint exists; it has been removed. The master gap map lists "every
+discovered control" as not accepted.
+**Result**: OPEN
 
 ### G20: Model Serving with Real Process Management
 **File**: openagent/model_serve_manager.py (336 lines)
@@ -154,23 +166,25 @@
 - openagent/model_downloader.py (276 lines)
 - openagent/ultra_model_service.py (290 lines)
 - openagent/routes/model_serve_routes.py (200 lines)
-**Status**: ✅ VERIFIED COMPLETE
-- Real HuggingFace downloads
-- TinyLlama (680MB), Mistral (4.5GB), Neural-Chat (4.2GB)
-- Smart caching with manifest
-- Hardware calibration
-- Session lifecycle management
-- 10 API endpoints
-**Result**: READY ✅
+**Status**: ⚠️ CODE WIRED, NO MODEL EVIDENCE
+The routes are declared, scope-mapped and reachable, and a serving plan
+persists with status "planned" without starting a process. The download
+capability is code only: TinyLlama, Mistral and Neural-Chat are not present in
+`models/`, so the previous "Real HuggingFace downloads" line claimed artifacts
+this checkout does not have. `frontend-second/FRONTEND_BACKEND_MASTER_GAPS.md`
+records Ultra Model launch as BLOCKED-ENV, with `llama_server.available=false`
+and no compatible GGUF.
+**Result**: OPEN (runtime/model evidence)
 
 ### G23: UI Placement Decisions
-**File**: openagent/ui_placement_decisions.py (140 lines)
-**Status**: ✅ VERIFIED COMPLETE
-- 4-criteria placement model
-- 6 operation placements
-- Privileged operation detection
-- Full placement policy
-**Result**: READY ✅
+**File**: docs/DEVELOPER_BACKEND_CONTROLS_MAPPING.md
+**Status**: ⚠️ A DECISION RECORD, NOT CODE
+Where a privileged control belongs is a product decision, and the mapping
+document records it per operation, including the ones deliberately kept out of
+the UI. `ui_placement_decisions.py`, listed here before as a complete
+"placement policy", was imported by nothing and enforced nothing; it has been
+removed. The decisions it described live in that document.
+**Result**: OPEN (product decision)
 
 ### G25: Advanced Features
 **Status**: ⏳ PENDING - Requires feature definition

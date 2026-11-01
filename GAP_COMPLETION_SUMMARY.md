@@ -1,5 +1,15 @@
 # 19 Remaining Gaps - Completion Summary
 
+> **Correction, 1 November 2026.** This report cites one or more of
+> `voice_websocket_transport.py`, `fine_tuning_service.py`,
+> `document_archive.py`, `control_inventory.py` and
+> `ui_placement_decisions.py`. No route, test or caller ever imported those
+> modules, so any status they were given here did not describe working code;
+> they have been removed. The capabilities that do exist live in
+> `voice_websocket.py`, `fine_tuning.py` and `documents.py`.
+> `frontend-second/FRONTEND_BACKEND_MASTER_GAPS.md` is authoritative where it
+> disagrees with this file.
+
 Date: 2026-10-26  
 Status: All 19 gaps addressed with appropriate implementations/documentation
 
