@@ -434,7 +434,8 @@ export const queryG25Graph = (q: string, project?: string, owner?: string, signa
 export const findG25GraphPaths = (start: string, end: string, project?: string, owner?: string, signal?: AbortSignal) =>
   apiGet(`/api/g25/graph/paths?${scopeQuery(project, owner, { start, end })}`, signal);
 
-export const indexG25Rag = (body: { doc_id: string; chunks: string[]; project?: string }) =>
+// The backend chunks the stored document itself, so only doc_id is sent.
+export const indexG25Rag = (body: { doc_id: string; project?: string }) =>
   apiPost('/api/g25/rag/index', { project: 'default', ...body });
 
 export const searchG25Rag = (body: { query: string; project?: string }) =>

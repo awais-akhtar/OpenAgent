@@ -69,8 +69,9 @@ class KnowledgeGraphService:
         # Verify source and target belong to same project/owner
         source_meta = self.node_metadata.get(source_id, {})
         target_meta = self.node_metadata.get(target_id, {})
-        if source_meta.get("project") != project or target_meta.get("project") != project:
-            return {"error": "Source and target nodes must be in same project"}
+        if (source_meta.get("project") != project or target_meta.get("project") != project
+                or source_meta.get("owner") != owner or target_meta.get("owner") != owner):
+            return {"error": "Source and target nodes must belong to this project and owner"}
 
         edge_id = str(uuid4())
         edge = Edge(edge_id, source_id, target_id, rel_type, properties or {})
@@ -92,29 +93,40 @@ class KnowledgeGraphService:
                 results.append(node)
         return results
 
-    def find_path(self, source_id: str, target_id: str, max_depth: int = 3) -> list[list[str]]:
-        """Find paths between nodes (BFS)."""
+    def find_path(self, source_id: str, target_id: str, max_depth: int = 3,
+                  project: str | None = None, owner: str | None = None) -> list[list[str]]:
+        """Find paths between nodes (BFS).
+
+        When project and owner are given the walk only crosses edges belonging
+        to them, so a path cannot be assembled out of another owner's edges.
+        """
         from collections import deque
-        
+
+        def allowed(edge_id: str) -> bool:
+            if project is None and owner is None:
+                return True
+            meta = self.edge_metadata.get(edge_id, {})
+            return meta.get("project") == project and meta.get("owner") == owner
+
         visited = set()
         queue = deque([(source_id, [source_id])])
         paths = []
-        
+
         while queue and len(paths) < 5:
             current, path = queue.popleft()
-            
+
             if current == target_id:
                 paths.append(path)
                 continue
-            
+
             if len(path) >= max_depth or current in visited:
                 continue
-            
+
             visited.add(current)
-            
+
             # Find connected nodes
-            for edge in self.edges.values():
-                if edge.source == current:
+            for edge_id, edge in self.edges.items():
+                if edge.source == current and allowed(edge_id):
                     next_node = edge.target
                     if next_node not in visited:
                         queue.append((next_node, path + [next_node]))
@@ -123,13 +135,17 @@ class KnowledgeGraphService:
 
     def find_paths(self, start_label: str, end_label: str, project: str = "default", owner: str = "default") -> list[list[dict[str, Any]]]:
         """Alias: Find paths between node labels (for route compatibility)."""
-        start_nodes = [n for n in self.nodes.values() if n.label == start_label and self.node_metadata.get(n.id, {}).get("project") == project]
-        end_nodes = [n for n in self.nodes.values() if n.label == end_label and self.node_metadata.get(n.id, {}).get("project") == project]
+        def mine(node) -> bool:
+            meta = self.node_metadata.get(node.id, {})
+            return meta.get("project") == project and meta.get("owner") == owner
+
+        start_nodes = [n for n in self.nodes.values() if n.label == start_label and mine(n)]
+        end_nodes = [n for n in self.nodes.values() if n.label == end_label and mine(n)]
 
         all_paths = []
         for start in start_nodes:
             for end in end_nodes:
-                paths = self.find_path(start.id, end.id)
+                paths = self.find_path(start.id, end.id, project=project, owner=owner)
                 for path in paths:
                     all_paths.append([self.nodes[nid].to_dict() for nid in path if nid in self.nodes])
         return all_paths

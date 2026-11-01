@@ -52,14 +52,19 @@ class RAGService:
             "indexed": True,
         }
 
-    def search(self, query: str, top_k: int = 5, project: str = "default", owner: str = "default") -> dict[str, Any]:
-        """Search documents semantically."""
+    def search(self, query: str, top_k: int = 5, project: str = "default", owner: str = "default",
+               doc_id: str = "") -> dict[str, Any]:
+        """Search documents semantically, optionally within one document."""
         query_embedding = self.embeddings.embed_text(query)
 
+        scope = f"{project}:{owner}:"
+        wanted = f"{scope}{doc_id}" if doc_id else ""
         results = []
         for index_key, chunks in self.retrieval_index.items():
             # Only search documents in this project/owner
-            if not index_key.startswith(f"{project}:{owner}:"):
+            if not index_key.startswith(scope):
+                continue
+            if wanted and index_key != wanted:
                 continue
             for chunk_data in chunks:
                 similarity = self.embeddings.similarity(
@@ -84,10 +89,15 @@ class RAGService:
             "total_matches": len(results),
         }
 
-    def get_context(self, query: str, context_size: int = 3, project: str = "default", owner: str = "default") -> dict[str, Any]:
-        """Retrieve context for query from documents and knowledge graph."""
+    def get_context(self, query: str, context_size: int = 3, project: str = "default", owner: str = "default",
+                    doc_id: str = "") -> dict[str, Any]:
+        """Retrieve context for query from documents and knowledge graph.
+
+        ``doc_id`` narrows the document side to a single document; the
+        knowledge-graph side is not document scoped.
+        """
         # Semantic search
-        search_results = self.search(query, top_k=context_size, project=project, owner=owner)
+        search_results = self.search(query, top_k=context_size, project=project, owner=owner, doc_id=doc_id)
 
         # Knowledge graph search
         kg_results = self.knowledge_graph.query_graph(query, project=project, owner=owner)

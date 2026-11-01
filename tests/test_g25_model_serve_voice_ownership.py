@@ -108,6 +108,46 @@ class G25ModelServeVoiceOwnershipTests(unittest.TestCase):
         status, _ = self.call("GET", f"/api/g25/documents/{document_id}", self.alice)
         self.assertEqual(status, HTTPStatus.OK)
 
+    def test_graph_paths_and_edges_do_not_cross_owners_within_a_project(self) -> None:
+        # Same project, different owners: the graph used to filter on project
+        # alone, so a path could be read, and built, across owners.
+        status, start = self.call("POST", "/api/g25/graph/nodes", self.alice, {"label": "PathStart"})
+        self.assertEqual(status, HTTPStatus.CREATED)
+        status, end = self.call("POST", "/api/g25/graph/nodes", self.alice, {"label": "PathEnd"})
+        self.assertEqual(status, HTTPStatus.CREATED)
+        start_id = (start.get("data") or start).get("id")
+        end_id = (end.get("data") or end).get("id")
+        self.assertTrue(start_id and end_id, f"node create omitted ids: {start} {end}")
+
+        status, _ = self.call(
+            "POST", "/api/g25/graph/edges", self.alice,
+            {"source_id": start_id, "target_id": end_id, "relationship": "LINKS"},
+        )
+        self.assertEqual(status, HTTPStatus.CREATED)
+
+        status, mine = self.call("GET", f"/api/g25/graph/paths?start=PathStart&end=PathEnd", self.alice)
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(len(self._rows(mine, "paths")), 1)
+
+        status, theirs = self.call("GET", f"/api/g25/graph/paths?start=PathStart&end=PathEnd", self.bob)
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(self._rows(theirs, "paths"), [], "bob was shown a path through alice's graph")
+
+        status, query = self.call("GET", "/api/g25/graph/query?q=PathStart", self.bob)
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(self._rows(query, "results"), [], "bob was shown alice's nodes")
+
+        # Nor may bob join alice's nodes with an edge of his own.
+        status, refused = self.call(
+            "POST", "/api/g25/graph/edges", self.bob,
+            {"source_id": start_id, "target_id": end_id, "relationship": "LINKS"},
+        )
+        body = refused.get("data") if isinstance(refused.get("data"), dict) else refused
+        self.assertTrue(
+            status != HTTPStatus.CREATED or "error" in (body or {}),
+            f"bob was allowed to create an edge between alice's nodes: {refused}",
+        )
+
     def test_voice_conversations_are_not_visible_or_readable_across_owners(self) -> None:
         status, created = self.call("POST", "/api/voice/conversations", self.alice, {})
         self.assertEqual(status, HTTPStatus.CREATED)

@@ -4537,7 +4537,6 @@ function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Re
   const [pathStart, setPathStart] = useState("");
   const [pathEnd, setPathEnd] = useState("");
   const [ragDocId, setRagDocId] = useState("");
-  const [ragChunks, setRagChunks] = useState("");
   const [ragQuery, setRagQuery] = useState("");
   const [reasoningTopic, setReasoningTopic] = useState("");
   const [reasoningText, setReasoningText] = useState("");
@@ -4593,11 +4592,11 @@ function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Re
 
   if (tab === "RAG") return <section className="p-card">
     <div className="p-card-heading"><h3>Retrieval index and search</h3></div>
-    <form onSubmit={(event: FormEvent) => { event.preventDefault(); const chunks = ragChunks.split("\n").map(line => line.trim()).filter(Boolean); start("Index document", () => indexG25Rag({ doc_id: ragDocId.trim(), chunks })); }}>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Index document", () => indexG25Rag({ doc_id: ragDocId.trim() })); }}>
       <label className="demo-form-field">Document id<input className="input" list="g25-rag-documents" value={ragDocId} onChange={event => setRagDocId(event.target.value)} required /></label>
       <datalist id="g25-rag-documents">{documents.map((document, index) => <option key={String(document.id ?? index)} value={String(document.id ?? "")}>{String(document.filename ?? document.name ?? "")}</option>)}</datalist>
-      <label className="demo-form-field">Chunks (one per line)<textarea className="input" rows={5} value={ragChunks} onChange={event => setRagChunks(event.target.value)} required /></label>
-      <button className="btn primary" disabled={busy || !ragDocId.trim() || !ragChunks.trim()}><Layers3 className="icon sm" />Index chunks</button>
+      <p className="caption">The backend chunks the stored document, so no text is pasted here.</p>
+      <button className="btn primary" disabled={busy || !ragDocId.trim()}><Layers3 className="icon sm" />Index document</button>
     </form>
     <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Retrieval search", () => searchG25Rag({ query: ragQuery.trim() })); }} style={{ marginTop: 16 }}>
       <label className="demo-form-field">Search query<input className="input" value={ragQuery} onChange={event => setRagQuery(event.target.value)} required /></label>

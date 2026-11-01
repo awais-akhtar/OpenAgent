@@ -98,9 +98,10 @@ def handle_get(path: str, query: str, deps: G25RouteDependencies) -> JsonRouteRe
     if path == "/api/g25/rag/context":
         doc_id = _first(params, "doc_id")
         query = _first(params, "q")
-        if not doc_id:
-            return JsonRouteResult({"error": "Document ID required"}, HTTPStatus.BAD_REQUEST)
-        context = deps.rag_service.get_context(doc_id, query or "", project=project, owner=owner)
+        # The query is what context is retrieved for; doc_id only narrows it.
+        if not query:
+            return JsonRouteResult({"error": "Query required"}, HTTPStatus.BAD_REQUEST)
+        context = deps.rag_service.get_context(query, project=project, owner=owner, doc_id=doc_id)
         return JsonRouteResult(context)
 
     if path.startswith("/api/g25/reasoning/chains/"):
@@ -178,12 +179,14 @@ def handle_post(path: str, deps: G25RouteDependencies) -> JsonRouteResult | None
 
     if path == "/api/g25/rag/index":
         doc_id = str(payload.get("doc_id", "")).strip()
-        chunks = list(payload.get("chunks", []))
+        if not doc_id:
+            return JsonRouteResult({"error": "doc_id required"}, HTTPStatus.BAD_REQUEST)
 
-        if not doc_id or not chunks:
-            return JsonRouteResult({"error": "doc_id and chunks required"}, HTTPStatus.BAD_REQUEST)
-
-        result = deps.rag_service.index_document(doc_id, chunks, project=project, owner=owner)
+        # The service chunks the document it already holds, so indexing is
+        # driven by the stored text rather than chunks supplied by the caller.
+        result = deps.rag_service.index_document(doc_id, project=project, owner=owner)
+        if "error" in result:
+            return JsonRouteResult(result, HTTPStatus.NOT_FOUND)
         return JsonRouteResult(result, HTTPStatus.CREATED)
 
     if path == "/api/g25/rag/search":
