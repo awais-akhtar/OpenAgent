@@ -496,8 +496,8 @@ class C3ProviderIntegrationTests(TestCase):
                     error_behavior=None,
                 )
                 mock_config.return_value = config_obj
-                result = fixture.validate_credentials()
-                # Result varies by provider key format
+                with self.subTest(provider=provider, key=key):
+                    self.assertEqual(fixture.validate_credentials(), expected)
 
     def test_provider_chain_auth_refresh_retry(self) -> None:
         """Test provider chain with token refresh and retry."""
