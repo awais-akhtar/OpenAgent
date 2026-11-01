@@ -25,6 +25,14 @@ import {
   createProvenanceFact, getProvenanceFact, listProvenanceFacts, restoreProvenanceFact,
   retractProvenanceFact, searchProvenanceFacts, type FactProvenanceSourceInput,
 } from "../api/client";
+import {
+  addPersonalOsGalleryAsset, batchTagGalleryAssets, deleteDeveloperWebhook,
+  dispatchDeveloperWebhook, editGalleryAssetMetadata, exportPersonalOsBundle,
+  getGalleryAssetOperations, getGalleryAssetVersions, importPersonalOsBundle,
+  listPersonalOsCompares, setPersonalOsGalleryFavorite, startPersonalOsCompare,
+  transformGalleryAsset, updateDeveloperWebhook, verifyDeveloperApiKey,
+  votePersonalOsCompare, type DeveloperWebhookUpdate,
+} from "../api/client";
 import { useWorkspaceState } from "../state";
 import { advancedDemoAction, advancedDemoScreen, resetAdvancedDemoRoute } from "../demo/advanced";
 import { demoProvider } from "../demo/provider";
@@ -154,10 +162,13 @@ function DeveloperResources({ tab, data, demo }: { tab: string; data?: Record<st
   if (tab === "API keys") {
     const keys = rows("keys");
     const scopes = rows("scopes");
-    return <section className="p-card"><div className="p-card-heading"><h3>Issued API keys</h3><span className="p-fixture">{keys.length} records</span></div>
+    return <><section className="p-card"><div className="p-card-heading"><h3>Issued API keys</h3><span className="p-fixture">{keys.length} records</span></div>
       {!keys.length ? <p className="muted small">No API keys are registered. New key tokens are shown once after creation.</p> : <div className="p-record-sections">{keys.map((key, index) => <article className="p-record-section" key={String(key.id ?? index)}><h4>{String(key.label ?? "API key")}</h4><p className="caption">{String(key.status ?? "unknown")} · created {String(key.created_at ?? "date unavailable")} · last used {String(key.last_used_at ?? "never")}</p><p className="caption">Scopes: {Array.isArray(key.scopes) ? key.scopes.map(String).join(", ") : "not reported"}</p></article>)}</div>}
       <div className="p-note section-space"><Shield className="icon sm" aria-hidden="true" /><span>{scopes.length ? `${scopes.length} permissions are available from the backend scope catalog. Choose only the permissions this key needs.` : "The backend scope catalog could not be read. Key creation is unavailable until the supported permissions can be verified."}</span></div>
-    </section>;
+    </section>
+    <DeveloperApiKeyVerification />
+    <section className="p-card"><div className="p-card-heading"><h3>Key revocation and rotation</h3></div><p className="muted small">The backend declares no revoke or rotate route for API keys, so no control is offered here. Removing a key is a backend operation until such a route exists.</p></section>
+    </>;
   }
   if (tab === "Webhooks" || tab === "Activity") {
     const webhooks = rows("webhooks");
@@ -166,6 +177,7 @@ function DeveloperResources({ tab, data, demo }: { tab: string; data?: Record<st
       {tab === "Webhooks" && <section className="p-card"><div className="p-card-heading"><h3>Registered webhooks</h3><span className="p-fixture">{webhooks.length} records</span></div>
         {!webhooks.length ? <p className="muted small">No webhooks registered.</p> : <div className="p-record-sections">{webhooks.map((webhook, index) => <article className="p-record-section" key={String(webhook.id ?? index)}><h4>{String(webhook.event ?? "*")}</h4><p className="caption">{String(webhook.target_url ?? "Target unavailable")} · {webhook.enabled === true ? "enabled" : "disabled"}</p><p className="caption">Updated {String(webhook.updated_at ?? "date unavailable")}</p></article>)}</div>}
       </section>}
+      {tab === "Webhooks" && <DeveloperWebhookLifecycle webhooks={webhooks} />}
       <section className="p-card"><div className="p-card-heading"><h3>Delivery history</h3><span className="p-fixture">{deliveries.length} records</span></div>
         {!deliveries.length ? <p className="muted small">No delivery records. This screen does not send test events.</p> : <div className="p-record-sections">{deliveries.slice(0, 50).map((delivery, index) => <article className="p-record-section" key={String(delivery.id ?? index)}><h4>{String(delivery.event ?? "Webhook event")}</h4><p className="caption">{String(delivery.status ?? "status unavailable")} · webhook {String(delivery.webhook_id ?? "unknown")} · {String(delivery.created_at ?? "date unavailable")}</p></article>)}</div>}
       </section>
@@ -195,6 +207,174 @@ function DeveloperResources({ tab, data, demo }: { tab: string; data?: Record<st
     return <section className="p-card"><div className="p-card-heading"><h3>Developer connections</h3></div><div className="p-record-sections"><p className="caption">Backend platform status: {String(status.status ?? "response received; no status field reported")}</p><p className="caption">Registered plugins: {plugins.length} · extensions: {extensions.length}</p></div><div className="p-note section-space"><Network className="icon sm" aria-hidden="true" /><span>No general integration-connect endpoint is exposed by this service.</span></div></section>;
   }
   return <section className="p-card"><div className="p-card-heading"><h3>{tab}</h3></div><p className="muted small">No matching developer API resource is available.</p></section>;
+}
+
+// Webhook update (PUT) and delete (DELETE) exposure. Both routes are declared
+// by the backend developer router but previously had no caller in this screen.
+// Secret handling: the stored webhook secret is never requested or displayed.
+// `secret_hint` is a non-secret label, so it is shown as given and can be
+// cleared, and the delete step is confirmed before it is sent.
+function DeveloperWebhookLifecycle({ webhooks }: { webhooks: JsonRecord[] }) {
+  const client = useQueryClient();
+  const [editingId, setEditingId] = useState("");
+  const [eventPattern, setEventPattern] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [secretHint, setSecretHint] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<JsonRecord | null>(null);
+  const [dispatchEvent, setDispatchEvent] = useState("");
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+
+  const refresh = () => client.invalidateQueries({ queryKey: ["advanced-screen", "developer"] });
+  const run = useMutation({
+    mutationFn: async ({ message, operation }: { message: string; operation: () => Promise<unknown> }) => ({ message, value: await operation() }),
+    onSuccess: async ({ message }) => { setError(""); setFeedback(message); await refresh(); },
+    onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (message: string, operation: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ message, operation }); };
+  const busy = run.isPending;
+
+  const closeEditor = () => { setEditingId(""); setEventPattern(""); setTargetUrl(""); setSecretHint(""); setEnabled(true); };
+  const openEditor = (webhook: JsonRecord) => {
+    const id = String(webhook.id ?? "");
+    if (!id) { setFeedback(""); setError("This webhook has no id, so the backend cannot update it."); return; }
+    setError(""); setFeedback("");
+    setEditingId(id);
+    setEventPattern(String(webhook.event ?? "*"));
+    setTargetUrl(String(webhook.target_url ?? ""));
+    setEnabled(webhook.enabled !== false);
+    setSecretHint(String(webhook.secret_hint ?? ""));
+  };
+
+  const submitUpdate = (formEvent: FormEvent) => {
+    formEvent.preventDefault();
+    if (!editingId) return;
+    const update: DeveloperWebhookUpdate = { event: eventPattern.trim() || "*", enabled, secret_hint: secretHint.trim() };
+    const url = targetUrl.trim();
+    if (url) update.target_url = url;
+    start("Webhook updated by the developer service.", () => updateDeveloperWebhook(editingId, update));
+    closeEditor();
+  };
+
+  const confirmDelete = () => {
+    const id = String(pendingDelete?.id ?? "");
+    setPendingDelete(null);
+    if (!id) { setFeedback(""); setError("This webhook has no id, so the backend cannot delete it."); return; }
+    if (id === editingId) closeEditor();
+    start("Webhook deleted. No further deliveries will be attempted for it.", () => deleteDeveloperWebhook(id));
+  };
+
+  return <section className="p-card">
+    <div className="p-card-heading">
+      <h3>Webhook lifecycle</h3>
+      <span className="p-fixture"><LockKeyhole className="icon xs" aria-hidden="true" />developer scope</span>
+    </div>
+    <p className="muted small">Update or remove a registered webhook. Secret values are held by the backend and are never shown here; only the non-secret hint label can be edited.</p>
+    {error && <p className="caption" role="alert">{error}</p>}
+    {feedback && <p className="caption" role="status">{feedback}</p>}
+
+    {!webhooks.length ? <p className="caption">No registered webhooks to update or delete.</p>
+      : <ul className="p-list">{webhooks.map((webhook, index) => {
+          const id = String(webhook.id ?? "");
+          const label = String(webhook.event ?? "*");
+          return <li className="p-list-row" key={id || index}>
+            <span className="square-icon sm"><Network className="icon sm" aria-hidden="true" /></span>
+            <div className="flex1">
+              <strong>{label}</strong>
+              <small className="muted">{String(webhook.target_url ?? "Target unavailable")} · {webhook.enabled === false ? "disabled" : "enabled"}{id ? ` · id ${id}` : ""}</small>
+            </div>
+            <span className="p-fixture">{String(webhook.secret_hint ?? "").trim() ? "secret configured" : "no secret"}</span>
+            <button className="btn sm" type="button" disabled={busy} onClick={() => openEditor(webhook)} aria-label={`Edit webhook ${label}`}><Settings2 className="icon sm" aria-hidden="true" />Edit</button>
+            <button className="btn sm" type="button" disabled={busy} onClick={() => { setError(""); setFeedback(""); setPendingDelete(webhook); }} aria-label={`Delete webhook ${label}`}><Trash2 className="icon sm" aria-hidden="true" />Delete</button>
+          </li>;
+        })}</ul>}
+
+    {editingId && <form className="p-record-section section-space" onSubmit={submitUpdate}>
+      <h4>Update webhook {editingId}</h4>
+      <label className="demo-form-field">Event pattern<input className="input" value={eventPattern} onChange={event => setEventPattern(event.target.value)} placeholder="openagent.task.completed" /></label>
+      <label className="demo-form-field">Target URL<input className="input" type="url" value={targetUrl} onChange={event => setTargetUrl(event.target.value)} placeholder="https://example.org/webhook" /></label>
+      <label className="demo-form-field">Secret hint (label only, never the secret)<input className="input" value={secretHint} onChange={event => setSecretHint(event.target.value)} placeholder="Stored in the deployment vault" /></label>
+      <label className="row" style={{ gap: 8 }}><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />Deliveries enabled</label>
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn primary" type="submit" disabled={busy}><Check className="icon sm" aria-hidden="true" />Save webhook</button>
+        <button className="btn" type="button" onClick={closeEditor}>Cancel</button>
+      </div>
+    </form>}
+
+    <form className="p-record-section section-space" onSubmit={formEvent => {
+      formEvent.preventDefault();
+      const name = dispatchEvent.trim();
+      if (!name) return;
+      start("Dispatch recorded by the backend. No outbound network delivery was requested.", () => dispatchDeveloperWebhook({ event: name }));
+      setDispatchEvent("");
+    }}>
+      <h4>Record a test dispatch</h4>
+      <p className="muted small">The dispatch is recorded against matching webhooks with outbound network delivery switched off, so no request leaves this machine.</p>
+      <label className="demo-form-field">Event name<input className="input" value={dispatchEvent} onChange={event => setDispatchEvent(event.target.value)} placeholder="openagent.task.completed" /></label>
+      <button className="btn" type="submit" disabled={busy || !dispatchEvent.trim()}><Play className="icon sm" aria-hidden="true" />Record dispatch</button>
+    </form>
+
+    <div className="p-note section-space"><LockKeyhole className="icon sm" aria-hidden="true" /><span>MCP environment values and arbitrary command execution are intentionally not editable from this workspace.</span></div>
+
+    <Dialog.Root open={Boolean(pendingDelete)} onOpenChange={open => { if (!open) setPendingDelete(null); }}>
+      <Dialog.Portal><Dialog.Overlay /><Dialog.Content className="advanced-integration-dialog">
+        <div className="advanced-integration-heading">
+          <Dialog.Title className="second-app-dialog-title">Delete this webhook?</Dialog.Title>
+          <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close confirmation"><X size={16} aria-hidden="true" /></button></Dialog.Close>
+        </div>
+        <Dialog.Description className="second-app-dialog-description">Deleting removes the registration from the developer service. Past delivery records are kept, but no further events will be sent to this target. This cannot be undone from here.</Dialog.Description>
+        <p className="caption">{String(pendingDelete?.event ?? "*")} · {String(pendingDelete?.target_url ?? "target unavailable")}</p>
+        <div className="advanced-integration-actions">
+          <button type="button" className="btn" onClick={() => setPendingDelete(null)}>Cancel</button>
+          <button type="button" className="btn primary" disabled={busy} onClick={confirmDelete}><Trash2 className="icon sm" aria-hidden="true" />Delete webhook</button>
+        </div>
+      </Dialog.Content></Dialog.Portal>
+    </Dialog.Root>
+  </section>;
+}
+
+// API-key verification. The route takes a key and answers whether it is valid
+// for a scope; the key is typed into a password field, never rendered back and
+// never stored in component state beyond the pending submission.
+function DeveloperApiKeyVerification() {
+  const [keyValue, setKeyValue] = useState("");
+  const [scope, setScope] = useState("");
+  const [result, setResult] = useState<JsonRecord | null>(null);
+  const [error, setError] = useState("");
+
+  const verify = useMutation({
+    mutationFn: (body: { key: string; scope?: string }) => verifyDeveloperApiKey(body),
+    onSuccess: payload => { setError(""); setResult(payload); setKeyValue(""); },
+    onError: cause => { setResult(null); setKeyValue(""); setError(apiConnectionMessage(cause)); },
+  });
+
+  return <section className="p-card">
+    <div className="p-card-heading">
+      <h3>Verify an API key</h3>
+      <span className="p-fixture"><LockKeyhole className="icon xs" aria-hidden="true" />developer scope</span>
+    </div>
+    <p className="muted small">The backend checks the key and reports only whether it is valid and which scopes it carries. The value is cleared from this form as soon as it is submitted and is never displayed.</p>
+    <form onSubmit={(formEvent: FormEvent) => {
+      formEvent.preventDefault();
+      const key = keyValue.trim();
+      if (!key) return;
+      setError(""); setResult(null);
+      verify.mutate({ key, ...(scope.trim() ? { scope: scope.trim() } : {}) });
+    }}>
+      <label className="demo-form-field">API key<input className="input" type="password" autoComplete="off" value={keyValue} onChange={event => setKeyValue(event.target.value)} placeholder="Paste the key to check" /></label>
+      <label className="demo-form-field">Required scope (optional)<input className="input" value={scope} onChange={event => setScope(event.target.value)} placeholder="developer:write" /></label>
+      <button className="btn primary" type="submit" disabled={verify.isPending || !keyValue.trim()}><KeyRound className="icon sm" aria-hidden="true" />Verify key</button>
+    </form>
+    {error && <p className="caption" role="alert">{error}</p>}
+    {result && <div className="demo-detail-grid section-space">
+      <div><small>Valid</small><strong>{result.valid === true ? "Yes" : result.valid === false ? "No" : "Not reported"}</strong></div>
+      <div><small>Key label</small><strong>{String(result.label ?? "Not reported")}</strong></div>
+      <div><small>Key id</small><strong>{String(result.id ?? result.key_id ?? "Not reported")}</strong></div>
+      <div><small>Scopes</small><strong>{Array.isArray(result.scopes) ? result.scopes.map(String).join(", ") || "none" : "Not reported"}</strong></div>
+      <div><small>Scope satisfied</small><strong>{result.scope_allowed === true ? "Yes" : result.scope_allowed === false ? "No" : "Not reported"}</strong></div>
+    </div>}
+  </section>;
 }
 
 function DeveloperDemoRecords({ heading, collection, items, note, onTest, feedback, icon = SquareTerminal }: { heading: string; collection: string; items: JsonRecord[]; note?: string; onTest?: () => void; feedback?: string; icon?: LucideIcon }) {
@@ -3405,6 +3585,150 @@ function FineTuneDemoRecords({ heading, collection, items }: { heading: string; 
 
 // ─── Image Studio ────────────────────────────────────────────────────────────
 
+// Advanced Image Studio controls: per-asset metadata editing, library-wide
+// batch tagging, the declared transform operations and the per-asset operation
+// and version history. Each one maps to a single declared gallery route.
+function ImageStudioAdvancedControls({ assetId, assets }: { assetId: string | null; assets: JsonRecord[] }) {
+  const client = useQueryClient();
+  const [filename, setFilename] = useState("");
+  const [metadataTags, setMetadataTags] = useState("");
+  const [favorite, setFavorite] = useState(false);
+  const [batchIds, setBatchIds] = useState<string[]>([]);
+  const [batchTags, setBatchTags] = useState("");
+  const [batchReplace, setBatchReplace] = useState(false);
+  const [operation, setOperation] = useState("sharpen");
+  const [degrees, setDegrees] = useState("90");
+  const [scale, setScale] = useState("2");
+  const [threshold, setThreshold] = useState("36");
+  const [history, setHistory] = useState<{ operations: JsonRecord[]; versions: JsonRecord[] } | null>(null);
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+
+  const parseTags = (value: string) => value.split(",").map(part => part.trim()).filter(Boolean);
+  const refresh = () => client.invalidateQueries({ queryKey: ["advanced-screen", "gallery"] });
+  const run = useMutation({
+    mutationFn: async ({ message, operation: call }: { message: string; operation: () => Promise<unknown> }) => ({ message, value: await call() }),
+    onSuccess: async ({ message }) => { setError(""); setFeedback(message); await refresh(); },
+    onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const loadHistory = useMutation({
+    mutationFn: async (id: string) => ({
+      operations: rowsOf(await getGalleryAssetOperations(id), "operations"),
+      versions: rowsOf(await getGalleryAssetVersions(id), "versions"),
+    }),
+    onSuccess: payload => { setError(""); setFeedback(""); setHistory(payload); },
+    onError: cause => { setHistory(null); setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (message: string, call: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ message, operation: call }); };
+  const busy = run.isPending || loadHistory.isPending;
+
+  const transformParams = (): JsonRecord => {
+    if (operation === "rotate") return { degrees: Number(degrees) || 90 };
+    if (operation === "upscale") return { scale: Number(scale) || 2 };
+    if (operation === "remove-background") return { threshold: Number(threshold) || 36 };
+    return {};
+  };
+
+  return <>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Asset metadata</h3>{assetId && <span className="p-fixture">asset {assetId}</span>}</div>
+      {!assetId ? <p className="caption">Select an image in Library to edit its metadata.</p>
+        : <form onSubmit={(formEvent: FormEvent) => {
+            formEvent.preventDefault();
+            const tags = parseTags(metadataTags);
+            start("Metadata saved by the gallery service.", () => editGalleryAssetMetadata(assetId, {
+              ...(filename.trim() ? { filename: filename.trim() } : {}),
+              ...(metadataTags.trim() ? { tags } : {}),
+              favorite,
+            }));
+          }}>
+            <label className="demo-form-field">Filename (leave empty to keep the current one)<input className="input" value={filename} onChange={event => setFilename(event.target.value)} placeholder="portrait-final.png" /></label>
+            <label className="demo-form-field">Tags, comma separated (leave empty to keep the current ones)<input className="input" value={metadataTags} onChange={event => setMetadataTags(event.target.value)} placeholder="portrait, approved" /></label>
+            <label className="row" style={{ gap: 8 }}><input type="checkbox" checked={favorite} onChange={event => setFavorite(event.target.checked)} />Mark as favourite</label>
+            <button className="btn primary" type="submit" disabled={busy}><Check className="icon sm" aria-hidden="true" />Save metadata</button>
+          </form>}
+    </section>
+
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Batch tagging</h3><span className="p-fixture">{batchIds.length} selected</span></div>
+      <p className="muted small">Tags are added to every selected asset. Replace mode discards the tags those assets already carry.</p>
+      {!assets.length ? <p className="caption">No assets are loaded, so there is nothing to tag.</p>
+        : <form onSubmit={(formEvent: FormEvent) => {
+            formEvent.preventDefault();
+            const tags = parseTags(batchTags);
+            if (!batchIds.length || !tags.length) return;
+            start(`Tags applied to ${batchIds.length} asset${batchIds.length === 1 ? "" : "s"}.`, () => batchTagGalleryAssets({ asset_ids: batchIds, tags, replace: batchReplace }));
+          }}>
+            <fieldset className="p-record-section"><legend>Assets</legend>
+              {assets.slice(0, 50).map((asset, index) => {
+                const id = String(asset.id ?? "");
+                if (!id) return null;
+                return <label className="row" style={{ gap: 8 }} key={id || index}>
+                  <input type="checkbox" checked={batchIds.includes(id)} onChange={event => setBatchIds(current => event.target.checked ? [...current, id] : current.filter(value => value !== id))} />
+                  {String(asset.filename ?? asset.name ?? id)}
+                </label>;
+              })}
+            </fieldset>
+            <label className="demo-form-field">Tags, comma separated<input className="input" value={batchTags} onChange={event => setBatchTags(event.target.value)} placeholder="reviewed, export" /></label>
+            <label className="row" style={{ gap: 8 }}><input type="checkbox" checked={batchReplace} onChange={event => setBatchReplace(event.target.checked)} />Replace existing tags instead of adding</label>
+            <button className="btn primary" type="submit" disabled={busy || !batchIds.length || !parseTags(batchTags).length}><Layers3 className="icon sm" aria-hidden="true" />Apply tags</button>
+          </form>}
+    </section>
+
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Transform</h3></div>
+      <p className="muted small">Each transform writes a new version and can be reverted with Undo. Inpainting is not offered here because it requires a mask image the backend has to receive separately.</p>
+      {!assetId ? <p className="caption">Select an image in Library to transform it.</p>
+        : <form onSubmit={(formEvent: FormEvent) => {
+            formEvent.preventDefault();
+            start(`Transform "${operation}" applied. A new version was recorded.`, () => transformGalleryAsset(assetId, { operation, params: transformParams() }));
+          }}>
+            <label className="demo-form-field">Operation<select className="select" value={operation} onChange={event => setOperation(event.target.value)}>
+              <option value="sharpen">sharpen</option>
+              <option value="denoise">denoise</option>
+              <option value="restore">restore</option>
+              <option value="style">style</option>
+              <option value="rotate">rotate</option>
+              <option value="upscale">upscale</option>
+              <option value="remove-background">remove-background</option>
+            </select></label>
+            {operation === "rotate" && <label className="demo-form-field">Degrees<input className="input" type="number" step="90" value={degrees} onChange={event => setDegrees(event.target.value)} /></label>}
+            {operation === "upscale" && <label className="demo-form-field">Scale (1–8)<input className="input" type="number" min="1" max="8" value={scale} onChange={event => setScale(event.target.value)} /></label>}
+            {operation === "remove-background" && <label className="demo-form-field">Colour threshold<input className="input" type="number" min="5" max="180" value={threshold} onChange={event => setThreshold(event.target.value)} /></label>}
+            <button className="btn primary" type="submit" disabled={busy}><Sparkles className="icon sm" aria-hidden="true" />Apply transform</button>
+          </form>}
+    </section>
+
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Operation and version history</h3>
+        {assetId && <button className="btn sm" type="button" disabled={busy} onClick={() => loadHistory.mutate(assetId)}><FileClock className="icon sm" aria-hidden="true" />{loadHistory.isPending ? "Loading…" : "Load history"}</button>}
+      </div>
+      {!assetId ? <p className="caption">Select an image in Library to read its history.</p>
+        : !history ? <p className="caption">Load the history to see the operations and versions the backend has recorded for this asset.</p>
+          : <>
+              <div className="p-record-section"><h4>Operations</h4>
+                {!history.operations.length ? <p className="caption">No operations recorded.</p>
+                  : <ul className="p-list">{history.operations.map((entry, index) => <li className="p-list-row" key={String(entry.id ?? index)}>
+                      <span className="square-icon sm"><Activity className="icon sm" aria-hidden="true" /></span>
+                      <div className="flex1"><strong>{String(entry.operation ?? entry.name ?? "Operation")}</strong><small className="muted">{String(entry.created_at ?? "")}</small></div>
+                      <span className="p-fixture">{String(entry.status ?? "recorded")}</span>
+                    </li>)}</ul>}
+              </div>
+              <div className="p-record-section section-space"><h4>Versions</h4>
+                {!history.versions.length ? <p className="caption">No stored versions.</p>
+                  : <ul className="p-list">{history.versions.map((entry, index) => <li className="p-list-row" key={String(entry.id ?? index)}>
+                      <span className="square-icon sm"><Image className="icon sm" aria-hidden="true" /></span>
+                      <div className="flex1"><strong>{String(entry.filename ?? entry.version ?? `Version ${index + 1}`)}</strong><small className="muted">{String(entry.created_at ?? "")}</small></div>
+                    </li>)}</ul>}
+              </div>
+            </>}
+    </section>
+
+    {error && <p className="caption" role="alert">{error}</p>}
+    {feedback && <p className="caption" role="status">{feedback}</p>}
+  </>;
+}
+
 function GalleryWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
   const client = useQueryClient();
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -3514,7 +3838,7 @@ function GalleryWorkspace({ tab, data, query: lq }: { tab: string; data?: Record
         </div>)}</div>}
   </section>;
 
-  if (tab === "Operations") return <section className="p-card">
+  if (tab === "Operations") return <><section className="p-card">
     <div className="p-card-heading"><h3>Batch operations</h3></div>
     {opError && <p className="caption" role="alert">{opError}</p>}
     <div className="p-list">
@@ -3526,7 +3850,9 @@ function GalleryWorkspace({ tab, data, query: lq }: { tab: string; data?: Record
       </>}
       {!selectedId && <p className="caption">Select an image in Library to enable per-image operations.</p>}
     </div>
-  </section>;
+  </section>
+  <ImageStudioAdvancedControls assetId={selectedId} assets={images} />
+  </>;
 
   // Library tab (default)
   return <section className="p-card">
@@ -3887,6 +4213,154 @@ function PersonalOSRecordList({ collection, records, loading }: { collection: "s
   </section>;
 }
 
+// Personal OS gallery, side-by-side compare and bundle transfer. Every control
+// maps to a declared personal-os route; the export bundle is rendered as a
+// record count rather than its contents so nothing stored is dumped on screen.
+function PersonalOSGalleryOperations({ gallery }: { gallery: JsonRecord[] }) {
+  const client = useQueryClient();
+  const [title, setTitle] = useState("");
+  const [mediaType, setMediaType] = useState("image");
+  const [sourcePath, setSourcePath] = useState("");
+  const [tags, setTags] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [leftOutput, setLeftOutput] = useState("");
+  const [rightOutput, setRightOutput] = useState("");
+  const [compares, setCompares] = useState<JsonRecord[] | null>(null);
+  const [importText, setImportText] = useState("");
+  const [exportSummary, setExportSummary] = useState<string>("");
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+
+  const refresh = () => client.invalidateQueries({ queryKey: ["advanced-screen", "personalos"] });
+  const run = useMutation({
+    mutationFn: async ({ message, operation }: { message: string; operation: () => Promise<unknown> }) => ({ message, value: await operation() }),
+    onSuccess: async ({ message }) => { setError(""); setFeedback(message); await refresh(); },
+    onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const loadCompares = useMutation({
+    mutationFn: () => listPersonalOsCompares(),
+    onSuccess: payload => { setError(""); setFeedback(""); setCompares(rowsOf(payload, "compares", "items")); },
+    onError: cause => { setCompares(null); setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const loadExport = useMutation({
+    mutationFn: () => exportPersonalOsBundle(),
+    onSuccess: payload => {
+      setError(""); setFeedback("");
+      const counts = Object.entries(payload)
+        .filter(([, value]) => Array.isArray(value))
+        .map(([key, value]) => `${key}: ${(value as unknown[]).length}`);
+      setExportSummary(counts.length ? counts.join(" · ") : "The backend returned no record collections.");
+    },
+    onError: cause => { setExportSummary(""); setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (message: string, operation: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ message, operation }); };
+  const busy = run.isPending || loadCompares.isPending || loadExport.isPending;
+
+  return <>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Save a gallery item</h3></div>
+      <p className="muted small">The item is stored against this project. Favourites can be switched on and off per item below.</p>
+      <form onSubmit={(formEvent: FormEvent) => {
+        formEvent.preventDefault();
+        if (!title.trim()) return;
+        start("Gallery item saved by Personal OS.", () => addPersonalOsGalleryAsset({
+          title: title.trim(),
+          media_type: mediaType,
+          ...(sourcePath.trim() ? { source_path: sourcePath.trim() } : {}),
+          ...(tags.trim() ? { tags: tags.split(",").map(part => part.trim()).filter(Boolean) } : {}),
+        }));
+        setTitle(""); setSourcePath(""); setTags("");
+      }}>
+        <label className="demo-form-field">Title<input className="input" value={title} onChange={event => setTitle(event.target.value)} required maxLength={160} /></label>
+        <label className="demo-form-field">Media type<select className="select" value={mediaType} onChange={event => setMediaType(event.target.value)}>
+          <option value="image">image</option><option value="audio">audio</option><option value="video">video</option><option value="document">document</option>
+        </select></label>
+        <label className="demo-form-field">Source path (optional)<input className="input" value={sourcePath} onChange={event => setSourcePath(event.target.value)} placeholder="Local path the backend can read" /></label>
+        <label className="demo-form-field">Tags, comma separated (optional)<input className="input" value={tags} onChange={event => setTags(event.target.value)} /></label>
+        <button className="btn primary" type="submit" disabled={busy || !title.trim()}><Plus className="icon sm" aria-hidden="true" />Save item</button>
+      </form>
+    </section>
+
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Favourites</h3><span className="p-fixture">{gallery.length} items</span></div>
+      {!gallery.length ? <p className="caption">No gallery items to mark.</p>
+        : <ul className="p-list">{gallery.map((item, index) => {
+            const id = String(item.id ?? "");
+            const isFavourite = item.favorite === true;
+            return <li className="p-list-row" key={id || index}>
+              <span className="square-icon sm"><Image className="icon sm" aria-hidden="true" /></span>
+              <div className="flex1"><strong>{String(item.title ?? item.name ?? "Item")}</strong><small className="muted">{String(item.media_type ?? "item")}{id ? ` · id ${id}` : ""}</small></div>
+              <span className="p-fixture">{isFavourite ? "favourite" : "not a favourite"}</span>
+              <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start(isFavourite ? "Removed from favourites." : "Added to favourites.", () => setPersonalOsGalleryFavorite(id, !isFavourite))}>
+                {isFavourite ? "Unmark" : "Mark favourite"}
+              </button>
+            </li>;
+          })}</ul>}
+    </section>
+
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Compare two outputs</h3>
+        <button className="btn sm" type="button" disabled={busy} onClick={() => loadCompares.mutate()}><FileClock className="icon sm" aria-hidden="true" />{loadCompares.isPending ? "Loading…" : "Load history"}</button>
+      </div>
+      <form onSubmit={(formEvent: FormEvent) => {
+        formEvent.preventDefault();
+        if (!prompt.trim()) return;
+        start("Comparison started. Vote on it from the history below.", () => startPersonalOsCompare({
+          prompt: prompt.trim(), left_output: leftOutput, right_output: rightOutput,
+        }));
+        setPrompt(""); setLeftOutput(""); setRightOutput("");
+      }}>
+        <label className="demo-form-field">Prompt<textarea className="input" rows={2} value={prompt} onChange={event => setPrompt(event.target.value)} required /></label>
+        <label className="demo-form-field">Output A<textarea className="input" rows={2} value={leftOutput} onChange={event => setLeftOutput(event.target.value)} /></label>
+        <label className="demo-form-field">Output B<textarea className="input" rows={2} value={rightOutput} onChange={event => setRightOutput(event.target.value)} /></label>
+        <button className="btn primary" type="submit" disabled={busy || !prompt.trim()}><Layers3 className="icon sm" aria-hidden="true" />Start comparison</button>
+      </form>
+      {compares !== null && (!compares.length ? <p className="caption section-space">No comparisons recorded.</p>
+        : <ul className="p-list section-space">{compares.map((entry, index) => {
+            const id = String(entry.id ?? entry.compare_id ?? "");
+            const vote = String(entry.vote ?? "").trim();
+            return <li className="p-list-row" key={id || index}>
+              <span className="square-icon sm"><Layers3 className="icon sm" aria-hidden="true" /></span>
+              <div className="flex1"><strong>{String(entry.prompt ?? "Comparison")}</strong><small className="muted">{String(entry.created_at ?? "")}{id ? ` · id ${id}` : ""}</small></div>
+              {vote ? <span className="p-fixture">voted {vote}</span> : <>
+                <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Vote recorded for output A.", () => votePersonalOsCompare({ session_id: id, vote: "left" }))}>Prefer A</button>
+                <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Vote recorded for output B.", () => votePersonalOsCompare({ session_id: id, vote: "right" }))}>Prefer B</button>
+              </>}
+            </li>;
+          })}</ul>)}
+    </section>
+
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Bundle transfer</h3></div>
+      <p className="muted small">Export reports how many records of each kind this project holds. Import merges a bundle the backend produced; it is not a replacement of what is already stored.</p>
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn" type="button" disabled={busy} onClick={() => loadExport.mutate()}><FileDown className="icon sm" aria-hidden="true" />{loadExport.isPending ? "Reading…" : "Read export summary"}</button>
+      </div>
+      {exportSummary && <p className="caption section-space" role="status">{exportSummary}</p>}
+      <form className="section-space" onSubmit={(formEvent: FormEvent) => {
+        formEvent.preventDefault();
+        let bundle: JsonRecord;
+        try {
+          const parsed: unknown = JSON.parse(importText);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+          bundle = parsed as JsonRecord;
+        } catch {
+          setFeedback(""); setError("The bundle must be a JSON object, as produced by the export route.");
+          return;
+        }
+        start("Bundle imported by Personal OS.", () => importPersonalOsBundle(bundle));
+        setImportText("");
+      }}>
+        <label className="demo-form-field">Bundle JSON<textarea className="input" rows={4} value={importText} onChange={event => setImportText(event.target.value)} placeholder='{"notes": [], "presets": []}' /></label>
+        <button className="btn" type="submit" disabled={busy || !importText.trim()}><Upload className="icon sm" aria-hidden="true" />Import bundle</button>
+      </form>
+    </section>
+
+    {error && <p className="caption" role="alert">{error}</p>}
+    {feedback && <p className="caption" role="status">{feedback}</p>}
+  </>;
+}
+
 function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
   const client = useQueryClient();
   const [noteText, setNoteText] = useState("");
@@ -3980,7 +4454,7 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
     </div>}
   </section>;
 
-  if (tab === "Gallery") return <section className="p-card">
+  if (tab === "Gallery") return <><section className="p-card">
     <div className="p-card-heading"><h3>Personal gallery</h3></div>
     {lq.isLoading ? <p className="caption">Loading…</p> : gallery.length === 0
       ? <EmptyState icon={Image} title="No gallery items" detail="Images saved to Personal OS appear here." />
@@ -3991,7 +4465,9 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
             <span className="p-gallery-label">{String(img.name ?? img.title ?? "Image")}</span>
           </div>;
         })}</div>}
-  </section>;
+  </section>
+  <PersonalOSGalleryOperations gallery={gallery} />
+  </>;
 
   if (tab === "Signatures") return <PersonalOSRecordList key="signatures" collection="signatures" records={signatures} loading={lq.isLoading}/>;
   if (tab === "Drafts") return <PersonalOSRecordList key="drafts" collection="drafts" records={drafts} loading={lq.isLoading}/>;
