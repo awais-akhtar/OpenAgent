@@ -90,16 +90,21 @@ class DirectHardwareClient:
         *,
         timeout: float = 120.0,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
         **payload: Any,
     ) -> dict[str, Any]:
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or
                 not math.isfinite(timeout) or timeout < 0):
             raise ValueError('finite nonnegative device request timeout required')
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError('device request cancellation must be callable')
         request_id = uuid4().hex
         command = {**payload, "action": action, "request_id": request_id}
         with self._request_lock:
             if self._closed:
                 raise DirectHardwareError("The native accelerator client is closed.")
+            if cancelled is not None and cancelled():
+                raise InterruptedError("direct model request cancelled before execution")
             self._ensure_started()
             process = self._process
             if process is None or process.stdin is None:
@@ -112,6 +117,21 @@ class DirectHardwareClient:
                 raise DirectHardwareError(self._failure_message("Native worker command pipe closed", exc)) from exc
             deadline = time.monotonic() + max(0.1, float(timeout))
             while True:
+                if cancelled is not None:
+                    try:
+                        requested = bool(cancelled())
+                    except BaseException as primary:
+                        try:
+                            self._terminate()
+                        except BaseException as cleanup:
+                            try:
+                                primary.add_note("worker cleanup after cancellation check failed: " + repr(cleanup))
+                            except BaseException:
+                                pass
+                        raise
+                    if requested:
+                        self._terminate()
+                        raise InterruptedError("direct model request cancelled; worker retired")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._terminate()
@@ -255,10 +275,12 @@ class DirectHardwareClient:
         prompt: str = "",
         generation: dict[str, Any] | None = None,
         timeout: float = 600.0,
+        cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         return self.request(
             "generate", model_id=model_id, messages=messages,
             prompt=prompt, generation=generation or {}, timeout=timeout,
+            cancelled=cancelled,
         )
 
     def stream_generate(
@@ -269,17 +291,20 @@ class DirectHardwareClient:
         prompt: str = "",
         generation: dict[str, Any] | None = None,
         timeout: float = 600.0,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError('device stream cancellation must be callable')
         # Keep at most a small window of generated events in memory.  The
         # request thread is also the pipe-response consumer, so its callback
         # must apply backpressure rather than allowing an abandoned/slow HTTP
         # consumer to accumulate an unbounded transcript.
         events: Queue[tuple[str, Any]] = Queue(maxsize=16)
         finished = threading.Event()
-        cancelled = threading.Event()
+        consumer_closed = threading.Event()
 
         def publish(item: tuple[str, Any]) -> None:
-            while not cancelled.is_set():
+            while not consumer_closed.is_set():
                 try:
                     events.put(item, timeout=0.1)
                     return
@@ -294,7 +319,7 @@ class DirectHardwareClient:
                 result = self.request(
                     "generate_stream", model_id=model_id, messages=messages,
                     prompt=prompt, generation=generation or {}, timeout=timeout,
-                    on_event=on_event,
+                    on_event=on_event, cancelled=cancelled,
                 )
                 publish(("done", result))
             except Exception as exc:
@@ -306,7 +331,12 @@ class DirectHardwareClient:
         thread.start()
         try:
             while True:
-                kind, value = events.get()
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("direct model stream cancelled")
+                try:
+                    kind, value = events.get(timeout=0.1)
+                except Empty:
+                    continue
                 if kind == "event":
                     yield dict(value)
                 elif kind == "done":
@@ -315,7 +345,7 @@ class DirectHardwareClient:
                 else:
                     raise value
         finally:
-            cancelled.set()
+            consumer_closed.set()
             if not finished.is_set():
                 self._terminate()
 

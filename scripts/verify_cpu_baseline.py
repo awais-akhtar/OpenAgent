@@ -83,6 +83,32 @@ def main() -> int:
                 not chunks or not chunks[-1].done or not streamed.strip() or
                 any(chunk.provider != "openvino-direct" for chunk in chunks)):
             raise RuntimeError("CPU gateway completion or streaming was incomplete")
+        # The resident worker must be retired when a long request is cancelled;
+        # the next ordinary gateway request must load into a fresh worker.
+        old_worker = client._process
+        cancel_request = threading.Event()
+        timer = threading.Timer(0.25, cancel_request.set)
+        timer.start()
+        try:
+            try:
+                client.generate(
+                    "phase1-cpu-small",
+                    messages=[{"role": "user", "content": "Count upward slowly from one."}],
+                    generation={"max_new_tokens": 256, "do_sample": False},
+                    cancelled=cancel_request.is_set)
+            except InterruptedError:
+                pass
+            else:
+                raise RuntimeError("long CPU generation completed without observing cancellation")
+        finally:
+            timer.cancel()
+        if client._process is old_worker:
+            raise RuntimeError("cancelled CPU worker was not retired")
+        recovered = gateway.complete(
+            [{"role": "user", "content": "After cancellation, say recovered."}],
+            provider_id="openvino-direct", max_output_tokens=16)
+        if recovered.provider != "openvino-direct" or not recovered.content.strip():
+            raise RuntimeError("CPU gateway did not recover after worker retirement")
     finally:
         stop.set()
         watcher.join(timeout=2)
@@ -98,6 +124,8 @@ def main() -> int:
         "sampled_rss_limit_bytes": int(args.max_sampled_rss_gib * 1024**3),
         "complete_text": result.content,
         "stream_text": streamed,
+        "cancelled_worker_retired": True,
+        "post_cancel_gateway_reload": True,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
     print(json.dumps(report, sort_keys=True))

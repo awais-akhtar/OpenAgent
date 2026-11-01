@@ -586,6 +586,45 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertEqual(chunks[-1].metadata["first_token_ms"], 2.0)
         self.assertTrue(chunks[-1].metadata["streamed"])
 
+    def test_openvino_cancel_signal_reaches_worker_without_fallback(self) -> None:
+        class CancellingHardware(FakeDirectHardware):
+            def generate(self, model_id, **kwargs):
+                self.signal = kwargs.get("cancelled")
+                cancelled.set()
+                raise InterruptedError("worker retired after cancellation")
+
+        cancelled = Event()
+        signal = cancelled.is_set
+        client = CancellingHardware()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
+        ):
+            gateway = ModelGateway(direct_hardware=client)
+            fallback_calls = []
+            gateway.select_fallback = lambda provider_id: fallback_calls.append(provider_id)
+            with self.assertRaises(InterruptedError):
+                gateway.complete(
+                    [{"role": "user", "content": "cancel OpenVINO generation"}],
+                    provider_id="openvino-direct", cancelled=signal)
+        self.assertIs(client.signal, signal)
+        self.assertEqual(fallback_calls, [])
+
+    def test_openvino_reload_after_new_worker_loses_old_residency(self) -> None:
+        client = FakeDirectHardware()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
+        ):
+            gateway = ModelGateway(direct_hardware=client)
+            provider = gateway.providers["openvino-direct"]
+            gateway.complete([{"role": "user", "content": "first"}], provider_id="openvino-direct")
+            self.assertEqual(client.load_calls, 1)
+            # Simulate a restarted worker: running, but with no resident model.
+            client.loaded = False
+            client.status = lambda *, start=False: {"running": True, "models": []}
+            gateway.complete([{"role": "user", "content": "second"}], provider_id="openvino-direct")
+            self.assertEqual(client.load_calls, 2)
+            self.assertIn(provider.default_model, provider._resident_model_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

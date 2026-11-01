@@ -400,8 +400,11 @@ def launch_desktop(data_dir: Path | str | None = None, *, project: str = "defaul
     root.geometry("1320x840")
     root.minsize(1080, 700)
     app = DesktopShell(root=root, ttk=ttk, messagebox=messagebox, store=store, project=project, data_dir=data_path)
-    app.render()
-    root.mainloop()
+    try:
+        app.render()
+        root.mainloop()
+    finally:
+        app.close()
     return 0
 
 
@@ -414,7 +417,11 @@ class DesktopShell:
         self.project = project
         self.data_dir = data_dir
         self.context = ContextEngine(store)
-        self.gateway = ModelGateway()
+        from .adaptive_engine.device_runtime import DirectHardwareClient
+        from .adaptive_engine.hardware import HardwareProfiler
+
+        self._direct = DirectHardwareClient(HardwareProfiler(data_dir))
+        self.gateway = ModelGateway(direct_hardware=self._direct)
         self.chat = ChatService(store, self.gateway)
         self.agents = AgentRegistry(store, self.gateway)
         self.workspace = WorkspaceManager(store)
@@ -462,6 +469,9 @@ class DesktopShell:
         self.browser_external_approval: Any = None
         self.security_output: Any = None
         self.audit_output: Any = None
+
+    def close(self) -> None:
+        self._direct.close()
 
     def render(self) -> None:
         self._configure_style()
@@ -1309,7 +1319,7 @@ class DesktopShell:
         if not message:
             return
         try:
-            result = self.chat.send(message, project=self.project, provider="local")
+            result = self.chat.send(message, project=self.project, provider="auto")
             transcript = "\n\n".join(f"{item['role']}: {item['content']}" for item in result["messages"])
             self._append_text(self.chat_log, transcript + "\n")
             self.chat_input.delete(0, "end")

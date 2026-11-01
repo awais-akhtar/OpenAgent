@@ -110,6 +110,11 @@ def main() -> int:
         # Keep this integration credential limited to those exact operations.
         "knowledge": token("smoke-knowledge", ["knowledge:read", "knowledge:write", "semantic:read", "semantic:write"]),
         "voice": token("smoke-voice", ["voice:read", "voice:write"]),
+        # The three route groups that used to bypass the auth gate by being
+        # unmapped. models:* is distinct from the local_ai:* the Models screen
+        # uses, so the serving screen needs its own credential.
+        "g25": token("smoke-g25", ["g25:read", "g25:write"]),
+        "modelServe": token("smoke-model-serve", ["models:read", "models:write"]),
         "communication": token("smoke-communications", ["communication:read", "communication:write"]),
         "calendar": token("smoke-calendar", ["calendar:read", "calendar:write"]),
         # Fine-tuning Jobs composes the Fine-tuning contract with read-only

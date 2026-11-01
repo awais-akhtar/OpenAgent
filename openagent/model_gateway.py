@@ -760,6 +760,7 @@ class OpenVINODirectProvider(BaseProvider):
         messages: list[dict[str, str]],
         *,
         model: str | None = None,
+        cancelled=None,
     ) -> ModelResult:
         model_id = model or self.default_model
         self._ensure_loaded(model_id)
@@ -772,7 +773,9 @@ class OpenVINODirectProvider(BaseProvider):
             "top_k": int(options.get("top_k", 50)),
             "do_sample": float(options.get("temperature", 0.0)) > 0.0,
         }
-        result = self.client.generate(model_id, messages=runtime_messages, generation=generation)
+        generate_options = {"cancelled": cancelled} if cancelled is not None else {}
+        result = self.client.generate(model_id, messages=runtime_messages,
+                                      generation=generation, **generate_options)
         content = str(result.get("text", ""))
         if not content:
             raise ProviderUnavailableError("The direct OpenVINO model returned an empty response.")
@@ -797,6 +800,7 @@ class OpenVINODirectProvider(BaseProvider):
         messages: list[dict[str, str]],
         *,
         model: str | None = None,
+        cancelled=None,
     ) -> Iterator[StreamChunk]:
         model_id = model or self.default_model
         self._ensure_loaded(model_id)
@@ -811,7 +815,9 @@ class OpenVINODirectProvider(BaseProvider):
         }
         emitted = False
         final: dict[str, Any] = {}
-        events = self.client.stream_generate(model_id, messages=runtime_messages, generation=generation)
+        stream_options = {"cancelled": cancelled} if cancelled is not None else {}
+        events = self.client.stream_generate(model_id, messages=runtime_messages,
+                                             generation=generation, **stream_options)
         primary: BaseException | None = None
         try:
             for event in events:
@@ -901,8 +907,9 @@ class OpenVINODirectProvider(BaseProvider):
                 if any(item.get("model_id") == model_id and item.get("kind") == "llm" for item in status.get("models", [])):
                     self._resident_model_ids.add(model_id)
                     return
-                if status.get("running") and model_id in self._resident_model_ids:
-                    return
+                # A cancelled request may retire the worker. Never trust the
+                # previous process's cached residency after a fresh status.
+                self._resident_model_ids.discard(model_id)
             except Exception as exc:
                 raise ProviderUnavailableError(f"The direct accelerator worker is unavailable: {exc}") from exc
             path = Path(self.model_path).expanduser() if self.model_path else None
@@ -1805,7 +1812,7 @@ class ModelGateway:
         try:
             check_cancelled()
             provider_options = {"model": selected_model}
-            if provider.id == "native-publisher" and cancelled is not None:
+            if provider.id in {"native-publisher", "openvino-direct"} and cancelled is not None:
                 provider_options["cancelled"] = cancelled
             with self.inference.activate(plan), _approve_model_egress(allow_external):
                 result = provider.complete(plan.messages, **provider_options)
@@ -2112,7 +2119,7 @@ class ModelGateway:
         try:
             check_cancelled()
             provider_options = {"model": selected_model}
-            if provider.id == 'native-publisher':
+            if provider.id in {'native-publisher', 'openvino-direct'}:
                 provider_options['cancelled'] = cancelled
             stream = _closing_provider_stream(
                 provider.stream_complete(plan.messages, **provider_options))

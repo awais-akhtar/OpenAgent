@@ -1810,6 +1810,77 @@ async function run() {
     return;
   }
 
+
+  // The G25, voice-conversation and model-serve groups were dispatched by the
+  // runtime while unregistered and unmapped, so the auth gate skipped them and
+  // no React caller existed. These three workflows exercise the screens that
+  // now reach them, each with a credential carrying only that group's scopes.
+  await open('g25advanced', fixture.tokens.g25);
+  await page.getByRole('tab', { name: 'Documents' }).click();
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'g25-integration.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Synthetic G25 integration document body for indexing.'),
+  });
+  await page.getByLabel('Filename').fill('g25-integration.txt');
+  const g25UploadPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/documents/upload' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Upload document' }).click();
+  const g25UploadResponse = await g25UploadPromise;
+  assert(g25UploadResponse.status() === 201, `G25 document upload returned HTTP ${g25UploadResponse.status()}: ${await g25UploadResponse.text()}`);
+  const g25UploadBody = await g25UploadResponse.json();
+  const g25Document = g25UploadBody.data ?? g25UploadBody;
+  const g25DocumentId = String(g25Document.document_id ?? '');
+  assert(g25DocumentId, `G25 upload response omitted its document id: ${JSON.stringify(g25UploadBody)}`);
+  await expect(page.getByText('g25-integration.txt').first()).toBeVisible();
+  const g25PersistedDocuments = await requestJson(fixture.baseUrl, '/api/g25/documents?project=default', fixture.tokens.g25);
+  const g25Rows = g25PersistedDocuments.payload.documents ?? g25PersistedDocuments.payload.data?.documents ?? [];
+  assert(g25PersistedDocuments.response.ok && g25Rows.some(row => String(row.id) === g25DocumentId), `Uploaded G25 document was not returned from a fresh Python read: ${JSON.stringify(g25PersistedDocuments.payload)}`);
+  // A knowledge-scoped credential must not reach the same records.
+  const g25Forbidden = await requestJson(fixture.baseUrl, '/api/g25/documents?project=default', fixture.tokens.knowledge);
+  assert(g25Forbidden.response.status === 403, `A knowledge-scoped token reached G25 documents with HTTP ${g25Forbidden.response.status}`);
+  await page.getByRole('tab', { name: 'Knowledge graph' }).click();
+  await page.getByLabel('Node label').fill('IntegrationTopic');
+  const g25NodePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/graph/nodes' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create node' }).click();
+  const g25NodeResponse = await g25NodePromise;
+  assert(g25NodeResponse.status() === 201, `G25 graph node create returned HTTP ${g25NodeResponse.status()}: ${await g25NodeResponse.text()}`);
+  results.push({ workflow: 'G25 advanced documents and knowledge graph', result: 'PASS', evidence: `React uploaded a document through /api/g25/documents/upload with a g25-scoped credential, rendered the returned record, and a fresh authenticated Python read returned document ${g25DocumentId}. A knowledge-scoped token was refused with 403, and a knowledge-graph node was created through the same screen. No model provider was contacted.` });
+
+  await open('voiceconv', fixture.tokens.voice);
+  const voiceConversationPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/voice/conversations' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  const voiceConversationResponse = await voiceConversationPromise;
+  assert(voiceConversationResponse.status() === 201, `Voice conversation create returned HTTP ${voiceConversationResponse.status()}: ${await voiceConversationResponse.text()}`);
+  const voiceConversationBody = await voiceConversationResponse.json();
+  const voiceConversation = voiceConversationBody.data ?? voiceConversationBody;
+  const voiceConversationId = String(voiceConversation.conversation_id ?? voiceConversation.id ?? '');
+  assert(voiceConversationId, `Voice conversation response omitted its id: ${JSON.stringify(voiceConversationBody)}`);
+  const voicePersisted = await requestJson(fixture.baseUrl, '/api/voice/conversations?project=default', fixture.tokens.voice);
+  const voiceRows = voicePersisted.payload.conversations ?? voicePersisted.payload.data?.conversations ?? [];
+  assert(voicePersisted.response.ok && voiceRows.some(row => String(row.conversation_id ?? row.id) === voiceConversationId), `Created voice conversation was not returned from a fresh Python read: ${JSON.stringify(voicePersisted.payload)}`);
+  results.push({ workflow: 'Voice conversation lifecycle', result: 'PASS', evidence: `React created a conversation through /api/voice/conversations with a voice-scoped credential and a fresh authenticated Python read returned ${voiceConversationId}. Transcription and synthesis were not exercised, so no speech provider was contacted and no audio quality is claimed.` });
+
+  await open('modelserve', fixture.tokens.modelServe);
+  await page.getByLabel('Model id').fill('synthetic-integration-model');
+  await page.getByLabel('Model path').fill('/synthetic/integration/model');
+  const servePlanPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/model-serve/plans' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create serving plan' }).click();
+  const servePlanResponse = await servePlanPromise;
+  assert(servePlanResponse.status() === 201, `Model serve plan create returned HTTP ${servePlanResponse.status()}: ${await servePlanResponse.text()}`);
+  const servePlanBody = await servePlanResponse.json();
+  const servePlan = servePlanBody.data ?? servePlanBody;
+  const serveSessionId = String(servePlan.session_id ?? servePlan.id ?? '');
+  assert(serveSessionId, `Serving plan response omitted its session id: ${JSON.stringify(servePlanBody)}`);
+  const servePersisted = await requestJson(fixture.baseUrl, '/api/model-serve/sessions?project=default', fixture.tokens.modelServe);
+  const serveRows = servePersisted.payload.sessions ?? servePersisted.payload.data?.sessions ?? [];
+  const persistedServeSession = serveRows.find(row => String(row.session_id ?? row.id) === serveSessionId);
+  assert(servePersisted.response.ok && persistedServeSession, `Serving plan was not returned from a fresh Python read: ${JSON.stringify(servePersisted.payload)}`);
+  assert(String(persistedServeSession.status ?? '') === 'planned', `A plan must not start a process; persisted status was ${JSON.stringify(persistedServeSession.status)}`);
+  await page.getByRole('tab', { name: 'Readiness' }).click();
+  const readiness = await requestJson(fixture.baseUrl, '/api/ultra-models/readiness?project=default', fixture.tokens.modelServe);
+  assert(readiness.response.ok, `Ultra model readiness returned HTTP ${readiness.response.status}`);
+  results.push({ workflow: 'Model serving plan and readiness', result: 'PASS', evidence: `React created a serving plan through /api/model-serve/plans with a models-scoped credential; a fresh authenticated Python read returned session ${serveSessionId} with status planned, proving no process was launched. Readiness was read through the same credential. No model was downloaded, launched or served.` });
+
   const demoArtifactCalls = apiRequests.filter(request => request.url().includes('/demo/'));
   assert(demoArtifactCalls.length === 0, 'Live integration unexpectedly requested Demo fixture assets');
   finishResults({ demoFixtureRequests: demoArtifactCalls.length, apiResponses: apiResponses.length });

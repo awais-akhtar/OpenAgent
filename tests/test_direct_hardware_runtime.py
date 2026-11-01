@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import io
 import json
 from pathlib import Path
 from queue import Empty
@@ -17,6 +18,20 @@ from openagent.adaptive_engine.worker import _decode_expert_payload, _expert_pay
 
 
 class DirectHardwareClientTests(unittest.TestCase):
+    def test_cancellation_retires_inflight_worker_before_next_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            client = DirectHardwareClient(HardwareProfiler(temp))
+            fake_process = type("Process", (), {
+                "stdin": io.StringIO(), "poll": lambda self: None,
+            })()
+            client._process = fake_process
+            checks = iter((False, True))
+            with patch.object(client, "_ensure_started"), patch.object(client, "_terminate") as retire:
+                with self.assertRaises(InterruptedError):
+                    client.request("generate", timeout=1, cancelled=lambda: next(checks))
+            retire.assert_called_once()
+            self.assertIn('"action":"generate"', fake_process.stdin.getvalue())
+
     def test_accelerator_environment_does_not_inherit_host_python_packages(self) -> None:
         with patch.dict(
             os.environ,
