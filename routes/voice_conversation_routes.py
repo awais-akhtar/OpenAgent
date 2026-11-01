@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, unquote
 
 from ..voice_conversation_manager import VoiceConversationManager
@@ -36,6 +36,8 @@ def contract() -> dict[str, Any]:
 class VoiceConversationRouteDependencies:
     manager: VoiceConversationManager
     read_json: Any
+    query_owner: Callable[[dict[str, list[str]]], str]
+    auth_scope_owner: Callable[[], str]
 
 
 def _first(params: dict[str, list[str]], key: str) -> str:

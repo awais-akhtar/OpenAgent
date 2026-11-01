@@ -959,17 +959,21 @@ def build_http_server(
     def model_cookbook_route_dependencies(read_json) -> ModelCookbookRouteDependencies:
         return ModelCookbookRouteDependencies(cookbook=model_cookbook, read_json=read_json)
 
-    def model_serve_route_dependencies(read_json) -> ModelServeRouteDependencies:
+    def model_serve_route_dependencies(read_json, query_owner, payload_owner) -> ModelServeRouteDependencies:
         return ModelServeRouteDependencies(
             serve_manager=serve_manager,
             ultra_model_service=ultra_model_service,
             read_json=read_json,
+            query_owner=query_owner,
+            auth_scope_owner=payload_owner,
         )
 
-    def voice_conversation_route_dependencies(read_json) -> VoiceConversationRouteDependencies:
+    def voice_conversation_route_dependencies(read_json, query_owner, payload_owner) -> VoiceConversationRouteDependencies:
         return VoiceConversationRouteDependencies(
             manager=voice_conversation_manager,
             read_json=read_json,
+            query_owner=query_owner,
+            auth_scope_owner=payload_owner,
         )
 
     def g25_route_dependencies(read_json, query_owner, payload_owner) -> G25RouteDependencies:
@@ -1499,11 +1503,11 @@ def build_http_server(
             if model_cookbook_route is not None:
                 self.send_json(model_cookbook_route.payload, status=model_cookbook_route.status)
                 return
-            model_serve_route = handle_model_serve_get(parsed.path, parsed.query, model_serve_route_dependencies(self.read_json))
+            model_serve_route = handle_model_serve_get(parsed.path, parsed.query, model_serve_route_dependencies(self.read_json, self._query_owner, self._payload_owner))
             if model_serve_route is not None:
                 self.send_json(model_serve_route.payload, status=model_serve_route.status)
                 return
-            voice_conversation_route = handle_voice_conversation_get(parsed.path, parsed.query, voice_conversation_route_dependencies(self.read_json))
+            voice_conversation_route = handle_voice_conversation_get(parsed.path, parsed.query, voice_conversation_route_dependencies(self.read_json, self._query_owner, self._payload_owner))
             if voice_conversation_route is not None:
                 self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
@@ -2531,11 +2535,11 @@ def build_http_server(
             if model_cookbook_route is not None:
                 self.send_json(model_cookbook_route.payload, status=model_cookbook_route.status)
                 return
-            model_serve_route = handle_model_serve_post(parsed.path, model_serve_route_dependencies(self.read_json))
+            model_serve_route = handle_model_serve_post(parsed.path, model_serve_route_dependencies(self.read_json, self._query_owner, self._payload_owner))
             if model_serve_route is not None:
                 self.send_json(model_serve_route.payload, status=model_serve_route.status)
                 return
-            voice_conversation_route = handle_voice_conversation_post(parsed.path, voice_conversation_route_dependencies(self.read_json))
+            voice_conversation_route = handle_voice_conversation_post(parsed.path, voice_conversation_route_dependencies(self.read_json, self._query_owner, self._payload_owner))
             if voice_conversation_route is not None:
                 self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
