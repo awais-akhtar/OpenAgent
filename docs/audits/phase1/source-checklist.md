@@ -2,6 +2,19 @@
 
 ## CPU-first scope correction — 2026-11-01
 
+The first product baseline uses the already-local 0.94 GB Qwen2.5-1.5B INT4
+OpenVINO checkpoint. The real worker loaded it on CPU and generated a response;
+the production gateway completed and streamed two prompts with fallback disabled.
+The provider now discovers that complete local bundle by default, and a new
+`scripts.verify_cpu_baseline` smoke command checks model-file size before load,
+then samples process-tree RSS while exercising both callers. One run measured
+2,199,883,776 bytes peak RSS and returned real text. This is a local CPU product
+observation, not evidence that all 16 GB machines work, a universal-engine
+adapter, an exact publisher MoE route receipt, or proof of recovery/cancellation.
+The existing 171-route research matrix remains unchanged; 126 receipts are
+still absent from its legacy gate. Gateway tests pass 25/25 and syntax/diff
+checks pass. No downloads occurred.
+
 The canonical CLI verifier now prints an explicit CPU product scope failure
 after the historical full-family audit and refuses to report total completion
 without a CPU baseline gate. This protects against a future green legacy matrix

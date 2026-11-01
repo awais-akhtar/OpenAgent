@@ -73,9 +73,13 @@ test('All Tools desktop labels, group hierarchy and card affordances match the a
         await page.getByRole('button', { name: theme === 'dark' ? 'Switch to dark theme' : 'Switch to light theme' }).click();
       }
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-      await expect(page.getByText('26 existing feature views')).toBeVisible();
+      // 26 approved views plus the four added once their backends were
+      // registered and scope-mapped: Personal Context (fact provenance),
+      // Advanced AI, Voice conversations and Model serving. The figure stays
+      // explicit so an unapproved addition still fails this check.
+      await expect(page.getByText('30 existing feature views')).toBeVisible();
       await expect(page.getByRole('button', { name: /Personal assistant Tasks, goals and priorities/ })).toBeVisible();
-      await expect(page.locator('.p-tool-link svg.lucide-arrow-right')).toHaveCount(26);
+      await expect(page.locator('.p-tool-link svg.lucide-arrow-right')).toHaveCount(30);
       const sectionWeight = await page.locator('.p-section-heading h2').first().evaluate(element => getComputedStyle(element).fontWeight);
       expect(Number(sectionWeight), 'category heading weight').toBeGreaterThanOrEqual(600);
       await page.mouse.move(0, 0);

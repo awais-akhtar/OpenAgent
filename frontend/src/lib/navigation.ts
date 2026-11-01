@@ -5,7 +5,7 @@ import {
   Wrench, Vault, Waypoints, type IconComponent,
 } from './icons';
 
-export type ViewId = 'dashboard' | 'chat' | 'codebase' | 'voice' | 'research' | 'agents' | 'knowledge' | 'workspace' | 'automation' | 'assistant' | 'communications' | 'models' | 'security' | 'developer' | 'settings' | 'engine' | 'science' | 'calendar' | 'twin' | 'vault' | 'scraper' | 'finetune' | 'fact-provenance';
+export type ViewId = 'dashboard' | 'chat' | 'codebase' | 'voice' | 'research' | 'agents' | 'knowledge' | 'workspace' | 'automation' | 'assistant' | 'communications' | 'models' | 'security' | 'developer' | 'settings' | 'engine' | 'science' | 'calendar' | 'twin' | 'vault' | 'scraper' | 'finetune';
 export type NavItem = { id: ViewId; label: string; icon: IconComponent; keywords?: string };
 export type NavGroup = { label: string; key: string; items: NavItem[] };
 
@@ -35,7 +35,6 @@ export const groups: NavGroup[] = [
     { id: 'scraper', label: 'Web Scraper', icon: Network },
     { id: 'finetune', label: 'Fine-tuning', icon: Waypoints },
     { id: 'twin', label: 'Personal Context', icon: Users, keywords: 'digital twin' },
-    { id: 'fact-provenance', label: 'Fact Provenance', icon: BrainCircuit, keywords: 'facts sources retractions knowledge' },
     { id: 'vault', label: 'Vault', icon: Vault, keywords: 'credentials secrets' },
   ] },
 ];

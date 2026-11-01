@@ -8,12 +8,19 @@ const root = resolve(process.cwd(), '..');
 let backend: ChildProcessWithoutNullStreams;
 let fixture: { origin: string; modelDir: string; datasetId: string };
 test.describe.configure({ mode: 'serial' });
+// This fixture imports PyTorch before it can serve, which takes most of 30
+// seconds on its own and overruns that budget when the full suite runs in
+// parallel and the import competes for CPU. The allowance covers the import
+// only: the server still has to print READY, and a server that fails to start
+// still fails the run.
+const SERVER_STARTUP_TIMEOUT_MS = 120_000;
 test.beforeAll(async () => {
+  test.setTimeout(SERVER_STARTUP_TIMEOUT_MS + 30_000);
   const python = process.env.OPENAGENT_MODEL_TEST_PYTHON ?? resolve(root, '.accelerator-venv/Scripts/python.exe');
   backend = spawn(python, ['-u', 'tests/support/tiny_finetune_server.py'], { cwd: root, windowsHide: true });
   fixture = await new Promise((ready, reject) => {
     let output = ''; let errors = '';
-    const timer = setTimeout(() => reject(new Error(`Tiny model server startup failed: ${errors}`)), 30000);
+    const timer = setTimeout(() => reject(new Error(`Tiny model server startup failed: ${errors}`)), SERVER_STARTUP_TIMEOUT_MS);
     backend.stderr.on('data', chunk => { errors += String(chunk); });
     backend.stdout.on('data', chunk => {
       output += String(chunk);

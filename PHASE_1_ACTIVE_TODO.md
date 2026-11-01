@@ -2,6 +2,21 @@
 
 ## Scope correction — 1 November 2026
 
+CPU product path update: the existing local Qwen2.5-1.5B INT4 OpenVINO model
+(935,999,480 bytes of files) was loaded by the production pipe worker with
+`device=CPU`; it generated a nonempty answer. The same model passed the real
+`ModelGateway` completion and streaming paths without an external fallback.
+`OpenVINODirectProvider` now discovers this complete local bundle when no
+model path was configured. `scripts/verify_cpu_baseline.py` exercises both
+gateway callers with no download and a preflight 4 GiB file budget; on this
+host its sampled worker process-tree peak RSS was 2,199,883,776 bytes, below
+the tool's 12 GiB ceiling. This is one host observation, not a 16 GiB machine
+qualification or a family-route P13 receipt. The direct worker/gateway path is
+real; desktop legacy Tk callers, recovery, and low-RAM cross-host evidence
+remain to be audited. `.venv` gateway tests pass 25/25; syntax and diff checks
+pass. The old 171-route research matrix and 126 missing receipts are unchanged.
+No file, dependency or checkpoint was downloaded.
+
 `phase1_verify.py` now reports the legacy full-family evidence audit and the
 CPU product target separately. It fails closed on CPU product completion until
 a reviewed small-checkpoint route and measured resource/serving evidence gate

@@ -91,6 +91,27 @@ tracked in [PHASE_1_ACTIVE_TODO.md](PHASE_1_ACTIVE_TODO.md).
 
 ## Quick Start
 
+### Lightweight CPU model in this checkout
+
+The optional local model at `models/openvino/qwen2.5-1.5b-instruct-int4-ov`
+uses about 0.94 GB of disk. When those files and the optional OpenVINO GenAI
+runtime are present, the local model gateway selects that directory by default
+and runs it on CPU. No model is downloaded or cloud provider contacted. From
+this repository on Windows, verify the real completion and streaming callers:
+
+```powershell
+.\.accelerator-venv\Scripts\python.exe -m scripts.verify_cpu_baseline
+```
+
+Model weights are ignored by Git and are not included in the package. The
+command checks a configurable 4 GiB model-file budget and reports sampled
+process-tree memory against a 12 GiB ceiling, leaving room within a 16 GiB
+target machine. It is a local product smoke check, not a guarantee for every
+16 GiB host or a receipt for a different model family. If the optional runtime
+is absent, the command fails with a setup message; it never installs anything.
+The larger publisher families remain optional research scope while the Phase 1
+CPU baseline evidence and resource limits are completed.
+
 ### Package Install
 
 Install the base local runtime from PyPI:

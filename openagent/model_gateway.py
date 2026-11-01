@@ -727,7 +727,16 @@ class OpenVINODirectProvider(BaseProvider):
 
     def __init__(self, client: Any) -> None:
         self.client = client
-        self.model_path = os.environ.get("OPENAGENT_OPENVINO_MODEL_DIR", "").strip()
+        configured_path = os.environ.get("OPENAGENT_OPENVINO_MODEL_DIR", "").strip()
+        # A checkout with the small, already-local INT4 CPU model should work
+        # without a separate setup/download step. Explicit configuration wins.
+        bundled_cpu = (Path(__file__).resolve().parents[1] / "models" /
+                       "openvino" / "qwen2.5-1.5b-instruct-int4-ov")
+        required = ("config.json", "openvino_model.xml", "openvino_model.bin",
+                    "tokenizer.json")
+        self.model_path = (configured_path or
+                           (str(bundled_cpu) if all((bundled_cpu / name).is_file()
+                                                    for name in required) else ""))
         self.device = os.environ.get("OPENAGENT_OPENVINO_DEVICE", "CPU").strip() or "CPU"
         self.default_model = os.environ.get("OPENAGENT_OPENVINO_MODEL_ID", "openagent-direct-chat").strip() or "openagent-direct-chat"
         self._load_lock = threading.RLock()
