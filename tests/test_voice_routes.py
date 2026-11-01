@@ -12,7 +12,9 @@ from openagent.routes.voice_routes import (
 
 def _deps(payload=None, *, owner=""):
     voice = Mock()
+    voice_websocket = Mock()
     read_json = Mock(return_value=payload if payload is not None else {})
+    read_query_string = Mock(return_value={})
     first = lambda params, key: (params.get(key, [None])[0] or None)
     query_owner = lambda params: owner
     payload_owner = lambda p, default: owner or default
@@ -20,7 +22,9 @@ def _deps(payload=None, *, owner=""):
     parse_int = lambda value, default: default if value is None else int(value)
     return voice, VoiceRouteDependencies(
         voice=voice,
+        voice_websocket=voice_websocket,
         read_json=read_json,
+        read_query_string=read_query_string,
         first=first,
         parse_bool=parse_bool,
         parse_int=parse_int,

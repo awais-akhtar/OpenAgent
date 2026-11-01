@@ -28,18 +28,23 @@ class C5VoiceWebSocketTests(TestCase):
         self.payload_owner = lambda payload, default: payload.get("owner", default) or default
         self.read_json_func = lambda: {}
 
-    def _create_deps(self, read_json_result=None):
+    def _create_deps(self, read_json_result=None, query_string=None):
         """Create VoiceRouteDependencies for testing."""
         if read_json_result is None:
             read_json_result = {}
+        if query_string is None:
+            query_string = {}
+        voice_websocket_mock = Mock()
         return VoiceRouteDependencies(
             voice=self.voice_mock,
+            voice_websocket=voice_websocket_mock,
             first=self.first,
             parse_bool=self.parse_bool,
             parse_int=self.parse_int,
             query_owner=self.query_owner,
             payload_owner=self.payload_owner,
             read_json=lambda: read_json_result,
+            read_query_string=lambda: query_string,
         )
 
     def test_websocket_connection_initiation(self) -> None:
