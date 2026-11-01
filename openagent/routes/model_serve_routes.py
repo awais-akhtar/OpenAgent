@@ -57,42 +57,44 @@ def _first(params: dict[str, list[str]], key: str) -> str:
 def handle_get(path: str, query: str, deps: ModelServeRouteDependencies) -> JsonRouteResult | None:
     """Handle GET requests for model serve endpoints."""
     params = parse_qs(query)
+    project = _first(params, "project") or "default"
+    owner = deps.query_owner(params) or "default"
 
     # G20 routes
     if path == "/api/model-serve/sessions":
-        sessions = deps.serve_manager.list_sessions()
+        sessions = deps.serve_manager.list_sessions(project=project, owner=owner)
         return JsonRouteResult({"sessions": sessions})
 
     if path.startswith("/api/model-serve/sessions/") and path.endswith(""):
         session_id = unquote(path.removeprefix("/api/model-serve/sessions/")).strip()
-        session = deps.serve_manager.get_session(session_id)
+        session = deps.serve_manager.get_session(session_id, project=project, owner=owner)
         if not session:
             return JsonRouteResult({"error": f"Session {session_id} not found"}, HTTPStatus.NOT_FOUND)
         return JsonRouteResult(session)
 
     # G22 routes
     if path == "/api/ultra-models/models":
-        models = deps.ultra_model_service.get_available_models()
+        models = deps.ultra_model_service.get_available_models(project=project, owner=owner)
         return JsonRouteResult({"models": models})
 
     if path == "/api/ultra-models/sessions":
-        sessions = deps.ultra_model_service.list_sessions()
+        sessions = deps.ultra_model_service.list_sessions(project=project, owner=owner)
         return JsonRouteResult({"sessions": sessions})
 
     if path == "/api/ultra-models/readiness":
-        status = deps.ultra_model_service.get_readiness_status()
+        status = deps.ultra_model_service.get_readiness_status(project=project, owner=owner)
         return JsonRouteResult(status)
 
     if path.startswith("/api/ultra-models/sessions/") and path.endswith(""):
         session_id = unquote(path.removeprefix("/api/ultra-models/sessions/")).strip()
-        session = deps.ultra_model_service.get_session(session_id)
+        session = deps.ultra_model_service.get_session(session_id, project=project, owner=owner)
         if not session:
             return JsonRouteResult({"error": f"Session {session_id} not found"}, HTTPStatus.NOT_FOUND)
         return JsonRouteResult(session)
 
     if path.startswith("/api/ultra-models/models/") and path.endswith("/calibrate"):
         model_id = unquote(path.removeprefix("/api/ultra-models/models/").removesuffix("/calibrate")).strip()
-        calibration = deps.ultra_model_service.calibrate_for_hardware(model_id)
+        calibration = deps.ultra_model_service.calibrate_for_hardware(model_id, project=project, owner=owner)
         if "error" in calibration:
             return JsonRouteResult(calibration, HTTPStatus.NOT_FOUND)
         return JsonRouteResult(calibration)
@@ -106,6 +108,8 @@ def handle_post(path: str, deps: ModelServeRouteDependencies) -> JsonRouteResult
         return None
 
     payload = deps.read_json()
+    project = str(payload.get("project", "")).strip() or "default"
+    owner = deps.auth_scope_owner() or "default"
 
     # G20: Model Serve routes
     if path == "/api/model-serve/plans":
@@ -119,19 +123,21 @@ def handle_post(path: str, deps: ModelServeRouteDependencies) -> JsonRouteResult
             model_path=model_path,
             host=str(payload.get("host", "127.0.0.1")).strip(),
             port=int(payload.get("port", 8000)),
+            project=project,
+            owner=owner,
         )
         return JsonRouteResult(plan, HTTPStatus.CREATED)
 
     if path.startswith("/api/model-serve/sessions/") and path.endswith("/start"):
         session_id = unquote(path.removeprefix("/api/model-serve/sessions/").removesuffix("/start")).strip()
-        result = deps.serve_manager.start_serve(session_id)
+        result = deps.serve_manager.start_serve(session_id, project=project, owner=owner)
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result)
 
     if path.startswith("/api/model-serve/sessions/") and path.endswith("/stop"):
         session_id = unquote(path.removeprefix("/api/model-serve/sessions/").removesuffix("/stop")).strip()
-        result = deps.serve_manager.stop_serve(session_id)
+        result = deps.serve_manager.stop_serve(session_id, project=project, owner=owner)
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result)
@@ -139,7 +145,7 @@ def handle_post(path: str, deps: ModelServeRouteDependencies) -> JsonRouteResult
     # G22: Ultra Model routes
     if path.startswith("/api/ultra-models/models/") and path.endswith("/download"):
         model_id = unquote(path.removeprefix("/api/ultra-models/models/").removesuffix("/download")).strip()
-        result = deps.ultra_model_service.download_model(model_id)
+        result = deps.ultra_model_service.download_model(model_id, project=project, owner=owner)
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result)
@@ -152,6 +158,8 @@ def handle_post(path: str, deps: ModelServeRouteDependencies) -> JsonRouteResult
         result = deps.ultra_model_service.create_session(
             model_id=model_id,
             session_name=str(payload.get("name", "")).strip() or None,
+            project=project,
+            owner=owner,
         )
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
@@ -159,21 +167,21 @@ def handle_post(path: str, deps: ModelServeRouteDependencies) -> JsonRouteResult
 
     if path.startswith("/api/ultra-models/sessions/") and path.endswith("/launch"):
         session_id = unquote(path.removeprefix("/api/ultra-models/sessions/").removesuffix("/launch")).strip()
-        result = deps.ultra_model_service.launch_session(session_id)
+        result = deps.ultra_model_service.launch_session(session_id, project=project, owner=owner)
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result)
 
     if path.startswith("/api/ultra-models/sessions/") and path.endswith("/stop"):
         session_id = unquote(path.removeprefix("/api/ultra-models/sessions/").removesuffix("/stop")).strip()
-        result = deps.ultra_model_service.stop_session(session_id)
+        result = deps.ultra_model_service.stop_session(session_id, project=project, owner=owner)
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result)
 
     if path.startswith("/api/ultra-models/sessions/") and path.endswith("/reload"):
         session_id = unquote(path.removeprefix("/api/ultra-models/sessions/").removesuffix("/reload")).strip()
-        result = deps.ultra_model_service.reload_session(session_id)
+        result = deps.ultra_model_service.reload_session(session_id, project=project, owner=owner)
         if "error" in result:
             return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result)
