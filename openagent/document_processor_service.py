@@ -10,7 +10,7 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
-class DocumentProcessor:
+class DocumentProcessorService:
     """Process documents: extract info, analyze, summarize."""
 
     def __init__(self):

@@ -1,5 +1,37 @@
 # Phase 1 source implementation checklist
 
+## CPU-first scope correction — 2026-11-01
+
+The canonical CLI verifier now prints an explicit CPU product scope failure
+after the historical full-family audit and refuses to report total completion
+without a CPU baseline gate. This protects against a future green legacy matrix
+being misreported as proof of the low-RAM product. It does not yet implement the
+small-model loader, budget measurements, CPU receipts, or revised production
+admission. Its current run remains 10/17 with 126/171 historical receipt gaps;
+syntax and diff checks pass. No checkpoint or dependency was downloaded.
+
+The user reaffirmed the original product requirement: useful CPU inference on
+ordinary 16 GB RAM machines, with 32 GB as a common higher tier and about
+512 GB total local storage. A GPU or terabytes of checkpoint storage must not
+be a prerequisite for completing the baseline Phase 1 engine. The present
+source matrix nevertheless admits 171 exact tuples tied to flagship publisher
+checkpoints, 126 of which lack actual receipts. Several of those checkpoints
+are too large even to store on the target machine. This is a scope-design
+failure, not evidence that a CPU-first product needs a GPU or multi-terabyte
+disk.
+
+P02/P13/P15 stay open while the scope is corrected. Required work: define one
+or more affordable, exact CPU checkpoint/format/backend tuples; enforce their
+memory and storage admission budgets through the real loader and serving path;
+capture genuine execution, comparison, cache, recovery, and ABI evidence for
+those tuples; and move large publisher identities into a separately labelled
+optional/experimental scope only after all relevant factory, CLI, gateway,
+recovery, catalog, and verifier entrypoints agree. A small checkpoint must not
+be represented as evidence for a different MoE identity. Merely removing old
+tuples from the evidence count or marking them complete is not closure. The
+current 10/17 result and 126 missing receipts remain the honest status of the
+existing gate until a reviewed replacement is implemented and verified.
+
 ## Shared host-cache ownership reconciliation — 2026-10-26
 
 P12/P14 utility fixes detach and freeze KV payloads, protect prefix/block

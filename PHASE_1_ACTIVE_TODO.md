@@ -1,5 +1,35 @@
 # Phase 1 — current audit and completion queue
 
+## Scope correction — 1 November 2026
+
+`phase1_verify.py` now reports the legacy full-family evidence audit and the
+CPU product target separately. It fails closed on CPU product completion until
+a reviewed small-checkpoint route and measured resource/serving evidence gate
+exist. This is a reporting/closure guard, not a replacement source matrix or
+a working low-RAM decoder. The current run still gives 10/17 legacy checks,
+171 admitted tuples and 126 missing receipts; no new route evidence was made.
+`python -m py_compile phase1_verify.py` and `git diff --check` pass. No model or
+other artifact was downloaded.
+
+The product target is useful local CPU inference for ordinary users with roughly
+16 GB RAM (32 GB where available) and no more than a typical 512 GB local drive.
+GPU access and multi-terabyte checkpoint storage are not Phase 1 prerequisites.
+The pinned flagship checkpoints in the current route matrix are architecture
+research targets, not reasonable baseline download requirements for users.
+
+The current 171 admitted route tuples and 126 missing receipts still describe
+the *old* evidence gate. Do not call those receipts captured or make the old
+gate pass by deleting rows, substituting smaller models, or relabeling source
+formats. The next implementation task is a reviewed CPU-first scope contract:
+select a real, runnable small checkpoint and bounded formats; prove the end-to-
+end CPU loader/execution/cache/serving/recovery path under explicit RAM and disk
+budgets; keep larger identities available only under an honest optional or
+experimental contract with its own admission and evidence requirements. Update
+all reachable entrypoints and the canonical verifier together, then obtain
+real receipts for the newly defined admitted Phase 1 paths. Until that work is
+complete, Phase 1 remains OPEN and the verifier's current counts remain valid
+for the old scope only.
+
 Updated 26 October 2026 against the uncommitted `D:\openagent` working tree
 (HEAD baseline `70bae5a`). This is the current task list. Older dated status reports must not
 be read as current completion evidence. The detailed P02–P15 criteria and audit

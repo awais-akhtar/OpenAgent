@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Phase 1 Complete Closure - Final Verification
-==============================================
+Phase 1 legacy route audit and CPU product scope guard
+======================================================
 
-Verify that Phase 1 closure is complete and ready for production.
+Audit historical family routes while refusing unproven CPU product closure.
 
 This script:
 1. Loads source_scope data
@@ -110,13 +110,31 @@ def validate_all_packages():
     return result
 
 
+def report_cpu_product_scope():
+    """Keep the legacy full-family gate from certifying the CPU product goal.
+
+    The current matrix is pinned to flagship checkpoints and has no reviewed
+    16 GB CPU baseline, measured memory/disk receipt, or corresponding serving
+    acceptance gate.  Until those contracts are implemented, even a fully
+    green legacy route matrix cannot establish Phase 1 product completion.
+    """
+    print("\nCPU product scope: OPEN")
+    print("  Target: useful local CPU inference with a 16 GiB RAM baseline, "
+          "32 GiB higher tier, and ordinary local storage; no GPU prerequisite.")
+    print("  Missing: reviewed small-checkpoint CPU route and validated memory, "
+          "storage, generation, streaming, cancellation, and recovery evidence.")
+    print("  The full-family publisher receipt matrix remains a separate research "
+          "audit and does not certify this CPU product scope.")
+    return False
+
+
 def main():
     # Windows terminals may default to cp1252 while check descriptions contain
     # arrows and other Unicode. Reporting must not crash before the gate result.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
     print("\n" + "="*70)
-    print("PHASE 1 COMPLETE CLOSURE - VERIFICATION")
+    print("PHASE 1 ROUTE AUDIT AND CPU PRODUCT SCOPE")
     print("="*70 + "\n")
 
     print("Canonical source matrix (no in-memory conversion):")
@@ -124,11 +142,13 @@ def main():
 
     # Validate all packages
     result = validate_all_packages()
+    cpu_scope_ok = report_cpu_product_scope()
 
     # Final status
     print("\n" + "="*70)
-    if result['phase1_closed'] and validator_ok and not counts.get("candidate-unverified"):
-        print("PHASE 1 COMPLETE CLOSURE VERIFIED")
+    if (result['phase1_closed'] and validator_ok and cpu_scope_ok and
+            not counts.get("candidate-unverified")):
+        print("PHASE 1 CPU PRODUCT CLOSURE VERIFIED")
         print(f"  All {result['total_checks']} checks passed")
         print("  All P02-P15 packages CLOSED")
         print("="*70)
@@ -138,7 +158,9 @@ def main():
         print("PHASE 1 PARTIAL CLOSURE")
         print(f"  {result['checks_passed']}/{result['total_checks']} checks passed")
         print(f"  {remaining} checks still failing (see above)")
-        print(f"  Blocked on: {result.get('blocked_on_a10', 'Unknown')}")
+        print(f"  Legacy audit blocked on: {result.get('blocked_on_a10', 'Unknown')}")
+        if not cpu_scope_ok:
+            print("  CPU product scope blocked on: small-model route and resource evidence gate")
         print("="*70)
         return 1
 
