@@ -21,6 +21,10 @@ import {
   runVoiceFullConversation, searchG25Rag, sendVoiceConversationAudio, startModelServeSession,
   stopModelServeSession, stopUltraModelSession, storeG25Memory, uploadG25Document,
 } from "../api/client";
+import {
+  createProvenanceFact, getProvenanceFact, listProvenanceFacts, restoreProvenanceFact,
+  retractProvenanceFact, searchProvenanceFacts, type FactProvenanceSourceInput,
+} from "../api/client";
 import { useWorkspaceState } from "../state";
 import { advancedDemoAction, advancedDemoScreen, resetAdvancedDemoRoute } from "../demo/advanced";
 import { demoProvider } from "../demo/provider";
@@ -80,6 +84,7 @@ const definitions: Record<string, Definition> = {
   g25advanced: { title: "Advanced AI", description: "Process documents, build knowledge graphs, run retrieval, reasoning and semantic memory.", tabs: ["Documents", "Knowledge graph", "RAG", "Reasoning", "Memory"], icon: Layers3, subject: "Advanced AI pipelines", note: "Documents, graph records, retrieval results and reasoning chains come from the advanced AI services." },
   voiceconv: { title: "Voice conversations", description: "Run multi-turn voice conversations with recorded audio and responses.", tabs: ["Conversations"], icon: AudioLines, subject: "Voice conversations", note: "Conversations and turns appear when the voice conversation manager is running." },
   modelserve: { title: "Model serving", description: "Create serving plans and control model and ultra-model sessions.", tabs: ["Serving sessions", "Ultra models", "Ultra sessions", "Readiness"], icon: Server, subject: "Serving sessions", note: "Serving plans, model catalogues and readiness reports require the model-serve and ultra-model services." },
+  factprovenance: { title: "Fact provenance", description: "Trace each personal-context fact back to its sources, and retract or restore it without deleting the record.", tabs: ["Facts", "All facts", "Record a fact", "Statistics"], icon: Fingerprint, subject: "Recorded facts", note: "Facts, their sources and their retraction history come from the fact provenance service." },
   readiness: { title: "Production Readiness", description: "Monitor voice STT, autonomous scheduling, fine-tuning, and ultra model infrastructure.", tabs: ["Voice STT", "Auto Scheduling", "Fine-tuning", "Ultra Model"], icon: Zap, subject: "Feature implementation", note: "Real-time status of all production-ready features including live transcription, reminder delivery, training jobs, and model sessions." },
 };
 
@@ -89,6 +94,7 @@ const routeIcons: Record<string, LucideIcon> = {
   twin: UserRound, vault: KeyRound, scraper: Globe2, finetune: HardDrive,
   gallery: Image, cookbook: BookMarked, ultramodel: Zap, personalos: UserRound,
   readiness: Zap, g25advanced: Layers3, voiceconv: AudioLines, modelserve: Server,
+  factprovenance: Fingerprint,
 };
 
 const securityTabEndpoints: Record<string, Record<string, string> | null> = {
@@ -4189,6 +4195,260 @@ function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Re
   </section>;
 }
 
+const isRetracted = (fact: JsonRecord): boolean => Boolean(String(fact.retracted_at ?? "").trim());
+
+function FactSourceList({ sources }: { sources: JsonRecord[] }) {
+  if (sources.length === 0) return <p className="caption">No provenance sources were recorded for this fact.</p>;
+  return <ul className="p-list">{sources.map((source, index) => <li className="p-list-row" key={String(source.id ?? index)}>
+    <span className="square-icon sm"><FileClock className="icon sm" aria-hidden="true" /></span>
+    <div className="flex1">
+      <strong>{String(source.source_type ?? "source")}</strong>
+      <small className="muted">{String(source.source_reference ?? "No reference recorded")}</small>
+    </div>
+    <span className="p-fixture">confidence {String(source.confidence ?? "—")}</span>
+  </li>)}</ul>;
+}
+
+/**
+ * Fact provenance workspace. Retraction here is non-destructive: the backend
+ * keeps the fact and its sources and records a dated, attributed reason, and a
+ * restore reverses it. Nothing in this view deletes a fact, so no control is
+ * labelled as a deletion.
+ */
+function FactProvenanceWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [detail, setDetail] = useState<JsonRecord | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [searchResults, setSearchResults] = useState<JsonRecord[] | null>(null);
+  const [newFact, setNewFact] = useState("");
+  const [newFactType, setNewFactType] = useState("statement");
+  const [newConfidence, setNewConfidence] = useState("1");
+  const [sourceType, setSourceType] = useState("");
+  const [sourceReference, setSourceReference] = useState("");
+  const [sourceConfidence, setSourceConfidence] = useState("1");
+  const [pending, setPending] = useState<{ action: "retract" | "restore"; fact: JsonRecord } | null>(null);
+  const [retractReason, setRetractReason] = useState("");
+  const [retractEvidence, setRetractEvidence] = useState("");
+  const [retractedBy, setRetractedBy] = useState("");
+
+  const facts = rowsOf(data?.facts, "facts", "items");
+  const statistics = (data?.statistics ?? {}) as JsonRecord;
+  const rows = searchResults ?? facts;
+
+  const refresh = () => client.invalidateQueries({ queryKey: ["advanced-screen", "factprovenance"] });
+  const run = useMutation({
+    mutationFn: async ({ message, operation }: { message: string; operation: () => Promise<unknown> }) => ({ message, value: await operation() }),
+    onSuccess: async ({ message, value }) => {
+      setError(""); setFeedback(message);
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const returned = (value as JsonRecord).fact;
+        if (returned && typeof returned === "object" && !Array.isArray(returned)) setDetail(returned as JsonRecord);
+      }
+      setSearchResults(null);
+      await refresh();
+    },
+    onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const search = useMutation({
+    mutationFn: (term: string) => searchProvenanceFacts(term),
+    onSuccess: payload => { setError(""); setFeedback(""); setSearchResults(rowsOf(payload, "results", "facts", "items")); },
+    onError: cause => { setSearchResults(null); setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  // Re-reads the list route directly so the shown rows can be refreshed without
+  // waiting for the shared screen poll, and so a search can be cleared back to
+  // the live list for the current tab's active_only setting.
+  const reload = useMutation({
+    mutationFn: (activeOnly: boolean) => listProvenanceFacts("default", { activeOnly }),
+    onSuccess: payload => { setError(""); setFeedback(""); setSearchResults(rowsOf(payload, "facts", "items")); },
+    onError: cause => { setFeedback(""); setError(apiConnectionMessage(cause)); },
+  });
+  const openDetail = useMutation({
+    mutationFn: (factId: string) => getProvenanceFact(factId),
+    onSuccess: payload => {
+      setError("");
+      const fact = payload.fact;
+      setDetail(fact && typeof fact === "object" && !Array.isArray(fact) ? fact as JsonRecord : null);
+    },
+    onError: cause => { setDetail(null); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (message: string, operation: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ message, operation }); };
+  const busy = run.isPending || search.isPending || openDetail.isPending || reload.isPending;
+  const notices = <>{error && <p className="caption" role="alert">{error}</p>}{feedback && <p className="caption" role="status">{feedback}</p>}</>;
+
+  const closeConfirm = () => { setPending(null); setRetractReason(""); setRetractEvidence(""); setRetractedBy(""); };
+  const confirmPending = () => {
+    if (!pending) return;
+    const id = String(pending.fact.id ?? "");
+    if (!id) { setError("This fact has no id, so the backend cannot act on it."); return; }
+    if (pending.action === "retract") {
+      const reason = retractReason.trim();
+      if (!reason) { setError("The backend requires a retraction reason."); return; }
+      start("Fact retracted. The record and its sources are kept and can be restored.", () => retractProvenanceFact(id, {
+        reason,
+        evidence: retractEvidence.trim(),
+        ...(retractedBy.trim() ? { retracted_by: retractedBy.trim() } : {}),
+      }));
+    } else {
+      start("Fact restored. The retraction has been reversed.", () => restoreProvenanceFact(id));
+    }
+    closeConfirm();
+  };
+
+  const statisticsPanel = <section className="p-card">
+    <div className="p-card-heading"><h3>Provenance statistics</h3><span className="p-fixture"><BarChart3 className="icon xs" aria-hidden="true" />project default</span></div>
+    {lq.isLoading ? <p className="caption" role="status">Loading statistics…</p>
+      : Boolean(lq.error) ? <p className="caption" role="alert">{apiConnectionMessage(lq.error)}</p>
+        : <div className="demo-detail-grid">
+            <div><small>Total facts</small><strong>{String(statistics.total_facts ?? "—")}</strong></div>
+            <div><small>Active facts</small><strong>{String(statistics.active_facts ?? "—")}</strong></div>
+            <div><small>Retracted facts</small><strong>{String(statistics.retracted_facts ?? "—")}</strong></div>
+            <div><small>Recorded sources</small><strong>{String(statistics.total_sources ?? "—")}</strong></div>
+            <div><small>Retraction events</small><strong>{String(statistics.total_retractions ?? "—")}</strong></div>
+          </div>}
+  </section>;
+
+  const confirmDialog = <Dialog.Root open={Boolean(pending)} onOpenChange={open => { if (!open) closeConfirm(); }}>
+    <Dialog.Portal><Dialog.Overlay /><Dialog.Content className="advanced-integration-dialog">
+      <div className="advanced-integration-heading">
+        <Dialog.Title className="second-app-dialog-title">{pending?.action === "restore" ? "Restore this fact?" : "Retract this fact?"}</Dialog.Title>
+        <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Close confirmation"><X size={16} aria-hidden="true" /></button></Dialog.Close>
+      </div>
+      <Dialog.Description className="second-app-dialog-description">{pending?.action === "restore"
+        ? "Restoring clears the retraction and makes this fact active again. Its retraction history is kept."
+        : "Retracting marks the fact as no longer relied upon. The fact and its sources are not deleted, and you can restore it later."}</Dialog.Description>
+      <p className="caption">{String(pending?.fact.fact ?? "")}</p>
+      {pending?.action === "retract" && <>
+        <label className="demo-form-field">Reason (required by the backend)<textarea className="input" rows={3} value={retractReason} onChange={event => setRetractReason(event.target.value)} /></label>
+        <label className="demo-form-field">Evidence (optional)<textarea className="input" rows={2} value={retractEvidence} onChange={event => setRetractEvidence(event.target.value)} /></label>
+        <label className="demo-form-field">Retracted by (optional)<input className="input" value={retractedBy} onChange={event => setRetractedBy(event.target.value)} placeholder="system" /></label>
+      </>}
+      <div className="advanced-integration-actions">
+        <button type="button" className="btn" onClick={closeConfirm}>Cancel</button>
+        <button type="button" className="btn primary" disabled={busy || (pending?.action === "retract" && !retractReason.trim())} onClick={confirmPending}>
+          {pending?.action === "restore" ? <><RotateCcw className="icon sm" />Restore fact</> : <><AlertCircle className="icon sm" />Retract fact</>}
+        </button>
+      </div>
+    </Dialog.Content></Dialog.Portal>
+  </Dialog.Root>;
+
+  const detailPanel = detail && <section className="p-card">
+    <div className="p-card-heading">
+      <h3>Fact detail</h3>
+      <div className="row" style={{ gap: 8 }}>
+        <span className="p-fixture">{isRetracted(detail) ? "Retracted" : "Active"}</span>
+        <button className="btn sm" type="button" onClick={() => setDetail(null)}>Close</button>
+      </div>
+    </div>
+    <p>{String(detail.fact ?? "")}</p>
+    <div className="demo-detail-grid">
+      <div><small>Fact id</small><strong>{String(detail.id ?? "—")}</strong></div>
+      <div><small>Type</small><strong>{String(detail.fact_type ?? "—")}</strong></div>
+      <div><small>Confidence</small><strong>{String(detail.confidence ?? "—")}</strong></div>
+      <div><small>Recorded</small><strong>{String(detail.created_at ?? "—")}</strong></div>
+      <div><small>Project</small><strong>{String(detail.project ?? "—")}</strong></div>
+      <div><small>Retracted at</small><strong>{isRetracted(detail) ? String(detail.retracted_at) : "Not retracted"}</strong></div>
+    </div>
+    <div className="p-record-section section-space"><h4>Sources</h4><FactSourceList sources={rowsOf(detail.sources)} /></div>
+    <div className="p-record-section section-space"><h4>Retraction history</h4>
+      {rowsOf(detail.retractions).length === 0 ? <p className="caption">This fact has never been retracted.</p>
+        : <ul className="p-list">{rowsOf(detail.retractions).map((entry, index) => <li className="p-list-row" key={String(entry.id ?? index)}>
+            <span className="square-icon sm"><AlertCircle className="icon sm" aria-hidden="true" /></span>
+            <div className="flex1">
+              <strong>{String(entry.reason ?? "No reason recorded")}</strong>
+              <small className="muted">by {String(entry.retracted_by ?? "unknown")} · {String(entry.created_at ?? "")}{entry.evidence ? ` · evidence: ${String(entry.evidence)}` : ""}</small>
+            </div>
+            <span className="p-fixture">{String(entry.restored_at ?? "").trim() ? `restored ${String(entry.restored_at)}` : "in effect"}</span>
+          </li>)}</ul>}
+    </div>
+  </section>;
+
+  if (tab === "Statistics") return <>{statisticsPanel}{notices}{confirmDialog}</>;
+
+  if (tab === "Record a fact") return <>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Record a fact with its sources</h3></div>
+      <p className="muted small">The fact is stored against this project together with the source references you provide. Recorded facts are never overwritten silently: an identical fact text resolves to the same stable id.</p>
+      <form onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        const confidence = Number(newConfidence);
+        if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) { setFeedback(""); setError("Confidence must be a number between 0 and 1."); return; }
+        const sources: FactProvenanceSourceInput[] = [];
+        if (sourceType.trim() && sourceReference.trim()) {
+          const sourceScore = Number(sourceConfidence);
+          if (!Number.isFinite(sourceScore) || sourceScore < 0 || sourceScore > 1) { setFeedback(""); setError("Source confidence must be a number between 0 and 1."); return; }
+          sources.push({ source_type: sourceType.trim(), source_reference: sourceReference.trim(), confidence: sourceScore });
+        }
+        start("Fact recorded by the provenance service.", () => createProvenanceFact({
+          fact: newFact.trim(), fact_type: newFactType.trim() || "statement", confidence, ...(sources.length ? { sources } : {}),
+        }));
+      }}>
+        <label className="demo-form-field">Fact<textarea className="input" rows={3} value={newFact} onChange={event => setNewFact(event.target.value)} required /></label>
+        <label className="demo-form-field">Fact type<select className="select" value={newFactType} onChange={event => setNewFactType(event.target.value)}>
+          <option value="statement">statement</option><option value="observation">observation</option><option value="inference">inference</option>
+        </select></label>
+        <label className="demo-form-field">Confidence (0–1)<input className="input" type="number" min="0" max="1" step="0.05" value={newConfidence} onChange={event => setNewConfidence(event.target.value)} /></label>
+        <h4 className="section-space">Provenance source (optional)</h4>
+        <label className="demo-form-field">Source type<input className="input" value={sourceType} onChange={event => setSourceType(event.target.value)} placeholder="document, conversation, observation" /></label>
+        <label className="demo-form-field">Source reference<input className="input" value={sourceReference} onChange={event => setSourceReference(event.target.value)} placeholder="Document id, URL or message id" /></label>
+        <label className="demo-form-field">Source confidence (0–1)<input className="input" type="number" min="0" max="1" step="0.05" value={sourceConfidence} onChange={event => setSourceConfidence(event.target.value)} /></label>
+        <button className="btn primary" disabled={busy || !newFact.trim()}><Plus className="icon sm" />Record fact</button>
+      </form>
+      {notices}
+    </section>
+    {detailPanel}
+    {confirmDialog}
+  </>;
+
+  // Facts and All facts tabs.
+  return <>
+    <section className="p-card">
+      <div className="p-card-heading">
+        <h3>{tab === "All facts" ? "All recorded facts, including retracted" : "Active facts"}</h3>
+        <span className="p-fixture">{rows.length} {rows.length === 1 ? "fact" : "facts"}{searchResults ? " · search result" : ""}</span>
+      </div>
+      <form className="row section-space" style={{ gap: 8 }} onSubmit={(event: FormEvent) => { event.preventDefault(); const term = searchTerm.trim(); if (!term) { setSearchResults(null); return; } setError(""); setFeedback(""); search.mutate(term); }}>
+        <label className="search-field flex1"><SearchIcon className="icon sm" aria-hidden="true" />
+          <input aria-label="Search recorded facts" placeholder="Search fact text…" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} />
+        </label>
+        <button className="btn primary" disabled={busy || !searchTerm.trim()}><SearchIcon className="icon sm" />Search</button>
+        {searchResults && <button className="btn" type="button" onClick={() => { setSearchResults(null); setSearchTerm(""); }}>Clear search</button>}
+        <button className="btn" type="button" disabled={busy} onClick={() => { setSearchTerm(""); reload.mutate(tab !== "All facts"); }}><RotateCcw className="icon sm" />Reload facts</button>
+      </form>
+      {notices}
+      {lq.isLoading ? <p className="caption" role="status">Loading facts…</p>
+        : Boolean(lq.error) ? <p className="caption" role="alert">{apiConnectionMessage(lq.error)}</p>
+          : rows.length === 0 ? <EmptyState icon={Fingerprint} title="No recorded facts" detail="Record a fact to track where a piece of personal context came from." />
+            : <div className="p-list">{rows.map((fact, index) => {
+                const id = String(fact.id ?? "");
+                const retracted = isRetracted(fact);
+                const sources = rowsOf(fact.sources);
+                return <article className="p-list-row" key={id || index} data-fact-id={id} data-retracted={retracted ? "true" : "false"}>
+                  <span className="square-icon sm">{retracted ? <AlertCircle className="icon sm" aria-hidden="true" /> : <Check className="icon sm" aria-hidden="true" />}</span>
+                  <div className="flex1">
+                    <strong>{String(fact.fact ?? (id || "Fact"))}</strong>
+                    <small className="muted">
+                      {String(fact.fact_type ?? "statement")} · confidence {String(fact.confidence ?? "—")} · {sources.length} {sources.length === 1 ? "source" : "sources"}
+                      {sources.length > 0 ? ` (${sources.map(source => String(source.source_type ?? "source")).join(", ")})` : ""}
+                      {fact.created_at ? ` · ${String(fact.created_at)}` : ""}
+                      {retracted ? ` · retracted ${String(fact.retracted_at)}${fact.retraction_reason ? `: ${String(fact.retraction_reason)}` : ""}` : ""}
+                    </small>
+                  </div>
+                  <span className="p-fixture">{retracted ? "Retracted" : "Active"}</span>
+                  <button className="btn sm" type="button" disabled={busy || !id} onClick={() => openDetail.mutate(id)}>Open</button>
+                  {retracted
+                    ? <button className="btn sm" type="button" disabled={busy || !id} onClick={() => { setError(""); setFeedback(""); setPending({ action: "restore", fact }); }}><RotateCcw className="icon sm" />Restore</button>
+                    : <button className="btn sm" type="button" disabled={busy || !id} onClick={() => { setError(""); setFeedback(""); setPending({ action: "retract", fact }); }}><AlertCircle className="icon sm" />Retract</button>}
+                </article>;
+              })}</div>}
+    </section>
+    {detailPanel}
+    {statisticsPanel}
+    {confirmDialog}
+  </>;
+}
+
 function VoiceConversationsWorkspace({ data, query: lq }: { data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
   const client = useQueryClient();
   const [selectedId, setSelectedId] = useState("");
@@ -4438,6 +4698,7 @@ function RouteContent({ route, tab, definition, data, query, onTabChange, demo }
   if (route === "g25advanced") return <G25AdvancedWorkspace tab={tab} data={data} query={query} />;
   if (route === "voiceconv") return <VoiceConversationsWorkspace data={data} query={query} />;
   if (route === "modelserve") return <ModelServeWorkspace tab={tab} data={data} query={query} />;
+  if (route === "factprovenance") return <FactProvenanceWorkspace tab={tab} data={data} query={query} />;
 
   return <section className="p-card"><div className="p-card-heading"><h3>{tab}</h3></div><EmptyState icon={Icon} title={`No ${tab.toLowerCase()} loaded`} detail={definition.note} /></section>;
 }
@@ -4450,7 +4711,7 @@ export default function AdvancedScreen({ route }: { route: string }) {
   const [guideExportError, setGuideExportError] = useState("");
   const integrationGuideTrigger = useRef<HTMLButtonElement | null>(null);
   const currentTab = definition.tabs.includes(activeTab) ? activeTab : definition.tabs[0];
-  const supportedRoutes: AdvancedRoute[] = ["voice", "assistant", "communications", "security", "developer", "engine", "science", "twin", "vault", "scraper", "finetune", "gallery", "cookbook", "ultramodel", "personalos", "g25advanced", "voiceconv", "modelserve"];
+  const supportedRoutes: AdvancedRoute[] = ["voice", "assistant", "communications", "security", "developer", "engine", "science", "twin", "vault", "scraper", "finetune", "gallery", "cookbook", "ultramodel", "personalos", "g25advanced", "voiceconv", "modelserve", "factprovenance"];
   const isAdvanced = supportedRoutes.includes(route as AdvancedRoute);
   const selectedRoute = (isAdvanced ? route : "voice") as AdvancedRoute;
   const endpointMap = isAdvanced ? route === "security" ? securityTabEndpoints[currentTab] : route === "science" && currentTab === "Data" ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), catalog: "/api/science/materials/catalog" } : route === "ultramodel" && ["Status", "Plans"].includes(currentTab) ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), manifests: "/api/ultra-model/manifests" } : advancedScreenEndpoints(selectedRoute, currentTab) : null;
@@ -4482,7 +4743,7 @@ export default function AdvancedScreen({ route }: { route: string }) {
       {showVoiceIntro && <section className="demo-feature-hero" aria-label="Voice workspace"><div className="demo-feature-symbol"><Mic className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Recordings · Workspace</span><h2>Capture and understand ideas</h2><p>Record, review and edit the words that matter.</p></div></section>}
       {route === "voice" && dataMode === "demo" && currentTab !== "Recordings" && <section className="demo-feature-hero" aria-label="Voice workspace"><div className="demo-feature-symbol"><Mic className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">{currentTab} · Workspace</span><h2>Capture and understand ideas</h2><p>Record, review and edit the words that matter.</p></div></section>}
       {showCommunicationsIntro && <section className="demo-feature-hero" aria-label={`${currentTab} workspace`}><div className="demo-feature-symbol"><Mail className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">{currentTab} · Workspace</span><h2>Everything in one place</h2><p>Read, reply and prepare communications with clear control.</p></div></section>}
-      <RouteContent route={route} tab={currentTab} definition={definition} data={liveQuery.data} query={liveQuery} onTabChange={setActiveTab} demo={dataMode === "demo"} />{route === "assistant" && dataMode === "demo" && <AssistantDemoActivity events={(liveQuery.data?.activity?.events ?? []) as JsonRecord[]} />}{isAdvanced && route !== "security" && !(route === "assistant" && dataMode === "demo") && !(route === "twin" && dataMode === "demo") && !(["developer", "engine", "science", "scraper"].includes(route) && dataMode === "demo") && <>{route !== "vault" && route !== "finetune" && !["g25advanced", "voiceconv", "modelserve"].includes(route) && <><LiveData route={route} tab={currentTab} query={liveQuery} supported={Boolean(endpointMap)} /><BackendActions route={route} tab={currentTab} data={liveQuery.data} /></>}</>}
+      <RouteContent route={route} tab={currentTab} definition={definition} data={liveQuery.data} query={liveQuery} onTabChange={setActiveTab} demo={dataMode === "demo"} />{route === "assistant" && dataMode === "demo" && <AssistantDemoActivity events={(liveQuery.data?.activity?.events ?? []) as JsonRecord[]} />}{isAdvanced && route !== "security" && !(route === "assistant" && dataMode === "demo") && !(route === "twin" && dataMode === "demo") && !(["developer", "engine", "science", "scraper"].includes(route) && dataMode === "demo") && <>{route !== "vault" && route !== "finetune" && !["g25advanced", "voiceconv", "modelserve", "factprovenance"].includes(route) && <><LiveData route={route} tab={currentTab} query={liveQuery} supported={Boolean(endpointMap)} /><BackendActions route={route} tab={currentTab} data={liveQuery.data} /></>}</>}
     </div><ConnectionRail definition={definition} route={route} tab={currentTab} connectionLabel={connectionLabel} data={liveQuery.data} onTabChange={setActiveTab} /></div>
     <Dialog.Root open={integrationGuideOpen} onOpenChange={open => { setIntegrationGuideOpen(open); if (!open) requestAnimationFrame(() => integrationGuideTrigger.current?.focus()); }}>
       <Dialog.Portal>

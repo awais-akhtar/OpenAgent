@@ -306,10 +306,27 @@ class CalendarEventLifecycleTests(unittest.TestCase):
             self.assertEqual(enabled_result, {
                 "delivered": [reminder_id], "skipped": [], "notifications_enabled": True, "project": "personal",
             })
-            self.assertEqual(calendar.get_due_reminders(project="personal"), [])
+            # Delivery is bookkeeping, not acknowledgement: the reminder stays
+            # in the owner's due list so the acknowledge action remains usable.
+            self.assertEqual([item["reminder_id"] for item in calendar.get_due_reminders(project="personal")], [reminder_id])
             deliveries = [event for event in store.list_audit_events(project="personal", limit=100) if event["action"] == "calendar.notification.deliver"]
             self.assertEqual(len(deliveries), 1)
             self.assertEqual(deliveries[0]["metadata"]["reminder_id"], reminder_id)
+
+            # Running the worker again must not deliver the same reminder twice.
+            repeat_result = calendar.deliver_due_notifications(project="personal", integration_hub=integrations)
+            self.assertEqual(repeat_result["delivered"], [])
+            repeat_deliveries = [event for event in store.list_audit_events(project="personal", limit=100) if event["action"] == "calendar.notification.deliver"]
+            self.assertEqual(len(repeat_deliveries), 1)
+
+            # Delivery state is durable, so a restart does not re-deliver it.
+            restarted = CalendarSystem(store)
+            self.assertEqual(restarted.deliver_due_notifications(project="personal", integration_hub=integrations)["delivered"], [])
+            self.assertEqual([item["reminder_id"] for item in restarted.get_due_reminders(project="personal")], [reminder_id])
+
+            # Only the owner's acknowledgement clears it, and that also persists.
+            restarted.mark_reminder_triggered(reminder_id, project="personal")
+            self.assertEqual(CalendarSystem(store).get_due_reminders(project="personal"), [])
 
     def test_reminder_acknowledgement_route_contract_and_write_scope(self) -> None:
         routes = {(route["method"], route["path"]) for route in calendar_routes.contract()["routes"]}

@@ -263,6 +263,9 @@ class CalendarSystem:
                     triggered INTEGER NOT NULL DEFAULT 0,
                     trigger_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    -- Appended last so a fresh database matches the column
+                    -- order ALTER TABLE produces on a migrated one.
+                    delivered INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY(event_id) REFERENCES calendar_events(id) ON DELETE CASCADE
                 );
 
@@ -311,6 +314,10 @@ class CalendarSystem:
         # calendar_reminders
         ensure_column("calendar_reminders", "method TEXT NOT NULL DEFAULT 'notification'")
         ensure_column("calendar_reminders", "triggered INTEGER NOT NULL DEFAULT 0")
+        # Autonomous delivery is tracked apart from `triggered`, which the owner
+        # sets by acknowledging. Sharing one flag let the background worker
+        # consume a reminder before it was ever shown.
+        ensure_column("calendar_reminders", "delivered INTEGER NOT NULL DEFAULT 0")
         ensure_column("calendar_reminders", "trigger_at TEXT NOT NULL DEFAULT ''")
         ensure_column("calendar_reminders", "created_at TEXT NOT NULL DEFAULT ''")
 
@@ -465,7 +472,9 @@ class CalendarSystem:
                     trigger_at = starts_at
                 reminder_id = hashlib.md5(f"{event_id}-{advance_mins}".encode()).hexdigest()
                 conn.execute(
-                    "INSERT OR IGNORE INTO calendar_reminders VALUES(?,?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO calendar_reminders (id, event_id, project, "
+                    "advance_minutes, method, triggered, trigger_at, created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (reminder_id, event_id, project, advance_mins, "notification", 0, trigger_at, now),
                 )
         self.store.add_audit_event(AuditEvent(
@@ -766,7 +775,9 @@ class CalendarSystem:
                         trigger_at = start_for_reminder
                     reminder_id = hashlib.md5(f"{event_id}-{advance_minutes}".encode()).hexdigest()
                     conn.execute(
-                        "INSERT OR IGNORE INTO calendar_reminders VALUES(?,?,?,?,?,?,?,?)",
+                        "INSERT OR IGNORE INTO calendar_reminders (id, event_id, project, "
+                    "advance_minutes, method, triggered, trigger_at, created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                         (reminder_id, event_id, current["project"], advance_minutes,
                          "notification", 0, trigger_at, now),
                     )
@@ -883,7 +894,9 @@ class CalendarSystem:
                     trigger_at = start_time.isoformat()
                 reminder_id = hashlib.md5(f"{override_id}-{advance_minutes}".encode()).hexdigest()
                 conn.execute(
-                    "INSERT OR IGNORE INTO calendar_reminders VALUES(?,?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO calendar_reminders (id, event_id, project, "
+                    "advance_minutes, method, triggered, trigger_at, created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (reminder_id, override_id, master["project"], advance_minutes,
                      "notification", 0, trigger_at, now),
                 )
@@ -1119,16 +1132,25 @@ class CalendarSystem:
     # Reminders
     # ------------------------------------------------------------------
 
-    def get_due_reminders(self, *, project: str = "default") -> list[dict[str, Any]]:
-        """Return reminders that are due and not yet triggered."""
+    def get_due_reminders(
+        self, *, project: str = "default", undelivered_only: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return reminders that are due and not yet acknowledged.
+
+        ``undelivered_only`` narrows the result to reminders autonomous delivery
+        has not sent yet, which is how the background worker avoids delivering
+        the same reminder twice. The owner-facing list deliberately ignores
+        delivery state so an already-delivered reminder stays acknowledgeable.
+        """
         now = utc_now()
+        delivery_filter = " AND r.delivered=0" if undelivered_only else ""
         with self.store.session() as conn:
             rows = conn.execute(
                 "SELECT r.id, r.event_id, r.advance_minutes, r.method, r.trigger_at, "
                 "e.title, e.starts_at "
                 "FROM calendar_reminders r "
                 "JOIN calendar_events e ON e.id=r.event_id "
-                "WHERE r.project=? AND r.triggered=0 AND r.trigger_at <= ? "
+                f"WHERE r.project=? AND r.triggered=0{delivery_filter} AND r.trigger_at <= ? "
                 "ORDER BY r.trigger_at LIMIT 50",
                 (project, now),
             ).fetchall()
@@ -1160,6 +1182,21 @@ class CalendarSystem:
                 raise KeyError("Reminder not found")
         return True
 
+    def mark_reminder_delivered(self, reminder_id: str, *, project: str = "default") -> bool:
+        """Record that autonomous delivery has sent this reminder once."""
+        reminder_id = str(reminder_id).strip()
+        project = str(project).strip()
+        if not reminder_id or not project:
+            raise ValueError("reminder_id and project are required")
+        with self.store.session() as conn:
+            cursor = conn.execute(
+                "UPDATE calendar_reminders SET delivered=1 WHERE id=? AND project=?",
+                (reminder_id, project),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError("Reminder not found")
+        return True
+
     def deliver_due_notifications(
         self,
         *,
@@ -1182,7 +1219,11 @@ class CalendarSystem:
                 except (TypeError, AttributeError):
                     enabled = True
 
-        due = [r for r in self.get_due_reminders(project=project) if r.get("method") == "notification"]
+        due = [
+            r
+            for r in self.get_due_reminders(project=project, undelivered_only=True)
+            if r.get("method") == "notification"
+        ]
         delivered: list[str] = []
         skipped: list[str] = []
 
@@ -1206,7 +1247,9 @@ class CalendarSystem:
                 },
             ))
             try:
-                self.mark_reminder_triggered(rid, project=project)
+                # Delivery records itself only; acknowledging stays the owner's
+                # action, so the reminder remains visible until they clear it.
+                self.mark_reminder_delivered(rid, project=project)
                 delivered.append(rid)
             except KeyError:
                 skipped.append(rid)

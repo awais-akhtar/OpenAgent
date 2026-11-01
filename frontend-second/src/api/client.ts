@@ -124,7 +124,7 @@ export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Bl
   return response.blob();
 }
 
-export type AdvancedRoute = 'voice' | 'assistant' | 'communications' | 'security' | 'developer' | 'engine' | 'science' | 'twin' | 'vault' | 'scraper' | 'finetune' | 'gallery' | 'cookbook' | 'ultramodel' | 'personalos' | 'g25advanced' | 'voiceconv' | 'modelserve';
+export type AdvancedRoute = 'voice' | 'assistant' | 'communications' | 'security' | 'developer' | 'engine' | 'science' | 'twin' | 'vault' | 'scraper' | 'finetune' | 'gallery' | 'cookbook' | 'ultramodel' | 'personalos' | 'g25advanced' | 'voiceconv' | 'modelserve' | 'factprovenance';
 export type AdvancedTab = string;
 
 /**
@@ -245,6 +245,19 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
       'Ultra models': { models: '/api/ultra-models/models?project=default&owner=default' },
       'Ultra sessions': { sessions: '/api/ultra-models/sessions?project=default&owner=default' },
       Readiness: { readiness: '/api/ultra-models/readiness?project=default&owner=default' },
+    },
+    factprovenance: {
+      // Fact provenance routes are scoped by project only; they take no owner.
+      Facts: {
+        facts: '/api/fact-provenance/facts?project=default&limit=100&active_only=true',
+        statistics: '/api/fact-provenance/statistics?project=default',
+      },
+      'All facts': {
+        facts: '/api/fact-provenance/facts?project=default&limit=100&active_only=false',
+        statistics: '/api/fact-provenance/statistics?project=default',
+      },
+      'Record a fact': null,
+      Statistics: { statistics: '/api/fact-provenance/statistics?project=default' },
     },
   };
   return routes[route]?.[tab] ?? null;
@@ -516,6 +529,70 @@ export const getUltraModelReadiness = (project?: string, owner?: string, signal?
 
 export const calibrateUltraModel = (modelId: string, project?: string, owner?: string, signal?: AbortSignal) =>
   apiGet(`/api/ultra-models/models/${seg(modelId)}/calibrate?${scopeQuery(project, owner)}`, signal);
+
+// ── Fact provenance (personal context fact sourcing and retraction) ────────
+// The backend scopes these routes by `project` only; there is no `owner`
+// parameter on any fact-provenance route, so scopeQuery is deliberately not
+// used here. Retraction is non-destructive: `retract` records a reason and
+// `restore` reverses it. Neither route deletes a fact.
+export type FactProvenanceSourceInput = {
+  source_type: string;
+  source_reference: string;
+  confidence?: number;
+};
+
+const factProvenanceQuery = (project = 'default', extra: Record<string, string> = {}): string => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
+  params.set('project', project);
+  return params.toString();
+};
+
+/** GET /api/fact-provenance/facts — list facts with their source metadata. */
+export const listProvenanceFacts = (
+  project = 'default',
+  options: { limit?: number; activeOnly?: boolean } = {},
+  signal?: AbortSignal,
+) => apiGet(`/api/fact-provenance/facts?${factProvenanceQuery(project, {
+  limit: String(options.limit ?? 100),
+  active_only: options.activeOnly === false ? 'false' : 'true',
+})}`, signal);
+
+/** GET /api/fact-provenance/facts/{id} — one fact with sources and retraction history. */
+export const getProvenanceFact = (factId: string, project = 'default', signal?: AbortSignal) =>
+  apiGet(`/api/fact-provenance/facts/${seg(factId)}?${factProvenanceQuery(project)}`, signal);
+
+/** GET /api/fact-provenance/search — substring search over recorded facts. */
+export const searchProvenanceFacts = (q: string, project = 'default', limit = 50, signal?: AbortSignal) =>
+  apiGet(`/api/fact-provenance/search?${factProvenanceQuery(project, { q, limit: String(limit) })}`, signal);
+
+/** GET /api/fact-provenance/statistics — fact, source and retraction counts. */
+export const getProvenanceStatistics = (project = 'default', signal?: AbortSignal) =>
+  apiGet(`/api/fact-provenance/statistics?${factProvenanceQuery(project)}`, signal);
+
+/** POST /api/fact-provenance/facts — record a fact with its provenance sources. */
+export const createProvenanceFact = (body: {
+  fact: string;
+  fact_type?: string;
+  confidence?: number;
+  sources?: FactProvenanceSourceInput[];
+  project?: string;
+}) => apiPost('/api/fact-provenance/facts', { project: 'default', ...body });
+
+/**
+ * POST /api/fact-provenance/facts/{id}/retract — mark a fact as retracted.
+ * The fact and its sources are retained; `reason` is required by the backend.
+ */
+export const retractProvenanceFact = (factId: string, body: {
+  reason: string;
+  retracted_by?: string;
+  evidence?: string;
+  project?: string;
+}) => apiPost(`/api/fact-provenance/facts/${seg(factId)}/retract`, { project: 'default', ...body });
+
+/** POST /api/fact-provenance/facts/{id}/restore — reverse a retraction. */
+export const restoreProvenanceFact = (factId: string, project = 'default') =>
+  apiPost(`/api/fact-provenance/facts/${seg(factId)}/restore`, { project });
 
 export function apiConnectionMessage(error: unknown): string {
   if (error instanceof ApiError) {
