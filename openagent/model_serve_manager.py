@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class ModelServeSession:
     """Represents a running model serve session with process tracking."""
 
-    def __init__(self, session_id: str, model_id: str, model_path: str):
+    def __init__(self, session_id: str, model_id: str, model_path: str, project: str = "default", owner: str = "default"):
         self.session_id = session_id
         self.model_id = model_id
         self.model_path = model_path
@@ -28,6 +28,8 @@ class ModelServeSession:
         self.status = "planned"  # planned, starting, running, stopped, failed
         self.logs: list[str] = []
         self.process_identity: dict[str, Any] = {}
+        self.project = project
+        self.owner = owner
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -42,6 +44,8 @@ class ModelServeSession:
             "status": self.status,
             "logs": self.logs[-20:],  # Last 20 log lines
             "process_identity": self.process_identity,
+            "project": self.project,
+            "owner": self.owner,
         }
 
 
@@ -51,7 +55,10 @@ class ModelServeManager:
     def __init__(self, models_dir: str | None = None):
         self.models_dir = Path(models_dir or "models")
         self.sessions: dict[str, ModelServeSession] = {}
-        self.state_file = Path("model_sessions_state.json")
+        self.session_metadata: dict[str, dict[str, Any]] = {}
+        # Keep state beside the models it describes; a bare relative name would
+        # drop this file into whatever directory the server was started from.
+        self.state_file = self.models_dir / "model_sessions_state.json"
         self._load_state()
 
     def _load_state(self) -> None:
@@ -76,18 +83,21 @@ class ModelServeManager:
     def _save_state(self) -> None:
         """Save session state to disk."""
         state = {"sessions": [s.to_dict() for s in self.sessions.values()]}
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.state_file, "w") as f:
             json.dump(state, f, indent=2)
 
     def create_serve_plan(
-        self, model_id: str, model_path: str, host: str = "127.0.0.1", port: int = 8000
+        self, model_id: str, model_path: str, host: str = "127.0.0.1", port: int = 8000,
+        project: str = "default", owner: str = "default"
     ) -> dict[str, Any]:
         """Create a plan for serving a model (no actual process started)."""
         session_id = str(uuid4())
-        session = ModelServeSession(session_id, model_id, model_path)
+        session = ModelServeSession(session_id, model_id, model_path, project, owner)
         session.status = "planned"
 
         self.sessions[session_id] = session
+        self.session_metadata[session_id] = {"project": project, "owner": owner}
         self._save_state()
 
         return {
@@ -96,12 +106,18 @@ class ModelServeManager:
             "status": "planned",
             "command": f"llama-server -m {model_path} -ngl 999 --host {host} --port {port}",
             "created_at": session.created_at,
+            "project": project,
+            "owner": owner,
         }
 
-    def start_serve(self, session_id: str) -> dict[str, Any]:
+    def start_serve(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Start actual model serving process (with permission)."""
         if session_id not in self.sessions:
             return {"error": f"Session {session_id} not found"}
+
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return {"error": "Session does not belong to this project/owner"}
 
         session = self.sessions[session_id]
 
@@ -174,10 +190,14 @@ class ModelServeManager:
         self._save_state()
         return session.to_dict()
 
-    def stop_serve(self, session_id: str) -> dict[str, Any]:
+    def stop_serve(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Stop model serving process with PID verification."""
         if session_id not in self.sessions:
             return {"error": f"Session {session_id} not found"}
+
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return {"error": "Session does not belong to this project/owner"}
 
         session = self.sessions[session_id]
 
@@ -219,15 +239,20 @@ class ModelServeManager:
         self._save_state()
         return session.to_dict()
 
-    def get_session(self, session_id: str) -> dict[str, Any] | None:
+    def get_session(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
         """Get session status."""
-        if session_id in self.sessions:
-            return self.sessions[session_id].to_dict()
-        return None
+        if session_id not in self.sessions:
+            return None
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return None
+        return self.sessions[session_id].to_dict()
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, project: str = "default", owner: str = "default") -> list[dict[str, Any]]:
         """List all sessions."""
-        return [s.to_dict() for s in self.sessions.values()]
+        return [s.to_dict() for session_id, s in self.sessions.items()
+                if self.session_metadata.get(session_id, {}).get("project") == project
+                and self.session_metadata.get(session_id, {}).get("owner") == owner]
 
     def cleanup_stopped_sessions(self, older_than_seconds: int = 3600) -> int:
         """Clean up stopped sessions older than threshold."""

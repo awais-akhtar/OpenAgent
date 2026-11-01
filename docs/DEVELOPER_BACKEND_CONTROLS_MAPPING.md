@@ -8,43 +8,63 @@ This document maps backend developer operations to their UI placement and safety
 
 ## Backend Operations Inventory
 
-| Operation | Current Route | Current UI | Scope | Safety | Status |
-|-----------|---------------|-----------|-------|--------|--------|
-| API Key list | GET /api/developer/keys | Keys panel | developer:read | Safe | Wired |
-| API Key create | POST /api/developer/keys | Create button | developer:write | Safe | Wired |
-| API Key revoke | DELETE /api/developer/keys/{id} | Revoke action | developer:write | Safe | Wired |
-| API Key rotation | POST /api/developer/keys/{id}/rotate | Rotate button | developer:write | Safe | Partially wired |
-| Webhook list | GET /api/developer/webhooks | Webhooks panel | developer:read | Safe | Wired |
-| Webhook register | POST /api/developer/webhooks | Register dialog | developer:write | Requires URL | Wired |
-| Webhook update | PATCH /api/developer/webhooks/{id} | (Missing) | developer:write | URL validation | **Not wired** |
-| Webhook delete | DELETE /api/developer/webhooks/{id} | Delete action | developer:write | Safe | Wired |
-| Webhook test | POST /api/developer/webhooks/{id}/test | Test button | developer:write | Safe | Wired |
-| Webhook history | GET /api/developer/webhooks/{id}/delivery-history | History panel | developer:read | Safe | Wired |
-| MCP list | GET /api/mcp-runtime/configs | MCP panel | developer:read | Safe | Wired (read-only) |
-| MCP enable | POST /api/mcp-runtime/{id}/enable | (Limited) | developer:write | Requires validation | **Partial** |
-| MCP disable | POST /api/mcp-runtime/{id}/disable | (Limited) | developer:write | Safe | Partial |
-| MCP execute | POST /api/mcp-runtime/{id}/execute | (Limited) | developer:write | Requires approval | **Restricted** |
-| MCP env vars | PATCH /api/mcp-runtime/{id}/environment | (Missing) | developer:admin | Secrets handling | **Not wired** |
+Routes below are the ones `openagent.routes.route_contracts()` actually
+declares. Operations with no declared route are listed separately as not
+implemented, so this table cannot drift back into describing routes that do not
+exist.
+
+| Operation | Declared route | Current UI | Scope | Safety | Status |
+|-----------|----------------|-----------|-------|--------|--------|
+| API Key list | GET /api/developer/api-keys | Keys panel | developer:read | Safe | Route declared |
+| API Key create | POST /api/developer/api-keys | Create button | developer:write | Safe | Route declared |
+| API Key verify | POST /api/developer/api-keys/verify | (none) | developer:write | Safe | Route declared, no UI |
+| Webhook list | GET /api/developer/webhooks | Webhooks panel | developer:read | Safe | Route declared |
+| Webhook register | POST /api/developer/webhooks | Register dialog | developer:write | Requires URL | Route declared |
+| Webhook update | PUT /api/developer/webhooks/{id} | (none) | developer:write | URL validation | Route declared, no UI |
+| Webhook delete | DELETE /api/developer/webhooks/{id} | Delete action | developer:write | Safe | Route declared |
+| Webhook dispatch | POST /api/developer/webhooks/dispatch | Test button | developer:write | Safe | Route declared |
+| Webhook deliveries | GET /api/developer/webhook-deliveries | History panel | developer:read | Safe | Route declared |
+| MCP server list | GET /api/mcp/servers | MCP panel | developer:read | Safe | Route declared |
+| MCP server add | POST /api/mcp/servers | (none) | developer:admin | Requires validation | Route declared, no UI |
+| MCP server reconnect | POST /api/mcp/servers/{id}/reconnect | (none) | developer:admin | Safe | Route declared, no UI |
+| MCP tool list | GET /api/mcp/tools | MCP panel | developer:read | Safe | Route declared |
+| MCP tool update | PATCH /api/mcp/tools/{id} | (none) | developer:admin | Requires validation | Route declared, no UI |
+| MCP tool invoke | POST /api/mcp/tools/{id}/invoke | (none) | developer:admin | Requires approval | Route declared, restricted |
+| MCP permissions | GET /api/mcp/permissions | (none) | developer:read | Safe | Route declared, no UI |
+
+"Route declared" means the HTTP contract exists; it is not a claim that a
+control has been exercised end to end.
+
+### Not implemented (no declared route)
+
+These were previously listed above as wired or partial, which was incorrect —
+no such route is declared:
+
+- API key revoke (`DELETE .../api-keys/{id}`) and rotation (`POST .../api-keys/{id}/rotate`)
+- MCP enable / disable toggles
+- MCP per-server environment variable editing
+
+Deciding whether to implement these is open; see Implementation Priority below.
 
 ## UI Placement Plan
 
 ### Tier 1: Currently Wired (No Action)
-- API key CRUD operations
-- Webhook list/register/delete/test
+- API key list/create
+- Webhook list/register/delete/dispatch
 - Webhook delivery history
-- MCP list and basic enable/disable
+- MCP server and tool listing
 
 ### Tier 2: Partial Wiring (Complete)
 
 #### Webhook Update Endpoint
-- **Route**: PATCH /api/developer/webhooks/{id}
+- **Route**: PUT /api/developer/webhooks/{id}
 - **Parameters**: url, events, active, retry_policy
 - **Safety**: URL must be validated against egress policy
 - **UI**: Add "Edit webhook" dialog in webhooks panel
 - **Tests**: URL validation, egress enforcement, schema validation
 
 #### API Key Rotation
-- **Route**: POST /api/developer/keys/{id}/rotate
+- **Route**: not implemented; would need a new declaration
 - **Parameters**: (none)
 - **Safety**: Safe, returns new key
 - **UI**: Add "Rotate" button in keys list
@@ -53,7 +73,7 @@ This document maps backend developer operations to their UI placement and safety
 ### Tier 3: Requires Approval (Restrict)
 
 #### MCP Execution Controls
-- **Route**: POST /api/mcp-runtime/{id}/execute
+- **Route**: POST /api/mcp/tools/{id}/invoke
 - **Parameters**: command, arguments, timeout
 - **Safety**: Very high - executes arbitrary code
 - **UI**: Developer advanced section only, requires approval
@@ -61,7 +81,7 @@ This document maps backend developer operations to their UI placement and safety
 - **Tests**: Command validation, timeout enforcement, error isolation
 
 #### MCP Environment Variables
-- **Route**: PATCH /api/mcp-runtime/{id}/environment
+- **Route**: not implemented; deliberately undeclared
 - **Parameters**: environment variables
 - **Safety**: Critical - can pass secrets, affect all commands
 - **UI**: **Do not expose** in current UI
@@ -156,5 +176,5 @@ This document maps backend developer operations to their UI placement and safety
 ## References
 
 - [Developer Routes](../openagent/routes/developer_routes.py)
-- [MCP Runtime Routes](../openagent/routes/mcp_runtime_routes.py)
+- [MCP Runtime Routes](../openagent/routes/mcp_runtime_routes.py) (declares the `/api/mcp/*` group)
 - [Related Tests](../tests/test_developer_security_routes.py)

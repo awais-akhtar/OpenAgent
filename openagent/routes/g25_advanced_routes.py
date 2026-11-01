@@ -54,7 +54,7 @@ class G25RouteDependencies:
     embeddings: VectorEmbeddingsService
     read_json: Any
     query_owner: Callable[[dict[str, list[str]]], str]
-    auth_scope_owner: Callable[[], str]
+    auth_scope_owner: Callable[[dict[str, object]], str]
 
 
 def _first(params: dict[str, list[str]], key: str) -> str:
@@ -67,7 +67,7 @@ def handle_get(path: str, query: str, deps: G25RouteDependencies) -> JsonRouteRe
     params = parse_qs(query)
 
     project = _first(params, "project") or "default"
-    owner = deps.query_owner(params) or "default"
+    owner = deps.query_owner(params) or "local"
 
     if path == "/api/g25/documents":
         docs = deps.doc_processor.list_documents(project=project, owner=owner)
@@ -128,7 +128,7 @@ def handle_post(path: str, deps: G25RouteDependencies) -> JsonRouteResult | None
     payload = deps.read_json()
 
     project = str(payload.get("project", "")).strip() or "default"
-    owner = deps.auth_scope_owner() or "default"
+    owner = deps.auth_scope_owner(payload)
 
     if path == "/api/g25/documents/upload":
         filename = str(payload.get("filename", "document")).strip()

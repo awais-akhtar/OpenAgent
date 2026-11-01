@@ -47,14 +47,16 @@ class AdvancedReasoningService:
     def __init__(self):
         self.chains: dict[str, ReasoningChain] = {}
         self.memory_store = {}
+        self.chain_metadata: dict[str, dict[str, Any]] = {}
 
-    def create_reasoning_chain(self, topic: str) -> dict[str, Any]:
+    def create_reasoning_chain(self, topic: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create new reasoning chain."""
         chain_id = str(uuid4())
         chain = ReasoningChain(chain_id, topic)
         self.chains[chain_id] = chain
-        logger.info(f"Created reasoning chain: {topic}")
-        return {"chain_id": chain_id, "topic": topic}
+        self.chain_metadata[chain_id] = {"project": project, "owner": owner}
+        logger.info(f"Created reasoning chain: {topic} (project={project}, owner={owner})")
+        return {"chain_id": chain_id, "topic": topic, "project": project, "owner": owner}
 
     def add_reasoning_step(self, chain_id: str, step_type: str, input_data: str, output_data: str) -> dict[str, Any]:
         """Add step to reasoning chain."""
@@ -141,13 +143,30 @@ class AdvancedReasoningService:
         
         return chain.to_dict()
 
-    def get_chain(self, chain_id: str) -> dict[str, Any] | None:
+    def get_chain(self, chain_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
         """Get reasoning chain."""
-        return self.chains.get(chain_id).to_dict() if chain_id in self.chains else None
+        if chain_id not in self.chains:
+            return None
+        meta = self.chain_metadata.get(chain_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return None
+        result = self.chains[chain_id].to_dict()
+        result["project"] = project
+        result["owner"] = owner
+        return result
 
-    def list_chains(self) -> list[dict[str, Any]]:
+    def list_chains(self, project: str = "default", owner: str = "default") -> list[dict[str, Any]]:
         """List all reasoning chains."""
-        return [chain.to_dict() for chain in self.chains.values()]
+        results = []
+        for chain_id, chain in self.chains.items():
+            meta = self.chain_metadata.get(chain_id, {})
+            if meta.get("project") != project or meta.get("owner") != owner:
+                continue
+            result = chain.to_dict()
+            result["project"] = project
+            result["owner"] = owner
+            results.append(result)
+        return results
 
     def store_memory(self, key: str, value: Any) -> None:
         """Store in long-term memory."""
@@ -158,11 +177,11 @@ class AdvancedReasoningService:
         """Retrieve from memory."""
         return self.memory_store.get(key)
 
-    def create_chain(self, topic: str) -> dict[str, Any]:
+    def create_chain(self, topic: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Alias: create_reasoning_chain (for route compatibility)."""
-        return self.create_reasoning_chain(topic)
+        return self.create_reasoning_chain(topic, project, owner)
 
-    def analyze_semantics(self, text: str) -> dict[str, Any]:
+    def analyze_semantics(self, text: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Alias: analyze_semantically (for route compatibility)."""
         return self.analyze_semantically(text)
 

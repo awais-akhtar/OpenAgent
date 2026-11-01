@@ -7,8 +7,8 @@
 | B01 | Personal OS authoring/import/compare | POST signatures, drafts, gallery, import, compare/* | Add to Personal OS contextual actions (with approval) |
 | B02 | Gallery advanced edits | POST metadata, batch-tags, transform | Add to Image Studio after G19 verified |
 | B03 | Contacts import | POST import, GET search | Add to Communications Contacts import dialog |
-| B04 | MCP/skills lifecycle | /api/mcp-runtime/*, /api/skills/* | Keep restricted - no new general controls |
-| B05 | Advanced document processing | /api/document-processing/*, /api/rag/* | Keep specialized - no general UI |
+| B04 | MCP/skills lifecycle | /api/mcp/*, /api/skills/* | Keep restricted - no new general controls |
+| B05 | Advanced document processing | /api/document/* processing operations, /api/rag/* | Keep specialized - no general UI |
 | B06 | Scheduler task controls | scheduler routes | Calendar/Automations contextual diagnostics |
 | B07 | Conversation organization | /api/conversations/* organization/branch/export | Chat history/detail menus |
 | B08 | Model Cookbook adoption | serve/adopt/session contracts | Cookbook with explicit G20 fix |

@@ -21,7 +21,10 @@ class UltraModelService:
         self.downloader = ModelDownloader(models_dir or "models")
         self.serve_manager = ModelServeManager(models_dir)
         self.sessions: dict[str, dict[str, Any]] = {}
-        self.manifest_file = Path("ultra_model_manifest.json")
+        self.session_metadata: dict[str, dict[str, Any]] = {}
+        # Keep the manifest beside the models; a bare relative name would
+        # drop this file into whatever directory the server was started from.
+        self.manifest_file = Path(models_dir or "models") / "ultra_model_manifest.json"
         self._load_manifest()
 
     def _load_manifest(self) -> None:
@@ -36,16 +39,18 @@ class UltraModelService:
 
     def _save_manifest(self) -> None:
         """Save sessions to manifest."""
+        self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.manifest_file, "w") as f:
             json.dump({"sessions": self.sessions}, f, indent=2)
 
-    def get_available_models(self) -> dict[str, Any]:
+    def get_available_models(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Get all available models and their cache status."""
+        # Note: downloader is global, models are project-aware in storage
         return self.downloader.get_cached_models()
 
-    def download_model(self, model_id: str) -> dict[str, Any]:
+    def download_model(self, model_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Download a model (may take time for 2GB+ downloads)."""
-        logger.info(f"Starting download of {model_id}")
+        logger.info(f"Starting download of {model_id} (project={project}, owner={owner})")
 
         try:
             model_info = self.downloader.get_model_info(model_id)
@@ -79,7 +84,8 @@ class UltraModelService:
             return {"error": str(e)}
 
     def create_session(
-        self, model_id: str, session_name: str | None = None
+        self, model_id: str, session_name: str | None = None,
+        project: str = "default", owner: str = "default"
     ) -> dict[str, Any]:
         """Create a new ultra model session."""
         try:
@@ -91,7 +97,7 @@ class UltraModelService:
             # Download if not cached
             if not model_info["cached"]:
                 logger.info(f"Model {model_id} not cached, attempting download...")
-                download_result = self.download_model(model_id)
+                download_result = self.download_model(model_id, project, owner)
                 if "error" in download_result:
                     return download_result
 
@@ -102,7 +108,8 @@ class UltraModelService:
 
             # Create serve plan
             serve_plan = self.serve_manager.create_serve_plan(
-                model_id=model_id, model_path=str(model_path)
+                model_id=model_id, model_path=str(model_path),
+                project=project, owner=owner
             )
 
             # Create session record
@@ -114,7 +121,10 @@ class UltraModelService:
                 "status": "ready",
                 "serve_plan": serve_plan,
                 "created_at": serve_plan["created_at"],
+                "project": project,
+                "owner": owner,
             }
+            self.session_metadata[session_id] = {"project": project, "owner": owner}
 
             self._save_manifest()
 
@@ -124,14 +134,18 @@ class UltraModelService:
             logger.error(f"Failed to create session: {e}")
             return {"error": str(e)}
 
-    def launch_session(self, session_id: str) -> dict[str, Any]:
+    def launch_session(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Launch a session (start serving the model)."""
         if session_id not in self.sessions:
             return {"error": f"Session {session_id} not found"}
 
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return {"error": "Session does not belong to this project/owner"}
+
         try:
             # Start the serve process
-            serve_result = self.serve_manager.start_serve(session_id)
+            serve_result = self.serve_manager.start_serve(session_id, project, owner)
 
             if "error" in serve_result:
                 self.sessions[session_id]["status"] = "failed"
@@ -148,14 +162,18 @@ class UltraModelService:
             self._save_manifest()
             return {"error": str(e)}
 
-    def stop_session(self, session_id: str) -> dict[str, Any]:
+    def stop_session(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Stop a running session."""
         if session_id not in self.sessions:
             return {"error": f"Session {session_id} not found"}
 
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return {"error": "Session does not belong to this project/owner"}
+
         try:
             # Stop the serve process
-            serve_result = self.serve_manager.stop_serve(session_id)
+            serve_result = self.serve_manager.stop_serve(session_id, project, owner)
 
             self.sessions[session_id]["status"] = serve_result.get("status", "stopped")
             self.sessions[session_id]["serve_session"] = serve_result
@@ -167,9 +185,9 @@ class UltraModelService:
             logger.error(f"Failed to stop session: {e}")
             return {"error": str(e)}
 
-    def reload_session(self, session_id: str) -> dict[str, Any]:
+    def reload_session(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Reload a session (stop and restart)."""
-        stop_result = self.stop_session(session_id)
+        stop_result = self.stop_session(session_id, project, owner)
         if "error" in stop_result:
             return stop_result
 
@@ -178,30 +196,36 @@ class UltraModelService:
 
         time.sleep(1)
 
-        return self.launch_session(session_id)
+        return self.launch_session(session_id, project, owner)
 
-    def get_session(self, session_id: str) -> dict[str, Any] | None:
+    def get_session(self, session_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
         """Get session details."""
-        if session_id in self.sessions:
-            # Refresh serve status
-            serve_status = self.serve_manager.get_session(session_id)
-            if serve_status:
-                self.sessions[session_id]["serve_session"] = serve_status
-            return self.sessions[session_id]
-        return None
+        if session_id not in self.sessions:
+            return None
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return None
+        # Refresh serve status
+        serve_status = self.serve_manager.get_session(session_id, project, owner)
+        if serve_status:
+            self.sessions[session_id]["serve_session"] = serve_status
+        return self.sessions[session_id]
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, project: str = "default", owner: str = "default") -> list[dict[str, Any]]:
         """List all sessions."""
         result = []
         for session_id, session in self.sessions.items():
+            meta = self.session_metadata.get(session_id, {})
+            if meta.get("project") != project or meta.get("owner") != owner:
+                continue
             # Refresh serve status
-            serve_status = self.serve_manager.get_session(session_id)
+            serve_status = self.serve_manager.get_session(session_id, project, owner)
             if serve_status:
                 session["serve_session"] = serve_status
             result.append(session)
         return result
 
-    def get_readiness_status(self) -> dict[str, Any]:
+    def get_readiness_status(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Check infrastructure readiness."""
         models = self.get_available_models()
         sessions = self.list_sessions()
@@ -217,7 +241,7 @@ class UltraModelService:
             "sample_command": "llama-server -m model.gguf -ngl 999 --host 127.0.0.1 --port 8000",
         }
 
-    def calibrate_for_hardware(self, model_id: str) -> dict[str, Any]:
+    def calibrate_for_hardware(self, model_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Suggest hardware settings for a model."""
         model_info = self.downloader.get_model_info(model_id)
         if not model_info:

@@ -124,7 +124,7 @@ export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Bl
   return response.blob();
 }
 
-export type AdvancedRoute = 'voice' | 'assistant' | 'communications' | 'security' | 'developer' | 'engine' | 'science' | 'twin' | 'vault' | 'scraper' | 'finetune' | 'gallery' | 'cookbook' | 'ultramodel' | 'personalos';
+export type AdvancedRoute = 'voice' | 'assistant' | 'communications' | 'security' | 'developer' | 'engine' | 'science' | 'twin' | 'vault' | 'scraper' | 'finetune' | 'gallery' | 'cookbook' | 'ultramodel' | 'personalos' | 'g25advanced' | 'voiceconv' | 'modelserve';
 export type AdvancedTab = string;
 
 /**
@@ -229,6 +229,22 @@ export function advancedScreenEndpoints(route: AdvancedRoute, tab: AdvancedTab):
       Gallery: { gallery: '/api/personal-os/gallery' },
       Signatures: { signatures: '/api/personal-os/signatures' },
       Drafts: { drafts: '/api/personal-os/drafts' },
+    },
+    g25advanced: {
+      Documents: { documents: '/api/g25/documents?project=default&owner=default' },
+      'Knowledge graph': null,
+      RAG: { documents: '/api/g25/documents?project=default&owner=default' },
+      Reasoning: null,
+      Memory: null,
+    },
+    voiceconv: {
+      Conversations: { conversations: '/api/voice/conversations?project=default&owner=default' },
+    },
+    modelserve: {
+      'Serving sessions': { sessions: '/api/model-serve/sessions?project=default&owner=default' },
+      'Ultra models': { models: '/api/ultra-models/models?project=default&owner=default' },
+      'Ultra sessions': { sessions: '/api/ultra-models/sessions?project=default&owner=default' },
+      Readiness: { readiness: '/api/ultra-models/readiness?project=default&owner=default' },
     },
   };
   return routes[route]?.[tab] ?? null;
@@ -367,6 +383,139 @@ export const finishVoiceStream = (body: {
   transcript_hint?: string;
   allow_fallback_stt?: boolean;
 }) => apiPost('/api/voice/stream/finish', body);
+
+// ── Project scope helpers ──────────────────────────────────────────────────
+/** Build the `project`/`owner` query string every scoped backend GET expects. */
+function scopeQuery(project = 'default', owner = 'default', extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
+  params.set('project', project);
+  params.set('owner', owner);
+  return params.toString();
+}
+
+const seg = (value: string) => encodeURIComponent(value);
+
+// ── G25 advanced: documents, knowledge graph, RAG, reasoning, memory ───────
+export const uploadG25Document = (body: { filename: string; content: string; project?: string }) =>
+  apiPost('/api/g25/documents/upload', { project: 'default', ...body });
+
+export const listG25Documents = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/documents?${scopeQuery(project, owner)}`, signal);
+
+export const getG25Document = (documentId: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/documents/${seg(documentId)}`, signal);
+
+export const analyzeG25Document = (documentId: string, project = 'default') =>
+  apiPost(`/api/g25/documents/${seg(documentId)}/analyze`, { project });
+
+export const createG25GraphNode = (body: { label: string; properties?: JsonRecord; project?: string }) =>
+  apiPost('/api/g25/graph/nodes', { project: 'default', properties: {}, ...body });
+
+export const createG25GraphEdge = (body: { source_id: string; target_id: string; relationship: string; project?: string }) =>
+  apiPost('/api/g25/graph/edges', { project: 'default', ...body });
+
+export const queryG25Graph = (q: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/graph/query?${scopeQuery(project, owner, { q })}`, signal);
+
+export const findG25GraphPaths = (start: string, end: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/graph/paths?${scopeQuery(project, owner, { start, end })}`, signal);
+
+export const indexG25Rag = (body: { doc_id: string; chunks: string[]; project?: string }) =>
+  apiPost('/api/g25/rag/index', { project: 'default', ...body });
+
+export const searchG25Rag = (body: { query: string; project?: string }) =>
+  apiPost('/api/g25/rag/search', { project: 'default', ...body });
+
+export const getG25RagContext = (docId: string, q: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/rag/context?${scopeQuery(project, owner, { doc_id: docId, q })}`, signal);
+
+export const createG25ReasoningChain = (body: { topic: string; project?: string }) =>
+  apiPost('/api/g25/reasoning/chains', { project: 'default', ...body });
+
+export const analyzeG25Reasoning = (body: { text: string; project?: string }) =>
+  apiPost('/api/g25/reasoning/analyze', { project: 'default', ...body });
+
+export const getG25ReasoningChain = (chainId: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/reasoning/chains/${seg(chainId)}`, signal);
+
+export const createG25MemorySession = (project = 'default') =>
+  apiPost('/api/g25/memory/sessions', { project });
+
+export const storeG25Memory = (body: { session_id: string; role: string; content: string; project?: string }) =>
+  apiPost('/api/g25/memory/store', { project: 'default', ...body });
+
+export const getG25MemoryHistory = (sessionId: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/g25/memory/history?${scopeQuery(project, owner, { session_id: sessionId })}`, signal);
+
+// ── Voice conversations ────────────────────────────────────────────────────
+export const createVoiceConversation = (project = 'default') =>
+  apiPost('/api/voice/conversations', { project });
+
+export const listVoiceConversations = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/voice/conversations?${scopeQuery(project, owner)}`, signal);
+
+export const getVoiceConversation = (conversationId: string, signal?: AbortSignal) =>
+  apiGet(`/api/voice/conversations/${seg(conversationId)}`, signal);
+
+export const sendVoiceConversationAudio = (conversationId: string, body: { audio: string; project?: string }) =>
+  apiPost(`/api/voice/conversations/${seg(conversationId)}/audio`, { project: 'default', ...body });
+
+export const respondVoiceConversation = (conversationId: string, body: { text: string; project?: string }) =>
+  apiPost(`/api/voice/conversations/${seg(conversationId)}/respond`, { project: 'default', ...body });
+
+export const runVoiceFullConversation = (conversationId: string, body: { audio: string; response_text: string; project?: string }) =>
+  apiPost(`/api/voice/conversations/${seg(conversationId)}/full-conversation`, { project: 'default', ...body });
+
+export const closeVoiceConversation = (conversationId: string, project = 'default') =>
+  apiPost(`/api/voice/conversations/${seg(conversationId)}/close`, { project });
+
+// ── Model serving ──────────────────────────────────────────────────────────
+export const createModelServePlan = (body: { model_id: string; model_path: string; host: string; port: number; project?: string }) =>
+  apiPost('/api/model-serve/plans', { project: 'default', ...body });
+
+export const startModelServeSession = (sessionId: string, project = 'default') =>
+  apiPost(`/api/model-serve/sessions/${seg(sessionId)}/start`, { project });
+
+export const stopModelServeSession = (sessionId: string, project = 'default') =>
+  apiPost(`/api/model-serve/sessions/${seg(sessionId)}/stop`, { project });
+
+export const getModelServeSession = (sessionId: string, signal?: AbortSignal) =>
+  apiGet(`/api/model-serve/sessions/${seg(sessionId)}`, signal);
+
+export const listModelServeSessions = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/model-serve/sessions?${scopeQuery(project, owner)}`, signal);
+
+// ── Ultra models ───────────────────────────────────────────────────────────
+export const listUltraModels = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/ultra-models/models?${scopeQuery(project, owner)}`, signal);
+
+export const downloadUltraModel = (modelId: string, project = 'default') =>
+  apiPost(`/api/ultra-models/models/${seg(modelId)}/download`, { project });
+
+export const createUltraModelSession = (body: { model_id: string; name: string; project?: string }) =>
+  apiPost('/api/ultra-models/sessions', { project: 'default', ...body });
+
+export const launchUltraModelSession = (sessionId: string, project = 'default') =>
+  apiPost(`/api/ultra-models/sessions/${seg(sessionId)}/launch`, { project });
+
+export const stopUltraModelSession = (sessionId: string, project = 'default') =>
+  apiPost(`/api/ultra-models/sessions/${seg(sessionId)}/stop`, { project });
+
+export const reloadUltraModelSession = (sessionId: string, project = 'default') =>
+  apiPost(`/api/ultra-models/sessions/${seg(sessionId)}/reload`, { project });
+
+export const getUltraModelSession = (sessionId: string, signal?: AbortSignal) =>
+  apiGet(`/api/ultra-models/sessions/${seg(sessionId)}`, signal);
+
+export const listUltraModelSessions = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/ultra-models/sessions?${scopeQuery(project, owner)}`, signal);
+
+export const getUltraModelReadiness = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/ultra-models/readiness?${scopeQuery(project, owner)}`, signal);
+
+export const calibrateUltraModel = (modelId: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/ultra-models/models/${seg(modelId)}/calibrate?${scopeQuery(project, owner)}`, signal);
 
 export function apiConnectionMessage(error: unknown): string {
   if (error instanceof ApiError) {

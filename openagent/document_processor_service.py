@@ -18,43 +18,47 @@ class DocumentProcessorService:
         self.max_file_size = 100 * 1024 * 1024  # 100MB
         self.documents = {}
 
-    def process_document(self, file_path: str, file_content: bytes) -> dict[str, Any]:
+    def process_document(self, file_path: str, file_content: bytes, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Process uploaded document."""
         try:
             path = Path(file_path)
-            
-            # Validate
-            if path.stat().st_size > self.max_file_size:
+
+            # Uploads arrive as a filename plus bytes, so the content length is
+            # authoritative; the name may not exist on disk.
+            if len(file_content) > self.max_file_size:
                 return {"error": f"File too large (max {self.max_file_size/1024/1024:.0f}MB)"}
-            
+
             if path.suffix.lower() not in self.supported_formats:
                 return {"error": f"Unsupported format: {path.suffix}"}
-            
+
             # Extract text based on format
             text = self._extract_text(path, file_content)
-            
+
             if not text:
                 return {"error": "Could not extract text from document"}
-            
+
             # Analyze document
             doc_id = str(uuid4())
             analysis = self._analyze_document(text)
-            
-            self.documents[doc_id] = {
+
+            storage_key = f"{project}:{owner}:{doc_id}"
+            self.documents[storage_key] = {
                 "id": doc_id,
                 "filename": path.name,
                 "format": path.suffix,
                 "text": text,
                 "analysis": analysis,
+                "project": project,
+                "owner": owner,
             }
-            
-            logger.info(f"Processed document: {path.name}")
+
+            logger.info(f"Processed document: {path.name} (project={project}, owner={owner})")
             return {
                 "document_id": doc_id,
                 "filename": path.name,
                 "analysis": analysis,
             }
-        
+
         except Exception as e:
             logger.error(f"Document processing failed: {e}")
             return {"error": str(e)}
@@ -125,52 +129,55 @@ class DocumentProcessorService:
         counts = Counter(filtered)
         return [word for word, _ in counts.most_common(10)]
 
-    def get_document(self, doc_id: str) -> dict[str, Any] | None:
+    def get_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
         """Get document details."""
-        return self.documents.get(doc_id)
+        storage_key = f"{project}:{owner}:{doc_id}"
+        return self.documents.get(storage_key)
 
-    def analyze_document(self, doc_id: str) -> dict[str, Any] | None:
+    def analyze_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
         """Analyze document (public method for routes)."""
-        doc = self.get_document(doc_id)
+        doc = self.get_document(doc_id, project, owner)
         if not doc:
             return None
         return doc.get("analysis", {})
 
-    def list_documents(self) -> list[dict[str, Any]]:
+    def list_documents(self, project: str = "default", owner: str = "default") -> list[dict[str, Any]]:
         """List all processed documents."""
+        prefix = f"{project}:{owner}:"
         return [
             {"id": d["id"], "filename": d["filename"], "analysis": d["analysis"]}
             for d in self.documents.values()
+            if d.get("project") == project and d.get("owner") == owner
         ]
 
-    def extract_information(self, doc_id: str, query: str) -> dict[str, Any]:
+    def extract_information(self, doc_id: str, query: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Extract specific information from document."""
-        doc = self.documents.get(doc_id)
+        doc = self.get_document(doc_id, project, owner)
         if not doc:
             return {"error": "Document not found"}
-        
+
         text = doc["text"]
         # Simple: find matching lines
         matching_lines = [line for line in text.split("\n") if query.lower() in line.lower()]
-        
+
         return {
             "query": query,
             "matches": len(matching_lines),
             "results": matching_lines[:5],  # First 5 matches
         }
 
-    def summarize_document(self, doc_id: str) -> dict[str, Any]:
+    def summarize_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Generate document summary."""
-        doc = self.documents.get(doc_id)
+        doc = self.get_document(doc_id, project, owner)
         if not doc:
             return {"error": "Document not found"}
-        
+
         text = doc["text"]
-        
+
         # Simple summarization: extract first 3 sentences
         sentences = text.split(". ")
         summary = ". ".join(sentences[:3]) + "."
-        
+
         return {
             "document_id": doc_id,
             "summary": summary,

@@ -46,25 +46,41 @@ class KnowledgeGraphService:
         self.nodes: dict[str, Node] = {}
         self.edges: dict[str, Edge] = {}
         self.indexes = {}
+        self.node_metadata: dict[str, dict[str, Any]] = {}
+        self.edge_metadata: dict[str, dict[str, Any]] = {}
 
-    def create_node(self, label: str, properties: dict[str, Any]) -> dict[str, Any]:
+    def create_node(self, label: str, properties: dict[str, Any], project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create knowledge graph node."""
         node_id = str(uuid4())
         node = Node(node_id, label, properties)
         self.nodes[node_id] = node
-        logger.info(f"Created node: {label} ({node_id})")
-        return node.to_dict()
+        self.node_metadata[node_id] = {"project": project, "owner": owner}
+        logger.info(f"Created node: {label} ({node_id}) (project={project}, owner={owner})")
+        result = node.to_dict()
+        result["project"] = project
+        result["owner"] = owner
+        return result
 
-    def create_edge(self, source_id: str, target_id: str, rel_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    def create_edge(self, source_id: str, target_id: str, rel_type: str, properties: dict[str, Any] | None = None, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create relationship between nodes."""
         if source_id not in self.nodes or target_id not in self.nodes:
             return {"error": "Source or target node not found"}
-        
+
+        # Verify source and target belong to same project/owner
+        source_meta = self.node_metadata.get(source_id, {})
+        target_meta = self.node_metadata.get(target_id, {})
+        if source_meta.get("project") != project or target_meta.get("project") != project:
+            return {"error": "Source and target nodes must be in same project"}
+
         edge_id = str(uuid4())
         edge = Edge(edge_id, source_id, target_id, rel_type, properties or {})
         self.edges[edge_id] = edge
-        logger.info(f"Created edge: {rel_type} ({source_id} -> {target_id})")
-        return edge.to_dict()
+        self.edge_metadata[edge_id] = {"project": project, "owner": owner}
+        logger.info(f"Created edge: {rel_type} ({source_id} -> {target_id}) (project={project}, owner={owner})")
+        result = edge.to_dict()
+        result["project"] = project
+        result["owner"] = owner
+        return result
 
     def find_node(self, label: str | None = None, **properties) -> list[Node]:
         """Find nodes by label and properties."""
@@ -105,10 +121,10 @@ class KnowledgeGraphService:
         
         return paths
 
-    def find_paths(self, start_label: str, end_label: str) -> list[list[dict[str, Any]]]:
+    def find_paths(self, start_label: str, end_label: str, project: str = "default", owner: str = "default") -> list[list[dict[str, Any]]]:
         """Alias: Find paths between node labels (for route compatibility)."""
-        start_nodes = [n for n in self.nodes.values() if n.label == start_label]
-        end_nodes = [n for n in self.nodes.values() if n.label == end_label]
+        start_nodes = [n for n in self.nodes.values() if n.label == start_label and self.node_metadata.get(n.id, {}).get("project") == project]
+        end_nodes = [n for n in self.nodes.values() if n.label == end_label and self.node_metadata.get(n.id, {}).get("project") == project]
 
         all_paths = []
         for start in start_nodes:
@@ -136,16 +152,22 @@ class KnowledgeGraphService:
             "connection_count": len(connected_edges),
         }
 
-    def query_graph(self, query: str) -> dict[str, Any]:
+    def query_graph(self, query: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Execute a simple graph query (Neo4j-like Cypher subset)."""
         # Simple pattern: find nodes matching keywords
         keywords = query.lower().split()
         matching_nodes = []
-        
-        for node in self.nodes.values():
+
+        for node_id, node in self.nodes.items():
+            node_meta = self.node_metadata.get(node_id, {})
+            if node_meta.get("project") != project or node_meta.get("owner") != owner:
+                continue
             if any(kw in node.label.lower() for kw in keywords):
-                matching_nodes.append(node.to_dict())
-        
+                result = node.to_dict()
+                result["project"] = project
+                result["owner"] = owner
+                matching_nodes.append(result)
+
         return {
             "query": query,
             "results": matching_nodes,

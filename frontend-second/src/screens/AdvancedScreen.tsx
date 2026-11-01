@@ -11,6 +11,16 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { advancedScreenEndpoints, apiConnectionMessage, apiDelete as backendDelete, apiGet as backendGet, apiGetBlob as backendGetBlob, apiPatch as backendPatch, apiPost as backendPost, apiPut as backendPut, fetchAdvancedScreenData, type AdvancedRoute, type JsonRecord } from "../api/client";
+import {
+  analyzeG25Document, analyzeG25Reasoning, calibrateUltraModel, closeVoiceConversation,
+  createG25GraphEdge, createG25GraphNode, createG25MemorySession, createG25ReasoningChain,
+  createModelServePlan, createUltraModelSession, createVoiceConversation, downloadUltraModel,
+  findG25GraphPaths, getG25Document, getG25MemoryHistory, getG25RagContext, getG25ReasoningChain,
+  getModelServeSession, getUltraModelSession, getVoiceConversation, indexG25Rag,
+  launchUltraModelSession, queryG25Graph, reloadUltraModelSession, respondVoiceConversation,
+  runVoiceFullConversation, searchG25Rag, sendVoiceConversationAudio, startModelServeSession,
+  stopModelServeSession, stopUltraModelSession, storeG25Memory, uploadG25Document,
+} from "../api/client";
 import { useWorkspaceState } from "../state";
 import { advancedDemoAction, advancedDemoScreen, resetAdvancedDemoRoute } from "../demo/advanced";
 import { demoProvider } from "../demo/provider";
@@ -67,6 +77,9 @@ const definitions: Record<string, Definition> = {
   cookbook: { title: "Model Cookbook", description: "Host, certify and serve local model builds.", tabs: ["Hosts", "Cached", "Certifications", "Logs"], icon: BookMarked, subject: "Model hosts", note: "Hosted models and certification records require a connected cookbook service." },
   ultramodel: { title: "Ultra Model", description: "Control ultra-scale inference manifests, plans and sessions.", tabs: ["Status", "Manifests", "Plans", "Sessions"], icon: Zap, subject: "Inference sessions", note: "Manifests, routing plans and sessions appear when the ultra-model service is running." },
   personalos: { title: "Personal OS", description: "Manage personal presets, notes, signatures and drafts.", tabs: ["Status", "Presets", "Notes", "Gallery", "Signatures", "Drafts"], icon: UserRound, subject: "Personal workspace", note: "Presets and notes appear when the personal-os service is connected." },
+  g25advanced: { title: "Advanced AI", description: "Process documents, build knowledge graphs, run retrieval, reasoning and semantic memory.", tabs: ["Documents", "Knowledge graph", "RAG", "Reasoning", "Memory"], icon: Layers3, subject: "Advanced AI pipelines", note: "Documents, graph records, retrieval results and reasoning chains come from the advanced AI services." },
+  voiceconv: { title: "Voice conversations", description: "Run multi-turn voice conversations with recorded audio and responses.", tabs: ["Conversations"], icon: AudioLines, subject: "Voice conversations", note: "Conversations and turns appear when the voice conversation manager is running." },
+  modelserve: { title: "Model serving", description: "Create serving plans and control model and ultra-model sessions.", tabs: ["Serving sessions", "Ultra models", "Ultra sessions", "Readiness"], icon: Server, subject: "Serving sessions", note: "Serving plans, model catalogues and readiness reports require the model-serve and ultra-model services." },
   readiness: { title: "Production Readiness", description: "Monitor voice STT, autonomous scheduling, fine-tuning, and ultra model infrastructure.", tabs: ["Voice STT", "Auto Scheduling", "Fine-tuning", "Ultra Model"], icon: Zap, subject: "Feature implementation", note: "Real-time status of all production-ready features including live transcription, reminder delivery, training jobs, and model sessions." },
 };
 
@@ -75,7 +88,7 @@ const routeIcons: Record<string, LucideIcon> = {
   security: Fingerprint, developer: Braces, engine: Activity, science: Database,
   twin: UserRound, vault: KeyRound, scraper: Globe2, finetune: HardDrive,
   gallery: Image, cookbook: BookMarked, ultramodel: Zap, personalos: UserRound,
-  readiness: Zap,
+  readiness: Zap, g25advanced: Layers3, voiceconv: AudioLines, modelserve: Server,
 };
 
 const securityTabEndpoints: Record<string, Record<string, string> | null> = {
@@ -3992,6 +4005,359 @@ function PersonalOSWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
   </section>;
 }
 
+// ─── G25 advanced / voice conversations / model serving ──────────────────────
+
+/** Read a list out of either `{ key: [...] }` or a bare array payload. */
+function rowsOf(payload: unknown, ...keys: string[]): JsonRecord[] {
+  const isRecord = (value: unknown): value is JsonRecord => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  if (Array.isArray(payload)) return payload.filter(isRecord);
+  if (!isRecord(payload)) return [];
+  for (const key of keys) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value.filter(isRecord);
+  }
+  return [];
+}
+
+function readFileBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => { const result = String(reader.result ?? ""); resolve(result.slice(result.indexOf(",") + 1)); };
+    reader.onerror = () => reject(new Error("The selected file could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Render a backend response verbatim. No value is summarised or invented. */
+function BackendResult({ title, result, onClose }: { title: string; result: unknown; onClose?: () => void }) {
+  if (result === null || result === undefined) return null;
+  return <section className="p-record-section">
+    <h4>{title}</h4>
+    <pre style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--surface)", borderRadius: 6, padding: 12, maxHeight: 280, overflow: "auto", whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(result, null, 2)}</pre>
+    {onClose && <button className="btn sm" type="button" onClick={onClose} style={{ marginTop: 8 }}>Close</button>}
+  </section>;
+}
+
+function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [result, setResult] = useState<unknown>(null);
+  const [resultTitle, setResultTitle] = useState("");
+  const [uploadName, setUploadName] = useState("");
+  const [uploadContent, setUploadContent] = useState("");
+  const [nodeLabel, setNodeLabel] = useState("");
+  const [nodeProperties, setNodeProperties] = useState("");
+  const [edgeSource, setEdgeSource] = useState("");
+  const [edgeTarget, setEdgeTarget] = useState("");
+  const [edgeRelationship, setEdgeRelationship] = useState("");
+  const [graphQuery, setGraphQuery] = useState("");
+  const [pathStart, setPathStart] = useState("");
+  const [pathEnd, setPathEnd] = useState("");
+  const [ragDocId, setRagDocId] = useState("");
+  const [ragChunks, setRagChunks] = useState("");
+  const [ragQuery, setRagQuery] = useState("");
+  const [reasoningTopic, setReasoningTopic] = useState("");
+  const [reasoningText, setReasoningText] = useState("");
+  const [chainId, setChainId] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [memoryRole, setMemoryRole] = useState("user");
+  const [memoryContent, setMemoryContent] = useState("");
+
+  const documents = rowsOf(data?.documents, "documents", "items");
+
+  const run = useMutation({
+    mutationFn: async ({ title, operation }: { title: string; operation: () => Promise<unknown> }) => ({ title, value: await operation() }),
+    onSuccess: async ({ title, value }) => {
+      setError(""); setResultTitle(title); setResult(value); setFeedback(`${title} completed by the backend.`);
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "g25advanced"] });
+    },
+    onError: cause => { setFeedback(""); setResult(null); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (title: string, operation: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ title, operation }); };
+  const busy = run.isPending;
+  const notices = <>{error && <p className="caption" role="alert">{error}</p>}{feedback && <p className="caption" role="status">{feedback}</p>}</>;
+
+  if (tab === "Knowledge graph") return <>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Knowledge graph nodes and edges</h3></div>
+      <form onSubmit={(event: FormEvent) => { event.preventDefault(); let properties: JsonRecord = {}; if (nodeProperties.trim()) { try { const parsed: unknown = JSON.parse(nodeProperties); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Properties must be a JSON object."); properties = parsed as JsonRecord; } catch (cause) { setFeedback(""); setError(cause instanceof Error ? cause.message : "Properties must be valid JSON."); return; } } start("Create node", () => createG25GraphNode({ label: nodeLabel.trim(), properties })); }}>
+        <label className="demo-form-field">Node label<input className="input" value={nodeLabel} onChange={event => setNodeLabel(event.target.value)} required /></label>
+        <label className="demo-form-field">Properties (JSON object, optional)<textarea className="input" rows={3} value={nodeProperties} onChange={event => setNodeProperties(event.target.value)} placeholder='{"source": "manual"}' /></label>
+        <button className="btn primary" disabled={busy || !nodeLabel.trim()}><Plus className="icon sm" />Create node</button>
+      </form>
+      <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Create edge", () => createG25GraphEdge({ source_id: edgeSource.trim(), target_id: edgeTarget.trim(), relationship: edgeRelationship.trim() })); }} style={{ marginTop: 16 }}>
+        <label className="demo-form-field">Source node id<input className="input" value={edgeSource} onChange={event => setEdgeSource(event.target.value)} required /></label>
+        <label className="demo-form-field">Target node id<input className="input" value={edgeTarget} onChange={event => setEdgeTarget(event.target.value)} required /></label>
+        <label className="demo-form-field">Relationship<input className="input" value={edgeRelationship} onChange={event => setEdgeRelationship(event.target.value)} required /></label>
+        <button className="btn" disabled={busy || !edgeSource.trim() || !edgeTarget.trim() || !edgeRelationship.trim()}><Network className="icon sm" />Create edge</button>
+      </form>
+    </section>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Query the graph</h3></div>
+      <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Graph query", () => queryG25Graph(graphQuery.trim())); }}>
+        <label className="demo-form-field">Query<input className="input" value={graphQuery} onChange={event => setGraphQuery(event.target.value)} placeholder="Search nodes and relationships" required /></label>
+        <button className="btn primary" disabled={busy || !graphQuery.trim()}><SearchIcon className="icon sm" />Run query</button>
+      </form>
+      <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Graph paths", () => findG25GraphPaths(pathStart.trim(), pathEnd.trim())); }} style={{ marginTop: 16 }}>
+        <label className="demo-form-field">Path start node id<input className="input" value={pathStart} onChange={event => setPathStart(event.target.value)} required /></label>
+        <label className="demo-form-field">Path end node id<input className="input" value={pathEnd} onChange={event => setPathEnd(event.target.value)} required /></label>
+        <button className="btn" disabled={busy || !pathStart.trim() || !pathEnd.trim()}><ArrowRight className="icon sm" />Find paths</button>
+      </form>
+      {notices}
+      <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+    </section>
+  </>;
+
+  if (tab === "RAG") return <section className="p-card">
+    <div className="p-card-heading"><h3>Retrieval index and search</h3></div>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); const chunks = ragChunks.split("\n").map(line => line.trim()).filter(Boolean); start("Index document", () => indexG25Rag({ doc_id: ragDocId.trim(), chunks })); }}>
+      <label className="demo-form-field">Document id<input className="input" list="g25-rag-documents" value={ragDocId} onChange={event => setRagDocId(event.target.value)} required /></label>
+      <datalist id="g25-rag-documents">{documents.map((document, index) => <option key={String(document.id ?? index)} value={String(document.id ?? "")}>{String(document.filename ?? document.name ?? "")}</option>)}</datalist>
+      <label className="demo-form-field">Chunks (one per line)<textarea className="input" rows={5} value={ragChunks} onChange={event => setRagChunks(event.target.value)} required /></label>
+      <button className="btn primary" disabled={busy || !ragDocId.trim() || !ragChunks.trim()}><Layers3 className="icon sm" />Index chunks</button>
+    </form>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Retrieval search", () => searchG25Rag({ query: ragQuery.trim() })); }} style={{ marginTop: 16 }}>
+      <label className="demo-form-field">Search query<input className="input" value={ragQuery} onChange={event => setRagQuery(event.target.value)} required /></label>
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn primary" disabled={busy || !ragQuery.trim()}><SearchIcon className="icon sm" />Search index</button>
+        <button className="btn" type="button" disabled={busy || !ragQuery.trim() || !ragDocId.trim()} onClick={() => start("Retrieval context", () => getG25RagContext(ragDocId.trim(), ragQuery.trim()))}><FileText className="icon sm" />Get document context</button>
+      </div>
+    </form>
+    {notices}
+    <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+  </section>;
+
+  if (tab === "Reasoning") return <section className="p-card">
+    <div className="p-card-heading"><h3>Reasoning chains</h3></div>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Reasoning chain", () => createG25ReasoningChain({ topic: reasoningTopic.trim() })); }}>
+      <label className="demo-form-field">Chain topic<input className="input" value={reasoningTopic} onChange={event => setReasoningTopic(event.target.value)} required /></label>
+      <button className="btn primary" disabled={busy || !reasoningTopic.trim()}><Sparkles className="icon sm" />Create chain</button>
+    </form>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Reasoning analysis", () => analyzeG25Reasoning({ text: reasoningText.trim() })); }} style={{ marginTop: 16 }}>
+      <label className="demo-form-field">Text to analyse<textarea className="input" rows={5} value={reasoningText} onChange={event => setReasoningText(event.target.value)} required /></label>
+      <button className="btn" disabled={busy || !reasoningText.trim()}><Activity className="icon sm" />Analyse text</button>
+    </form>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Reasoning chain detail", () => getG25ReasoningChain(chainId.trim())); }} style={{ marginTop: 16 }}>
+      <label className="demo-form-field">Chain id<input className="input" value={chainId} onChange={event => setChainId(event.target.value)} required /></label>
+      <button className="btn" disabled={busy || !chainId.trim()}><SearchIcon className="icon sm" />Load chain</button>
+    </form>
+    {notices}
+    <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+  </section>;
+
+  if (tab === "Memory") return <section className="p-card">
+    <div className="p-card-heading"><h3>Semantic memory sessions</h3><button className="btn sm primary" type="button" disabled={busy} onClick={() => start("Memory session", async () => { const created = await createG25MemorySession(); const id = created.session_id ?? (created.session as JsonRecord | undefined)?.id ?? created.id; if (typeof id === "string") setSessionId(id); return created; })}><Plus className="icon sm" />Create session</button></div>
+    <label className="demo-form-field">Session id<input className="input" value={sessionId} onChange={event => setSessionId(event.target.value)} /></label>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Store memory", () => storeG25Memory({ session_id: sessionId.trim(), role: memoryRole, content: memoryContent.trim() })); }}>
+      <label className="demo-form-field">Role<select className="select" value={memoryRole} onChange={event => setMemoryRole(event.target.value)}><option value="user">user</option><option value="assistant">assistant</option><option value="system">system</option></select></label>
+      <label className="demo-form-field">Content<textarea className="input" rows={4} value={memoryContent} onChange={event => setMemoryContent(event.target.value)} required /></label>
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn primary" disabled={busy || !sessionId.trim() || !memoryContent.trim()}><Plus className="icon sm" />Store entry</button>
+        <button className="btn" type="button" disabled={busy || !sessionId.trim()} onClick={() => start("Memory history", () => getG25MemoryHistory(sessionId.trim()))}><FileClock className="icon sm" />Load history</button>
+      </div>
+    </form>
+    {notices}
+    <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+  </section>;
+
+  // Documents tab (default)
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Documents</h3></div>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Document upload", () => uploadG25Document({ filename: uploadName.trim(), content: uploadContent })); }}>
+      <label className="demo-form-field">File<input className="input" type="file" onChange={async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        setError(""); setFeedback("");
+        try { setUploadContent(await readFileBase64(file)); setUploadName(file.name); }
+        catch (cause) { setUploadContent(""); setError(cause instanceof Error ? cause.message : "The selected file could not be read."); }
+      }} /></label>
+      <label className="demo-form-field">Filename<input className="input" value={uploadName} onChange={event => setUploadName(event.target.value)} required /></label>
+      <button className="btn primary" disabled={busy || !uploadName.trim() || !uploadContent}><Upload className="icon sm" />Upload document</button>
+    </form>
+    {notices}
+    {lq.isLoading ? <p className="caption" role="status">Loading documents…</p>
+      : Boolean(lq.error) ? <p className="caption" role="alert">{apiConnectionMessage(lq.error)}</p>
+        : documents.length === 0 ? <EmptyState icon={FileText} title="No documents" detail="Upload a document to index and analyse it." />
+          : <div className="p-list">{documents.map((document, index) => { const id = String(document.id ?? ""); return <article className="p-list-row" key={id || index}>
+              <span className="square-icon sm"><FileText className="icon sm" aria-hidden="true" /></span>
+              <div className="flex1"><strong>{String(document.filename ?? document.name ?? (id || "Document"))}</strong><small className="muted">{String(document.status ?? document.created_at ?? "")}</small></div>
+              <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Document detail", () => getG25Document(id))}>Open</button>
+              <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Document analysis", () => analyzeG25Document(id))}>Analyse</button>
+            </article>; })}</div>}
+    <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+  </section>;
+}
+
+function VoiceConversationsWorkspace({ data, query: lq }: { data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [selectedId, setSelectedId] = useState("");
+  const [responseText, setResponseText] = useState("");
+  const [audioBase64, setAudioBase64] = useState("");
+  const [audioName, setAudioName] = useState("");
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [result, setResult] = useState<unknown>(null);
+  const [resultTitle, setResultTitle] = useState("");
+  const conversations = rowsOf(data?.conversations, "conversations", "items");
+
+  const run = useMutation({
+    mutationFn: async ({ title, operation }: { title: string; operation: () => Promise<unknown> }) => ({ title, value: await operation() }),
+    onSuccess: async ({ title, value }) => {
+      setError(""); setResultTitle(title); setResult(value); setFeedback(`${title} completed by the backend.`);
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "voiceconv"] });
+    },
+    onError: cause => { setFeedback(""); setResult(null); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (title: string, operation: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ title, operation }); };
+  const busy = run.isPending;
+
+  return <>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Voice conversations</h3><button className="btn sm primary" type="button" disabled={busy} onClick={() => start("New conversation", async () => { const created = await createVoiceConversation(); const id = created.conversation_id ?? (created.conversation as JsonRecord | undefined)?.id ?? created.id; if (typeof id === "string") setSelectedId(id); return created; })}><Plus className="icon sm" />Start conversation</button></div>
+      {error && <p className="caption" role="alert">{error}</p>}{feedback && <p className="caption" role="status">{feedback}</p>}
+      {lq.isLoading ? <p className="caption" role="status">Loading conversations…</p>
+        : Boolean(lq.error) ? <p className="caption" role="alert">{apiConnectionMessage(lq.error)}</p>
+          : conversations.length === 0 ? <EmptyState icon={AudioLines} title="No voice conversations" detail="Start a conversation to record turns and responses." />
+            : <div className="p-list">{conversations.map((conversation, index) => { const id = String(conversation.id ?? conversation.conversation_id ?? ""); return <article className="p-list-row" key={id || index} aria-current={id === selectedId ? "true" : undefined}>
+                <span className="square-icon sm"><AudioLines className="icon sm" aria-hidden="true" /></span>
+                <div className="flex1"><strong>{id || "Conversation"}</strong><small className="muted">{String(conversation.status ?? conversation.created_at ?? "")}</small></div>
+                <button className="btn sm" type="button" disabled={!id} onClick={() => { setSelectedId(id); setError(""); setFeedback(""); }}>Select</button>
+                <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Conversation detail", () => getVoiceConversation(id))}>Open</button>
+                <button className="btn sm danger" type="button" disabled={busy || !id} onClick={() => { if (window.confirm("Close this conversation?")) start("Close conversation", () => closeVoiceConversation(id)); }}>Close</button>
+              </article>; })}</div>}
+    </section>
+    <section className="p-card">
+      <div className="p-card-heading"><h3>Conversation turns</h3></div>
+      <label className="demo-form-field">Conversation id<input className="input" value={selectedId} onChange={event => setSelectedId(event.target.value)} /></label>
+      <label className="demo-form-field">Audio file<input className="input" type="file" accept="audio/*" onChange={async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        setError(""); setFeedback("");
+        try { setAudioBase64(await readFileBase64(file)); setAudioName(file.name); }
+        catch (cause) { setAudioBase64(""); setAudioName(""); setError(cause instanceof Error ? cause.message : "The selected file could not be read."); }
+      }} /></label>
+      {audioName && <p className="caption">Selected audio: {audioName}</p>}
+      <label className="demo-form-field">Response text<textarea className="input" rows={4} value={responseText} onChange={event => setResponseText(event.target.value)} /></label>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        <button className="btn" type="button" disabled={busy || !selectedId.trim() || !audioBase64} onClick={() => start("Send audio", () => sendVoiceConversationAudio(selectedId.trim(), { audio: audioBase64 }))}><Mic className="icon sm" />Send audio turn</button>
+        <button className="btn" type="button" disabled={busy || !selectedId.trim() || !responseText.trim()} onClick={() => start("Send response", () => respondVoiceConversation(selectedId.trim(), { text: responseText.trim() }))}><ArrowRight className="icon sm" />Send response text</button>
+        <button className="btn primary" type="button" disabled={busy || !selectedId.trim() || !audioBase64 || !responseText.trim()} onClick={() => start("Full conversation turn", () => runVoiceFullConversation(selectedId.trim(), { audio: audioBase64, response_text: responseText.trim() }))}><Play className="icon sm" />Run full turn</button>
+      </div>
+      <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+    </section>
+  </>;
+}
+
+function ModelServeWorkspace({ tab, data, query: lq }: { tab: string; data?: Record<string, JsonRecord>; query: { isLoading: boolean; error: unknown } }) {
+  const client = useQueryClient();
+  const [modelId, setModelId] = useState("");
+  const [modelPath, setModelPath] = useState("");
+  const [host, setHost] = useState("127.0.0.1");
+  const [port, setPort] = useState("8000");
+  const [sessionId, setSessionId] = useState("");
+  const [sessionName, setSessionName] = useState("");
+  const [ultraModelId, setUltraModelId] = useState("");
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [result, setResult] = useState<unknown>(null);
+  const [resultTitle, setResultTitle] = useState("");
+
+  const run = useMutation({
+    mutationFn: async ({ title, operation }: { title: string; operation: () => Promise<unknown> }) => ({ title, value: await operation() }),
+    onSuccess: async ({ title, value }) => {
+      setError(""); setResultTitle(title); setResult(value); setFeedback(`${title} completed by the backend.`);
+      await client.invalidateQueries({ queryKey: ["advanced-screen", "modelserve"] });
+    },
+    onError: cause => { setFeedback(""); setResult(null); setError(apiConnectionMessage(cause)); },
+  });
+  const start = (title: string, operation: () => Promise<unknown>) => { setError(""); setFeedback(""); run.mutate({ title, operation }); };
+  const busy = run.isPending;
+  const notices = <>{error && <p className="caption" role="alert">{error}</p>}{feedback && <p className="caption" role="status">{feedback}</p>}</>;
+  const loadState = lq.isLoading ? <p className="caption" role="status">Loading…</p> : Boolean(lq.error) ? <p className="caption" role="alert">{apiConnectionMessage(lq.error)}</p> : null;
+
+  if (tab === "Ultra models") {
+    const models = rowsOf(data?.models, "models", "items");
+    return <section className="p-card">
+      <div className="p-card-heading"><h3>Ultra models</h3></div>
+      {notices}
+      {loadState ?? (models.length === 0
+        ? <EmptyState icon={Server} title="No ultra models" detail="Models appear when the ultra-model service reports its catalogue." />
+        : <div className="p-list">{models.map((model, index) => { const id = String(model.id ?? model.model_id ?? ""); return <article className="p-list-row" key={id || index}>
+            <span className="square-icon sm"><Server className="icon sm" aria-hidden="true" /></span>
+            <div className="flex1"><strong>{String(model.name ?? (id || "Model"))}</strong><small className="muted">{String(model.status ?? model.size ?? "")}</small></div>
+            <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Model download", () => downloadUltraModel(id))}>Download</button>
+            <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Model calibration", () => calibrateUltraModel(id))}>Calibrate</button>
+          </article>; })}</div>)}
+      <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+    </section>;
+  }
+
+  if (tab === "Ultra sessions") {
+    const sessions = rowsOf(data?.sessions, "sessions", "items");
+    return <section className="p-card">
+      <div className="p-card-heading"><h3>Ultra model sessions</h3></div>
+      <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Create ultra session", () => createUltraModelSession({ model_id: ultraModelId.trim(), name: sessionName.trim() })); }}>
+        <label className="demo-form-field">Model id<input className="input" value={ultraModelId} onChange={event => setUltraModelId(event.target.value)} required /></label>
+        <label className="demo-form-field">Session name<input className="input" value={sessionName} onChange={event => setSessionName(event.target.value)} required /></label>
+        <button className="btn primary" disabled={busy || !ultraModelId.trim() || !sessionName.trim()}><Plus className="icon sm" />Create session</button>
+      </form>
+      {notices}
+      {loadState ?? (sessions.length === 0
+        ? <EmptyState icon={Zap} title="No ultra sessions" detail="Create a session to launch an ultra-scale model." />
+        : <div className="p-list">{sessions.map((session, index) => { const id = String(session.id ?? session.session_id ?? ""); return <article className="p-list-row" key={id || index}>
+            <span className="square-icon sm"><Zap className="icon sm" aria-hidden="true" /></span>
+            <div className="flex1"><strong>{String(session.name ?? (id || "Session"))}</strong><small className="muted">{String(session.status ?? session.model_id ?? "")}</small></div>
+            <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Launch ultra session", () => launchUltraModelSession(id))}>Launch</button>
+            <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Reload ultra session", () => reloadUltraModelSession(id))}>Reload</button>
+            <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Ultra session detail", () => getUltraModelSession(id))}>Open</button>
+            <button className="btn sm danger" type="button" disabled={busy || !id} onClick={() => start("Stop ultra session", () => stopUltraModelSession(id))}>Stop</button>
+          </article>; })}</div>)}
+      <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+    </section>;
+  }
+
+  if (tab === "Readiness") {
+    const readiness = data?.readiness;
+    return <section className="p-card">
+      <div className="p-card-heading"><h3>Ultra model readiness</h3></div>
+      {notices}
+      {loadState ?? (readiness ? <BackendResult title="Readiness report" result={readiness} /> : <EmptyState icon={CheckCircle2} title="No readiness report" detail="The ultra-model service has not reported readiness." />)}
+      <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+    </section>;
+  }
+
+  // Serving sessions tab (default)
+  const sessions = rowsOf(data?.sessions, "sessions", "items");
+  return <section className="p-card">
+    <div className="p-card-heading"><h3>Model serving plans and sessions</h3></div>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); const parsedPort = Number.parseInt(port, 10); if (!Number.isFinite(parsedPort)) { setFeedback(""); setError("Enter a numeric port."); return; } start("Serving plan", () => createModelServePlan({ model_id: modelId.trim(), model_path: modelPath.trim(), host: host.trim(), port: parsedPort })); }}>
+      <label className="demo-form-field">Model id<input className="input" value={modelId} onChange={event => setModelId(event.target.value)} required /></label>
+      <label className="demo-form-field">Model path<input className="input" value={modelPath} onChange={event => setModelPath(event.target.value)} required /></label>
+      <label className="demo-form-field">Host<input className="input" value={host} onChange={event => setHost(event.target.value)} required /></label>
+      <label className="demo-form-field">Port<input className="input" type="number" min={1} max={65535} value={port} onChange={event => setPort(event.target.value)} required /></label>
+      <button className="btn primary" disabled={busy || !modelId.trim() || !modelPath.trim() || !host.trim()}><Plus className="icon sm" />Create serving plan</button>
+    </form>
+    <label className="demo-form-field">Session id<input className="input" value={sessionId} onChange={event => setSessionId(event.target.value)} /></label>
+    <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+      <button className="btn" type="button" disabled={busy || !sessionId.trim()} onClick={() => start("Start serving session", () => startModelServeSession(sessionId.trim()))}><Play className="icon sm" />Start session</button>
+      <button className="btn" type="button" disabled={busy || !sessionId.trim()} onClick={() => start("Serving session detail", () => getModelServeSession(sessionId.trim()))}><SearchIcon className="icon sm" />Open session</button>
+      <button className="btn danger" type="button" disabled={busy || !sessionId.trim()} onClick={() => start("Stop serving session", () => stopModelServeSession(sessionId.trim()))}>Stop session</button>
+    </div>
+    {notices}
+    {loadState ?? (sessions.length === 0
+      ? <EmptyState icon={Server} title="No serving sessions" detail="Create a serving plan to start a model session." />
+      : <div className="p-list">{sessions.map((session, index) => { const id = String(session.id ?? session.session_id ?? ""); return <article className="p-list-row" key={id || index}>
+          <span className="square-icon sm"><Cpu className="icon sm" aria-hidden="true" /></span>
+          <div className="flex1"><strong>{String(session.model_id ?? (id || "Session"))}</strong><small className="muted">{String(session.status ?? "")}{session.host ? ` · ${String(session.host)}:${String(session.port ?? "")}` : ""}</small></div>
+          <button className="btn sm" type="button" disabled={!id} onClick={() => { setSessionId(id); setError(""); setFeedback(""); }}>Select</button>
+          <button className="btn sm" type="button" disabled={busy || !id} onClick={() => start("Start serving session", () => startModelServeSession(id))}>Start</button>
+          <button className="btn sm danger" type="button" disabled={busy || !id} onClick={() => start("Stop serving session", () => stopModelServeSession(id))}>Stop</button>
+        </article>; })}</div>)}
+    <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
+  </section>;
+}
+
 // ─── Logs viewer helper ───────────────────────────────────────────────────────
 
 function LogsViewer({ path, label }: { path: string; label: string }) {
@@ -4069,6 +4435,9 @@ function RouteContent({ route, tab, definition, data, query, onTabChange, demo }
   if (route === "cookbook") return <CookbookWorkspace tab={tab} data={data} query={query} />;
   if (route === "ultramodel") return <UltraModelWorkspace tab={tab} data={data} query={query} />;
   if (route === "personalos") return <PersonalOSWorkspace tab={tab} data={data} query={query} />;
+  if (route === "g25advanced") return <G25AdvancedWorkspace tab={tab} data={data} query={query} />;
+  if (route === "voiceconv") return <VoiceConversationsWorkspace data={data} query={query} />;
+  if (route === "modelserve") return <ModelServeWorkspace tab={tab} data={data} query={query} />;
 
   return <section className="p-card"><div className="p-card-heading"><h3>{tab}</h3></div><EmptyState icon={Icon} title={`No ${tab.toLowerCase()} loaded`} detail={definition.note} /></section>;
 }
@@ -4081,7 +4450,7 @@ export default function AdvancedScreen({ route }: { route: string }) {
   const [guideExportError, setGuideExportError] = useState("");
   const integrationGuideTrigger = useRef<HTMLButtonElement | null>(null);
   const currentTab = definition.tabs.includes(activeTab) ? activeTab : definition.tabs[0];
-  const supportedRoutes: AdvancedRoute[] = ["voice", "assistant", "communications", "security", "developer", "engine", "science", "twin", "vault", "scraper", "finetune", "gallery", "cookbook", "ultramodel", "personalos"];
+  const supportedRoutes: AdvancedRoute[] = ["voice", "assistant", "communications", "security", "developer", "engine", "science", "twin", "vault", "scraper", "finetune", "gallery", "cookbook", "ultramodel", "personalos", "g25advanced", "voiceconv", "modelserve"];
   const isAdvanced = supportedRoutes.includes(route as AdvancedRoute);
   const selectedRoute = (isAdvanced ? route : "voice") as AdvancedRoute;
   const endpointMap = isAdvanced ? route === "security" ? securityTabEndpoints[currentTab] : route === "science" && currentTab === "Data" ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), catalog: "/api/science/materials/catalog" } : route === "ultramodel" && ["Status", "Plans"].includes(currentTab) ? { ...(advancedScreenEndpoints(selectedRoute, currentTab) ?? {}), manifests: "/api/ultra-model/manifests" } : advancedScreenEndpoints(selectedRoute, currentTab) : null;
@@ -4113,7 +4482,7 @@ export default function AdvancedScreen({ route }: { route: string }) {
       {showVoiceIntro && <section className="demo-feature-hero" aria-label="Voice workspace"><div className="demo-feature-symbol"><Mic className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">Recordings · Workspace</span><h2>Capture and understand ideas</h2><p>Record, review and edit the words that matter.</p></div></section>}
       {route === "voice" && dataMode === "demo" && currentTab !== "Recordings" && <section className="demo-feature-hero" aria-label="Voice workspace"><div className="demo-feature-symbol"><Mic className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">{currentTab} · Workspace</span><h2>Capture and understand ideas</h2><p>Record, review and edit the words that matter.</p></div></section>}
       {showCommunicationsIntro && <section className="demo-feature-hero" aria-label={`${currentTab} workspace`}><div className="demo-feature-symbol"><Mail className="icon lg" aria-hidden="true" /></div><div><span className="p-eyebrow">{currentTab} · Workspace</span><h2>Everything in one place</h2><p>Read, reply and prepare communications with clear control.</p></div></section>}
-      <RouteContent route={route} tab={currentTab} definition={definition} data={liveQuery.data} query={liveQuery} onTabChange={setActiveTab} demo={dataMode === "demo"} />{route === "assistant" && dataMode === "demo" && <AssistantDemoActivity events={(liveQuery.data?.activity?.events ?? []) as JsonRecord[]} />}{isAdvanced && route !== "security" && !(route === "assistant" && dataMode === "demo") && !(route === "twin" && dataMode === "demo") && !(["developer", "engine", "science", "scraper"].includes(route) && dataMode === "demo") && <>{route !== "vault" && route !== "finetune" && <><LiveData route={route} tab={currentTab} query={liveQuery} supported={Boolean(endpointMap)} /><BackendActions route={route} tab={currentTab} data={liveQuery.data} /></>}</>}
+      <RouteContent route={route} tab={currentTab} definition={definition} data={liveQuery.data} query={liveQuery} onTabChange={setActiveTab} demo={dataMode === "demo"} />{route === "assistant" && dataMode === "demo" && <AssistantDemoActivity events={(liveQuery.data?.activity?.events ?? []) as JsonRecord[]} />}{isAdvanced && route !== "security" && !(route === "assistant" && dataMode === "demo") && !(route === "twin" && dataMode === "demo") && !(["developer", "engine", "science", "scraper"].includes(route) && dataMode === "demo") && <>{route !== "vault" && route !== "finetune" && !["g25advanced", "voiceconv", "modelserve"].includes(route) && <><LiveData route={route} tab={currentTab} query={liveQuery} supported={Boolean(endpointMap)} /><BackendActions route={route} tab={currentTab} data={liveQuery.data} /></>}</>}
     </div><ConnectionRail definition={definition} route={route} tab={currentTab} connectionLabel={connectionLabel} data={liveQuery.data} onTabChange={setActiveTab} /></div>
     <Dialog.Root open={integrationGuideOpen} onOpenChange={open => { setIntegrationGuideOpen(open); if (!open) requestAnimationFrame(() => integrationGuideTrigger.current?.focus()); }}>
       <Dialog.Portal>

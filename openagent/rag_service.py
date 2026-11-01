@@ -16,19 +16,19 @@ class RAGService:
         self.embeddings = embeddings_service
         self.documents = document_processor
         self.knowledge_graph = knowledge_graph
-        self.retrieval_index = {}  # Maps embeddings to documents
+        self.retrieval_index = {}  # Maps (project:owner:doc_id) -> embeddings
 
-    def index_document(self, doc_id: str) -> dict[str, Any]:
+    def index_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Index document for semantic search."""
-        doc = self.documents.get_document(doc_id)
+        doc = self.documents.get_document(doc_id, project, owner)
         if not doc:
             return {"error": "Document not found"}
-        
+
         text = doc["text"]
-        
+
         # Split into chunks
         chunks = self._chunk_text(text, chunk_size=500)
-        
+
         # Embed each chunk
         chunk_embeddings = []
         for i, chunk in enumerate(chunks):
@@ -38,52 +38,60 @@ class RAGService:
                 "chunk_id": i,
                 "text": chunk,
                 "embedding": embedding,
+                "project": project,
+                "owner": owner,
             })
-        
-        self.retrieval_index[doc_id] = chunk_embeddings
-        logger.info(f"Indexed document {doc_id} with {len(chunks)} chunks")
-        
+
+        index_key = f"{project}:{owner}:{doc_id}"
+        self.retrieval_index[index_key] = chunk_embeddings
+        logger.info(f"Indexed document {doc_id} with {len(chunks)} chunks (project={project}, owner={owner})")
+
         return {
             "document_id": doc_id,
             "chunks": len(chunks),
             "indexed": True,
         }
 
-    def semantic_search(self, query: str, top_k: int = 5) -> dict[str, Any]:
+    def search(self, query: str, top_k: int = 5, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Search documents semantically."""
         query_embedding = self.embeddings.embed_text(query)
-        
+
         results = []
-        for doc_id, chunks in self.retrieval_index.items():
+        for index_key, chunks in self.retrieval_index.items():
+            # Only search documents in this project/owner
+            if not index_key.startswith(f"{project}:{owner}:"):
+                continue
             for chunk_data in chunks:
                 similarity = self.embeddings.similarity(
                     query_embedding,
                     chunk_data["embedding"]
                 )
                 results.append({
-                    "doc_id": doc_id,
+                    "doc_id": chunk_data["doc_id"],
                     "chunk_id": chunk_data["chunk_id"],
                     "text": chunk_data["text"],
                     "similarity": float(similarity),
+                    "project": project,
+                    "owner": owner,
                 })
-        
+
         # Sort by similarity
         results.sort(key=lambda x: x["similarity"], reverse=True)
-        
+
         return {
             "query": query,
             "results": results[:top_k],
             "total_matches": len(results),
         }
 
-    def retrieve_context(self, query: str, context_size: int = 3) -> dict[str, Any]:
+    def get_context(self, query: str, context_size: int = 3, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Retrieve context for query from documents and knowledge graph."""
         # Semantic search
-        search_results = self.semantic_search(query, top_k=context_size)
-        
+        search_results = self.search(query, top_k=context_size, project=project, owner=owner)
+
         # Knowledge graph search
-        kg_results = self.knowledge_graph.query_graph(query)
-        
+        kg_results = self.knowledge_graph.query_graph(query, project=project, owner=owner)
+
         return {
             "query": query,
             "document_context": search_results["results"],
@@ -91,21 +99,21 @@ class RAGService:
             "total_context": len(search_results["results"]) + len(kg_results["results"]),
         }
 
-    def generate_with_context(self, query: str, context_size: int = 3) -> dict[str, Any]:
+    def generate_with_context(self, query: str, context_size: int = 3, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Generate response using retrieved context (RAG)."""
-        context = self.retrieve_context(query, context_size)
-        
+        context = self.get_context(query, context_size, project=project, owner=owner)
+
         # Build context string
         context_text = ""
-        
+
         # Add document context
         for result in context["document_context"]:
             context_text += f"[Document {result['doc_id'][:8]}]: {result['text']}\n"
-        
+
         # Add knowledge graph context
         for result in context["knowledge_context"]:
             context_text += f"[Knowledge]: {result['label']} - {result['properties']}\n"
-        
+
         return {
             "query": query,
             "context": context_text,

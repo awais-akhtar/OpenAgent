@@ -29,7 +29,7 @@ class VoiceConversationRouteDependencies:
     manager: VoiceConversationManager
     read_json: Any
     query_owner: Callable[[dict[str, list[str]]], str]
-    auth_scope_owner: Callable[[], str]
+    auth_scope_owner: Callable[[dict[str, object]], str]
 
 
 def _first(params: dict[str, list[str]], key: str) -> str:
@@ -40,7 +40,7 @@ def handle_get(path: str, query: str, deps: VoiceConversationRouteDependencies) 
     """Handle GET requests."""
     params = parse_qs(query)
     project = _first(params, "project") or "default"
-    owner = deps.query_owner(params) or "default"
+    owner = deps.query_owner(params) or "local"
 
     if path == "/api/voice/conversations":
         return JsonRouteResult({"conversations": deps.manager.list_conversations(project=project, owner=owner)})
@@ -61,7 +61,7 @@ def handle_post(path: str, deps: VoiceConversationRouteDependencies) -> JsonRout
 
     payload = deps.read_json()
     project = str(payload.get("project", "")).strip() or "default"
-    owner = deps.auth_scope_owner() or "default"
+    owner = deps.auth_scope_owner(payload)
 
     if path == "/api/voice/conversations":
         return JsonRouteResult(deps.manager.create_conversation(project=project, owner=owner), HTTPStatus.CREATED)

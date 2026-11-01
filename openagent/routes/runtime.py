@@ -986,7 +986,7 @@ def build_http_server(
             embeddings=embeddings_service,
             read_json=read_json,
             query_owner=query_owner,
-            auth_scope_owner=handler._auth_scope_owner if hasattr(handler, '_auth_scope_owner') else lambda: "local",
+            auth_scope_owner=payload_owner,
         )
 
     def document_processing_route_dependencies(read_json, payload_owner) -> DocumentProcessingRouteDependencies:
@@ -1210,6 +1210,7 @@ def build_http_server(
 
         def handle_one_request(self) -> None:
             self.request_id = uuid4().hex
+            self._json_body_cache = None
             started = time.monotonic()
             try:
                 super().handle_one_request()
@@ -1369,6 +1370,9 @@ def build_http_server(
                     read_query_string=lambda: parse_qs(parsed.query),
                 ),
             )
+            if isinstance(voice_route, StreamRouteResult):
+                self.send_event_stream(voice_route.events, headers=voice_route.headers)
+                return
             if voice_route is not None:
                 self.send_json(voice_route.payload, status=voice_route.status)
                 return
@@ -4394,8 +4398,16 @@ def build_http_server(
             self.wfile.write(body)
 
         def read_json(self) -> dict[str, object]:
+            # The dispatcher offers one body to many route modules in turn, and
+            # a module that declines the path may already have read it. The
+            # socket keeps the connection open, so a second rfile.read() would
+            # block forever; cache the parsed body for the current request.
+            cached = getattr(self, "_json_body_cache", None)
+            if cached is not None:
+                return cached
             length = parse_int(self.headers.get("Content-Length"), default=0)
             if length <= 0:
+                self._json_body_cache = {}
                 return {}
             if length > settings.json_body_limit_bytes:
                 raise RequestRejected("JSON request body exceeds the configured limit.", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
@@ -4406,6 +4418,7 @@ def build_http_server(
                 raise RequestRejected("Request body is not valid JSON.") from exc
             if not isinstance(payload, dict):
                 raise RequestRejected("JSON request body must be an object.")
+            self._json_body_cache = payload
             return payload
 
         def _bearer_token(self) -> str:

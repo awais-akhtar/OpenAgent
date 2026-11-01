@@ -19,10 +19,11 @@ class SemanticMemoryService:
         self.sessions = {}
         self.conversation_history = {}
         self.context_memories = {}
+        self.session_metadata: dict[str, dict[str, Any]] = {}
         self.state_file = Path("semantic_memory_state.json")
         self._load_state()
 
-    def create_session(self) -> dict[str, Any]:
+    def create_session(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create new memory session."""
         session_id = str(uuid4())
         self.sessions[session_id] = {
@@ -31,36 +32,51 @@ class SemanticMemoryService:
             "last_access": time.time(),
             "messages": [],
             "context_embedding": None,
+            "project": project,
+            "owner": owner,
         }
-        logger.info(f"Created memory session: {session_id}")
-        return {"session_id": session_id, "created_at": self.sessions[session_id]["created_at"]}
+        self.session_metadata[session_id] = {"project": project, "owner": owner}
+        logger.info(f"Created memory session: {session_id} (project={project}, owner={owner})")
+        return {"session_id": session_id, "created_at": self.sessions[session_id]["created_at"], "project": project, "owner": owner}
 
-    def store_message(self, session_id: str, role: str, content: str, embedding: list[float] | None = None) -> dict[str, Any]:
+    def store_message(self, session_id: str, role: str, content: str, embedding: list[float] | None = None, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Store message in conversation history."""
         if session_id not in self.sessions:
             return {"error": "Session not found"}
-        
+
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return {"error": "Session does not belong to this project/owner"}
+
         self.sessions[session_id]["messages"].append({
             "role": role,
             "content": content,
             "embedding": embedding,
             "timestamp": time.time(),
+            "project": project,
+            "owner": owner,
         })
         self.sessions[session_id]["last_access"] = time.time()
-        
+
         self._save_state()
         return {"stored": True, "message_count": len(self.sessions[session_id]["messages"])}
 
-    def get_conversation_history(self, session_id: str, limit: int = 10) -> dict[str, Any]:
+    def get_conversation_history(self, session_id: str, limit: int = 10, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Get conversation history for session."""
         if session_id not in self.sessions:
             return {"error": "Session not found"}
-        
+
+        meta = self.session_metadata.get(session_id, {})
+        if meta.get("project") != project or meta.get("owner") != owner:
+            return {"error": "Session does not belong to this project/owner"}
+
         messages = self.sessions[session_id]["messages"][-limit:]
         return {
             "session_id": session_id,
             "messages": messages,
             "total_messages": len(self.sessions[session_id]["messages"]),
+            "project": project,
+            "owner": owner,
         }
 
     def search_history(self, session_id: str, query: str) -> dict[str, Any]:
@@ -135,7 +151,7 @@ class SemanticMemoryService:
             "context_items": len(self.context_memories.get(session_id, {})),
         }
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, project: str = "default", owner: str = "default") -> list[dict[str, Any]]:
         """List all sessions."""
         return [
             {
@@ -143,8 +159,11 @@ class SemanticMemoryService:
                 "created_at": s["created_at"],
                 "messages": len(s["messages"]),
                 "last_access": s["last_access"],
+                "project": s.get("project"),
+                "owner": s.get("owner"),
             }
             for s in self.sessions.values()
+            if s.get("project") == project and s.get("owner") == owner
         ]
 
     def _save_state(self) -> None:

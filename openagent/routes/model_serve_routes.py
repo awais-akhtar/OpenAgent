@@ -46,7 +46,7 @@ class ModelServeRouteDependencies:
     ultra_model_service: UltraModelService
     read_json: Any
     query_owner: Callable[[dict[str, list[str]]], str]
-    auth_scope_owner: Callable[[], str]
+    auth_scope_owner: Callable[[dict[str, object]], str]
 
 
 def _first(params: dict[str, list[str]], key: str) -> str:
@@ -58,7 +58,7 @@ def handle_get(path: str, query: str, deps: ModelServeRouteDependencies) -> Json
     """Handle GET requests for model serve endpoints."""
     params = parse_qs(query)
     project = _first(params, "project") or "default"
-    owner = deps.query_owner(params) or "default"
+    owner = deps.query_owner(params) or "local"
 
     # G20 routes
     if path == "/api/model-serve/sessions":
@@ -109,7 +109,7 @@ def handle_post(path: str, deps: ModelServeRouteDependencies) -> JsonRouteResult
 
     payload = deps.read_json()
     project = str(payload.get("project", "")).strip() or "default"
-    owner = deps.auth_scope_owner() or "default"
+    owner = deps.auth_scope_owner(payload)
 
     # G20: Model Serve routes
     if path == "/api/model-serve/plans":

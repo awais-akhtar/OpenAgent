@@ -6,9 +6,9 @@ import json
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any, Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
-from . import JsonRouteResult
+from . import JsonRouteResult, ServerSentEvent, StreamRouteResult
 from ._contracts import route_contract
 
 
@@ -19,6 +19,9 @@ ROUTES = (
     ("POST", "/api/voice/websocket/chunk"),
     ("POST", "/api/voice/websocket/finish"),
     ("GET", "/api/voice/websocket/status"),
+    ("GET", "/api/voice/stream/continuous/{session_id}/stream"),
+    ("POST", "/api/voice/stream/continuous/{session_id}/chunk"),
+    ("POST", "/api/voice/stream/continuous/{session_id}/finish"),
 )
 
 
@@ -49,7 +52,7 @@ def handle_post(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | No
 
     try:
         if path == "/api/voice/stream/continuous":
-            # Handle continuous audio streaming
+            # Handle continuous audio streaming with new streaming-first approach
             session_id = str(payload.get("session_id", "")).strip()
             if not session_id:
                 return JsonRouteResult({"error": "session_id is required."}, HTTPStatus.BAD_REQUEST)
@@ -69,7 +72,7 @@ def handle_post(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | No
                     HTTPStatus.BAD_REQUEST
                 )
 
-            # Process the continuous audio stream
+            # Process the continuous audio stream with project/owner scoping
             project = str(payload.get("project", "default")).strip() or "default"
             owner = deps.payload_owner(payload, "")
             language = str(payload.get("language", "en")).strip() or "en"
@@ -83,6 +86,47 @@ def handle_post(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | No
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             )
             return JsonRouteResult({"stream_result": result}, HTTPStatus.OK)
+
+        # New parameterized endpoints for streaming with session ID in path
+        if path.startswith("/api/voice/stream/continuous/") and path.endswith("/chunk"):
+            session_id = unquote(path.removeprefix("/api/voice/stream/continuous/").removesuffix("/chunk").strip("/"))
+            if not session_id:
+                return JsonRouteResult({"error": "session_id required"}, HTTPStatus.BAD_REQUEST)
+
+            audio_base64 = str(payload.get("audio_base64", "") or payload.get("audio", "")).strip()
+            if not audio_base64:
+                return JsonRouteResult({"error": "audio_base64 required"}, HTTPStatus.BAD_REQUEST)
+
+            try:
+                import base64
+                audio_data = base64.b64decode(audio_base64)
+            except Exception as exc:
+                return JsonRouteResult(
+                    {"error": f"Invalid base64 audio data: {exc}"},
+                    HTTPStatus.BAD_REQUEST
+                )
+
+            # Extract project and owner from payload with proper scoping
+            project = str(payload.get("project", "default")).strip() or "default"
+            owner = deps.payload_owner(payload, "")
+
+            try:
+                result = voice_websocket.process_audio_frame(session_id, audio_data)
+                return JsonRouteResult(result, HTTPStatus.OK)
+            except (ValueError, RuntimeError) as exc:
+                return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+        # Finish streaming endpoint with session ID in path
+        if path.startswith("/api/voice/stream/continuous/") and path.endswith("/finish"):
+            session_id = unquote(path.removeprefix("/api/voice/stream/continuous/").removesuffix("/finish").strip("/"))
+            if not session_id:
+                return JsonRouteResult({"error": "session_id required"}, HTTPStatus.BAD_REQUEST)
+
+            try:
+                result = voice_websocket.finalize_session(session_id)
+                return JsonRouteResult(result, HTTPStatus.OK)
+            except ValueError:
+                return JsonRouteResult({"error": "Session not found"}, HTTPStatus.NOT_FOUND)
 
         elif path == "/api/voice/websocket/create":
             # Create a new WebSocket streaming session
@@ -145,22 +189,85 @@ def handle_post(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | No
     return None
 
 
-def handle_get(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | None:
+def handle_get(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | StreamRouteResult | None:
     if not path.startswith("/api/voice/"):
         return None
 
     voice_websocket = deps.voice_websocket
+    query = deps.read_query_string()
 
     try:
         if path == "/api/voice/websocket/status":
             # Get status of a WebSocket streaming session
-            query = deps.read_query_string()
             stream_id = deps.first(query, "stream_id") or ""
             if not stream_id:
                 return JsonRouteResult({"error": "stream_id query param is required."}, HTTPStatus.BAD_REQUEST)
 
             result = voice_websocket.get_session_status(stream_id)
             return JsonRouteResult(result, HTTPStatus.OK)
+
+        # Stream continuous transcription frames via SSE
+        if path.startswith("/api/voice/stream/continuous/") and path.endswith("/stream"):
+            session_id = unquote(path.removeprefix("/api/voice/stream/continuous/").removesuffix("/stream").strip("/"))
+            if not session_id:
+                return JsonRouteResult({"error": "session_id required"}, HTTPStatus.BAD_REQUEST)
+
+            try:
+                def stream_voice_frames():
+                    """Stream incremental voice transcription frames."""
+                    try:
+                        # Send stream start event
+                        yield ServerSentEvent(
+                            data={
+                                "type": "stream.started",
+                                "session_id": session_id,
+                                "stream_type": "voice",
+                            },
+                            event="stream.start",
+                        )
+
+                        # Poll for frame updates (in real implementation, this would use WebSocket or callbacks)
+                        session = voice_websocket.get_session_status(session_id)
+                        if session and session.get("status") in {"open", "buffering"}:
+                            yield ServerSentEvent(
+                                data={
+                                    "type": "stream.frame",
+                                    "session_id": session_id,
+                                    **session,
+                                },
+                                event="voice.frame",
+                            )
+
+                        # Send stream end event
+                        final_session = voice_websocket.get_session_status(session_id)
+                        if final_session:
+                            yield ServerSentEvent(
+                                data={
+                                    "type": "stream.ended",
+                                    "session_id": session_id,
+                                    "transcription": final_session.get("transcription", ""),
+                                    "is_final": final_session.get("is_final", False),
+                                },
+                                event="stream.end",
+                                terminal=True,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        yield ServerSentEvent(
+                            data={
+                                "type": "stream.error",
+                                "error": str(exc),
+                                "session_id": session_id,
+                            },
+                            event="stream.error",
+                            terminal=True,
+                        )
+
+                return StreamRouteResult(
+                    stream_voice_frames(),
+                    {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+                )
+            except ValueError:
+                return JsonRouteResult({"error": "Session not found"}, HTTPStatus.NOT_FOUND)
 
     except ValueError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
