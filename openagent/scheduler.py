@@ -653,8 +653,11 @@ class Scheduler:
             return {"delivered": [], "skipped": [], "notifications_enabled": False, "project": project}
 
         try:
-            result = calendar_system.deliver_due_notifications(project=project, integration_hub=integration_hub)
-            return result
+            # Autonomous delivery has shown the reminder to nobody, so it must
+            # not clear it from the owner's due list.
+            return calendar_system.deliver_due_notifications(
+                project=project, integration_hub=integration_hub, owner_initiated=False
+            )
         except Exception as exc:
             return {
                 "delivered": [],

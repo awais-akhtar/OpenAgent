@@ -527,6 +527,102 @@ export const listUltraModelSessions = (project?: string, owner?: string, signal?
 export const getUltraModelReadiness = (project?: string, owner?: string, signal?: AbortSignal) =>
   apiGet(`/api/ultra-models/readiness?${scopeQuery(project, owner)}`, signal);
 
+// ── Developer webhook and API-key lifecycle ────────────────────────────────
+// The backend declares PUT/DELETE on /api/developer/webhooks/{id}; it omits
+// only the keys sent, so an omitted field is left as the backend has it.
+// No secret value is ever returned to or sent from these helpers except the
+// key the caller explicitly passes to the verify route, which the backend
+// checks and never echoes back.
+export type DeveloperWebhookUpdate = {
+  event?: string;
+  target_url?: string;
+  enabled?: boolean;
+  secret_hint?: string;
+  metadata?: JsonRecord;
+};
+
+export const updateDeveloperWebhook = (webhookId: string, body: DeveloperWebhookUpdate) =>
+  apiPut(`/api/developer/webhooks/${seg(webhookId)}`, body);
+
+export const deleteDeveloperWebhook = (webhookId: string) =>
+  apiDelete(`/api/developer/webhooks/${seg(webhookId)}`);
+
+export const dispatchDeveloperWebhook = (body: { event: string; payload?: JsonRecord; allow_network?: boolean }) =>
+  apiPost('/api/developer/webhooks/dispatch', { payload: {}, allow_network: false, ...body });
+
+export const verifyDeveloperApiKey = (body: { key: string; scope?: string }) =>
+  apiPost('/api/developer/api-keys/verify', body);
+
+// ── Image Studio advanced gallery operations ───────────────────────────────
+export const getGalleryAssetOperations = (assetId: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/gallery/${seg(assetId)}/operations?${scopeQuery(project, owner)}`, signal);
+
+export const getGalleryAssetVersions = (assetId: string, project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/gallery/${seg(assetId)}/versions?${scopeQuery(project, owner)}`, signal);
+
+export const editGalleryAssetMetadata = (assetId: string, body: {
+  filename?: string;
+  tags?: string[];
+  metadata?: JsonRecord;
+  favorite?: boolean;
+  project?: string;
+  owner?: string;
+}) => apiPost(`/api/gallery/${seg(assetId)}/metadata`, { project: 'default', ...body });
+
+export const batchTagGalleryAssets = (body: {
+  asset_ids: string[];
+  tags: string[];
+  replace?: boolean;
+  project?: string;
+  owner?: string;
+}) => apiPost('/api/gallery/batch-tags', { project: 'default', replace: false, ...body });
+
+/** `operation` must be one the studio supports; `inpaint` additionally needs a mask and is not offered here. */
+export const transformGalleryAsset = (assetId: string, body: {
+  operation: string;
+  params?: JsonRecord;
+  project?: string;
+  owner?: string;
+}) => apiPost(`/api/gallery/${seg(assetId)}/transform`, { project: 'default', params: {}, ...body });
+
+// ── Personal OS gallery, compare and bundle transfer ───────────────────────
+export const listPersonalOsGallery = (project?: string, owner?: string, tag = '', signal?: AbortSignal) =>
+  apiGet(`/api/personal-os/gallery?${scopeQuery(project, owner, tag ? { tag } : {})}`, signal);
+
+export const addPersonalOsGalleryAsset = (body: {
+  title: string;
+  media_type?: string;
+  source_path?: string;
+  content?: string;
+  tags?: string[];
+  metadata?: JsonRecord;
+  project?: string;
+}) => apiPost('/api/personal-os/gallery', { project: 'default', ...body });
+
+export const setPersonalOsGalleryFavorite = (assetId: string, favorite: boolean, project = 'default') =>
+  apiPost('/api/personal-os/gallery/favorite', { asset_id: assetId, favorite, project });
+
+export const listPersonalOsCompares = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/personal-os/compare?${scopeQuery(project, owner)}`, signal);
+
+export const startPersonalOsCompare = (body: {
+  prompt: string;
+  left_output: string;
+  right_output: string;
+  left_label?: string;
+  right_label?: string;
+  project?: string;
+}) => apiPost('/api/personal-os/compare/start', { project: 'default', ...body });
+
+export const votePersonalOsCompare = (body: { session_id: string; vote: string; project?: string }) =>
+  apiPost('/api/personal-os/compare/vote', { project: 'default', ...body });
+
+export const exportPersonalOsBundle = (project?: string, owner?: string, signal?: AbortSignal) =>
+  apiGet(`/api/personal-os/export?${scopeQuery(project, owner)}`, signal);
+
+export const importPersonalOsBundle = (bundle: JsonRecord, project = 'default') =>
+  apiPost('/api/personal-os/import', { bundle, project });
+
 export const calibrateUltraModel = (modelId: string, project?: string, owner?: string, signal?: AbortSignal) =>
   apiGet(`/api/ultra-models/models/${seg(modelId)}/calibrate?${scopeQuery(project, owner)}`, signal);
 

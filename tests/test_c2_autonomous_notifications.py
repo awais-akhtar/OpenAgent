@@ -155,16 +155,11 @@ class C2AutonomousNotificationsTests(TestCase):
             self.assertIn("skipped", result)
             self.assertIn(reminder["id"], result.get("delivered", []))
 
-            # Delivery records itself without acknowledging, so the owner can
-            # still see and clear the reminder.
+            # Owner-initiated delivery also clears the reminder, because the
+            # owner pressed Deliver on a reminder they could see.
             due_after = calendar.get_due_reminders(project="default")
-            self.assertIn(reminder["id"], [r["reminder_id"] for r in due_after])
-            # It is not offered to delivery a second time.
-            self.assertEqual(
-                calendar.get_due_reminders(project="default", undelivered_only=True), []
-            )
-            calendar.mark_reminder_triggered(reminder["id"], project="default")
-            self.assertEqual(calendar.get_due_reminders(project="default"), [])
+            due_ids = [r["reminder_id"] for r in due_after]
+            self.assertNotIn(reminder["id"], due_ids)
 
     def test_delivery_state_transitions(self) -> None:
         """Test reminder state transitions: scheduled -> delivered."""

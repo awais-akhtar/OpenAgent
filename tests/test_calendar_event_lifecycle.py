@@ -306,25 +306,60 @@ class CalendarEventLifecycleTests(unittest.TestCase):
             self.assertEqual(enabled_result, {
                 "delivered": [reminder_id], "skipped": [], "notifications_enabled": True, "project": "personal",
             })
-            # Delivery is bookkeeping, not acknowledgement: the reminder stays
-            # in the owner's due list so the acknowledge action remains usable.
-            self.assertEqual([item["reminder_id"] for item in calendar.get_due_reminders(project="personal")], [reminder_id])
+            self.assertEqual(calendar.get_due_reminders(project="personal"), [])
             deliveries = [event for event in store.list_audit_events(project="personal", limit=100) if event["action"] == "calendar.notification.deliver"]
             self.assertEqual(len(deliveries), 1)
             self.assertEqual(deliveries[0]["metadata"]["reminder_id"], reminder_id)
 
-            # Running the worker again must not deliver the same reminder twice.
-            repeat_result = calendar.deliver_due_notifications(project="personal", integration_hub=integrations)
-            self.assertEqual(repeat_result["delivered"], [])
-            repeat_deliveries = [event for event in store.list_audit_events(project="personal", limit=100) if event["action"] == "calendar.notification.deliver"]
-            self.assertEqual(len(repeat_deliveries), 1)
+    def test_autonomous_delivery_keeps_reminders_acknowledgeable_and_does_not_repeat(self) -> None:
+        """The 60-second worker must not consume a reminder nobody has seen."""
+        with TemporaryDirectory() as directory:
+            store = OpenAgentStore(directory)
+            calendar = CalendarSystem(store)
+            integrations = IntegrationHub(
+                store, health_provider=store.health, module_health_provider=lambda project: {"status": "ok"},
+                metrics_provider=lambda: {"status": "ok"}, model_provider=lambda: {"status": "ok"},
+                voice_provider=lambda project: {"status": "ok"}, developer_provider=lambda: {"status": "ok"},
+                tool_provider=lambda: [], backup_provider=lambda: {}, backups_provider=lambda: [],
+            )
+            calendar.create_event(
+                "Worker-delivered reminder", "2020-01-01T09:00:00+00:00", "2020-01-01T10:00:00+00:00",
+                project="personal", reminders=[0],
+            )
+            reminder_id = calendar.get_due_reminders(project="personal")[0]["reminder_id"]
 
-            # Delivery state is durable, so a restart does not re-deliver it.
+            # Opt-out: nothing is delivered and the reminder is left alone.
+            integrations.set_preference(project="personal", scope="notifications", key="enabled", value=False)
+            opted_out = calendar.deliver_due_notifications(
+                project="personal", integration_hub=integrations, owner_initiated=False,
+            )
+            self.assertEqual(opted_out["delivered"], [])
+            self.assertEqual(opted_out["skipped"], [reminder_id])
+            self.assertFalse(any(event["action"] == "calendar.notification.deliver" for event in store.list_audit_events(project="personal", limit=100)))
+
+            # Delivered once, and still acknowledgeable by the owner.
+            integrations.set_preference(project="personal", scope="notifications", key="enabled", value=True)
+            first_pass = calendar.deliver_due_notifications(
+                project="personal", integration_hub=integrations, owner_initiated=False,
+            )
+            self.assertEqual(first_pass["delivered"], [reminder_id])
+            self.assertEqual([item["reminder_id"] for item in calendar.get_due_reminders(project="personal")], [reminder_id])
+
+            # Dedup: a second worker pass delivers nothing further.
+            second_pass = calendar.deliver_due_notifications(
+                project="personal", integration_hub=integrations, owner_initiated=False,
+            )
+            self.assertEqual(second_pass["delivered"], [])
+            self.assertEqual(len([event for event in store.list_audit_events(project="personal", limit=100) if event["action"] == "calendar.notification.deliver"]), 1)
+
+            # Restart: delivery state is durable and the reminder is not lost.
             restarted = CalendarSystem(store)
-            self.assertEqual(restarted.deliver_due_notifications(project="personal", integration_hub=integrations)["delivered"], [])
+            self.assertEqual(restarted.deliver_due_notifications(
+                project="personal", integration_hub=integrations, owner_initiated=False,
+            )["delivered"], [])
             self.assertEqual([item["reminder_id"] for item in restarted.get_due_reminders(project="personal")], [reminder_id])
 
-            # Only the owner's acknowledgement clears it, and that also persists.
+            # Only the owner clears it, and that survives a restart too.
             restarted.mark_reminder_triggered(reminder_id, project="personal")
             self.assertEqual(CalendarSystem(store).get_due_reminders(project="personal"), [])
 

@@ -1202,13 +1202,21 @@ class CalendarSystem:
         *,
         project: str = "default",
         integration_hub: Any = None,
+        owner_initiated: bool = True,
     ) -> dict[str, Any]:
         """Process due calendar reminders with method='notification'.
 
         Reads integration_preferences (scope='notifications', key='enabled') to
         decide whether delivery is active. For each due notification reminder,
-        records a delivery audit event and marks the reminder as triggered.
-        Returns a summary of delivered and skipped reminder ids.
+        records a delivery audit event. Returns a summary of delivered and
+        skipped reminder ids.
+
+        ``owner_initiated`` separates the two callers. The owner pressing
+        Deliver has seen the reminder, so delivering also clears it from their
+        due list. The background worker has not shown it to anyone, so it only
+        records that delivery happened and leaves the reminder due; otherwise
+        the worker would consume reminders before they were ever displayed and
+        the acknowledge action could never be reached.
         """
         enabled = True
         if integration_hub is not None:
@@ -1221,7 +1229,9 @@ class CalendarSystem:
 
         due = [
             r
-            for r in self.get_due_reminders(project=project, undelivered_only=True)
+            for r in self.get_due_reminders(
+                project=project, undelivered_only=not owner_initiated
+            )
             if r.get("method") == "notification"
         ]
         delivered: list[str] = []
@@ -1247,9 +1257,10 @@ class CalendarSystem:
                 },
             ))
             try:
-                # Delivery records itself only; acknowledging stays the owner's
-                # action, so the reminder remains visible until they clear it.
-                self.mark_reminder_delivered(rid, project=project)
+                if owner_initiated:
+                    self.mark_reminder_triggered(rid, project=project)
+                else:
+                    self.mark_reminder_delivered(rid, project=project)
                 delivered.append(rid)
             except KeyError:
                 skipped.append(rid)
