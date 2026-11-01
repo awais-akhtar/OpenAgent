@@ -60,6 +60,7 @@ DOMAIN_ROUTE_MODULES: tuple[str, ...] = (
     "personal_os_routes",
     "production_routes",
     "twin_routes",
+    "fact_provenance_routes",
     "vault_routes",
     "scraper_routes",
     "research_routes",

@@ -67,6 +67,7 @@ GROUP_AUDIENCE = {
     "personal_os": "Advanced user",
     "production": "Internal / operator",
     "twin": "Advanced user / privacy-sensitive",
+    "fact_provenance": "Advanced user / privacy-sensitive",
     "vault": "Advanced / security-sensitive",
     "scraper": "Advanced user / network-sensitive",
     "research": "User-facing",
@@ -97,6 +98,7 @@ GROUP_AUDIENCE = {
     "enterprise-identity": "Admin-only / security-sensitive",
     "science": "Advanced user",
     "codebase": "User-facing + destructive/approval controls",
+    "voice": "User-facing / microphone-sensitive",
 }
 
 ROUTE_AUDIENCE_OVERRIDES = {

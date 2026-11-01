@@ -941,6 +941,7 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/personal-os/", "personal_os:read", "personal_os:write"),
     ("/api/vault/", "vault:read", "vault:admin"),
     ("/api/twin/", "twin:read", "twin:write"),
+    ("/api/fact-provenance/", "twin:read", "twin:write"),
     ("/api/scraper/", "scraper:read", "scraper:write"),
     ("/api/finetune/", "finetune:read", "finetune:write"),
     ("/api/workspace/", "workspace:read", "workspace:write"),
@@ -959,6 +960,10 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/ultra-model/", "local_ai:read", "local_ai:admin"),
     ("/api/adaptive-engine/", "local_ai:read", "local_ai:admin"),
     ("/api/contacts", "communication:read", "communication:write"),
+    # The autonomous scheduler controls the same project-local reminder/task
+    # work as /api/tasks and must not fall through as an unmapped route when
+    # auth enforcement is enabled.
+    ("/api/scheduler/autonomous/", "assistant:read", "assistant:write"),
     ("/api/model-cookbook/", "local_ai:read", "local_ai:admin"),
     ("/api/gallery/", "media:read", "media:write"),
     ("/api/tasks", "assistant:read", "assistant:write"),

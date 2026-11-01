@@ -117,6 +117,7 @@ class AuthEnforcementTests(unittest.TestCase):
 
                     # The expanded scope map now also gates previously-open route groups.
                     self._assert_http_error(f"{base_url}/api/personal-os/status", 401)
+                    self._assert_http_error(f"{base_url}/api/scheduler/autonomous/status", 401)
                     with urlopen(
                         Request(
                             f"{base_url}/api/personal-os/status",
@@ -125,6 +126,27 @@ class AuthEnforcementTests(unittest.TestCase):
                         timeout=15,
                     ) as personal_os_ok:
                         self.assertEqual(personal_os_ok.status, 200)
+
+                    assistant_read = auth.create_api_token(user["user_id"], "assistant-read", scopes=["assistant:read"])
+                    with urlopen(Request(
+                        f"{base_url}/api/scheduler/autonomous/status",
+                        headers={"Authorization": f"Bearer {assistant_read['token']}"},
+                    ), timeout=15) as scheduler_status:
+                        self.assertEqual(scheduler_status.status, 200)
+                    self._assert_http_error(Request(
+                        f"{base_url}/api/scheduler/autonomous/status",
+                        headers={"Authorization": f"Bearer {restricted['token']}"},
+                    ), 403)
+                    self._assert_http_error(Request(
+                        f"{base_url}/api/scheduler/autonomous/start", data=b"{}", method="POST",
+                        headers={"Authorization": f"Bearer {assistant_read['token']}", "Content-Type": "application/json"},
+                    ), 403)
+                    assistant_write = auth.create_api_token(user["user_id"], "assistant-write", scopes=["assistant:write"])
+                    with urlopen(Request(
+                        f"{base_url}/api/scheduler/autonomous/start", data=b"{}", method="POST",
+                        headers={"Authorization": f"Bearer {assistant_write['token']}", "Content-Type": "application/json"},
+                    ), timeout=15) as scheduler_started:
+                        self.assertEqual(scheduler_started.status, 200)
 
                     self._assert_http_error(f"{base_url}/api/terminal/runs", 401)
                     with urlopen(
@@ -148,6 +170,48 @@ class AuthEnforcementTests(unittest.TestCase):
                     ), 403)
                 with urlopen(f"{base_url}/api/developer/status", timeout=15) as unrestricted_again:
                     self.assertEqual(unrestricted_again.status, 200)
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
+    def test_fact_provenance_routes_require_twin_scopes_and_persist(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            auth = AuthManager(store)
+            user = auth.register("facts", "facts@example.com", "a-strong-password-2")
+            read_token = auth.create_api_token(user["user_id"], "facts-read", scopes=["twin:read"])
+            write_token = auth.create_api_token(user["user_id"], "facts-write", scopes=["twin:write"])
+            unrelated = auth.create_api_token(user["user_id"], "facts-unrelated", scopes=["chat:read"])
+            server, thread = self._start_server(store)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                with patch.dict(os.environ, {"OPENAGENT_AUTH_ENFORCED": "1"}):
+                    self._assert_http_error(f"{base_url}/api/fact-provenance/facts?project=default", 401)
+                    self._assert_http_error(Request(
+                        f"{base_url}/api/fact-provenance/facts?project=default",
+                        headers={"Authorization": f"Bearer {unrelated['token']}"},
+                    ), 403)
+                    with urlopen(Request(
+                        f"{base_url}/api/fact-provenance/facts?project=default",
+                        headers={"Authorization": f"Bearer {read_token['token']}"},
+                    ), timeout=15) as listed:
+                        self.assertEqual(listed.status, 200)
+                    payload = b'{"project":"default","fact":"A source-backed test fact","sources":[{"source_type":"test","source_reference":"case-1"}]}'
+                    self._assert_http_error(Request(
+                        f"{base_url}/api/fact-provenance/facts", data=payload, method="POST",
+                        headers={"Authorization": f"Bearer {read_token['token']}", "Content-Type": "application/json"},
+                    ), 403)
+                    with urlopen(Request(
+                        f"{base_url}/api/fact-provenance/facts", data=payload, method="POST",
+                        headers={"Authorization": f"Bearer {write_token['token']}", "Content-Type": "application/json"},
+                    ), timeout=15) as created:
+                        self.assertEqual(created.status, 201)
+                    with urlopen(Request(
+                        f"{base_url}/api/fact-provenance/facts?project=default",
+                        headers={"Authorization": f"Bearer {read_token['token']}"},
+                    ), timeout=15) as reread:
+                        self.assertIn(b"A source-backed test fact", reread.read())
             finally:
                 server.shutdown()
                 thread.join(timeout=2)

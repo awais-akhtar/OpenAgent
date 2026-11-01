@@ -834,6 +834,51 @@ MIGRATIONS: tuple[Migration, ...] = (
             AddColumn("vector_collections", "archived_at TEXT NOT NULL DEFAULT ''"),
         ),
     ),
+    Migration(
+        34,
+        "create-fact-provenance-storage",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS fact_provenance (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                fact TEXT NOT NULL,
+                fact_type TEXT NOT NULL DEFAULT 'statement',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL,
+                retracted_at TEXT NOT NULL DEFAULT '',
+                retraction_reason TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_fact_provenance_project ON fact_provenance(project, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_fact_provenance_active ON fact_provenance(project, retracted_at)",
+            """
+            CREATE TABLE IF NOT EXISTS fact_sources (
+                id TEXT PRIMARY KEY,
+                fact_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_reference TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(fact_id) REFERENCES fact_provenance(id) ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_fact_sources_fact ON fact_sources(fact_id)",
+            """
+            CREATE TABLE IF NOT EXISTS fact_retractions (
+                id TEXT PRIMARY KEY,
+                fact_id TEXT NOT NULL,
+                retracted_by TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence TEXT NOT NULL DEFAULT '',
+                restored_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(fact_id) REFERENCES fact_provenance(id) ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_fact_retractions_fact ON fact_retractions(fact_id, created_at DESC)",
+        ),
+    ),
 )
 
 

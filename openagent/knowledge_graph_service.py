@@ -1,0 +1,157 @@
+"""G25: Neo4j-style knowledge graph building and reasoning."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+
+class Node:
+    """Knowledge graph node."""
+    def __init__(self, node_id: str, label: str, properties: dict[str, Any]):
+        self.id = node_id
+        self.label = label
+        self.properties = properties
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "label": self.label, "properties": self.properties}
+
+
+class Edge:
+    """Knowledge graph edge/relationship."""
+    def __init__(self, edge_id: str, source: str, target: str, rel_type: str, properties: dict[str, Any]):
+        self.id = edge_id
+        self.source = source
+        self.target = target
+        self.type = rel_type
+        self.properties = properties
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "source": self.source,
+            "target": self.target,
+            "type": self.type,
+            "properties": self.properties,
+        }
+
+
+class KnowledgeGraphService:
+    """Neo4j-style knowledge graph for reasoning and semantic understanding."""
+
+    def __init__(self):
+        self.nodes: dict[str, Node] = {}
+        self.edges: dict[str, Edge] = {}
+        self.indexes = {}
+
+    def create_node(self, label: str, properties: dict[str, Any]) -> dict[str, Any]:
+        """Create knowledge graph node."""
+        node_id = str(uuid4())
+        node = Node(node_id, label, properties)
+        self.nodes[node_id] = node
+        logger.info(f"Created node: {label} ({node_id})")
+        return node.to_dict()
+
+    def create_edge(self, source_id: str, target_id: str, rel_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Create relationship between nodes."""
+        if source_id not in self.nodes or target_id not in self.nodes:
+            return {"error": "Source or target node not found"}
+        
+        edge_id = str(uuid4())
+        edge = Edge(edge_id, source_id, target_id, rel_type, properties or {})
+        self.edges[edge_id] = edge
+        logger.info(f"Created edge: {rel_type} ({source_id} -> {target_id})")
+        return edge.to_dict()
+
+    def find_node(self, label: str | None = None, **properties) -> list[Node]:
+        """Find nodes by label and properties."""
+        results = []
+        for node in self.nodes.values():
+            if label and node.label != label:
+                continue
+            if all(node.properties.get(k) == v for k, v in properties.items()):
+                results.append(node)
+        return results
+
+    def find_path(self, source_id: str, target_id: str, max_depth: int = 3) -> list[list[str]]:
+        """Find paths between nodes (BFS)."""
+        from collections import deque
+        
+        visited = set()
+        queue = deque([(source_id, [source_id])])
+        paths = []
+        
+        while queue and len(paths) < 5:
+            current, path = queue.popleft()
+            
+            if current == target_id:
+                paths.append(path)
+                continue
+            
+            if len(path) >= max_depth or current in visited:
+                continue
+            
+            visited.add(current)
+            
+            # Find connected nodes
+            for edge in self.edges.values():
+                if edge.source == current:
+                    next_node = edge.target
+                    if next_node not in visited:
+                        queue.append((next_node, path + [next_node]))
+        
+        return paths
+
+    def get_node_context(self, node_id: str, depth: int = 2) -> dict[str, Any]:
+        """Get node and its relationships."""
+        if node_id not in self.nodes:
+            return {"error": "Node not found"}
+        
+        node = self.nodes[node_id]
+        connected_edges = []
+        
+        for edge in self.edges.values():
+            if edge.source == node_id or edge.target == node_id:
+                connected_edges.append(edge.to_dict())
+        
+        return {
+            "node": node.to_dict(),
+            "connected_edges": connected_edges,
+            "connection_count": len(connected_edges),
+        }
+
+    def query_graph(self, query: str) -> dict[str, Any]:
+        """Execute a simple graph query (Neo4j-like Cypher subset)."""
+        # Simple pattern: find nodes matching keywords
+        keywords = query.lower().split()
+        matching_nodes = []
+        
+        for node in self.nodes.values():
+            if any(kw in node.label.lower() for kw in keywords):
+                matching_nodes.append(node.to_dict())
+        
+        return {
+            "query": query,
+            "results": matching_nodes,
+            "result_count": len(matching_nodes),
+        }
+
+    def get_graph_stats(self) -> dict[str, Any]:
+        """Get graph statistics."""
+        return {
+            "node_count": len(self.nodes),
+            "edge_count": len(self.edges),
+            "node_labels": list(set(n.label for n in self.nodes.values())),
+            "relationship_types": list(set(e.type for e in self.edges.values())),
+        }
+
+    def export_graph(self) -> dict[str, Any]:
+        """Export complete graph."""
+        return {
+            "nodes": [n.to_dict() for n in self.nodes.values()],
+            "edges": [e.to_dict() for e in self.edges.values()],
+            "stats": self.get_graph_stats(),
+        }

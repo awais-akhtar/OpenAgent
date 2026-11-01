@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from typing import Any
 
+from .models import utc_now
 from .storage import OpenAgentStore
-from .utils import stable_id, utc_now
+
+
+def stable_id(*parts: str) -> str:
+    """Build stable, namespaced fact/source identifiers."""
+    return sha256("::".join(str(part) for part in parts).encode("utf-8")).hexdigest()[:32]
 
 
 class FactProvenanceService:
@@ -203,7 +209,12 @@ class FactProvenanceService:
             # Mark restoration in retractions
             connection.execute(
                 """
-                UPDATE fact_retractions SET restored_at = ? WHERE fact_id = ? ORDER BY created_at DESC LIMIT 1
+                UPDATE fact_retractions SET restored_at = ?
+                WHERE id = (
+                    SELECT id FROM fact_retractions
+                    WHERE fact_id = ? AND restored_at = ''
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                )
                 """,
                 (now, fact_id),
             )

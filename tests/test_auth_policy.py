@@ -19,6 +19,10 @@ class AuthPolicyContractTests(unittest.TestCase):
         self.assertEqual(required_scope_for_path("/api/agents/approvals", "GET"), "agents:admin")
         self.assertEqual(required_scope_for_path("/api/media/assets/asset-1", "DELETE"), "media:write")
         self.assertEqual(required_scope_for_path("/api/media/assets", "GET"), "media:read")
+        self.assertEqual(required_scope_for_path("/api/scheduler/autonomous/status", "GET"), "assistant:read")
+        self.assertEqual(required_scope_for_path("/api/scheduler/autonomous/start", "POST"), "assistant:write")
+        self.assertEqual(required_scope_for_path("/api/fact-provenance/facts", "GET"), "twin:read")
+        self.assertEqual(required_scope_for_path("/api/fact-provenance/facts", "POST"), "twin:write")
 
 
 if __name__ == "__main__":

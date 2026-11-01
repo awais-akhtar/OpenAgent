@@ -124,6 +124,7 @@ from .media_routes import MediaContentRouteResult, MediaRouteDependencies, Respo
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
 from .model_serve_routes import ModelServeRouteDependencies, handle_get as handle_model_serve_get, handle_post as handle_model_serve_post, contract as model_serve_contract
 from .voice_conversation_routes import VoiceConversationRouteDependencies, handle_get as handle_voice_conversation_get, handle_post as handle_voice_conversation_post, contract as voice_conversation_contract
+from .g25_advanced_routes import G25RouteDependencies, handle_get as handle_g25_get, handle_post as handle_g25_post, contract as g25_contract
 from .personal_os_routes import PersonalOSRouteDependencies, handle_get as handle_personal_os_get, handle_post as handle_personal_os_post, handle_put as handle_personal_os_put, handle_delete as handle_personal_os_delete
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
@@ -492,7 +493,20 @@ def build_http_server(
     ultra_model_service = UltraModelService(models_dir=str(store.data_dir / "models"))
     # G05-G06: Voice conversation services
     from ..voice_conversation_manager import VoiceConversationManager
+    from ..document_processor_service import DocumentProcessorService
+    from ..knowledge_graph_service import KnowledgeGraphService
+    from ..rag_service import RAGService
+    from ..advanced_reasoning_service import AdvancedReasoningService
+    from ..semantic_memory_service import SemanticMemoryService
+    from ..vector_embeddings_service import VectorEmbeddingsService
+
     voice_conversation_manager = VoiceConversationManager()
+    doc_processor_service = DocumentProcessorService()
+    knowledge_graph_service = KnowledgeGraphService()
+    rag_service = RAGService()
+    reasoning_service = AdvancedReasoningService()
+    memory_service = SemanticMemoryService()
+    embeddings_service = VectorEmbeddingsService()
     document_processing = DocumentProcessing(store, knowledge=knowledge)
     image_studio = ImageStudio(store)
     scheduler = Scheduler(store)
@@ -955,6 +969,17 @@ def build_http_server(
     def voice_conversation_route_dependencies(read_json) -> VoiceConversationRouteDependencies:
         return VoiceConversationRouteDependencies(
             manager=voice_conversation_manager,
+            read_json=read_json,
+        )
+
+    def g25_route_dependencies(read_json) -> G25RouteDependencies:
+        return G25RouteDependencies(
+            doc_processor=doc_processor_service,
+            knowledge_graph=knowledge_graph_service,
+            rag_service=rag_service,
+            reasoning_service=reasoning_service,
+            memory_service=memory_service,
+            embeddings=embeddings_service,
             read_json=read_json,
         )
 
@@ -1480,6 +1505,12 @@ def build_http_server(
             if voice_conversation_route is not None:
                 self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
+
+            g25_route = handle_g25_get(parsed.path, parsed.query, g25_route_dependencies(self.read_json))
+            if g25_route is not None:
+                self.send_json(g25_route.payload, status=g25_route.status)
+                return
+
             image_studio_route = handle_image_studio_get(
                 parsed.path,
                 parsed.query,
@@ -2506,6 +2537,12 @@ def build_http_server(
             if voice_conversation_route is not None:
                 self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
+
+            g25_route = handle_g25_post(parsed.path, g25_route_dependencies(self.read_json))
+            if g25_route is not None:
+                self.send_json(g25_route.payload, status=g25_route.status)
+                return
+
             document_processing_route = handle_document_processing_post(
                 parsed.path,
                 document_processing_route_dependencies(self.read_json, self._payload_owner),

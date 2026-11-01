@@ -32,6 +32,8 @@ class LegacyAttributionRouteDependencies:
 
 
 def handle_get(path: str, query: str, deps: LegacyAttributionRouteDependencies) -> JsonRouteResult | None:
+    if path not in {"/api/legacy-attribution/policy", "/api/legacy-attribution/verify"}:
+        return None
     current_owner = deps.auth_scope_owner()
     if not current_owner:
         return JsonRouteResult({"error": "Authentication required."}, HTTPStatus.UNAUTHORIZED)
@@ -52,6 +54,12 @@ def handle_get(path: str, query: str, deps: LegacyAttributionRouteDependencies) 
 
 
 def handle_post(path: str, deps: LegacyAttributionRouteDependencies) -> JsonRouteResult | None:
+    if path not in {
+        "/api/legacy-attribution/validate-ownership",
+        "/api/legacy-attribution/validate-creation",
+        "/api/legacy-attribution/validate-modification",
+    }:
+        return None
     current_owner = deps.auth_scope_owner()
     if not current_owner:
         return JsonRouteResult({"error": "Authentication required."}, HTTPStatus.UNAUTHORIZED)
