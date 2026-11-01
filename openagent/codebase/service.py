@@ -607,7 +607,13 @@ class CodebaseService:
         return str(Path(selected).resolve()) if selected else ""
 
     def create_project(self, *, name: str, source_path: str, project: str = "default", owner: str = "local", backend: str = "local") -> dict[str, Any]:
+        # An empty source_path resolves to the working directory, which would
+        # scan and then sandbox whatever the server was started from.
+        if not str(source_path).strip():
+            raise ValueError("source_path is required.")
         source = Path(source_path).expanduser().resolve()
+        if not source.is_dir():
+            raise ValueError(f"source_path is not an existing directory: {source}")
         intelligence = RepositoryIntelligence(source)
         project_map = intelligence.scan()
         codebase_project_id = uuid4().hex
