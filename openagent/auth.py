@@ -985,8 +985,9 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/v1/models", "local_ai:read", "local_ai:admin"),
     # G25 Advanced Features: document processing, knowledge graph, RAG, reasoning, memory
     ("/api/g25/", "g25:read", "g25:write"),
-    # Model Serving Routes
+    # Model Serving Routes (G20 and G22)
     ("/api/model-serve/", "models:read", "models:write"),
+    ("/api/ultra-models/", "models:read", "models:write"),
 )
 
 
