@@ -129,6 +129,13 @@ class DocumentProcessorService:
         """Get document details."""
         return self.documents.get(doc_id)
 
+    def analyze_document(self, doc_id: str) -> dict[str, Any] | None:
+        """Analyze document (public method for routes)."""
+        doc = self.get_document(doc_id)
+        if not doc:
+            return None
+        return doc.get("analysis", {})
+
     def list_documents(self) -> list[dict[str, Any]]:
         """List all processed documents."""
         return [

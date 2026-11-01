@@ -347,7 +347,7 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
     for candidate in candidates:
         if (candidate / "openvino_model.xml").is_file() and (candidate / "openvino_model.bin").is_file():
             os.environ["OPENAGENT_OPENVINO_MODEL_DIR"] = str(candidate.resolve())
-            os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "GPU")
+            os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "CPU")
             os.environ.setdefault("OPENAGENT_OPENVINO_MODEL_ID", "openagent-qwen2.5-1.5b-int4")
             return str(candidate.resolve())
     return ""

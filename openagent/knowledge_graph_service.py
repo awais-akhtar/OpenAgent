@@ -105,6 +105,19 @@ class KnowledgeGraphService:
         
         return paths
 
+    def find_paths(self, start_label: str, end_label: str) -> list[list[dict[str, Any]]]:
+        """Alias: Find paths between node labels (for route compatibility)."""
+        start_nodes = [n for n in self.nodes.values() if n.label == start_label]
+        end_nodes = [n for n in self.nodes.values() if n.label == end_label]
+
+        all_paths = []
+        for start in start_nodes:
+            for end in end_nodes:
+                paths = self.find_path(start.id, end.id)
+                for path in paths:
+                    all_paths.append([self.nodes[nid].to_dict() for nid in path if nid in self.nodes])
+        return all_paths
+
     def get_node_context(self, node_id: str, depth: int = 2) -> dict[str, Any]:
         """Get node and its relationships."""
         if node_id not in self.nodes:

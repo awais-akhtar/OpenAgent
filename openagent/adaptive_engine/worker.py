@@ -198,7 +198,7 @@ class HardwareWorker:
         import openvino_genai as ov_genai  # type: ignore[import-not-found]
 
         path = _model_directory(command.get("path"))
-        device = _device(command.get("device", "GPU"))
+        device = _device(command.get("device", "CPU"))
         model_id = _model_id(command.get("model_id"), path, device)
         config = _device_config(command.get("config"), cache_dir=command.get("cache_dir"), device=device)
         config = _filter_cpu_properties(self.core, device, config)
@@ -293,7 +293,7 @@ class HardwareWorker:
         hidden = int(command.get("hidden_size", 0))
         intermediate = int(command.get("intermediate_size", 0))
         dtype = str(command.get("dtype", ""))
-        device = _device(command.get("device", "GPU"))
+        device = _device(command.get("device", "CPU"))
         if offset < 0 or size <= 0 or hidden <= 0 or intermediate <= 0:
             raise ValueError("expert range and dimensions must be positive")
         if hidden > 65536 or intermediate > 262144 or size > 2 * 1024**3:

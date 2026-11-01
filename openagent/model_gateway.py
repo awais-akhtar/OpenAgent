@@ -728,7 +728,7 @@ class OpenVINODirectProvider(BaseProvider):
     def __init__(self, client: Any) -> None:
         self.client = client
         self.model_path = os.environ.get("OPENAGENT_OPENVINO_MODEL_DIR", "").strip()
-        self.device = os.environ.get("OPENAGENT_OPENVINO_DEVICE", "GPU").strip() or "GPU"
+        self.device = os.environ.get("OPENAGENT_OPENVINO_DEVICE", "CPU").strip() or "CPU"
         self.default_model = os.environ.get("OPENAGENT_OPENVINO_MODEL_ID", "openagent-direct-chat").strip() or "openagent-direct-chat"
         self._load_lock = threading.RLock()
         self._resident_model_ids: set[str] = set()
@@ -2854,7 +2854,7 @@ def runtime_settings_snapshot() -> dict[str, Any]:
         "target_ram_gb": os.environ.get("OPENAGENT_TOTAL_RAM_GB", ""),
         "model_timeout_seconds": model_timeout_seconds(),
         "openvino_model_dir": os.environ.get("OPENAGENT_OPENVINO_MODEL_DIR", ""),
-        "openvino_device": os.environ.get("OPENAGENT_OPENVINO_DEVICE", "GPU"),
+        "openvino_device": os.environ.get("OPENAGENT_OPENVINO_DEVICE", "CPU"),
         "openvino_model_id": os.environ.get("OPENAGENT_OPENVINO_MODEL_ID", "openagent-direct-chat"),
         "olmoe_model_dir": os.environ.get("OPENAGENT_OLMOE_MODEL_DIR", ""),
         "olmoe_manifest": os.environ.get("OPENAGENT_OLMOE_MANIFEST", ""),

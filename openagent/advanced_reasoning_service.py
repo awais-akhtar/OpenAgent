@@ -158,6 +158,14 @@ class AdvancedReasoningService:
         """Retrieve from memory."""
         return self.memory_store.get(key)
 
+    def create_chain(self, topic: str) -> dict[str, Any]:
+        """Alias: create_reasoning_chain (for route compatibility)."""
+        return self.create_reasoning_chain(topic)
+
+    def analyze_semantics(self, text: str) -> dict[str, Any]:
+        """Alias: analyze_semantically (for route compatibility)."""
+        return self.analyze_semantically(text)
+
     def get_reasoning_stats(self) -> dict[str, Any]:
         """Get reasoning statistics."""
         total_steps = sum(len(chain.steps) for chain in self.chains.values())

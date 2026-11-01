@@ -151,6 +151,7 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(installation_source_root(), source.resolve())
                 self.assertEqual(configure_managed_accelerator(), str(accelerator.resolve()))
                 self.assertEqual(configure_managed_openvino_model(Path(tmp) / "data"), str(model.resolve()))
+                self.assertEqual(os.environ["OPENAGENT_OPENVINO_DEVICE"], "CPU")
 
     def test_installed_runtime_does_not_reexec_into_manifest_source_venv(self) -> None:
         import os

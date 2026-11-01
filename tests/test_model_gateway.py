@@ -562,6 +562,8 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertFalse(result.metadata["network"])
         self.assertEqual(second.provider, "openvino-direct")
         self.assertEqual(client.load_calls, 1)
+        self.assertEqual(gateway.providers["openvino-direct"].device, "CPU")
+        self.assertEqual(runtime_settings_snapshot()["openvino_device"], "CPU")
 
     def test_direct_openvino_provider_forwards_native_token_stream(self) -> None:
         client = FakeDirectHardware()
