@@ -80,24 +80,22 @@ def handle_get(path: str, query: str, deps: WorkflowRouteDependencies) -> JsonRo
                 events = deps.store.get_workflow_run_events(run_id, after=after, limit=limit, project=project)
 
                 def stream_events():
-                    """Stream events in SSE format with proper deduplication and pagination."""
+                    """Stream events in SSE format with deduplication."""
                     from . import ServerSentEvent
                     try:
-                        # Send stream start event with pagination metadata
+                        # Send stream start event
                         yield ServerSentEvent(
                             data={
-                                "type": "stream.started",
+                                "event": "stream_started",
                                 "run_id": run_id,
                                 "cursor": after,
-                                "limit": limit,
                                 "project": project,
                             },
-                            event="stream.start",
+                            event="message",
                         )
 
                         # Stream all events (deduplicate by tracking IDs)
                         seen_ids = set()
-                        event_count = 0
                         for evt in events.get("events", []):
                             evt_id = evt.get("id")
                             # Skip duplicate events (same ID already sent)
@@ -108,36 +106,28 @@ def handle_get(path: str, query: str, deps: WorkflowRouteDependencies) -> JsonRo
                             # Verify project matches (security check)
                             if evt.get("project") != project:
                                 continue
-                            # Send each event with proper context
-                            yield ServerSentEvent(data=evt, event="workflow.event")
-                            event_count += 1
+                            yield ServerSentEvent(data=evt, event="message")
 
-                        # Send stream end event with pagination info for resumable history
+                        # Send stream end event
                         next_cursor = events.get("next") or events.get("cursor") or ""
                         yield ServerSentEvent(
                             data={
-                                "type": "stream.ended",
+                                "event": "stream_ended",
                                 "run_id": run_id,
                                 "next_cursor": next_cursor,
-                                "after_id": next_cursor,  # Alternative name for resumable pagination
                                 "has_more": bool(events.get("next")),
-                                "event_count": event_count,
-                                "total_sent": event_count,
+                                "event_count": len(events.get("events", [])),
                             },
-                            event="stream.end",
-                            terminal=True,
+                            event="message",
                         )
                     except Exception as exc:  # noqa: BLE001
-                        # Send proper error event
                         yield ServerSentEvent(
                             data={
-                                "type": "stream.error",
+                                "event": "stream_error",
                                 "error": str(exc),
                                 "run_id": run_id,
-                                "message": f"Stream error: {exc}",
                             },
-                            event="stream.error",
-                            terminal=True,
+                            event="error",
                         )
 
                 from . import StreamRouteResult

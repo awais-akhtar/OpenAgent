@@ -819,21 +819,20 @@ class OpenAgentStore:
         limit: int = 100,
         project: str | None = None,
     ) -> dict[str, Any]:
-        """Read workflow run events with cursor-based pagination support.
+        """Read the recorded final-status snapshot; this is not a live execution stream.
 
         Args:
             run_id: The workflow run ID
             after: Cursor ID to retrieve events after (pagination)
             limit: Maximum number of events to return (1-500)
-            project: Project scope for security
 
         Returns:
-            Dict with "events", "next", "cursor", and "has_more" keys for resumable history
+            Dict with "events", "next", and "cursor" keys
         """
         limit = max(1, min(int(limit), 500))
 
         with self.session() as connection:
-            # Verify run exists and matches project scope
+            # Verify run exists
             run = connection.execute(
                 "SELECT * FROM workflow_runs WHERE id = ?",
                 (run_id,),
@@ -843,83 +842,27 @@ class OpenAgentStore:
 
             run_dict = self._workflow_run_row_to_dict(run)
 
-            # Build base event from run status
-            # This represents the primary run status change event
-            status_event = {
-                "id": f"{run_dict['id']}:status",
-                "event_type": "run.status",
-                "event_name": "status_changed",
-                "workflow_id": run_dict["workflow_id"],
-                "run_id": run_dict["id"],
-                "status": run_dict["status"],
-                "timestamp": run_dict["created_at"],
-                "created_at": run_dict["created_at"],
-                "project": run_dict.get("project", "default"),
-                "data": {
-                    "status": run_dict["status"],
-                    "result": run_dict.get("result", {}),
-                    "completed_at": run_dict.get("completed_at"),
-                    "progress": run_dict.get("progress", 0),
-                },
-            }
-
-            # Collect events in chronological order
-            all_events = [status_event]
-
-            # Add completion event if run is done
-            if run_dict.get("completed_at"):
-                completion_event = {
-                    "id": f"{run_dict['id']}:completed",
-                    "event_type": "run.completed",
-                    "event_name": "completed",
+            # For now, return a single event representing the run status
+            # In future, this can be expanded to return detailed step events
+            events = [
+                {
+                    "id": run_dict["id"],
+                    "event_type": "status",
                     "workflow_id": run_dict["workflow_id"],
                     "run_id": run_dict["id"],
                     "status": run_dict["status"],
-                    "timestamp": run_dict.get("completed_at"),
-                    "created_at": run_dict.get("completed_at"),
-                    "project": run_dict.get("project", "default"),
+                    "timestamp": run_dict["created_at"],
                     "data": {
                         "result": run_dict.get("result", {}),
-                        "success": run_dict.get("status") == "completed",
+                        "completed_at": run_dict.get("completed_at"),
                     },
                 }
-                all_events.append(completion_event)
-
-            # Handle pagination with after cursor
-            events = all_events
-            next_cursor = None
-            has_more = False
-
-            if after:
-                # Find events after cursor
-                after_indices = [i for i, e in enumerate(all_events) if e.get("id") == after]
-                if after_indices:
-                    start_idx = after_indices[0] + 1
-                    events = all_events[start_idx : start_idx + limit]
-                    # Check if there are more events beyond this batch
-                    has_more = len(all_events) > (start_idx + limit)
-                    if has_more and events:
-                        next_cursor = events[-1].get("id", "")
-                else:
-                    # Cursor not found, return from start
-                    events = all_events[:limit]
-                    has_more = len(all_events) > limit
-                    if has_more:
-                        next_cursor = events[-1].get("id", "") if events else None
-            else:
-                # No cursor, return first batch
-                events = all_events[:limit]
-                has_more = len(all_events) > limit
-                if has_more:
-                    next_cursor = events[-1].get("id", "") if events else None
+            ]
 
         return {
-            "events": events,
-            "next": next_cursor,
-            "cursor": next_cursor,  # Backward compatibility
-            "after_id": next_cursor,  # Alternative pagination field
-            "has_more": has_more,
-            "total_events": len(all_events),
+            "events": [] if after == run_id else events[:limit],
+            "cursor": run_id,
+            "next": None,
         }
 
     def enqueue_job(
