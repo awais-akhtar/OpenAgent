@@ -2,6 +2,16 @@
 
 ## CPU-first scope correction — 2026-11-01
 
+Follow-up CPU lifecycle source work: direct worker completion and streaming
+accept cancellation, retire an interrupted worker, and gateway reuse checks
+actual worker residency. The no-download local smoke cancelled generation and
+successfully reloaded and generated again; peak sampled process-tree RSS was
+2,203,103,232 bytes on this host. The legacy Tk shell now owns/closes the
+direct CPU client and sends chat through automatic local provider selection.
+The focused gateway and worker suite reported 38 tests (36 pass, 2 platform skips). Tk actions
+remain synchronous on its UI thread; low-end host responsiveness and the CPU
+product evidence gate remain open. No publisher-family receipt was produced.
+
 The first product baseline uses the already-local 0.94 GB Qwen2.5-1.5B INT4
 OpenVINO checkpoint. The real worker loaded it on CPU and generated a response;
 the production gateway completed and streamed two prompts with fallback disabled.

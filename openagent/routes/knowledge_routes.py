@@ -173,19 +173,25 @@ def handle_post(path: str, deps: KnowledgeRouteDependencies) -> JsonRouteResult 
         return JsonRouteResult({"document": document}, HTTPStatus.CREATED)
     if path in {"/api/knowledge/semantic-search", "/api/knowledge/hybrid-search"}:
         method = deps.knowledge.semantic_search if path.endswith("/semantic-search") else deps.knowledge.hybrid_search
-        results = method(
-            str(payload.get("query", "")).strip(), project=project,
-            limit=_parse_int(str(payload.get("limit", "10")), default=10),
-            embedding_provider=str(payload.get("embedding_provider", "")).strip(),
-            owner=deps.auth_scope_owner(),
-        )
+        try:
+            results = method(
+                str(payload.get("query", "")).strip(), project=project,
+                limit=_parse_int(str(payload.get("limit", "10")), default=10),
+                embedding_provider=str(payload.get("embedding_provider", "")).strip(),
+                owner=deps.auth_scope_owner(),
+            )
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult({"results": results})
     if path == "/api/knowledge/synthesize":
-        result = deps.knowledge.synthesize(
-            str(payload.get("query", "")).strip(), project=project,
-            limit=_parse_int(str(payload.get("limit", "8")), default=8),
-            embedding_provider=str(payload.get("embedding_provider", "")).strip(),
-        )
+        try:
+            result = deps.knowledge.synthesize(
+                str(payload.get("query", "")).strip(), project=project,
+                limit=_parse_int(str(payload.get("limit", "8")), default=8),
+                embedding_provider=str(payload.get("embedding_provider", "")).strip(),
+            )
+        except ValueError as exc:
+            return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         return JsonRouteResult(result, HTTPStatus.CREATED)
     if path == "/api/knowledge/compress":
         return JsonRouteResult(deps.knowledge.compress_memory(project=project), HTTPStatus.CREATED)

@@ -2,6 +2,21 @@
 
 ## Scope correction — 1 November 2026
 
+Latest CPU lifecycle pass: the direct pipe client now accepts a cancellation
+callback for completion and streaming, retires an interrupted worker, and the
+OpenVINO gateway checks live worker residency before reuse. A local smoke run
+cancelled an in-flight generation, reopened the model through the gateway,
+and generated text again on CPU. Its sampled process-tree peak was
+2,203,103,232 bytes with the existing 935,999,480-byte checkpoint. Legacy
+Tk desktop now passes the same direct CPU client to its gateway, selects the
+automatic local provider for chat, and closes the worker on window exit.
+Focused gateway/worker suite reports 38 tests (36 pass, 2 skipped). These are local product
+checks; they do not close the old route evidence gate, prove 16 GB performance,
+or make synchronous Tk chat/agent actions nonblocking. Next: enforce a bounded
+CPU model admission contract across all entrypoints, move Tk generation and
+agent actions off its UI thread, then capture CPU product receipts and revise
+the Phase 1 closure gate without relabeling old MoE routes.
+
 CPU product path update: the existing local Qwen2.5-1.5B INT4 OpenVINO model
 (935,999,480 bytes of files) was loaded by the production pipe worker with
 `device=CPU`; it generated a nonempty answer. The same model passed the real
