@@ -123,6 +123,7 @@ from .mcp_runtime_routes import MCPRuntimeRouteDependencies, handle_get as handl
 from .media_routes import MediaContentRouteResult, MediaRouteDependencies, ResponseAlreadySent, handle_delete as handle_media_delete, handle_get as handle_media_get, handle_post as handle_media_post
 from .model_cookbook_routes import ModelCookbookRouteDependencies, handle_get as handle_model_cookbook_get, handle_post as handle_model_cookbook_post
 from .model_serve_routes import ModelServeRouteDependencies, handle_get as handle_model_serve_get, handle_post as handle_model_serve_post, contract as model_serve_contract
+from .voice_conversation_routes import VoiceConversationRouteDependencies, handle_get as handle_voice_conversation_get, handle_post as handle_voice_conversation_post, contract as voice_conversation_contract
 from .personal_os_routes import PersonalOSRouteDependencies, handle_get as handle_personal_os_get, handle_post as handle_personal_os_post, handle_put as handle_personal_os_put, handle_delete as handle_personal_os_delete
 from .scheduler_routes import SchedulerRouteDependencies, handle_get as handle_scheduler_get, handle_patch as handle_scheduler_patch, handle_post as handle_scheduler_post
 from .science_routes import ScienceRouteDependencies, handle_get as handle_science_get, handle_post as handle_science_post
@@ -489,6 +490,9 @@ def build_http_server(
     from ..ultra_model_service import UltraModelService
     serve_manager = ModelServeManager(models_dir=store.data_dir / "models")
     ultra_model_service = UltraModelService(models_dir=str(store.data_dir / "models"))
+    # G05-G06: Voice conversation services
+    from ..voice_conversation_manager import VoiceConversationManager
+    voice_conversation_manager = VoiceConversationManager()
     document_processing = DocumentProcessing(store, knowledge=knowledge)
     image_studio = ImageStudio(store)
     scheduler = Scheduler(store)
@@ -945,6 +949,12 @@ def build_http_server(
         return ModelServeRouteDependencies(
             serve_manager=serve_manager,
             ultra_model_service=ultra_model_service,
+            read_json=read_json,
+        )
+
+    def voice_conversation_route_dependencies(read_json) -> VoiceConversationRouteDependencies:
+        return VoiceConversationRouteDependencies(
+            manager=voice_conversation_manager,
             read_json=read_json,
         )
 
@@ -1465,6 +1475,10 @@ def build_http_server(
             model_serve_route = handle_model_serve_get(parsed.path, parsed.query, model_serve_route_dependencies(self.read_json))
             if model_serve_route is not None:
                 self.send_json(model_serve_route.payload, status=model_serve_route.status)
+                return
+            voice_conversation_route = handle_voice_conversation_get(parsed.path, parsed.query, voice_conversation_route_dependencies(self.read_json))
+            if voice_conversation_route is not None:
+                self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
             image_studio_route = handle_image_studio_get(
                 parsed.path,
@@ -2487,6 +2501,10 @@ def build_http_server(
             model_serve_route = handle_model_serve_post(parsed.path, model_serve_route_dependencies(self.read_json))
             if model_serve_route is not None:
                 self.send_json(model_serve_route.payload, status=model_serve_route.status)
+                return
+            voice_conversation_route = handle_voice_conversation_post(parsed.path, voice_conversation_route_dependencies(self.read_json))
+            if voice_conversation_route is not None:
+                self.send_json(voice_conversation_route.payload, status=voice_conversation_route.status)
                 return
             document_processing_route = handle_document_processing_post(
                 parsed.path,
