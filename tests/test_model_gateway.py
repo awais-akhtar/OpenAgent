@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 from threading import Event, Timer, get_ident
 from types import SimpleNamespace
 import time
@@ -8,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from openagent.core_runtime import CPU_MODEL_STACK
+from openagent.cpu_model_admission import CPUModelAdmissionError, admit_cpu_openvino_bundle
 from openagent.model_gateway import (
     ModelGateway,
     ProviderConfigurationError,
@@ -49,7 +51,26 @@ class FakeDirectHardware:
         yield {"type": "done", "text": "direct stream", "device": self.device, "latency_ms": 9.5, "first_token_ms": 2.0, "streamed": True}
 
 
+def write_tiny_openvino_bundle(directory: str) -> None:
+    for name in ("config.json", "openvino_model.xml", "openvino_model.bin", "tokenizer.json"):
+        (Path(directory) / name).write_bytes(b"fixture")
+
+
 class ModelGatewayTests(unittest.TestCase):
+    def test_cpu_bundle_admission_rejects_missing_and_oversized_before_worker_start(self) -> None:
+        client = FakeDirectHardware()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
+        ):
+            gateway = ModelGateway(direct_hardware=client)
+            with self.assertRaisesRegex(ProviderConfigurationError, "missing a regular"):
+                gateway.providers["openvino-direct"]._ensure_loaded("test-model")
+            self.assertEqual(client.load_calls, 0)
+            write_tiny_openvino_bundle(temp)
+            with self.assertRaisesRegex(CPUModelAdmissionError, "more than"):
+                admit_cpu_openvino_bundle(Path(temp), max_bytes=4)
+            self.assertEqual(admit_cpu_openvino_bundle(Path(temp), max_bytes=100), 28)
+
     def test_nonstreaming_native_completion_receives_cancellation_and_never_falls_back(self) -> None:
         from openagent.adaptive_engine.execution_service import ExecutionCancelled
 
@@ -556,6 +577,7 @@ class ModelGatewayTests(unittest.TestCase):
         ), patch("openagent.model_gateway.OllamaProvider.available", return_value=False), patch(
             "openagent.model_gateway.LlamaCppProvider.available", return_value=False
         ):
+            write_tiny_openvino_bundle(temp)
             gateway = ModelGateway(direct_hardware=client)
             result = gateway.complete([{"role": "user", "content": "hello"}], provider_id="auto")
             second = gateway.complete([{"role": "user", "content": "hello again"}], provider_id="auto")
@@ -574,6 +596,7 @@ class ModelGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
         ):
+            write_tiny_openvino_bundle(temp)
             gateway = ModelGateway(direct_hardware=client)
             chunks = list(
                 gateway.stream_complete(
@@ -599,6 +622,7 @@ class ModelGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
         ):
+            write_tiny_openvino_bundle(temp)
             gateway = ModelGateway(direct_hardware=client)
             fallback_calls = []
             gateway.select_fallback = lambda provider_id: fallback_calls.append(provider_id)
@@ -614,6 +638,7 @@ class ModelGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
         ):
+            write_tiny_openvino_bundle(temp)
             gateway = ModelGateway(direct_hardware=client)
             provider = gateway.providers["openvino-direct"]
             gateway.complete([{"role": "user", "content": "first"}], provider_id="openvino-direct")

@@ -9,6 +9,14 @@ from openagent.storage import OpenAgentStore
 
 
 class AgentTests(unittest.TestCase):
+    def test_cancelled_agent_run_does_not_persist(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            registry = AgentRegistry(store)
+            with self.assertRaises(InterruptedError):
+                registry.run("executive", "Plan a task", cancelled=lambda: True)
+            self.assertEqual(store.health()["agent_run_count"], 0)
+
     def test_executive_agent_uses_local_context(self) -> None:
         with TemporaryDirectory() as tmp:
             store = OpenAgentStore(tmp)

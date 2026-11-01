@@ -4,12 +4,15 @@ from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
+from threading import Event, get_ident
 import tomllib
 import unittest
 from unittest.mock import patch
 
 from openagent.desktop import (
+    DesktopShell,
     desktop_feature_manifest,
     desktop_runtime_status,
     desktop_layout_manifest,
@@ -36,6 +39,30 @@ from openagent.workbench import (
 
 
 class DesktopTests(unittest.TestCase):
+    def test_model_job_runs_off_tk_thread_and_publishes_on_ui_poll(self) -> None:
+        shell = DesktopShell.__new__(DesktopShell)
+        callbacks = []
+        shell.root = type("Root", (), {"after": lambda _self, _delay, callback: callbacks.append(callback)})()
+        shell.messagebox = type("Messages", (), {"showerror": lambda *_args: self.fail("unexpected error")})()
+        shell._cancel_background = Event()
+        shell._background_result = Queue(maxsize=1)
+        shell._background_thread = None
+        shell._background_busy = False
+        shell._closed = False
+        ui_thread = get_ident()
+        seen = []
+        shell._start_background(
+            lambda: (get_ident(), "answer"),
+            lambda result: seen.append((get_ident(), result)), error_title="Chat Failed",
+        )
+        shell._background_thread.join(timeout=2)
+        self.assertFalse(shell._background_thread.is_alive())
+        self.assertTrue(callbacks)
+        callbacks.pop(0)()
+        self.assertEqual(seen[0][0], ui_thread)
+        self.assertNotEqual(seen[0][1][0], ui_thread)
+        self.assertEqual(seen[0][1][1], "answer")
+
     def test_workbench_uses_one_stable_default_port(self) -> None:
         args = build_workbench_parser().parse_args([])
         self.assertEqual(args.port, DEFAULT_WORKBENCH_PORT)

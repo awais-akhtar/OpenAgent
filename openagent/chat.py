@@ -64,7 +64,10 @@ class ChatService:
         allow_external: bool = False,
         attachments: list[dict[str, Any]] | None = None,
         owner: str = "",
+        cancelled=None,
     ) -> dict[str, object]:
+        if cancelled is not None and cancelled():
+            raise InterruptedError("chat request cancelled before persistence")
         # Provider names and the local/external boundary are request
         # validation, not generation failures. Resolve them before writing a
         # conversation turn so a rejected provider cannot leave a dangling
@@ -86,7 +89,7 @@ class ChatService:
         )
         result = self._complete_with_attachments(
             messages, attachments=effective_attachments, provider=provider, model=model,
-            allow_external=allow_external, project=project, owner=owner,
+            allow_external=allow_external, project=project, owner=owner, cancelled=cancelled,
         )
         assistant_message = self._record_assistant_message(
             conversation,

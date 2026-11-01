@@ -310,7 +310,10 @@ class AgentRegistry:
 
     def run(
         self, agent_id: str, goal: str, *, project: str = "default", owner: str | None = None,
+        cancelled=None,
     ) -> dict[str, object]:
+        if cancelled is not None and cancelled():
+            raise InterruptedError("agent run cancelled")
         agent = self._agents.get(agent_id)
         if agent is None:
             known = ", ".join(sorted(self._agents))
@@ -321,7 +324,9 @@ class AgentRegistry:
         # round trip after the calculation; this keeps the path deterministic
         # and usable on CPU-only machines.
         if self.gateway is not None and agent_id != "scientific":
-            response = self._run_through_engine(agent, response, project=project)
+            response = self._run_through_engine(agent, response, project=project, cancelled=cancelled)
+        if cancelled is not None and cancelled():
+            raise InterruptedError("agent run cancelled")
         run = self.store.save_agent_run(response, project=project, owner=owner)
         self.store.add_audit_event(
             AuditEvent(
@@ -340,6 +345,7 @@ class AgentRegistry:
         fallback: AgentResponse,
         *,
         project: str,
+        cancelled=None,
     ) -> AgentResponse:
         """Use the shared resident model engine while retaining a safe local fallback."""
 
@@ -378,6 +384,7 @@ class AgentRegistry:
                 provider_id="auto",
                 allow_external=False,
                 max_output_tokens=640,
+                **({"cancelled": cancelled} if cancelled is not None else {}),
             )
             content = result.content.strip()
             if not content:
@@ -406,6 +413,8 @@ class AgentRegistry:
                 metadata=metadata,
             )
         except Exception as exc:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("agent run cancelled") from exc
             return AgentResponse(
                 agent=fallback.agent,
                 goal=fallback.goal,

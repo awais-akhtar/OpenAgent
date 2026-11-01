@@ -21,6 +21,7 @@ import time
 from typing import Any, Iterator, Protocol
 
 from .core_runtime import CPU_MODEL_STACK, model_request_options, smooth_runtime_profile
+from .cpu_model_admission import CPUModelAdmissionError, admit_cpu_openvino_bundle
 from .egress import EgressClient
 from .adaptive_engine.failure_reporting import failure_detail, failure_summary
 from .adaptive_engine.execution_service import ExecutionCancelled
@@ -900,6 +901,16 @@ class OpenVINODirectProvider(BaseProvider):
 
     def _ensure_loaded(self, model_id: str) -> None:
         with self._load_lock:
+            path = Path(self.model_path).expanduser() if self.model_path else None
+            if path is None or not path.is_dir():
+                raise ProviderConfigurationError(
+                    "Set OPENAGENT_OPENVINO_MODEL_DIR to a locally converted OpenVINO GenAI model directory."
+                )
+            if self.device.upper() == "CPU":
+                try:
+                    admit_cpu_openvino_bundle(path)
+                except CPUModelAdmissionError as exc:
+                    raise ProviderConfigurationError(str(exc)) from exc
             try:
                 status = self.client.status(start=True)
                 if not status.get("running"):
@@ -912,11 +923,6 @@ class OpenVINODirectProvider(BaseProvider):
                 self._resident_model_ids.discard(model_id)
             except Exception as exc:
                 raise ProviderUnavailableError(f"The direct accelerator worker is unavailable: {exc}") from exc
-            path = Path(self.model_path).expanduser() if self.model_path else None
-            if path is None or not path.is_dir():
-                raise ProviderConfigurationError(
-                    "Set OPENAGENT_OPENVINO_MODEL_DIR to a locally converted OpenVINO GenAI model directory."
-                )
             try:
                 self.client.load_llm(
                     str(path.resolve()),

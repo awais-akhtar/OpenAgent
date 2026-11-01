@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from queue import Empty, Queue
 import sys
+from threading import Event, Thread
 from typing import Any
 
 from .agents import AgentRegistry
@@ -469,9 +471,52 @@ class DesktopShell:
         self.browser_external_approval: Any = None
         self.security_output: Any = None
         self.audit_output: Any = None
+        self._cancel_background = Event()
+        self._background_result: Queue[tuple[str, Any]] = Queue(maxsize=1)
+        self._background_thread: Thread | None = None
+        self._background_busy = False
+        self._closed = False
 
     def close(self) -> None:
+        self._closed = True
+        self._cancel_background.set()
+        if self._background_thread is not None:
+            self._background_thread.join(timeout=2)
         self._direct.close()
+
+    def _start_background(self, action: Any, on_success: Any, *, error_title: str) -> None:
+        if self._closed or self._background_busy:
+            return
+        self._background_busy = True
+        self._cancel_background.clear()
+
+        def worker() -> None:
+            try:
+                self._background_result.put(("result", action()))
+            except Exception as exc:
+                self._background_result.put(("error", exc))
+
+        self._background_thread = Thread(target=worker, name="openagent-desktop-model", daemon=True)
+        self._background_thread.start()
+
+        def poll() -> None:
+            if self._closed:
+                return
+            try:
+                kind, value = self._background_result.get_nowait()
+            except Empty:
+                self.root.after(50, poll)
+                return
+            self._background_busy = False
+            if kind == "error":
+                self.messagebox.showerror(error_title, str(value))
+                return
+            try:
+                on_success(value)
+            except Exception as exc:
+                self.messagebox.showerror(error_title, str(exc))
+
+        self.root.after(50, poll)
 
     def render(self) -> None:
         self._configure_style()
@@ -1318,24 +1363,30 @@ class DesktopShell:
         message = self.chat_input.get().strip()
         if not message:
             return
-        try:
-            result = self.chat.send(message, project=self.project, provider="auto")
+        def complete(result: Any) -> None:
             transcript = "\n\n".join(f"{item['role']}: {item['content']}" for item in result["messages"])
             self._append_text(self.chat_log, transcript + "\n")
             self.chat_input.delete(0, "end")
             self.refresh_audit()
-        except Exception as exc:
-            self.messagebox.showerror("Chat Failed", str(exc))
+
+        self._start_background(
+            lambda: self.chat.send(message, project=self.project, provider="auto",
+                                   cancelled=self._cancel_background.is_set),
+            complete, error_title="Chat Failed",
+        )
 
     def run_agent(self) -> None:
         agent_id = self.agent_picker.get().strip() or "executive"
         goal = self.agent_goal.get().strip() or "Review OpenAgent desktop readiness"
-        try:
-            run = self.agents.run(agent_id, goal, project=self.project)
+        def complete(run: Any) -> None:
             self._set_text(self.agent_output, json.dumps(run, indent=2))
             self.refresh_audit()
-        except Exception as exc:
-            self.messagebox.showerror("Agent Failed", str(exc))
+
+        self._start_background(
+            lambda: self.agents.run(agent_id, goal, project=self.project,
+                                    cancelled=self._cancel_background.is_set),
+            complete, error_title="Agent Failed",
+        )
 
     def save_note(self) -> None:
         title = self.note_title.get().strip() or "Desktop note"
