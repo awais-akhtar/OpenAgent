@@ -69,15 +69,19 @@ describe('backend connected screens', () => {
   it('allows inspecting a completed fine-tune without claiming an absent adapter', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes('/stream-status')) return json({ job_id: 'completed-no-adapter', status: 'completed', progress: 1, output_adapter_id: '' });
       if (url.includes('/api/finetune/jobs')) return json({ jobs: [{ id: 'completed-no-adapter', base_model: 'test-local', status: 'completed', output_adapter_id: '' }] });
       return json({});
     }));
     renderWithQuery(<AdvancedScreen route="finetune" />);
     fireEvent.click(screen.getByRole('tab', { name: 'Jobs' }));
-    fireEvent.change(await screen.findByRole('combobox', { name: 'Job', exact: true }), { target: { value: 'completed-no-adapter' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Monitor selected job', exact: true }));
+    const jobSelect = await screen.findByRole('combobox', { name: 'Job', exact: true });
+    await waitFor(() => expect(jobSelect.querySelector('option[value="completed-no-adapter"]')).not.toBeNull());
+    fireEvent.change(jobSelect, { target: { value: 'completed-no-adapter' } });
+    expect(jobSelect).toHaveValue('completed-no-adapter');
+    fireEvent.click(await screen.findByRole('button', { name: 'Monitor selected job', exact: true }));
     expect(await screen.findByText('Training finished; no adapter registration was reported.')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Start CPU fine-tune', exact: true })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: 'Start CPU fine-tune', exact: true })).toBeDisabled();
   });
 
   it('uses checked agent execution, scoped access records, approvals and delegation contracts', async () => {
