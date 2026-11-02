@@ -9,8 +9,10 @@ from openagent.developer import DeveloperPlatform
 from openagent.routes.developer_routes import (
     DeveloperRouteDependencies,
     contract as developer_contract,
+    handle_delete as handle_developer_delete,
     handle_get as handle_developer_get,
     handle_post as handle_developer_post,
+    handle_put as handle_developer_put,
 )
 from openagent.routes.security_routes import (
     SecurityRouteDependencies,
@@ -110,13 +112,18 @@ class DeveloperAndSecurityRouteTests(unittest.TestCase):
         self.assertEqual(revealed.payload["secret"]["value"], "value")
 
     def test_declared_routes_are_owned_by_the_extracted_handlers(self) -> None:
+        # Dispatch by the declared method. Sending every non-GET route to
+        # handle_post made the PUT and DELETE webhook routes look unowned.
+        developer_handlers = {
+            "GET": lambda path: handle_developer_get(path, "", self.developer_deps()),
+            "POST": lambda path: handle_developer_post(path, self.developer_deps()),
+            "PUT": lambda path: handle_developer_put(path, self.developer_deps()),
+            "DELETE": lambda path: handle_developer_delete(path, self.developer_deps()),
+        }
         for route in developer_contract()["routes"]:
-            result = (
-                handle_developer_get(route["path"], "", self.developer_deps())
-                if route["method"] == "GET"
-                else handle_developer_post(route["path"], self.developer_deps())
-            )
-            self.assertIsNotNone(result, route)
+            handler = developer_handlers.get(route["method"])
+            self.assertIsNotNone(handler, f"no extracted handler for method {route['method']}")
+            self.assertIsNotNone(handler(route["path"]), route)
 
         for route in security_contract()["routes"]:
             result = (

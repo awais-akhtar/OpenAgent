@@ -106,8 +106,22 @@ class ServerTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=5)
 
-        self.assertEqual(events, ["handler", ("body-read", {"prompt": "hello"}),
-                                  "watcher-start", ("body", {"prompt": "hello"})])
+        # The invariant this test exists for: the disconnect watcher must not
+        # peek at the shared keep-alive socket until the request body has been
+        # consumed. Assert that ordering rather than an exact sequence, because
+        # which layer performs the single cached body read is an internal
+        # detail -- read_json caches per request, so the first caller may be
+        # the dispatcher rather than the handler.
+        self.assertIn(("body-read", {"prompt": "hello"}), events)
+        self.assertIn("watcher-start", events)
+        self.assertLess(
+            events.index(("body-read", {"prompt": "hello"})),
+            events.index("watcher-start"),
+            f"watcher started before the body was read: {events}",
+        )
+        # The handler still runs and still receives the parsed body.
+        self.assertIn("handler", events)
+        self.assertEqual(events[-1], ("body", {"prompt": "hello"}))
 
     def test_stream_disconnect_reaches_inference_cancellation_callback(self) -> None:
         from openagent.routes import runtime, ServerSentEvent, StreamRouteResult
