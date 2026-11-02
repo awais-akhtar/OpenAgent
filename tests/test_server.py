@@ -287,6 +287,11 @@ class ServerTests(unittest.TestCase):
                 # accelerator model and turn deterministic HTTP checks into
                 # hardware-dependent generation benchmarks.
                 "OPENAGENT_OPENVINO_MODEL_DIR": "",
+                # HTTP contract tests use the deterministic offline provider;
+                # an installed CPU model can otherwise exceed 5-second request
+                # timeouts and make unrelated route assertions hardware-bound.
+                "OPENAGENT_MODEL_ROUTING": "offline",
+                "OPENAGENT_MODEL_FALLBACK": "local",
             },
         )
         self._env_patch.start()
@@ -379,7 +384,14 @@ class ServerTests(unittest.TestCase):
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                mission_run = json.loads(urlopen(mission_request, timeout=15).read().decode("utf-8"))
+                # run_full_check exercises 18 local areas, and the model-gateway
+                # check now reaches the bundled OpenVINO CPU model instead of
+                # failing fast on an unconfigured provider. Measured on this
+                # host it answers 201 with all 18 checks passing in about 111
+                # seconds, so the previous 15-second allowance could not be met
+                # by a correct response. The assertions below still require
+                # every check to pass, so a real regression fails the test.
+                mission_run = json.loads(urlopen(mission_request, timeout=300).read().decode("utf-8"))
                 self.assertEqual(mission_run["status"], "passed", mission_run)
                 self.assertEqual(mission_run["failed"], 0)
             finally:
@@ -565,7 +577,7 @@ class ServerTests(unittest.TestCase):
                 blocked_gguf.exception.close()
 
                 policy = read_json(f"{base_url}/api/model-policy")
-                self.assertEqual(policy["routing_policy"], "local-first")
+                self.assertEqual(policy["routing_policy"], "offline")
                 self.assertIn("smooth_runtime", policy)
 
                 runtime_settings_request = Request(
