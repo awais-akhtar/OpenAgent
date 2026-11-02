@@ -1472,10 +1472,23 @@ class CodebaseService:
                     self._set_task(task["id"], "needs_fix", {"feedback": last_feedback[-20_000:], "stalled_attempts": attempts})
                     self._event(run_id, "task.continued", task_id=task["id"], summary=last_feedback, stalled_attempts=attempts)
                     if attempts >= 3:
-                        error = (
-                            "The selected model did not produce a repository change or validation result after "
-                            "three repair attempts. Choose a coding-capable model or make the task more specific."
-                        )
+                        # Blaming the model is wrong when it never answered.
+                        # If the gateway substituted its offline stub, say so,
+                        # because the remedy is a reachable model or a longer
+                        # OPENAGENT_MODEL_TIMEOUT_SECONDS, not a different task.
+                        substituted = self._fallback_providers(run_id)
+                        if substituted:
+                            error = (
+                                f"The requested model never answered: the gateway fell back to its offline "
+                                f"stub after {', '.join(sorted(substituted))} failed, and that stub cannot "
+                                "return the JSON actions a run needs. Check the provider is reachable and "
+                                "that OPENAGENT_MODEL_TIMEOUT_SECONDS allows for its response time."
+                            )
+                        else:
+                            error = (
+                                "The selected model did not produce a repository change or validation result after "
+                                "three repair attempts. Choose a coding-capable model or make the task more specific."
+                            )
                         self._set_run(run_id, status="failed", error=error, finished=True)
                         self._event(run_id, "run.failed", reason="model_stalled", task_id=task["id"], error=error)
                         return
@@ -2819,7 +2832,26 @@ if __name__ == '__main__':
         except (ProviderConfigurationError, ValueError) as exc:
             self._event(run["id"], "model.failed", error=str(exc))
             return {}
-        self._event(run["id"], "model.completed", provider=response.provider, model=response.model, role=role or "default")
+        # The gateway answers with its offline stub when the requested provider
+        # fails, recording the substitution in metadata. Without surfacing it a
+        # run reads as though the chosen model replied, when in fact nothing
+        # usable did -- the stub returns prose, never the JSON asked for.
+        metadata = response.metadata if isinstance(response.metadata, dict) else {}
+        fallback_from = str(metadata.get("fallback_from", "") or "")
+        if fallback_from:
+            self._event(
+                run["id"], "model.fallback",
+                requested_provider=fallback_from,
+                requested_model=model or "",
+                served_provider=response.provider,
+                error=str(metadata.get("fallback_error", "") or ""),
+                role=role or "default",
+            )
+        self._event(
+            run["id"], "model.completed",
+            provider=response.provider, model=response.model, role=role or "default",
+            fallback_from=fallback_from,
+        )
         return self._extract_json(response.content)
 
     @staticmethod
@@ -3095,6 +3127,24 @@ if __name__ == '__main__':
         safe_payload = self._redact_payload(payload)
         with self.store.session() as connection:
             connection.execute("INSERT INTO codebase_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", (uuid4().hex, run_id, event_type, json.dumps(safe_payload, default=str), utc_now()))
+
+    def _fallback_providers(self, run_id: str) -> set[str]:
+        """Providers this run asked for that the gateway had to substitute."""
+        with self.store.session() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM codebase_events WHERE run_id = ? AND type = 'model.fallback'",
+                (run_id,),
+            ).fetchall()
+        requested = set()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            name = str(payload.get("requested_provider", "") or "").strip()
+            if name:
+                requested.add(name)
+        return requested
 
     def _record_snapshot(self, run_id: str, snapshot: dict[str, Any], label: str) -> None:
         with self.store.session() as connection:
