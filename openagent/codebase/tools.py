@@ -204,11 +204,34 @@ class CodebaseTools:
         target.write_text(str(content), encoding="utf-8", newline="\n")
         return self._change_result(path, old, str(content))
 
+    @staticmethod
+    def _strip_context_line_numbers(text: str) -> str:
+        """Drop the ``N: `` prefix that repository context excerpts add.
+
+        ``RepositoryIntelligence._relevant_excerpt`` numbers every line it
+        shows, so text quoted straight out of that context cannot match the
+        file it came from. Only strip when every non-empty line carries the
+        prefix, which makes it unambiguously our own formatting rather than
+        content that happens to begin with digits.
+        """
+        lines = text.split("\n")
+        candidates = [line for line in lines if line.strip()]
+        if not candidates or not all(re.match(r"^\d+: ", line) for line in candidates):
+            return text
+        return "\n".join(re.sub(r"^\d+: ", "", line) if line.strip() else line for line in lines)
+
     def tool_patch_file(self, path: str, search: str, replace: str, expected_occurrences: int = 1) -> dict[str, Any]:
         self._assert_not_sensitive(path)
         target = self.repo.resolve(path, must_exist=True)
         old = target.read_text(encoding="utf-8", errors="replace")
         occurrences = old.count(search)
+        if occurrences != int(expected_occurrences):
+            # Accept a search copied verbatim out of a numbered context excerpt.
+            renumbered = self._strip_context_line_numbers(search)
+            if renumbered != search and old.count(renumbered) == int(expected_occurrences):
+                search = renumbered
+                replace = self._strip_context_line_numbers(replace)
+                occurrences = old.count(search)
         if occurrences != int(expected_occurrences):
             # "found 0" alone leaves a caller guessing at the text, and a model
             # that guessed once will guess again. Show the real content so the
