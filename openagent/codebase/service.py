@@ -414,6 +414,30 @@ DJANGO_SITE_JS = """(function ($) {
 """
 
 
+IMPLEMENTATION_ROLES = frozenset({"programmer", "debugger", "architect"})
+DEFAULT_IMPLEMENTATION_OUTPUT_TOKENS = 4096
+
+
+def codeq_output_token_budget(role: str) -> int:
+    """Cap a single model response in a run.
+
+    A cap is an upper bound, not a target: a model that finishes early costs
+    nothing extra. It does bound a runaway answer, and that is what matters
+    locally. The previous 16,384 for implementation roles let one call generate
+    for roughly an hour against a 30B model producing a few tokens a second,
+    which stalled runs before any file was touched. Raise
+    OPENAGENT_CODEQ_OUTPUT_TOKENS when the model is fast enough to afford more;
+    non-implementation roles return short reports and get half the budget.
+    """
+    try:
+        configured = int(os.environ.get("OPENAGENT_CODEQ_OUTPUT_TOKENS", "").strip() or 0)
+    except ValueError:
+        configured = 0
+    budget = configured if configured > 0 else DEFAULT_IMPLEMENTATION_OUTPUT_TOKENS
+    budget = max(512, min(32768, budget))
+    return budget if role in IMPLEMENTATION_ROLES else max(512, budget // 2)
+
+
 class CodebaseService:
     """Own projects, workspaces, task graphs, tools, events, and completion evidence."""
 
@@ -2827,7 +2851,7 @@ if __name__ == '__main__':
         model = str(role_config.get("model", run["model"])) if isinstance(role_config, dict) else run["model"]
         allow_external = bool(role_config.get("allow_external", run["allow_external"])) if isinstance(role_config, dict) else bool(run["allow_external"])
         try:
-            output_budget = 16384 if role in {"programmer", "debugger", "architect"} else 8192
+            output_budget = codeq_output_token_budget(role)
             response = self.gateway.complete(messages, provider_id=provider, model=model or None, allow_external=allow_external, max_output_tokens=output_budget)
         except (ProviderConfigurationError, ValueError) as exc:
             self._event(run["id"], "model.failed", error=str(exc))
