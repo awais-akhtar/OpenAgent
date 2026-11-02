@@ -4816,6 +4816,14 @@ def build_http_server(
 
         def server_close(self) -> None:
             workflow_worker.stop()
+            # build_http_server starts this reminder worker, so closing the
+            # server has to stop it too. Left running it keeps polling and
+            # holds the store open, which on Windows blocks the data directory
+            # from being removed.
+            try:
+                autonomous_scheduler.stop_worker("default")
+            except Exception:
+                pass
             super().server_close()
             for name, closer, timeout_seconds in (
                 ("model-runtime", ultra_model.close, 4.0),

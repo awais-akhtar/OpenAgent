@@ -210,7 +210,18 @@ class CodebaseTools:
         old = target.read_text(encoding="utf-8", errors="replace")
         occurrences = old.count(search)
         if occurrences != int(expected_occurrences):
-            raise ValueError(f"patch expected {expected_occurrences} occurrence(s), found {occurrences}")
+            # "found 0" alone leaves a caller guessing at the text, and a model
+            # that guessed once will guess again. Show the real content so the
+            # next attempt can quote it exactly.
+            detail = f"patch expected {expected_occurrences} occurrence(s), found {occurrences}"
+            if occurrences == 0:
+                excerpt = old if len(old) <= 4000 else old[:4000] + "\n...[truncated]"
+                detail += (
+                    f". The search text was not present in {path}."
+                    f" Its current content is:\n{excerpt}\n"
+                    "Copy the exact text to replace from that content."
+                )
+            raise ValueError(detail)
         new = old.replace(search, replace)
         target.write_text(new, encoding="utf-8", newline="\n")
         return self._change_result(path, old, new)
