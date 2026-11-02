@@ -414,28 +414,30 @@ DJANGO_SITE_JS = """(function ($) {
 """
 
 
-IMPLEMENTATION_ROLES = frozenset({"programmer", "debugger", "architect"})
-DEFAULT_IMPLEMENTATION_OUTPUT_TOKENS = 4096
+DEFAULT_OUTPUT_TOKENS = 8192
 
 
-def codeq_output_token_budget(role: str) -> int:
+def codeq_output_token_budget(role: str = "") -> int:
     """Cap a single model response in a run.
 
     A cap is an upper bound, not a target: a model that finishes early costs
-    nothing extra. It does bound a runaway answer, and that is what matters
-    locally. The previous 16,384 for implementation roles let one call generate
-    for roughly an hour against a 30B model producing a few tokens a second,
-    which stalled runs before any file was touched. Raise
-    OPENAGENT_CODEQ_OUTPUT_TOKENS when the model is fast enough to afford more;
-    non-implementation roles return short reports and get half the budget.
+    nothing extra. It bounds a runaway answer, which is what matters locally,
+    where 16,384 tokens for implementation roles meant roughly an hour per call
+    against a 30B model producing a few tokens a second.
+
+    One budget applies to every role. An earlier split that halved the
+    non-implementation roles starved ``project_manager``, whose reply is the
+    whole task plan, and a truncated plan is not valid JSON, so the run fell
+    back to a generic plan instead. 8,192 is the value those roles already
+    worked at, so nothing that was passing is reduced. Raise
+    OPENAGENT_CODEQ_OUTPUT_TOKENS for a model fast enough to afford more.
     """
     try:
         configured = int(os.environ.get("OPENAGENT_CODEQ_OUTPUT_TOKENS", "").strip() or 0)
     except ValueError:
         configured = 0
-    budget = configured if configured > 0 else DEFAULT_IMPLEMENTATION_OUTPUT_TOKENS
-    budget = max(512, min(32768, budget))
-    return budget if role in IMPLEMENTATION_ROLES else max(512, budget // 2)
+    budget = configured if configured > 0 else DEFAULT_OUTPUT_TOKENS
+    return max(512, min(32768, budget))
 
 
 class CodebaseService:
