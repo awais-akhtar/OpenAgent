@@ -4824,6 +4824,13 @@ def build_http_server(
                 autonomous_scheduler.stop_worker("default")
             except Exception:
                 pass
+            # Agent jobs run on their own threads and keep using the store
+            # until they see the cancellation, so the server waits for them
+            # here rather than leaving the data directory in use.
+            try:
+                multi_agent.close()
+            except Exception:
+                pass
             super().server_close()
             for name, closer, timeout_seconds in (
                 ("model-runtime", ultra_model.close, 4.0),

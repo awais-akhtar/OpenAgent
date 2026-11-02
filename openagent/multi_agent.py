@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import threading
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -30,7 +31,28 @@ class MultiAgentRuntime:
         self.registry = AgentRegistry(store, gateway)
         self._job_lock = threading.Lock()
         self._job_cancellations: dict[str, threading.Event] = {}
+        self._job_threads: dict[str, threading.Thread] = {}
         self.initialize()
+
+    def close(self, *, timeout_seconds: float = 5.0) -> None:
+        """Cancel running jobs and wait briefly for their threads to finish.
+
+        Job threads are daemons, so they do not block interpreter exit, but
+        they keep using the store until they notice the cancellation. Without
+        a way to wait for them a caller cannot know when the store is idle,
+        which on Windows means its data directory cannot be removed.
+        """
+        with self._job_lock:
+            cancellations = list(self._job_cancellations.values())
+            threads = list(self._job_threads.values())
+        for cancel in cancellations:
+            cancel.set()
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
 
     def initialize(self) -> None:
         with self.store.session() as connection:
@@ -207,11 +229,13 @@ class MultiAgentRuntime:
                 (job_id, project, owner, agent_id, goal, max(1, int(attempt)), retry_of, now, now),
             )
         cancel = threading.Event()
+        worker = threading.Thread(
+            target=self._execute_job, args=(job_id, cancel), name=f"openagent-agent-{job_id[:8]}", daemon=True,
+        )
         with self._job_lock:
             self._job_cancellations[job_id] = cancel
-        threading.Thread(
-            target=self._execute_job, args=(job_id, cancel), name=f"openagent-agent-{job_id[:8]}", daemon=True,
-        ).start()
+            self._job_threads[job_id] = worker
+        worker.start()
         return self.get_job(job_id, owner=owner) or {}
 
     def _execute_job(self, job_id: str, cancel: threading.Event) -> None:
@@ -270,6 +294,7 @@ class MultiAgentRuntime:
         finally:
             with self._job_lock:
                 self._job_cancellations.pop(job_id, None)
+                self._job_threads.pop(job_id, None)
 
     def jobs(self, *, project: str, owner: str, limit: int = 50) -> list[dict[str, Any]]:
         with self.store.session() as connection:
