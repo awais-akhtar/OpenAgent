@@ -172,6 +172,10 @@ def main() -> int:
             print(f"integration fixture completion request: {prompt[-160:]!r}", file=sys.stderr, flush=True)
             task_prompt = prompt.rsplit("CURRENT TASK (ANSWER THIS NOW):", 1)[-1]
             if "[integration-fail]" in task_prompt:
+                if "CURRENT TASK (ANSWER THIS NOW):" in prompt:
+                    # Exercise the Agent's recoverable runtime-exception
+                    # branch. Configuration failures deliberately fail closed.
+                    raise RuntimeError("Synthetic local integration provider runtime failure.")
                 raise ProviderConfigurationError("Synthetic local integration provider failure.")
             if "Run-only scope fixture" in task_prompt or "History integration fixture from the Agents workspace" in task_prompt:
                 return ModelResult(provider="local", model="integration-fixture", content="Synthetic local agent response for the Batch 2A authorization test.", metadata={})
@@ -249,10 +253,64 @@ def main() -> int:
         "ownerUsername": "integration-owner",
         "ownerPassword": "temporary-password-1",
     }), flush=True)
+    # Waiting on stdin alone leaks this process: if the runner is killed rather
+    # than closing the pipe, the read never reaches EOF and the fixture serves
+    # forever. Six of these were found still running hours after their runs.
+    # Watch the parent as well, the way the adaptive engine worker does, so the
+    # fixture cannot outlive whoever started it.
+    stop = threading.Event()
+
+    def parent_alive(pid: int) -> bool:
+        if pid <= 1:
+            return False
+        if os.name == "nt":
+            import ctypes
+
+            handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
+            if not handle:
+                return False
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, OSError):
+            return False
+        return True
+
+    # The runner states its own pid, the way the adaptive engine worker takes
+    # --parent-pid. os.getppid() cannot be used here: on Windows the child of a
+    # node spawn reports an intermediate process, not the runner, so watching
+    # it shut the fixture down mid-run.
+    runner_pid = 0
+    for index, argument in enumerate(sys.argv):
+        if argument == "--parent-pid" and index + 1 < len(sys.argv):
+            try:
+                runner_pid = int(sys.argv[index + 1])
+            except ValueError:
+                runner_pid = 0
+
+    if runner_pid > 1:
+        def watch_runner() -> None:
+            while not stop.wait(2.0):
+                if not parent_alive(runner_pid):
+                    stop.set()
+                    return
+
+        threading.Thread(target=watch_runner, name="real-integration-parent-watch", daemon=True).start()
+
+    def watch_stdin() -> None:
+        try:
+            for line in sys.stdin:
+                if line.strip() == "STOP":
+                    break
+        except Exception:
+            pass
+        stop.set()
+
+    threading.Thread(target=watch_stdin, name="real-integration-stdin", daemon=True).start()
+
     try:
-        for line in sys.stdin:
-            if line.strip() == "STOP":
-                break
+        stop.wait()
     finally:
         server.shutdown()
         thread.join(timeout=3)

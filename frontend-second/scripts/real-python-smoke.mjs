@@ -70,7 +70,10 @@ async function reserveLocalPort() {
 
 function startBackend() {
   return new Promise((resolve, reject) => {
-    backend = spawn(python, ['tests/support/real_integration_server.py'], {
+    // Tell the fixture which process to outlive. Without this it only watches
+    // stdin, and a runner that is killed rather than closing the pipe leaves it
+    // serving forever; six such strays were found after earlier runs.
+    backend = spawn(python, ['tests/support/real_integration_server.py', '--parent-pid', String(process.pid)], {
       cwd: repositoryRoot, stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true,
     });
     let buffered = '';
