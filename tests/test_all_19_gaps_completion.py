@@ -32,7 +32,7 @@ class AllGapsCompletion(unittest.TestCase):
     def test_g04_voice_socket_dispatcher_reachable(self):
         """G04: Voice WebSocket - Verify dispatcher reaches handler."""
         # Verify that the voice dispatcher is accessible and returns proper error for unknown session
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
             store = OpenAgentStore(tmp)
             server = build_http_server("127.0.0.1", 0, store)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -59,9 +59,10 @@ class AllGapsCompletion(unittest.TestCase):
 
     def test_g05_cancel_job_with_provider_fallback(self):
         """G05: Cancel/retry - Verify cancel with provider fallback metadata."""
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
             store = OpenAgentStore(tmp)
             runtime = MultiAgentRuntime(store)
+            self.addCleanup(runtime.close)
             # Create and cancel job with synthetic provider
             job = runtime.start_job("executive", "Cancel test", project="default", owner="test")
             self.assertIsNotNone(job["id"])
@@ -71,18 +72,26 @@ class AllGapsCompletion(unittest.TestCase):
 
     def test_g06_event_filter_with_status_synchronization(self):
         """G06: Event filter test - Verify status filter with synchronization barrier."""
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
             store = OpenAgentStore(tmp)
             runtime = MultiAgentRuntime(store)
+            self.addCleanup(runtime.close)
             job = runtime.start_job("executive", "Filter test", project="default", owner="test")
             # Record test events
             runtime.record_job_event(job["id"], event_type="progress", owner="test")
             runtime.record_job_event(job["id"], event_type="checkpoint", owner="test")
-            # Query with status filter - should work with isolated worker
-            events = runtime.job_events(job["id"], owner="test")
-            self.assertTrue(len(events) > 0)
-            # Verify proper event structure
-            self.assertTrue(all(isinstance(e, dict) for e in events))
+            # job_events returns a page, not a bare list: {job_id, events,
+            # cursor, next, filters}. Asserting against the wrapper iterated
+            # its keys, so the structure check was testing strings.
+            page = runtime.job_events(job["id"], owner="test")
+            self.assertEqual(page["job_id"], job["id"])
+            events = page["events"]
+            self.assertTrue(events, "no job events were recorded")
+            self.assertTrue(all(isinstance(event, dict) for event in events))
+            self.assertTrue(all(event["job_id"] == job["id"] for event in events))
+            recorded = {event["event_type"] for event in events}
+            self.assertIn("progress", recorded)
+            self.assertIn("checkpoint", recorded)
 
     def test_g08_autonomous_scheduler_with_preferences(self):
         """G08: Autonomous scheduler - Add opt-in background caller with preferences."""
@@ -110,10 +119,11 @@ class AllGapsCompletion(unittest.TestCase):
 
     def test_g13_project_membership_enforcement(self):
         """G13: Project membership - Enforce boundaries with policy tests."""
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
             store = OpenAgentStore(tmp)
             # Create records in different projects
             runtime = MultiAgentRuntime(store)
+            self.addCleanup(runtime.close)
             job_p1 = runtime.start_job("executive", "Test", project="p1", owner="alice")
             job_p2 = runtime.start_job("executive", "Test", project="p2", owner="alice")
             # Verify that job queries are project-scoped
@@ -169,9 +179,10 @@ class AllGapsCompletion(unittest.TestCase):
 
     def test_g25_degraded_result_presentation(self):
         """G25: Degraded behavior - Test all states (genuine/degraded/failed/cancelled)."""
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as tmp, patch.dict("os.environ", {"OPENAGENT_AUTH_ENFORCED": "0"}):
             store = OpenAgentStore(tmp)
             runtime = MultiAgentRuntime(store)
+            self.addCleanup(runtime.close)
             # Test genuine success
             with patch.object(runtime, "_execute_job", return_value={"result": "success"}):
                 job_genuine = runtime.start_job("executive", "Genuine", project="default", owner="test")
