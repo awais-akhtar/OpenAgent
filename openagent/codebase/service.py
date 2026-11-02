@@ -1287,6 +1287,23 @@ class CodebaseService:
             self._event(run_id, "environment.preflight.completed", preflight=environment)
             architecture = self._consult_specialists(run, project, project_map, environment)
             tasks = self._plan(run, project, project_map, architecture)
+            # Planning is the first point at which a model has had to answer.
+            # If the gateway served its offline stub instead, the configured
+            # model is unreachable and no later iteration can succeed, so stop
+            # here rather than spending the whole budget to reach the same
+            # conclusion with a message that blames the model.
+            substituted = self._fallback_providers(run_id)
+            if substituted:
+                error = (
+                    f"The configured model never answered: the gateway fell back to its offline stub "
+                    f"after {', '.join(sorted(substituted))} failed, and that stub cannot produce the "
+                    "JSON actions an autonomous run needs. Check the provider is reachable and that "
+                    "OPENAGENT_MODEL_TIMEOUT_SECONDS allows for its response time, then start the run "
+                    "again."
+                )
+                self._set_run(run_id, status="failed", error=error, finished=True)
+                self._event(run_id, "run.failed", reason="model_unavailable", providers=sorted(substituted), error=error)
+                return
             dependency_repairs = self._store_tasks(run_id, tasks)
             self._event(run_id, "plan.created", tasks=tasks, architecture=architecture, delivery_profile=classify_request(run["user_prompt"], project_map), dependency_repairs=dependency_repairs)
             self._set_run(run_id, status="running")
