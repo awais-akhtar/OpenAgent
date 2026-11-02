@@ -3,6 +3,7 @@ from __future__ import annotations
 from tempfile import TemporaryDirectory
 import unittest
 
+from openagent.autonomous_scheduler import AutonomousSchedulerManager
 from openagent.routes.scheduler_routes import ROUTES
 from openagent.routes.scheduler_routes import SchedulerRouteDependencies, handle_post
 from openagent.scheduler import Scheduler
@@ -60,6 +61,9 @@ class SchedulerLifecycleTests(unittest.TestCase):
             payload = {"project": "core", "owner": "u1"}
             deps = SchedulerRouteDependencies(
                 scheduler=scheduler,
+                # Required by the dependencies even though the notification
+                # path under test never reaches a worker control.
+                autonomous_scheduler=AutonomousSchedulerManager(),
                 first=lambda params, key: (params.get(key) or [None])[0],
                 parse_bool=lambda value, default=False: default if value is None else str(value).lower() == "true",
                 parse_int=lambda value, default=0: int(value) if value else default,
