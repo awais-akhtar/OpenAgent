@@ -15,12 +15,17 @@ logger = logging.getLogger(__name__)
 class SemanticMemoryService:
     """Long-term semantic memory and session management."""
 
-    def __init__(self):
+    def __init__(self, state_dir: str | Path | None = None):
         self.sessions = {}
         self.conversation_history = {}
         self.context_memories = {}
         self.session_metadata: dict[str, dict[str, Any]] = {}
-        self.state_file = Path("semantic_memory_state.json")
+        # Without a directory from the caller the state file used to land in
+        # whatever directory the process happened to start in, which put it in
+        # the repository when the server was run from a checkout.
+        base = Path(state_dir) if state_dir is not None else Path.cwd()
+        base.mkdir(parents=True, exist_ok=True)
+        self.state_file = base / "semantic_memory_state.json"
         self._load_state()
 
     def create_session(self, project: str = "default", owner: str = "default") -> dict[str, Any]:
@@ -36,6 +41,9 @@ class SemanticMemoryService:
             "owner": owner,
         }
         self.session_metadata[session_id] = {"project": project, "owner": owner}
+        # Saved here too: a session created and not yet written to was lost on
+        # restart, so the first message to it came back "Session not found".
+        self._save_state()
         logger.info(f"Created memory session: {session_id} (project={project}, owner={owner})")
         return {"session_id": session_id, "created_at": self.sessions[session_id]["created_at"], "project": project, "owner": owner}
 
@@ -167,21 +175,57 @@ class SemanticMemoryService:
         ]
 
     def _save_state(self) -> None:
-        """Persist memory state."""
+        """Persist memory state.
+
+        The sessions, their messages and their context memories are written in
+        full. An earlier version saved only counts, so a restart reported a
+        number of sessions it could no longer serve: every session id came back
+        as "Session not found".
+        """
         state = {
-            "sessions": {sid: {"created_at": s["created_at"], "message_count": len(s["messages"])} 
-                        for sid, s in self.sessions.items()},
-            "context_memories": {sid: len(ctx) for sid, ctx in self.context_memories.items()},
+            "version": 2,
+            "sessions": self.sessions,
+            "context_memories": self.context_memories,
         }
-        with open(self.state_file, "w") as f:
-            json.dump(state, f)
+        # Written beside the real file and moved into place, so a crash during
+        # the write cannot leave a truncated file that the next start refuses.
+        pending = self.state_file.with_name(self.state_file.name + ".tmp")
+        try:
+            with open(pending, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+            pending.replace(self.state_file)
+        except OSError as error:
+            logger.warning("Failed to persist memory state: %s", error)
 
     def _load_state(self) -> None:
-        """Load persisted state."""
-        if self.state_file.exists():
-            try:
-                with open(self.state_file) as f:
-                    state = json.load(f)
-                    logger.info(f"Loaded memory state: {len(state['sessions'])} sessions")
-            except Exception as e:
-                logger.warning(f"Failed to load state: {e}")
+        """Restore the sessions and context memories of an earlier run."""
+        if not self.state_file.exists():
+            return
+        try:
+            with open(self.state_file, encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (OSError, ValueError) as error:
+            logger.warning("Failed to load memory state: %s", error)
+            return
+        if not isinstance(state, dict) or state.get("version") != 2:
+            # A state file from the counts-only version holds nothing that can
+            # be served, so it is dropped rather than half-restored.
+            logger.info("Ignoring memory state written by an earlier version")
+            return
+        sessions = state.get("sessions")
+        if isinstance(sessions, dict):
+            for session_id, session in sessions.items():
+                if not isinstance(session, dict) or not isinstance(session.get("messages"), list):
+                    continue
+                session.setdefault("id", session_id)
+                self.sessions[str(session_id)] = session
+                self.session_metadata[str(session_id)] = {
+                    "project": session.get("project"),
+                    "owner": session.get("owner"),
+                }
+        contexts = state.get("context_memories")
+        if isinstance(contexts, dict):
+            for session_id, context in contexts.items():
+                if isinstance(context, dict):
+                    self.context_memories[str(session_id)] = context
+        logger.info("Loaded memory state: %d sessions", len(self.sessions))

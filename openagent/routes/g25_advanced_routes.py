@@ -62,6 +62,22 @@ def _first(params: dict[str, list[str]], key: str) -> str:
     return values[0] if values else ""
 
 
+def _memory_result(result: dict[str, Any]) -> JsonRouteResult:
+    """Give a refused memory read a refusal status.
+
+    The memory service reports a missing session and a session belonging to
+    another project or owner as an ``error`` key. Returned as-is that became a
+    200 with ``success: true``, so the screen announced a denied read as an
+    operation the backend had completed.
+    """
+    error = str(result.get("error", ""))
+    if not error:
+        return JsonRouteResult(result)
+    if "does not belong" in error:
+        return JsonRouteResult(result, HTTPStatus.FORBIDDEN)
+    return JsonRouteResult(result, HTTPStatus.NOT_FOUND)
+
+
 def handle_get(path: str, query: str, deps: G25RouteDependencies) -> JsonRouteResult | None:
     """Handle GET requests for G25 advanced features."""
     params = parse_qs(query)
@@ -116,7 +132,7 @@ def handle_get(path: str, query: str, deps: G25RouteDependencies) -> JsonRouteRe
         if not session_id:
             return JsonRouteResult({"error": "Session ID required"}, HTTPStatus.BAD_REQUEST)
         history = deps.memory_service.get_conversation_history(session_id, project=project, owner=owner)
-        return JsonRouteResult(history)
+        return _memory_result(history)
 
     return None
 
@@ -229,6 +245,6 @@ def handle_post(path: str, deps: G25RouteDependencies) -> JsonRouteResult | None
             )
 
         result = deps.memory_service.store_message(session_id, role, content, project=project, owner=owner)
-        return JsonRouteResult(result)
+        return _memory_result(result)
 
     return None

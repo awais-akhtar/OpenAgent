@@ -144,3 +144,7 @@ check BLUEPRINT .md
 /web/assets/
 /web/demo/
 /web/styles2.css
+
+# Written only when the semantic memory service is built without a state directory.
+semantic_memory_state.json
+semantic_memory_state.json.tmp

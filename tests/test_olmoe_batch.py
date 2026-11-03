@@ -4,6 +4,8 @@ from contextlib import ExitStack
 from pathlib import Path
 import tempfile
 import unittest
+
+from tests.support.optional_backends import numba_missing
 from unittest.mock import patch
 
 import numpy as np
@@ -136,6 +138,7 @@ class OlmoeBatchTests(unittest.TestCase):
                 self.assertTrue(np.isfinite(logits).all())
                 self.assertEqual(model.experts.preferred_kernel, backend.NAME)
 
+    @unittest.skipIf(numba_missing(), numba_missing())
     def test_gateway_defaults_float32_manifest_to_its_exact_native_consumer(self):
         from openagent.model_gateway import OlmoeDirectProvider
         from openagent.adaptive_engine.native_expert import NativeExpertBackend

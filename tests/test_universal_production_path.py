@@ -12,6 +12,8 @@ import shutil
 import tempfile
 import threading
 import unittest
+
+from tests.support.optional_backends import numba_missing
 from unittest.mock import patch
 
 import numpy as np
@@ -122,6 +124,7 @@ class UniversalProductionPathTests(unittest.TestCase):
         self.assertTrue(result["generated_ids"])
         self.assertFalse(result["numerical_parity_verified"])
 
+    @unittest.skipIf(numba_missing(), numba_missing())
     def test_unleased_admitted_format_uses_direct_explicit_kernel_without_library(self):
         from openagent.adaptive_engine.olmoe import pack_olmoe_experts
 

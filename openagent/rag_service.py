@@ -16,7 +16,11 @@ class RAGService:
         self.embeddings = embeddings_service
         self.documents = document_processor
         self.knowledge_graph = knowledge_graph
-        self.retrieval_index = {}  # Maps (project:owner:doc_id) -> embeddings
+        # Keyed by the (project, owner, doc_id) triple rather than a joined
+        # string: a project or owner name containing a colon would otherwise
+        # produce the same key as a different pairing, and one scope's chunks
+        # would be searchable from the other.
+        self.retrieval_index: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
 
     def index_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Index document for semantic search."""
@@ -42,8 +46,7 @@ class RAGService:
                 "owner": owner,
             })
 
-        index_key = f"{project}:{owner}:{doc_id}"
-        self.retrieval_index[index_key] = chunk_embeddings
+        self.retrieval_index[(project, owner, doc_id)] = chunk_embeddings
         logger.info(f"Indexed document {doc_id} with {len(chunks)} chunks (project={project}, owner={owner})")
 
         return {
@@ -57,14 +60,12 @@ class RAGService:
         """Search documents semantically, optionally within one document."""
         query_embedding = self.embeddings.embed_text(query)
 
-        scope = f"{project}:{owner}:"
-        wanted = f"{scope}{doc_id}" if doc_id else ""
         results = []
-        for index_key, chunks in self.retrieval_index.items():
+        for (indexed_project, indexed_owner, indexed_doc), chunks in self.retrieval_index.items():
             # Only search documents in this project/owner
-            if not index_key.startswith(scope):
+            if indexed_project != project or indexed_owner != owner:
                 continue
-            if wanted and index_key != wanted:
+            if doc_id and indexed_doc != doc_id:
                 continue
             for chunk_data in chunks:
                 similarity = self.embeddings.similarity(

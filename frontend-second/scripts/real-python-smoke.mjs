@@ -1848,6 +1848,72 @@ async function run() {
   const g25NodeResponse = await g25NodePromise;
   assert(g25NodeResponse.status() === 201, `G25 graph node create returned HTTP ${g25NodeResponse.status()}: ${await g25NodeResponse.text()}`);
   results.push({ workflow: 'G25 advanced documents and knowledge graph', result: 'PASS', evidence: `React uploaded a document through /api/g25/documents/upload with a g25-scoped credential, rendered the returned record, and a fresh authenticated Python read returned document ${g25DocumentId}. A knowledge-scoped token was refused with 403, and a knowledge-graph node was created through the same screen. No model provider was contacted.` });
+  // L07 asks for each accepted G25 tab to be driven from React, not only the
+  // Documents and Knowledge graph ones. The retrieval index and the reasoning
+  // chains live in the running server, so they are exercised here and the
+  // screen labels them session-only; semantic memory is read back from disk by
+  // tests/test_semantic_memory_durability.py.
+  await page.getByRole('tab', { name: 'RAG' }).click();
+  await page.getByLabel('Document id').fill(g25DocumentId);
+  const ragIndexPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/rag/index' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Index document' }).click();
+  const ragIndexResponse = await ragIndexPromise;
+  assert(ragIndexResponse.status() === 201, `RAG index returned HTTP ${ragIndexResponse.status()}: ${await ragIndexResponse.text()}`);
+  const ragIndexBody = await ragIndexResponse.json();
+  assert((ragIndexBody.chunks ?? 0) > 0, `Indexing reported no chunks: ${JSON.stringify(ragIndexBody)}`);
+  await page.getByLabel('Search query').fill('integration document');
+  const ragSearchPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/rag/search' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Search index' }).click();
+  const ragSearchResponse = await ragSearchPromise;
+  assert(ragSearchResponse.ok(), `RAG search returned HTTP ${ragSearchResponse.status()}`);
+  const ragSearchBody = await ragSearchResponse.json();
+  const ragMatches = ragSearchBody.results?.results ?? ragSearchBody.results ?? [];
+  assert(Array.isArray(ragMatches) && ragMatches.some(row => String(row.doc_id) === g25DocumentId), `The indexed document was not retrieved: ${JSON.stringify(ragSearchBody)}`);
+
+  await page.getByRole('tab', { name: 'Reasoning' }).click();
+  await page.getByLabel('Chain topic').fill('Integration reasoning topic');
+  const chainPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/reasoning/chains' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create chain' }).click();
+  const chainResponse = await chainPromise;
+  assert(chainResponse.status() === 201, `Reasoning chain create returned HTTP ${chainResponse.status()}: ${await chainResponse.text()}`);
+  const chainBody = await chainResponse.json();
+  const g25ChainId = String(chainBody.chain_id ?? chainBody.id ?? '');
+  assert(g25ChainId, `Reasoning chain response omitted its id: ${JSON.stringify(chainBody)}`);
+  await page.getByLabel('Chain id').fill(g25ChainId);
+  const chainDetailPromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/g25/reasoning/chains/${g25ChainId}`);
+  await page.getByRole('button', { name: 'Load chain' }).click();
+  const chainDetailResponse = await chainDetailPromise;
+  assert(chainDetailResponse.ok(), `Reasoning chain detail returned HTTP ${chainDetailResponse.status()}`);
+  // The same chain under another project must not resolve.
+  const chainForeignProject = await requestJson(fixture.baseUrl, `/api/g25/reasoning/chains/${g25ChainId}?project=smoke-other`, fixture.tokens.g25);
+  assert(chainForeignProject.response.status === 404, `A default-project chain resolved under another project with HTTP ${chainForeignProject.response.status}`);
+
+  await page.getByRole('tab', { name: 'Memory' }).click();
+  const memorySessionPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/memory/sessions' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create session' }).click();
+  const memorySessionResponse = await memorySessionPromise;
+  assert(memorySessionResponse.status() === 201, `Memory session create returned HTTP ${memorySessionResponse.status()}: ${await memorySessionResponse.text()}`);
+  const memorySessionBody = await memorySessionResponse.json();
+  const g25SessionId = String(memorySessionBody.session_id ?? memorySessionBody.id ?? '');
+  assert(g25SessionId, `Memory session response omitted its id: ${JSON.stringify(memorySessionBody)}`);
+  await page.getByLabel('Content').fill('Integration memory entry.');
+  const memoryStorePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/memory/store' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Store entry' }).click();
+  const memoryStoreResponse = await memoryStorePromise;
+  assert(memoryStoreResponse.ok(), `Memory store returned HTTP ${memoryStoreResponse.status()}: ${await memoryStoreResponse.text()}`);
+  const memoryHistoryPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/memory/history');
+  await page.getByRole('button', { name: 'Load history' }).click();
+  const memoryHistoryResponse = await memoryHistoryPromise;
+  assert(memoryHistoryResponse.ok(), `Memory history returned HTTP ${memoryHistoryResponse.status()}`);
+  const memoryHistoryBody = await memoryHistoryResponse.json();
+  const memoryMessages = memoryHistoryBody.messages ?? memoryHistoryBody.data?.messages ?? [];
+  assert(memoryMessages.some(row => String(row.content) === 'Integration memory entry.'), `The stored entry was not returned in the history: ${JSON.stringify(memoryHistoryBody)}`);
+  const memoryForeignProject = await requestJson(fixture.baseUrl, `/api/g25/memory/history?session_id=${encodeURIComponent(g25SessionId)}&project=smoke-other`, fixture.tokens.g25);
+  assert(memoryForeignProject.response.status === 403, `Reading a default-project memory session under another project returned HTTP ${memoryForeignProject.response.status}: ${JSON.stringify(memoryForeignProject.payload)}`);
+  const memoryUnknownSession = await requestJson(fixture.baseUrl, '/api/g25/memory/history?session_id=no-such-session&project=default', fixture.tokens.g25);
+  assert(memoryUnknownSession.response.status === 404, `An unknown memory session returned HTTP ${memoryUnknownSession.response.status}`);
+  results.push({ workflow: 'G25 retrieval, reasoning and semantic memory', result: 'PASS', evidence: `React indexed document ${g25DocumentId} through /api/g25/rag/index and retrieved it again through /api/g25/rag/search; it created reasoning chain ${g25ChainId} and loaded its detail, and created memory session ${g25SessionId}, stored an entry and read it back from the history. The same chain and session were refused under another project. The retrieval index and chains are server-process state and the screen says so; memory durability across a restart is covered by a Python test. No model provider was contacted.` });
+
 
   await open('voiceconv', fixture.tokens.voice);
   const voiceConversationPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/voice/conversations' && response.request().method() === 'POST');
@@ -1861,7 +1927,19 @@ async function run() {
   const voicePersisted = await requestJson(fixture.baseUrl, '/api/voice/conversations?project=default', fixture.tokens.voice);
   const voiceRows = voicePersisted.payload.conversations ?? voicePersisted.payload.data?.conversations ?? [];
   assert(voicePersisted.response.ok && voiceRows.some(row => String(row.conversation_id ?? row.id) === voiceConversationId), `Created voice conversation was not returned from a fresh Python read: ${JSON.stringify(voicePersisted.payload)}`);
-  results.push({ workflow: 'Voice conversation lifecycle', result: 'PASS', evidence: `React created a conversation through /api/voice/conversations with a voice-scoped credential and a fresh authenticated Python read returned ${voiceConversationId}. Transcription and synthesis were not exercised, so no speech provider was contacted and no audio quality is claimed.` });
+  // A conversation under another project must be refused as not the caller's,
+  // not as a malformed request: every refusal here used to answer 400.
+  const voiceForeignProject = await requestJson(fixture.baseUrl, `/api/voice/conversations/${voiceConversationId}?project=smoke-other`, fixture.tokens.voice);
+  assert(voiceForeignProject.response.status === 404, `Reading a default-project conversation under another project returned HTTP ${voiceForeignProject.response.status}`);
+  const voiceForeignRespond = await requestJson(fixture.baseUrl, `/api/voice/conversations/${voiceConversationId}/respond`, fixture.tokens.voice, {
+    method: 'POST',
+    body: { text: 'Integration refusal probe.', project: 'smoke-other' },
+  });
+  // The read filters by project in its lookup and so cannot find it (404),
+  // while respond finds the conversation and then refuses the scope (403).
+  // Either is a refusal; neither is the blanket 400 both used to return.
+  assert(voiceForeignRespond.response.status === 403, `Responding into a conversation under another project returned HTTP ${voiceForeignRespond.response.status}: ${JSON.stringify(voiceForeignRespond.payload)}`);
+  results.push({ workflow: 'Voice conversation lifecycle', result: 'PASS', evidence: `React created a conversation through /api/voice/conversations with a voice-scoped credential and a fresh authenticated Python read returned ${voiceConversationId}. Reading it under another project was refused with 404 and responding into it with 403, rather than the blanket 400 both used to return. Transcription and synthesis were not exercised, so no speech provider was contacted and no audio quality is claimed.` });
 
   await open('modelserve', fixture.tokens.modelServe);
   await page.getByLabel('Model id').fill('synthetic-integration-model');
@@ -1882,7 +1960,132 @@ async function run() {
   await page.getByRole('tab', { name: 'Readiness' }).click();
   const readiness = await requestJson(fixture.baseUrl, '/api/ultra-models/readiness?project=default', fixture.tokens.modelServe);
   assert(readiness.response.ok, `Ultra model readiness returned HTTP ${readiness.response.status}`);
-  results.push({ workflow: 'Model serving plan and readiness', result: 'PASS', evidence: `React created a serving plan through /api/model-serve/plans with a models-scoped credential; a fresh authenticated Python read returned session ${serveSessionId} with status planned, proving no process was launched. Readiness was read through the same credential. No model was downloaded, launched or served.` });
+  // Readiness must describe this host. It used to answer "ready" on every host
+  // because the mock server module imports everywhere, so a blocked host was
+  // reported as able to serve a model.
+  const readinessBody = readiness.payload.data ?? readiness.payload;
+  const servingRuntimeInstalled = Boolean(readinessBody.llama_server_available);
+  const canServe = servingRuntimeInstalled && Number(readinessBody.models_cached ?? 0) > 0;
+  assert(
+    readinessBody.status === (canServe ? 'ready' : 'blocked'),
+    `Readiness status ${JSON.stringify(readinessBody.status)} does not match what this host can do (runtime ${servingRuntimeInstalled}, cached ${readinessBody.models_cached}): ${JSON.stringify(readinessBody)}`,
+  );
+  assert(String(readinessBody.message ?? '').trim(), `Readiness must say why: ${JSON.stringify(readinessBody)}`);
+  if (!servingRuntimeInstalled) {
+    assert(String(readinessBody.message).includes('not installed'), `A host with no runtime must say so: ${JSON.stringify(readinessBody)}`);
+    await expect(page.getByText('No serving runtime').first()).toBeVisible();
+  }
+  // Creating an Ultra Model session must not fetch a model. This used to start
+  // a multi-gigabyte download from one create call.
+  const ultraCatalogue = await requestJson(fixture.baseUrl, '/api/ultra-models/models?project=default', fixture.tokens.modelServe);
+  assert(ultraCatalogue.response.ok, `Ultra model catalogue returned HTTP ${ultraCatalogue.response.status}`);
+  const ultraModels = ultraCatalogue.payload.models ?? ultraCatalogue.payload.data?.models ?? [];
+  const uncachedModel = (Array.isArray(ultraModels) ? ultraModels : []).find(row => !row.cached);
+  if (uncachedModel) {
+    const refusedCreate = await requestJson(fixture.baseUrl, '/api/ultra-models/sessions', fixture.tokens.modelServe, {
+      method: 'POST',
+      body: { model_id: String(uncachedModel.id ?? uncachedModel.model_id ?? ''), project: 'default' },
+    });
+    assert(refusedCreate.response.status === 400, `Creating a session for an undownloaded model returned HTTP ${refusedCreate.response.status}`);
+    const refusal = refusedCreate.payload.data ?? refusedCreate.payload;
+    assert(refusal.requires_download === true, `The refusal must say a download is required first: ${JSON.stringify(refusedCreate.payload)}`);
+  }
+  // Starting a serving session that has no model file must be refused, not
+  // reported as a ready model.
+  const refusedStart = await requestJson(fixture.baseUrl, `/api/model-serve/sessions/${serveSessionId}/start`, fixture.tokens.modelServe, {
+    method: 'POST',
+    body: { project: 'default' },
+  });
+  assert(refusedStart.response.status === 400, `Starting a plan with no model file returned HTTP ${refusedStart.response.status}: ${JSON.stringify(refusedStart.payload)}`);
+  // The same session under another project is not the caller's to start.
+  const foreignStart = await requestJson(fixture.baseUrl, `/api/model-serve/sessions/${serveSessionId}/start`, fixture.tokens.modelServe, {
+    method: 'POST',
+    body: { project: 'smoke-other' },
+  });
+  // The session is found by id and then refused on scope, so this is 403, not
+  // the blanket 400 every serving refusal used to return.
+  assert(foreignStart.response.status === 403, `Starting a default-project session under another project returned HTTP ${foreignStart.response.status}: ${JSON.stringify(foreignStart.payload)}`);
+  const stillPlanned = await requestJson(fixture.baseUrl, '/api/model-serve/sessions?project=default', fixture.tokens.modelServe);
+  const stillPlannedRow = (stillPlanned.payload.sessions ?? stillPlanned.payload.data?.sessions ?? []).find(row => String(row.session_id ?? row.id) === serveSessionId);
+  assert(stillPlannedRow && String(stillPlannedRow.status) !== 'running', `A refused start must not leave the session running: ${JSON.stringify(stillPlannedRow)}`);
+  results.push({ workflow: 'Model serving plan and readiness', result: 'PASS', evidence: `React created a serving plan through /api/model-serve/plans with a models-scoped credential; a fresh authenticated Python read returned session ${serveSessionId} with status planned, proving no process was launched. Readiness was read through the same credential. Readiness reported this host truthfully, creating a session for an undownloaded model was refused, and starting a plan with no model file was refused without leaving the session running. No model was downloaded, launched or served.` });
+
+  // Fact provenance had registered scoped routes and a mounted screen but no
+  // React-to-Python check, so create, search, retract and restore are each
+  // driven from the screen here and read back with a fresh credential.
+  const factText = `Smoke-recorded provenance fact ${Date.now()}`;
+  await open('factprovenance', fixture.tokens.twin);
+  await page.getByRole('tab', { name: 'Record a fact' }).click();
+  await page.getByLabel('Fact', { exact: true }).fill(factText);
+  await page.getByLabel('Source type').fill('document');
+  await page.getByLabel('Source reference').fill('smoke-integration-source');
+  const factCreatePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/fact-provenance/facts' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Record fact' }).click();
+  const factCreateResponse = await factCreatePromise;
+  assert(factCreateResponse.status() === 201, `Fact create returned HTTP ${factCreateResponse.status()}: ${await factCreateResponse.text()}`);
+  const factCreateBody = await factCreateResponse.json();
+  const createdFact = factCreateBody.fact ?? factCreateBody.data?.fact ?? factCreateBody.data ?? factCreateBody;
+  const factId = String(createdFact.id ?? '');
+  assert(factId, `Fact create response omitted its id: ${JSON.stringify(factCreateBody)}`);
+  const persistedFacts = await requestJson(fixture.baseUrl, '/api/fact-provenance/facts?project=default', fixture.tokens.twin);
+  const factRows = persistedFacts.payload.facts ?? persistedFacts.payload.data?.facts ?? [];
+  const persistedFact = factRows.find(row => String(row.id) === factId);
+  assert(persistedFacts.response.ok && persistedFact, `Recorded fact was not returned from a fresh Python read: ${JSON.stringify(persistedFacts.payload)}`);
+  assert((persistedFact.sources ?? []).length === 1, `The recorded source was not stored with the fact: ${JSON.stringify(persistedFact)}`);
+  // A credential without the twin scopes must not reach the same records.
+  const factForbidden = await requestJson(fixture.baseUrl, '/api/fact-provenance/facts?project=default', fixture.tokens.knowledge);
+  assert(factForbidden.response.status === 403, `A knowledge-scoped token reached fact provenance with HTTP ${factForbidden.response.status}`);
+  // The same credential, pointed at another project, must not see the record.
+  const factForeignProject = await requestJson(fixture.baseUrl, '/api/fact-provenance/facts?project=smoke-other', fixture.tokens.twin);
+  const foreignRows = factForeignProject.payload.facts ?? factForeignProject.payload.data?.facts ?? [];
+  assert(factForeignProject.response.ok && !foreignRows.some(row => String(row.id) === factId), `A fact recorded under default was listed under another project: ${JSON.stringify(factForeignProject.payload)}`);
+  const factForeignDetail = await requestJson(fixture.baseUrl, `/api/fact-provenance/facts/${factId}?project=smoke-other`, fixture.tokens.twin);
+  assert(factForeignDetail.response.status === 404, `Reading a default-project fact under another project returned HTTP ${factForeignDetail.response.status}`);
+
+  await page.getByRole('tab', { name: 'Facts', exact: true }).click();
+  const factSearchPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/fact-provenance/search');
+  await page.getByLabel('Search recorded facts').fill(factText);
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  const factSearchResponse = await factSearchPromise;
+  assert(factSearchResponse.ok(), `Fact search returned HTTP ${factSearchResponse.status()}`);
+  const factRow = page.locator(`article[data-fact-id="${factId}"]`);
+  await expect(factRow).toHaveAttribute('data-retracted', 'false');
+
+  const retractPromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/fact-provenance/facts/${factId}/retract` && response.request().method() === 'POST');
+  await factRow.getByRole('button', { name: 'Retract', exact: true }).click();
+  await page.getByLabel('Reason (required by the backend)').fill('Superseded during the integration smoke run.');
+  await page.getByRole('button', { name: 'Retract fact' }).click();
+  const retractResponse = await retractPromise;
+  assert(retractResponse.ok(), `Fact retract returned HTTP ${retractResponse.status()}: ${await retractResponse.text()}`);
+  const afterRetract = await requestJson(fixture.baseUrl, `/api/fact-provenance/facts/${factId}`, fixture.tokens.twin);
+  const retractedFact = afterRetract.payload.fact ?? afterRetract.payload.data?.fact ?? {};
+  assert(afterRetract.response.ok && String(retractedFact.retracted_at ?? '').trim(), `A retracted fact must carry retracted_at from a fresh Python read: ${JSON.stringify(afterRetract.payload)}`);
+  assert((retractedFact.retractions ?? []).length >= 1, `The retraction reason was not recorded: ${JSON.stringify(retractedFact)}`);
+
+  // The shared screen query asks for active facts only, so the All facts tab
+  // has to re-read with active_only=false before the retracted row is there.
+  await page.getByRole('tab', { name: 'All facts' }).click();
+  const allFactsPromise = responseWhen(page, response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/fact-provenance/facts' && url.searchParams.get('active_only') === 'false';
+  });
+  await page.getByRole('button', { name: 'Reload facts' }).click();
+  const allFactsResponse = await allFactsPromise;
+  assert(allFactsResponse.ok(), `Reloading all facts returned HTTP ${allFactsResponse.status()}`);
+  await expect(page.locator(`article[data-fact-id="${factId}"]`)).toHaveAttribute('data-retracted', 'true');
+  const restorePromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/fact-provenance/facts/${factId}/restore` && response.request().method() === 'POST');
+  await page.locator(`article[data-fact-id="${factId}"]`).getByRole('button', { name: 'Restore', exact: true }).click();
+  // Restoring is confirmed in the same dialog the retraction used.
+  await page.getByRole('button', { name: 'Restore fact' }).click();
+  const restoreResponse = await restorePromise;
+  assert(restoreResponse.ok(), `Fact restore returned HTTP ${restoreResponse.status()}: ${await restoreResponse.text()}`);
+  const afterRestore = await requestJson(fixture.baseUrl, `/api/fact-provenance/facts/${factId}`, fixture.tokens.twin);
+  const restoredFact = afterRestore.payload.fact ?? afterRestore.payload.data?.fact ?? {};
+  assert(afterRestore.response.ok && !String(restoredFact.retracted_at ?? '').trim(), `A restored fact must no longer carry retracted_at: ${JSON.stringify(afterRestore.payload)}`);
+  assert((restoredFact.retractions ?? []).length >= 1, `Restoring must keep the retraction history: ${JSON.stringify(restoredFact)}`);
+  const factStatistics = await requestJson(fixture.baseUrl, '/api/fact-provenance/statistics?project=default', fixture.tokens.twin);
+  assert(factStatistics.response.ok, `Fact provenance statistics returned HTTP ${factStatistics.response.status}`);
+  results.push({ workflow: 'Fact provenance record, search, retract and restore', result: 'PASS', evidence: `React recorded fact ${factId} with one source through /api/fact-provenance/facts using a twin-scoped credential; a knowledge-scoped token was refused with 403. The screen searched for it, retracted it with a reason and restored it, and fresh authenticated Python reads confirmed retracted_at appearing and clearing while the retraction history was kept. Statistics were read through the same credential.` });
 
   const demoArtifactCalls = apiRequests.filter(request => request.url().includes('/demo/'));
   assert(demoArtifactCalls.length === 0, 'Live integration unexpectedly requested Demo fixture assets');

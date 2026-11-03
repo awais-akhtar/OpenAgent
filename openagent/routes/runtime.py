@@ -505,7 +505,7 @@ def build_http_server(
     knowledge_graph_service = KnowledgeGraphService()
     embeddings_service = VectorEmbeddingsService()
     reasoning_service = AdvancedReasoningService()
-    memory_service = SemanticMemoryService()
+    memory_service = SemanticMemoryService(state_dir=store.data_dir)
     rag_service = RAGService(embeddings_service, doc_processor_service, knowledge_graph_service)
     document_processing = DocumentProcessing(store, knowledge=knowledge)
     image_studio = ImageStudio(store)

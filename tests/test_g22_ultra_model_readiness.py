@@ -97,7 +97,9 @@ class UltraModelReadinessTests(unittest.TestCase):
 
         assert session is not None
         assert session["project"] == project
-        assert session["status"] == "ready"
+        # A session holds a serve plan and starts no process, so it must not
+        # report "ready": that read as a model ready to answer.
+        assert session["status"] == "planned"
 
     def test_ultra_model_readiness_check(self) -> None:
         """Test checking readiness of Ultra Model infrastructure."""

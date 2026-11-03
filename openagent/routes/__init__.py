@@ -53,6 +53,7 @@ DOMAIN_ROUTE_MODULES: tuple[str, ...] = (
     "local_ai_routes",
     "enterprise_routes",
     "developer_routes",
+    "legacy_attribution_routes",
     "security_routes",
     "calendar_routes",
     "communication_routes",

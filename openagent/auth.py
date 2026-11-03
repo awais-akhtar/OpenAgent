@@ -936,6 +936,11 @@ PROTECTED_ROUTE_SCOPES: tuple[tuple[str, str, str], ...] = (
     ("/api/documents/", "docs:read", "docs:write"),
     ("/api/editor-drafts", "drafts:read", "drafts:write"),
     ("/api/security/", "security:read", "security:admin"),
+    # Dispatched by the runtime since d8a0b2b but left out of the contract
+    # registry, so these five carried no required scope and any authenticated
+    # token reached them. Each handler already demands an owner; this adds the
+    # scope the rest of the ownership surface is behind.
+    ("/api/legacy-attribution/", "security:read", "security:admin"),
     ("/api/developer/", "developer:read", "developer:admin"),
     ("/api/graphql", "developer:read", "developer:admin"),
     ("/api/local-ai/", "local_ai:read", "local_ai:admin"),

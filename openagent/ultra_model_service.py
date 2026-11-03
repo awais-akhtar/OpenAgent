@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -94,12 +95,17 @@ class UltraModelService:
             if not model_info:
                 return {"error": f"Unknown model: {model_id}"}
 
-            # Download if not cached
+            # Creating a session must not fetch anything. This used to call
+            # download_model, so a single "create session" click started a
+            # multi-gigabyte download with no size shown and no way to decline.
+            # Downloading stays available, but only through the explicit
+            # /api/ultra-models/models/{id}/download control.
             if not model_info["cached"]:
-                logger.info(f"Model {model_id} not cached, attempting download...")
-                download_result = self.download_model(model_id, project, owner)
-                if "error" in download_result:
-                    return download_result
+                return {
+                    "error": f"Model {model_id} is not downloaded. Download it first.",
+                    "model_id": model_id,
+                    "requires_download": True,
+                }
 
             # Get model path
             model_path = self.downloader.get_model_path(model_id)
@@ -118,7 +124,9 @@ class UltraModelService:
                 "session_id": session_id,
                 "model_id": model_id,
                 "name": session_name or f"UltraModel-{model_id}",
-                "status": "ready",
+                # A session holds a serve plan, not a process. It used to say
+                # "ready", which read as a model ready to answer.
+                "status": "planned",
                 "serve_plan": serve_plan,
                 "created_at": serve_plan["created_at"],
                 "project": project,
@@ -230,9 +238,26 @@ class UltraModelService:
         models = self.get_available_models()
         sessions = self.list_sessions()
 
+        # Whether a model can be served is decided by the installed runtime.
+        # This report used to answer with downloader_ready and
+        # serve_manager_ready alone, which are true on any host and read as
+        # "ready" even where nothing can serve a model.
+        executable = shutil.which("llama-server")
+        cached = sum(1 for m in models.values() if m.get("cached"))
+        if executable is None:
+            message = "llama-server is not installed, so no model can be served on this host"
+        elif cached == 0:
+            message = f"llama-server found at {executable}, but no model is downloaded yet"
+        else:
+            message = f"llama-server found at {executable}"
+
         return {
+            "status": "ready" if executable and cached else "blocked",
+            "message": message,
+            "llama_server_available": executable is not None,
+            "llama_server_path": executable,
             "models_available": len(models),
-            "models_cached": sum(1 for m in models.values() if m.get("cached")),
+            "models_cached": cached,
             "sessions_total": len(sessions),
             "sessions_running": sum(1 for s in sessions if s.get("status") == "running"),
             "downloader_ready": True,

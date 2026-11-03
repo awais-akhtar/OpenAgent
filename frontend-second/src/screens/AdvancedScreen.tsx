@@ -579,7 +579,14 @@ function TwinOperations({ tab, data }: { tab: string; data?: Record<string, Json
   });
   const predictions = tab === "Preferences";
   const controls = tab === "Data controls";
-  if (!predictions && !controls) return null;
+  // Profile fields arrive from the context service as free-form name/value
+  // rows, and none of them carries a fact-provenance identifier, so there is
+  // no per-field source to show. Say so rather than leaving the tab silent:
+  // facts that do have traceable sources live on the Fact provenance screen.
+  if (!predictions && !controls) return <section className="p-card">
+    <div className="p-card-heading"><h3>Field provenance</h3><span className="p-fixture"><CloudOff className="icon xs" aria-hidden="true" />Not available</span></div>
+    <p className="muted small">Individual profile fields are not linked to source identifiers, so this screen cannot show where a single field came from. Facts recorded with traceable sources, together with their retraction history, are on the Fact provenance screen.</p>
+  </section>;
   return <section className="p-card"><div className="p-card-heading"><h3>{predictions ? "Ask for a context suggestion" : "Personal data controls"}</h3></div>
     {predictions ? <form onSubmit={(event) => { event.preventDefault(); setFeedback(""); setResult({}); mutation.mutate({ path: "/api/twin/predict", body: { context: context.trim(), project: "default" } }); }}><label className="demo-form-field">Context to consider<textarea className="input" rows={3} value={context} onChange={(event) => setContext(event.target.value)} required /></label><p className="caption">Only the context you enter is sent. The result is an inferred suggestion and may be wrong.</p><button className="btn primary" disabled={mutation.isPending || !context.trim()}>{mutation.isPending ? "Requesting suggestion…" : "Get suggestion"}</button></form> : <><form onSubmit={(event) => { event.preventDefault(); setFeedback(""); setResult({}); mutation.mutate({ path: "/api/twin/goals", body: { title: goal.trim(), project: "default" } }); }}><label className="demo-form-field">Goal you choose to track<input className="input" value={goal} onChange={(event) => setGoal(event.target.value)} required /></label><button className="btn" disabled={mutation.isPending || !goal.trim()}>{mutation.isPending ? "Saving…" : "Save personal goal"}</button></form><div className="p-record-section section-space"><p className="caption">Consolidation may update stored personal context. Review the backend response after the operation.</p><button type="button" className="btn" disabled={mutation.isPending} onClick={() => { if (!window.confirm("Consolidate this project's personal context memory now?")) return; setFeedback(""); setResult({}); mutation.mutate({ path: "/api/twin/consolidate", body: { project: "default" } }); }}>Consolidate context memory</button></div></>}
     {feedback && <p className="caption" role={mutation.isError ? "alert" : "status"}>{feedback}</p>}{Object.keys(result).length > 0 && <ActionResult route="twin" result={result} />}
@@ -4591,7 +4598,8 @@ function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Re
   </>;
 
   if (tab === "RAG") return <section className="p-card">
-    <div className="p-card-heading"><h3>Retrieval index and search</h3></div>
+    <div className="p-card-heading"><h3>Retrieval index and search</h3><span className="p-fixture">Session only</span></div>
+    <p className="muted small">The retrieval index and the uploaded documents are held by the running server, so both have to be uploaded and indexed again after a restart.</p>
     <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Index document", () => indexG25Rag({ doc_id: ragDocId.trim() })); }}>
       <label className="demo-form-field">Document id<input className="input" list="g25-rag-documents" value={ragDocId} onChange={event => setRagDocId(event.target.value)} required /></label>
       <datalist id="g25-rag-documents">{documents.map((document, index) => <option key={String(document.id ?? index)} value={String(document.id ?? "")}>{String(document.filename ?? document.name ?? "")}</option>)}</datalist>
@@ -4610,7 +4618,8 @@ function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Re
   </section>;
 
   if (tab === "Reasoning") return <section className="p-card">
-    <div className="p-card-heading"><h3>Reasoning chains</h3></div>
+    <div className="p-card-heading"><h3>Reasoning chains</h3><span className="p-fixture">Session only</span></div>
+    <p className="muted small">Chains and analyses are held by the running server. A chain id stops resolving once the server restarts.</p>
     <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Reasoning chain", () => createG25ReasoningChain({ topic: reasoningTopic.trim() })); }}>
       <label className="demo-form-field">Chain topic<input className="input" value={reasoningTopic} onChange={event => setReasoningTopic(event.target.value)} required /></label>
       <button className="btn primary" disabled={busy || !reasoningTopic.trim()}><Sparkles className="icon sm" />Create chain</button>
@@ -4628,7 +4637,7 @@ function G25AdvancedWorkspace({ tab, data, query: lq }: { tab: string; data?: Re
   </section>;
 
   if (tab === "Memory") return <section className="p-card">
-    <div className="p-card-heading"><h3>Semantic memory sessions</h3><button className="btn sm primary" type="button" disabled={busy} onClick={() => start("Memory session", async () => { const created = await createG25MemorySession(); const id = created.session_id ?? (created.session as JsonRecord | undefined)?.id ?? created.id; if (typeof id === "string") setSessionId(id); return created; })}><Plus className="icon sm" />Create session</button></div>
+    <div className="p-card-heading"><h3>Semantic memory sessions</h3><span className="p-fixture">Kept across restarts</span><button className="btn sm primary" type="button" disabled={busy} onClick={() => start("Memory session", async () => { const created = await createG25MemorySession(); const id = created.session_id ?? (created.session as JsonRecord | undefined)?.id ?? created.id; if (typeof id === "string") setSessionId(id); return created; })}><Plus className="icon sm" />Create session</button></div>
     <label className="demo-form-field">Session id<input className="input" value={sessionId} onChange={event => setSessionId(event.target.value)} /></label>
     <form onSubmit={(event: FormEvent) => { event.preventDefault(); start("Store memory", () => storeG25Memory({ session_id: sessionId.trim(), role: memoryRole, content: memoryContent.trim() })); }}>
       <label className="demo-form-field">Role<select className="select" value={memoryRole} onChange={event => setMemoryRole(event.target.value)}><option value="user">user</option><option value="assistant">assistant</option><option value="system">system</option></select></label>
@@ -5054,9 +5063,16 @@ function ModelServeWorkspace({ tab, data, query: lq }: { tab: string; data?: Rec
 
   if (tab === "Readiness") {
     const readiness = data?.readiness;
+    // The service reports "blocked" when no serving runtime is installed, and
+    // a serving plan is not a running model. Say which it is in one line
+    // instead of leaving it to be read out of the raw report.
+    const servingRuntime = readiness ? Boolean(readiness.llama_server_available) : null;
     return <section className="p-card">
-      <div className="p-card-heading"><h3>Ultra model readiness</h3></div>
+      <div className="p-card-heading"><h3>Ultra model readiness</h3>
+        {servingRuntime !== null && <span className="p-fixture">{servingRuntime ? "Serving runtime installed" : "No serving runtime"}</span>}
+      </div>
       {notices}
+      {servingRuntime === false && <p className="muted small">{String(readiness?.message ?? "No serving runtime is installed, so a plan cannot start a model.")} Plans and sessions can still be created and inspected; none of them is a running model.</p>}
       {loadState ?? (readiness ? <BackendResult title="Readiness report" result={readiness} /> : <EmptyState icon={CheckCircle2} title="No readiness report" detail="The ultra-model service has not reported readiness." />)}
       <BackendResult title={resultTitle} result={result} onClose={() => setResult(null)} />
     </section>;

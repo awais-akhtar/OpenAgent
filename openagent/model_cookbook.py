@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import subprocess
 import time
 from typing import Any
@@ -539,17 +540,19 @@ class ModelCookbook:
         with self.store.session() as connection:
             connection.execute(
                 """
-                INSERT INTO model_serve_sessions (id, project, host_id, status, pid, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO model_serve_sessions (id, project, host_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, project, serve_plan_id, "ready", 0, now, now),
+                (session_id, project, serve_plan_id, "planned", now, now),
             )
 
+        # A session records the intent to serve a plan. It used to be stored as
+        # "ready" with a pid of 0, which read as a running model with a process.
         return {
             "id": session_id,
             "project": project,
             "serve_plan_id": serve_plan_id,
-            "status": "ready",
+            "status": "planned",
             "created_at": now,
         }
 
@@ -574,22 +577,33 @@ class ModelCookbook:
         return {"status": "stopped", "session_id": session_id}
 
     def get_readiness_status(self, *, project: str = "default") -> dict[str, Any]:
-        """Get readiness status of Ultra Model infrastructure."""
-        # Check if llama-server or mock is available
-        llama_server_available = False
+        """Report whether a model can actually be served on this host.
 
+        Availability used to be decided by importing ``mock_llama_server``,
+        which ships with the package, so this answered "ready" and
+        "llama-server available via mock" on every host — including one with no
+        serving runtime at all. The installed executable is what decides it now,
+        and the mock is reported separately so it can never stand in for it.
+        """
+        executable = shutil.which("llama-server")
         try:
-            from openagent.mock_llama_server import run_mock_server
+            import openagent.mock_llama_server  # noqa: F401
 
-            llama_server_available = True
+            mock_available = True
         except ImportError:
-            pass
+            mock_available = False
 
         return {
             "project": project,
-            "llama_server_available": llama_server_available,
-            "status": "ready" if llama_server_available else "blocked",
-            "message": "llama-server available via mock" if llama_server_available else "llama-server not available",
+            "llama_server_available": executable is not None,
+            "llama_server_path": executable,
+            "mock_server_available": mock_available,
+            "status": "ready" if executable else "blocked",
+            "message": (
+                f"llama-server found at {executable}"
+                if executable
+                else "llama-server is not installed, so no model can be served on this host"
+            ),
         }
 
 

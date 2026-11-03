@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Mic, Zap, HardDrive, CalendarDays, Play, Square,
+  Mic, Zap, HardDrive, CalendarDays,
   CheckCircle2, Clock, Radio,
 } from 'lucide-react';
+
+import { apiGet, apiConnectionMessage } from '../api/client';
+import type { JsonRecord } from '../api/client';
 
 interface TabProps {
   tabs: Array<{ id: string; label: string; icon: React.ReactNode; badge?: number }>;
@@ -26,142 +29,114 @@ const TabBar: React.FC<TabProps> = ({ tabs, active, onChange }) => (
   </div>
 );
 
+const rowsFrom = (payload: unknown, ...keys: string[]): JsonRecord[] => {
+  if (!payload || typeof payload !== 'object') return [];
+  const source = payload as JsonRecord;
+  for (const key of keys) {
+    const value = source[key];
+    if (Array.isArray(value)) return value.filter((row): row is JsonRecord => Boolean(row) && typeof row === 'object' && !Array.isArray(row));
+  }
+  return [];
+};
+
+/** What the backend reports, or why it could not be read. Never a stand-in. */
+function useBackendRead<T extends JsonRecord>(path: string, refreshMs = 0) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const read = async () => {
+      try {
+        const payload = await apiGet<T>(path, controller.signal);
+        if (!cancelled) { setData(payload); setError(''); }
+      } catch (cause) {
+        // No fabricated fallback: an unreadable panel says so and shows nothing.
+        if (!cancelled) { setData(null); setError(apiConnectionMessage(cause)); }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void read();
+    const timer = refreshMs > 0 ? setInterval(() => void read(), refreshMs) : undefined;
+    return () => { cancelled = true; controller.abort(); if (timer) clearInterval(timer); };
+  }, [path, refreshMs]);
+
+  return { data, error, loading };
+}
+
+const ReadState: React.FC<{ loading: boolean; error: string; empty?: boolean; emptyText?: string }> = ({ loading, error, empty, emptyText }) => {
+  if (loading) return <p className="read-state" role="status">Reading from the backend…</p>;
+  if (error) return <p className="read-state" role="alert">{error}</p>;
+  if (empty) return <p className="read-state">{emptyText ?? 'The backend reported no records.'}</p>;
+  return null;
+};
+
 const VoiceSTTPanel: React.FC = () => {
-  const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [confidence, setConfidence] = useState(0);
-  const [frameCount, setFrameCount] = useState(0);
-  const [sessions] = useState([
-    { id: 'voice-1', started: '2 min ago', frames: 45, status: 'Active' },
-    { id: 'voice-2', started: '15 min ago', frames: 120, status: 'Completed' },
-  ]);
-
-  const startRecording = () => {
-    setIsRecording(true);
-    setFrameCount(0);
-    setTranscript('');
-    const interval = setInterval(() => {
-      setFrameCount(f => f + 1);
-      setConfidence(Math.min(0.99, 0.7 + Math.random() * 0.25));
-    }, 100);
-    return () => clearInterval(interval);
-  };
-
-  const stopRecording = () => {
-    setIsRecording(false);
-    setTranscript('Sample transcription: "This is a test voice message with real-time STT"');
-  };
+  // This panel used to invent everything it showed: a recorder that touched no
+  // microphone, a hardcoded "Sample transcription", a random confidence, random
+  // waveform bars, a fixed "24ms" latency, three green ticks claiming Faster
+  // Whisper, a live socket and audio buffering were all running, and two made-up
+  // sessions with made-up frame counts. It is a Live screen, so it now shows
+  // only what /api/voice/status reports.
+  const { data, error, loading } = useBackendRead('/api/voice/status?project=default', 15_000);
+  const stt = (data?.stt ?? {}) as JsonRecord;
+  const engines = rowsFrom(stt, 'engines');
+  const ready = engines.filter(engine => Boolean(engine.available));
 
   return (
     <div className="panel-container">
-      {/* Live Recording Panel */}
       <div className="card-grid-2">
         <div className="card primary-card">
           <div className="card-header">
             <div>
-              <h3>Live Transcription</h3>
-              <p className="card-subtitle">WebSocket streaming with real STT</p>
+              <h3>Buffered speech-to-text</h3>
+              <p className="card-subtitle">Audio is uploaded in chunks and transcribed locally</p>
             </div>
-            <div className={`status-badge ${isRecording ? 'active' : 'idle'}`}>
-              {isRecording ? <Radio size={14} /> : <Mic size={14} />}
-              {isRecording ? 'Recording' : 'Ready'}
-            </div>
-          </div>
-
-          <div className="recording-display">
-            <div className={`waveform ${isRecording ? 'animating' : ''}`}>
-              {Array(20).fill(0).map((_, i) => (
-                <div key={i} className="wave-bar" style={{
-                  height: isRecording ? `${Math.random() * 100}%` : '20%',
-                }}></div>
-              ))}
+            <div className={`status-badge ${ready.length > 0 ? 'active' : 'idle'}`}>
+              <Mic size={14} />
+              {ready.length > 0 ? `${ready.length} engine${ready.length === 1 ? '' : 's'} ready` : 'No engine ready'}
             </div>
           </div>
-
-          <div className="transcript-box">
-            {transcript || <span className="placeholder">Waiting for audio input...</span>}
-          </div>
-
-          <div className="stats-row">
+          <p className="control-detail">
+            Recording and transcription are driven from the Voice screen, which uploads captured audio
+            over authenticated HTTP. There is no accepted continuous socket transport, so no live stream,
+            running confidence or latency figure is shown here.
+          </p>
+          <ReadState loading={loading} error={error} />
+          {data && <div className="stats-row">
             <div className="stat">
-              <span className="label">Confidence</span>
-              <span className="value">{(confidence * 100).toFixed(1)}%</span>
+              <span className="label">Recorded sessions</span>
+              <span className="value">{String(data.sessions ?? '—')}</span>
             </div>
             <div className="stat">
-              <span className="label">Frames</span>
-              <span className="value">{frameCount}</span>
+              <span className="label">Turns</span>
+              <span className="value">{String(data.turns ?? '—')}</span>
             </div>
             <div className="stat">
-              <span className="label">Latency</span>
-              <span className="value">24ms</span>
+              <span className="label">Translations</span>
+              <span className="value">{String(data.translations ?? '—')}</span>
             </div>
-          </div>
-
-          <div className="button-group">
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              className={`btn ${isRecording ? 'btn-danger' : 'btn-primary'}`}
-            >
-              {isRecording ? <Square size={16} /> : <Play size={16} />}
-              {isRecording ? 'Stop' : 'Start'} Recording
-            </button>
-          </div>
+          </div>}
         </div>
 
-        {/* STT Status */}
         <div className="card">
-          <div className="card-header">
-            <h3>STT Engine Status</h3>
-          </div>
+          <div className="card-header"><h3>Installed STT engines</h3></div>
+          <ReadState loading={loading} error={error} empty={Boolean(data) && engines.length === 0} emptyText="The backend reported no local speech-to-text engines." />
           <div className="status-list">
-            <div className="status-item">
-              <div className="status-check">✓</div>
-              <div>
-                <h4>Faster Whisper</h4>
-                <p>Primary engine - Ready</p>
-              </div>
-            </div>
-            <div className="status-item">
-              <div className="status-check">✓</div>
-              <div>
-                <h4>WebSocket Connection</h4>
-                <p>Live streaming - Active</p>
-              </div>
-            </div>
-            <div className="status-item">
-              <div className="status-check">✓</div>
-              <div>
-                <h4>Audio Buffering</h4>
-                <p>Chunk accumulation - Running</p>
-              </div>
-            </div>
+            {engines.map((engine, index) => {
+              const available = Boolean(engine.available);
+              return <div className="status-item" key={String(engine.id ?? engine.name ?? index)}>
+                <div className={`status-indicator ${available ? 'active' : ''}`}></div>
+                <div>
+                  <h4>{String(engine.name ?? engine.id ?? 'Engine')}</h4>
+                  <p>{available ? 'Installed and selectable' : String(engine.reason ?? 'Not installed')}</p>
+                </div>
+              </div>;
+            })}
           </div>
-        </div>
-      </div>
-
-      {/* Sessions */}
-      <div className="card">
-        <div className="card-header">
-          <h3>Active Sessions</h3>
-          <span className="fixture">{sessions.length} sessions</span>
-        </div>
-        <div className="table-like">
-          {sessions.map(session => (
-            <div key={session.id} className="row">
-              <div className="col">
-                <div className="row-label">{session.id}</div>
-                <div className="row-detail">Started {session.started}</div>
-              </div>
-              <div className="col">
-                <div className="row-label">{session.frames} frames</div>
-              </div>
-              <div className="col">
-                <span className={`badge ${session.status === 'Active' ? 'success' : 'default'}`}>
-                  {session.status}
-                </span>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </div>
@@ -169,107 +144,77 @@ const VoiceSTTPanel: React.FC = () => {
 };
 
 const AutonomousSchedulerPanel: React.FC = () => {
-  const [reminders] = useState([
-    { id: 'r1', event: 'Team Meeting', time: '10:00 AM', delivered: true, status: 'delivered' },
-    { id: 'r2', event: 'Project Review', time: '2:30 PM', delivered: false, status: 'pending' },
-    { id: 'r3', event: 'Daily Standup', time: '9:00 AM', delivered: true, status: 'delivered' },
-  ]);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  // The three reminders, the "12 delivered today", the "3 pending", and the
+  // three green worker indicators were all hardcoded. Reminders have a real
+  // backend route, so the list and the counts come from it; the delivered flag
+  // is the column the calendar system actually records.
+  const { data, error, loading } = useBackendRead('/api/calendar/reminders?project=default', 30_000);
+  const reminders = rowsFrom(data, 'reminders', 'items');
+  const delivered = reminders.filter(reminder => Boolean(reminder.delivered));
+  const pending = reminders.filter(reminder => !reminder.delivered);
 
   return (
     <div className="panel-container">
       <div className="card-grid-2">
         <div className="card">
           <div className="card-header">
-            <h3>Autonomous Delivery</h3>
-            <div className={`status-badge ${notificationsEnabled ? 'active' : 'disabled'}`}>
-              {notificationsEnabled ? 'Enabled' : 'Disabled'}
-            </div>
+            <h3>Due reminders</h3>
+            <span className="fixture">project default</span>
           </div>
-
-          <div className="notification-control">
-            <div className="control-header">
-              <span>Notification Preferences</span>
-            </div>
-            <button
-              onClick={() => setNotificationsEnabled(!notificationsEnabled)}
-              className={`toggle-switch ${notificationsEnabled ? 'on' : 'off'}`}
-            >
-              <span className="toggle-thumb"></span>
-            </button>
-            <p className="control-detail">
-              {notificationsEnabled
-                ? 'Reminders will be delivered autonomously'
-                : 'Reminders are disabled'}
-            </p>
-          </div>
-
-          <div className="stats-grid">
+          <p className="control-detail">
+            This reads the reminders the calendar system reports as due. Delivery preferences and the
+            Deliver control live on the Calendar screen, which is where a reminder is acknowledged or
+            sent; nothing is delivered from this panel.
+          </p>
+          <ReadState loading={loading} error={error} />
+          {data && <div className="stats-grid">
             <div className="stat-box">
-              <div className="stat-value">12</div>
-              <div className="stat-label">Delivered today</div>
+              <div className="stat-value">{reminders.length}</div>
+              <div className="stat-label">Due now</div>
             </div>
             <div className="stat-box">
-              <div className="stat-value">3</div>
-              <div className="stat-label">Pending</div>
+              <div className="stat-value">{delivered.length}</div>
+              <div className="stat-label">Already delivered</div>
             </div>
             <div className="stat-box">
-              <div className="stat-value">60s</div>
-              <div className="stat-label">Check interval</div>
+              <div className="stat-value">{pending.length}</div>
+              <div className="stat-label">Not yet delivered</div>
             </div>
-          </div>
+          </div>}
         </div>
 
         <div className="card">
-          <div className="card-header">
-            <h3>Worker Status</h3>
-          </div>
-          <div className="status-list">
-            <div className="status-item">
-              <div className="status-indicator active"></div>
-              <div>
-                <h4>Background Worker</h4>
-                <p>Running - 1 worker</p>
-              </div>
-            </div>
-            <div className="status-item">
-              <div className="status-indicator active"></div>
-              <div>
-                <h4>Calendar Integration</h4>
-                <p>Connected</p>
-              </div>
-            </div>
-            <div className="status-item">
-              <div className="status-indicator active"></div>
-              <div>
-                <h4>Integration Hub</h4>
-                <p>Preference-aware</p>
-              </div>
-            </div>
-          </div>
+          <div className="card-header"><h3>What this panel does not claim</h3></div>
+          <p className="control-detail">
+            Worker, calendar-integration and hub indicators used to be drawn here as three permanent
+            green lights. None of them was read from anything, so they have been removed rather than
+            left showing a state no service reported. Scheduler and worker health is on the
+            Automations and Developer screens, which read their own routes.
+          </p>
         </div>
       </div>
 
-      {/* Reminders List */}
       <div className="card">
         <div className="card-header">
-          <h3>Scheduled Reminders</h3>
-          <span className="fixture">{reminders.length} reminders</span>
+          <h3>Reminder records</h3>
+          <span className="fixture">{reminders.length} {reminders.length === 1 ? 'reminder' : 'reminders'}</span>
         </div>
+        <ReadState loading={loading} error={error} empty={Boolean(data) && reminders.length === 0} emptyText="The calendar system reports no due reminders." />
         <div className="table-like">
-          {reminders.map(reminder => (
-            <div key={reminder.id} className="row">
+          {reminders.map((reminder, index) => {
+            const isDelivered = Boolean(reminder.delivered);
+            return <div key={String(reminder.id ?? index)} className="row">
               <div className="col">
-                <div className="row-label">{reminder.event}</div>
-                <div className="row-detail">{reminder.time}</div>
+                <div className="row-label">{String(reminder.title ?? reminder.event_title ?? reminder.id ?? 'Reminder')}</div>
+                <div className="row-detail">{String(reminder.trigger_at ?? reminder.remind_at ?? '')}</div>
               </div>
               <div className="col">
-                <span className={`badge ${reminder.status === 'delivered' ? 'success' : 'warning'}`}>
-                  {reminder.status === 'delivered' ? '✓ Delivered' : '⏱ Pending'}
+                <span className={`badge ${isDelivered ? 'success' : 'warning'}`}>
+                  {isDelivered ? 'Delivered' : 'Not delivered'}
                 </span>
               </div>
-            </div>
-          ))}
+            </div>;
+          })}
         </div>
       </div>
     </div>
@@ -277,100 +222,83 @@ const AutonomousSchedulerPanel: React.FC = () => {
 };
 
 const FineTuningPanel: React.FC = () => {
-  const [jobs] = useState([
-    { id: 'job-1', name: 'GPT-2 Fine-tune', status: 'running', progress: 65, eta: '2h 15m' },
-    { id: 'job-2', name: 'BERT Adapter', status: 'completed', progress: 100, eta: '—' },
-    { id: 'job-3', name: 'T5 Training', status: 'queued', progress: 0, eta: '—' },
-  ]);
+  // The three jobs, their progress bars and ETAs, the "2.4GB checkpoint",
+  // "FP32", "1 validated" and three green validation ticks were all invented.
+  // Fine-tuning jobs have a real route, so the list and counts come from it and
+  // nothing is shown for figures no route reports.
+  const { data, error, loading } = useBackendRead('/api/finetune/jobs?project=default', 15_000);
+  const jobs = rowsFrom(data, 'jobs', 'items');
+  const countOf = (...states: string[]) =>
+    jobs.filter(job => states.includes(String(job.status ?? '').toLowerCase())).length;
 
   return (
     <div className="panel-container">
       <div className="card-grid-2">
         <div className="card">
           <div className="card-header">
-            <h3>Training Workspace</h3>
+            <h3>Training jobs</h3>
+            <span className="fixture">project default</span>
           </div>
-          <div className="stat-grid-2">
+          <ReadState loading={loading} error={error} />
+          {data && <div className="stat-grid-2">
             <div className="stat-box">
-              <div className="stat-icon">📊</div>
-              <div className="stat-value">3</div>
-              <div className="stat-label">Active jobs</div>
+              <div className="stat-value">{countOf('running', 'training')}</div>
+              <div className="stat-label">Running</div>
             </div>
             <div className="stat-box">
-              <div className="stat-icon">💾</div>
-              <div className="stat-value">2.4GB</div>
-              <div className="stat-label">Checkpoint size</div>
+              <div className="stat-value">{countOf('queued', 'pending')}</div>
+              <div className="stat-label">Queued</div>
             </div>
             <div className="stat-box">
-              <div className="stat-icon">⚡</div>
-              <div className="stat-value">FP32</div>
-              <div className="stat-label">Precision</div>
+              <div className="stat-value">{countOf('completed', 'succeeded')}</div>
+              <div className="stat-label">Completed</div>
             </div>
             <div className="stat-box">
-              <div className="stat-icon">✓</div>
-              <div className="stat-value">1</div>
-              <div className="stat-label">Validated</div>
+              <div className="stat-value">{countOf('failed', 'cancelled')}</div>
+              <div className="stat-label">Failed or cancelled</div>
             </div>
-          </div>
+          </div>}
         </div>
 
         <div className="card">
-          <div className="card-header">
-            <h3>Checkpoint Status</h3>
-          </div>
-          <div className="status-list">
-            <div className="status-item">
-              <div className="status-check">✓</div>
-              <div>
-                <h4>FP32 Validation</h4>
-                <p>Full precision - Verified</p>
-              </div>
-            </div>
-            <div className="status-item">
-              <div className="status-check">✓</div>
-              <div>
-                <h4>BF16 Validation</h4>
-                <p>Brain float precision - Ready</p>
-              </div>
-            </div>
-            <div className="status-item">
-              <div className="status-check">✓</div>
-              <div>
-                <h4>Worker Failures</h4>
-                <p>Tracked and logged</p>
-              </div>
-            </div>
-          </div>
+          <div className="card-header"><h3>Checkpoints and precision</h3></div>
+          <p className="control-detail">
+            Checkpoint size, precision and per-precision validation ticks were drawn here as fixed
+            values that no route reported. Dataset, job, checkpoint and result records, with the
+            controls that act on them, are on the Fine-tuning screen.
+          </p>
         </div>
       </div>
 
-      {/* Training Jobs */}
       <div className="card">
         <div className="card-header">
-          <h3>Training Jobs</h3>
-          <span className="fixture">{jobs.length} jobs</span>
+          <h3>Job records</h3>
+          <span className="fixture">{jobs.length} {jobs.length === 1 ? 'job' : 'jobs'}</span>
         </div>
+        <ReadState loading={loading} error={error} empty={Boolean(data) && jobs.length === 0} emptyText="The fine-tuning service reports no jobs for this project." />
         <div className="job-list">
-          {jobs.map(job => (
-            <div key={job.id} className="job-item">
+          {jobs.map((job, index) => {
+            const status = String(job.status ?? 'unknown').toLowerCase();
+            const progress = Number(job.progress ?? job.progress_percent ?? NaN);
+            return <div key={String(job.id ?? index)} className="job-item">
               <div className="job-header">
-                <h4>{job.name}</h4>
-                <span className={`status-label ${job.status}`}>
-                  {job.status === 'running' && <Radio size={12} />}
-                  {job.status === 'completed' && <CheckCircle2 size={12} />}
-                  {job.status === 'queued' && <Clock size={12} />}
-                  {job.status}
+                <h4>{String(job.name ?? job.base_model ?? job.id ?? 'Job')}</h4>
+                <span className={`status-label ${status}`}>
+                  {status === 'running' && <Radio size={12} />}
+                  {(status === 'completed' || status === 'succeeded') && <CheckCircle2 size={12} />}
+                  {(status === 'queued' || status === 'pending') && <Clock size={12} />}
+                  {status}
                 </span>
               </div>
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${job.progress}%` }}></div>
-              </div>
+              {Number.isFinite(progress) && <div className="progress-bar">
+                <div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}></div>
+              </div>}
               <div className="job-footer">
-                <span>{job.progress}%</span>
-                <span>ETA: {job.eta}</span>
+                <span>{Number.isFinite(progress) ? `${progress}%` : 'Progress not reported'}</span>
+                <span>{job.updated_at ? String(job.updated_at) : ''}</span>
               </div>
-            </div>
-          ))}
+            </div>;
+          })}
         </div>
       </div>
     </div>
@@ -385,42 +313,39 @@ const UltraModelPanel: React.FC = () => {
   const [serverUrl, setServerUrl] = useState<string>('');
 
   useEffect(() => {
-    const fetchData = async () => {
+    let cancelled = false;
+    const controller = new AbortController();
+    // These two reads used to go through a bare fetch(), so they carried no
+    // credential and were answered 401 on any authenticated install; and on
+    // failure the panel substituted two invented sessions ("Llama-7B", "ready",
+    // "4h 32m") into a Live screen. It now uses the authenticated client and
+    // shows nothing it could not read.
+    const read = async () => {
       try {
-        setLoading(true);
-        setError(null);
-
-        // Fetch status to get server info
-        const statusRes = await fetch('/api/ultra-model/status');
-        if (!statusRes.ok) throw new Error('Failed to fetch status');
-        const statusData = await statusRes.json();
+        const statusData = await apiGet<JsonRecord>('/api/ultra-model/status', controller.signal);
+        if (cancelled) return;
         setStatus(statusData);
-
-        // Extract server URL from status if available
-        if (statusData.server_host && statusData.server_port) {
-          setServerUrl(`${statusData.server_host}:${statusData.server_port}`);
-        }
-
-        // Fetch sessions
-        const sessionsRes = await fetch('/api/ultra-model/sessions');
-        if (!sessionsRes.ok) throw new Error('Failed to fetch sessions');
-        const sessionsData = await sessionsRes.json();
-        setSessions(Array.isArray(sessionsData.sessions) ? sessionsData.sessions : []);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load Ultra Model data');
-        // Show fallback demo data on error
-        setSessions([
-          { id: 'session-1', model: 'Llama-7B', status: 'ready', uptime: '4h 32m' },
-          { id: 'session-2', model: 'Llama-13B', status: 'planning', uptime: '—' },
-        ]);
+        setServerUrl(statusData.server_host && statusData.server_port
+          ? `${String(statusData.server_host)}:${String(statusData.server_port)}`
+          : '');
+        const sessionsData = await apiGet<JsonRecord>('/api/ultra-model/sessions', controller.signal);
+        if (cancelled) return;
+        setSessions(rowsFrom(sessionsData, 'sessions', 'items'));
+        setError(null);
+      } catch (cause) {
+        if (cancelled) return;
+        setStatus(null);
+        setSessions([]);
+        setServerUrl('');
+        setError(apiConnectionMessage(cause));
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    void read();
+    const interval = setInterval(() => void read(), 10000);
+    return () => { cancelled = true; controller.abort(); clearInterval(interval); };
   }, []);
 
   const readinessChecks = [
@@ -433,7 +358,7 @@ const UltraModelPanel: React.FC = () => {
     {
       name: 'GGUF Model',
       status: status?.model_validated ? 'validated' : 'pending',
-      format: status?.model_format || 'Q4_K_M',
+      format: status?.model_format ? String(status.model_format) : '',
       icon: status?.model_validated ? '✓' : '—'
     },
     {
@@ -492,11 +417,11 @@ const UltraModelPanel: React.FC = () => {
             </div>
             <div className="detail-row">
               <span className="label">Model Format</span>
-              <span className="value">{status?.model_format || 'GGUF'}</span>
+              <span className="value">{status?.model_format ? String(status.model_format) : 'Not reported'}</span>
             </div>
             <div className="detail-row">
               <span className="label">Serve Type</span>
-              <span className="value">{status?.serve_type || 'llama-server'}</span>
+              <span className="value">{status?.serve_type ? String(status.serve_type) : 'Not reported'}</span>
             </div>
             <div className="detail-row">
               <span className="label">Sessions</span>
@@ -556,11 +481,14 @@ export const ProductionReadinessPanel: React.FC<{ tab?: string }> = ({ tab }) =>
     }
   }, [tab]);
 
+  // The badges read 2, 3, 3, 2 regardless of what any service held, so each tab
+  // advertised a count of records that did not exist. A count belongs to the
+  // panel that read it, and each panel now shows its own.
   const tabs = [
-    { id: 'voice', label: 'Voice STT', icon: <Mic size={18} />, badge: 2 },
-    { id: 'scheduler', label: 'Auto Scheduling', icon: <CalendarDays size={18} />, badge: 3 },
-    { id: 'finetune', label: 'Fine-tuning', icon: <HardDrive size={18} />, badge: 3 },
-    { id: 'ultramodel', label: 'Ultra Model', icon: <Zap size={18} />, badge: 2 },
+    { id: 'voice', label: 'Voice STT', icon: <Mic size={18} /> },
+    { id: 'scheduler', label: 'Auto Scheduling', icon: <CalendarDays size={18} /> },
+    { id: 'finetune', label: 'Fine-tuning', icon: <HardDrive size={18} /> },
+    { id: 'ultramodel', label: 'Ultra Model', icon: <Zap size={18} /> },
   ];
 
   return (
@@ -960,6 +888,16 @@ export const ProductionReadinessPanel: React.FC<{ tab?: string }> = ({ tab }) =>
           font-size: 12px;
           color: #888;
           margin: 0;
+        }
+
+        .read-state {
+          font-size: 12px;
+          color: #9a9ab0;
+          margin: 12px 0 0;
+        }
+
+        .read-state[role="alert"] {
+          color: #ff8a8a;
         }
 
         .table-like {

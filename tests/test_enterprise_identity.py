@@ -4,12 +4,19 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from openagent.auth import AuthError, AuthManager, _totp_code
-from openagent.enterprise_identity import EnterpriseIdentity
+from openagent.enterprise_identity import EnterpriseIdentity, generate_registration_options
 from openagent.routes.identity_routes import ROUTES
 from openagent.storage import OpenAgentStore
 
+# Passkeys are the optional "security" dependency group, and the module says so
+# by raising rather than degrading. Without the group installed this one test
+# has nothing to exercise, so it reports that instead of failing the suite; the
+# device, federation and route checks below need no extra dependency.
+WEBAUTHN_INSTALLED = generate_registration_options is not None
+
 
 class EnterpriseIdentityTests(unittest.TestCase):
+    @unittest.skipUnless(WEBAUTHN_INSTALLED, "passkeys need the security dependency group (webauthn)")
     def test_passkey_challenge_is_origin_bound_expiring_and_single_use(self) -> None:
         with TemporaryDirectory() as temp:
             store = OpenAgentStore(temp)

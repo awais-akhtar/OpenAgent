@@ -1,58 +1,58 @@
-# Frontend API coverage gaps — full route audit
+# Frontend route references — generated source inventory
 
-> Supporting route source inventory only. The authoritative current gap/status, wiring and test classifications are in [FRONTEND_BACKEND_MASTER_GAPS.md](FRONTEND_BACKEND_MASTER_GAPS.md). “Found” means only that a production source path string matched.
+> Supporting source inventory only. [FRONTEND_BACKEND_MASTER_GAPS.md](FRONTEND_BACKEND_MASTER_GAPS.md) holds the current gap, integration and test classifications. “Found” means only that a production source string matched.
 
-Updated: 2026-10-18  
-Audited surfaces: primary React app (`frontend/src`) and independent second frontend (`frontend-second/src`).
+Updated: 2026-11-02
+Surfaces: `frontend/src` and `frontend-second/src`, excluding test and Demo fixture files.
 
 ## Summary
 
-The backend contract registry declares **654 method/path entries across 49 groups**. The scanner found direct route-pattern references in **249** entries in the primary frontend and **257** in the second frontend. A direct reference is not a verification of request method, response handling, permissions or working interaction.
-
-The primary app is the existing 22-destination reference frontend. `frontend-second/` is the target production frontend. Keep their coverage distinct: a capability in one does not imply that the other frontend exposes it. Route audiences below distinguish user-facing, advanced/admin-only and internal operations; route-level overrides take precedence.
+The backend registry declares **788 method/path entries across 55 groups**. Bounded route strings appear for **243** entries in the original frontend and **413** in `frontend-second`. These are source-reference counts, not working integrations or missing UI counts. Adaptive Engine routes appear only for registry accounting and are excluded from the owner's gap closure.
 
 | Group | Audience | API entries | Primary direct refs | Primary w/o ref | Second direct refs | Second w/o ref |
 | --- | --- | --- | --- | --- | --- | --- |
 | health | Internal / operator | 5 | 3 | 2 | 1 | 4 |
 | core | Internal / operator | 9 | 0 | 9 | 2 | 7 |
-| integrations | Advanced / admin | 13 | 0 | 13 | 0 | 13 |
-| chat | User-facing | 12 | 11 | 1 | 10 | 2 |
-| agents | User-facing + advanced permissions | 11 | 10 | 1 | 9 | 2 |
-| workflows | User-facing | 13 | 7 | 6 | 7 | 6 |
-| knowledge | User-facing | 14 | 9 | 5 | 11 | 3 |
-| semantic | Advanced user | 10 | 0 | 10 | 2 | 8 |
-| media | User-facing | 20 | 11 | 9 | 11 | 9 |
-| local_ai | Advanced user / admin actions | 30 | 19 | 11 | 19 | 11 |
+| integrations | Advanced / admin | 13 | 0 | 13 | 2 | 11 |
+| chat | User-facing | 12 | 9 | 3 | 9 | 3 |
+| agents | User-facing + advanced permissions | 19 | 9 | 10 | 11 | 8 |
+| workflows | User-facing | 15 | 7 | 8 | 7 | 8 |
+| knowledge | User-facing | 20 | 9 | 11 | 14 | 6 |
+| semantic | Advanced user | 13 | 0 | 13 | 5 | 8 |
+| media | User-facing | 25 | 11 | 14 | 16 | 9 |
+| local_ai | Advanced user / admin actions | 31 | 19 | 12 | 20 | 11 |
 | enterprise | Admin-only | 14 | 0 | 14 | 0 | 14 |
-| developer | Advanced / admin | 23 | 17 | 6 | 15 | 8 |
-| security | Admin-only / security-sensitive | 25 | 25 | 0 | 24 | 1 |
-| calendar | User-facing | 15 | 10 | 5 | 12 | 3 |
-| communication | User-facing + external-send approval | 37 | 14 | 23 | 21 | 16 |
-| assistant | User-facing | 13 | 10 | 3 | 6 | 7 |
-| personal_os | Advanced user | 18 | 0 | 18 | 0 | 18 |
+| developer | Advanced / admin | 25 | 16 | 9 | 19 | 6 |
+| legacy_attribution | Review required | 5 | 0 | 5 | 0 | 5 |
+| security | Admin-only / security-sensitive | 25 | 24 | 1 | 23 | 2 |
+| calendar | User-facing | 24 | 10 | 14 | 19 | 5 |
+| communication | User-facing + external-send approval | 40 | 14 | 26 | 24 | 16 |
+| assistant | User-facing | 18 | 10 | 8 | 11 | 7 |
+| personal_os | Advanced user | 23 | 0 | 23 | 21 | 2 |
 | production | Internal / operator | 34 | 0 | 34 | 0 | 34 |
 | twin | Advanced user / privacy-sensitive | 11 | 10 | 1 | 10 | 1 |
-| vault | Advanced / security-sensitive | 8 | 7 | 1 | 8 | 0 |
-| scraper | Advanced user / network-sensitive | 6 | 5 | 1 | 6 | 0 |
-| research | User-facing | 14 | 3 | 11 | 8 | 6 |
-| finetune | Advanced user / admin actions | 10 | 10 | 0 | 9 | 1 |
-| workspace | User-facing | 6 | 3 | 3 | 3 | 3 |
-| auth | Admin-only / security-sensitive | 18 | 1 | 17 | 2 | 16 |
+| fact_provenance | Advanced user / privacy-sensitive | 7 | 0 | 7 | 7 | 0 |
+| vault | Advanced / security-sensitive | 11 | 7 | 4 | 11 | 0 |
+| scraper | Advanced user / network-sensitive | 7 | 5 | 2 | 7 | 0 |
+| research | User-facing | 16 | 2 | 14 | 9 | 7 |
+| finetune | Advanced user / admin actions | 16 | 10 | 6 | 14 | 2 |
+| workspace | User-facing | 9 | 3 | 6 | 4 | 5 |
+| auth | Admin-only / security-sensitive | 18 | 1 | 17 | 6 | 12 |
 | document | User-facing | 10 | 9 | 1 | 9 | 1 |
 | draft | Advanced user | 5 | 0 | 5 | 0 | 5 |
 | worker | Internal / operator | 8 | 2 | 6 | 0 | 8 |
 | vector_store | Internal / operator | 5 | 0 | 5 | 0 | 5 |
 | advanced_rag | Advanced user | 4 | 1 | 3 | 2 | 2 |
 | inference | Internal / operator | 14 | 3 | 11 | 1 | 13 |
-| ultra_model | Advanced user / admin actions | 12 | 0 | 12 | 0 | 12 |
+| ultra_model | Advanced user / admin actions | 12 | 0 | 12 | 9 | 3 |
 | adaptive_engine | Advanced user / operator | 29 | 10 | 19 | 5 | 24 |
-| contacts | User-facing | 7 | 0 | 7 | 0 | 7 |
+| contacts | User-facing | 7 | 0 | 7 | 5 | 2 |
 | backup_restore | Admin-only / destructive confirmation | 4 | 4 | 0 | 4 | 0 |
-| model_cookbook | Advanced user | 11 | 0 | 11 | 0 | 11 |
+| model_cookbook | Advanced user | 12 | 0 | 12 | 11 | 1 |
 | document_processing | Advanced user | 14 | 2 | 12 | 2 | 12 |
-| image_studio | User-facing | 15 | 0 | 15 | 0 | 15 |
-| scheduler | User-facing + admin actions | 21 | 0 | 21 | 5 | 16 |
-| safe_terminal | Advanced user / explicit consent | 3 | 0 | 3 | 3 | 0 |
+| image_studio | User-facing | 15 | 0 | 15 | 12 | 3 |
+| scheduler | User-facing + admin actions | 25 | 0 | 25 | 3 | 22 |
+| safe_terminal | Advanced user / explicit consent | 5 | 0 | 5 | 5 | 0 |
 | mcp_runtime | Advanced / admin | 7 | 0 | 7 | 0 | 7 |
 | tool_runtime | Internal / operator | 2 | 0 | 2 | 0 | 2 |
 | compute_router | Internal / operator | 2 | 0 | 2 | 2 | 0 |
@@ -60,17 +60,14 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | skills | Advanced user / admin actions | 17 | 0 | 17 | 0 | 17 |
 | conversation-organization | User-facing | 9 | 4 | 5 | 3 | 6 |
 | enterprise-identity | Admin-only / security-sensitive | 15 | 0 | 15 | 0 | 15 |
-| science | Advanced user | 19 | 9 | 10 | 7 | 12 |
-| codebase | User-facing + destructive/approval controls | 23 | 20 | 3 | 18 | 5 |
+| science | Advanced user | 20 | 9 | 11 | 9 | 11 |
+| codebase | User-facing + destructive/approval controls | 25 | 20 | 5 | 19 | 6 |
+| voice | User-facing / microphone-sensitive | 5 | 0 | 5 | 1 | 4 |
+| g25_advanced | Advanced user / privacy-sensitive | 17 | 0 | 17 | 17 | 0 |
+| model_serve | Advanced user / model execution | 15 | 0 | 15 | 15 | 0 |
+| voice_conversation | User-facing / microphone-sensitive | 11 | 0 | 11 | 7 | 4 |
 
-## How to use the route matrix
-
-- **Found**: the registered route pattern appears as a string in that frontend's production source (fixture/demo and test files are excluded). This is still not proof of an active callsite or successful request.
-- **No literal**: no direct route-pattern string was found. This is a candidate frontend gap, but may be a false negative if a shared helper or dynamic URL builder constructs the path.
-- Routes are not assigned “not needed” automatically. Some are privileged admin/runtime operations and should remain inaccessible unless a deliberate screen and authorization workflow are designed.
-- The audience column is a UI classification aid, not proof of the route's authorization. The full list is the backend's declared contract surface; it does not prove every route has a live handler or passes its tests.
-
-## Route-by-route matrix
+## Route-by-route source matrix
 
 | Group | Audience | Method | Backend route pattern | Primary source ref | Second source ref |
 | --- | --- | --- | --- | --- | --- |
@@ -92,8 +89,8 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | integrations | Advanced / admin | GET | `/api/integrations/pairing-codes` | No literal | No literal |
 | integrations | Advanced / admin | POST | `/api/integrations/pairing-codes` | No literal | No literal |
 | integrations | Advanced / admin | POST | `/api/integrations/pairing-codes/redeem` | No literal | No literal |
-| integrations | Advanced / admin | GET | `/api/integrations/preferences` | No literal | No literal |
-| integrations | Advanced / admin | POST | `/api/integrations/preferences` | No literal | No literal |
+| integrations | Advanced / admin | GET | `/api/integrations/preferences` | No literal | Found |
+| integrations | Advanced / admin | POST | `/api/integrations/preferences` | No literal | Found |
 | integrations | Advanced / admin | GET | `/api/integrations/diagnostics` | No literal | No literal |
 | integrations | Advanced / admin | POST | `/api/integrations/diagnostics` | No literal | No literal |
 | integrations | Advanced / admin | GET | `/api/integrations/backups` | No literal | No literal |
@@ -101,21 +98,29 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | integrations | Advanced / admin | GET | `/api/integrations/safe-shell` | No literal | No literal |
 | integrations | Advanced / admin | POST | `/api/integrations/safe-shell` | No literal | No literal |
 | integrations | Advanced / admin | GET | `/api/integrations/parity` | No literal | No literal |
-| chat | User-facing | GET | `/api/conversations` | Found | Found |
+| chat | User-facing | GET | `/api/conversations` | No literal | Found |
 | chat | User-facing | GET | `/api/messages` | No literal | Found |
 | chat | User-facing | GET | `/api/conversation/messages` | Found | No literal |
 | chat | User-facing | GET | `/api/chat/search` | Found | No literal |
 | chat | User-facing | GET | `/api/chat/export` | Found | Found |
 | chat | User-facing | GET | `/api/chat/replay` | Found | Found |
-| chat | User-facing | POST | `/api/chat` | Found | Found |
+| chat | User-facing | POST | `/api/chat` | No literal | No literal |
 | chat | User-facing | POST | `/api/chat/stream` | Found | Found |
 | chat | User-facing | POST | `/api/chat/branch` | Found | Found |
 | chat | User-facing | POST | `/api/chat/import` | Found | Found |
 | chat | User-facing | POST | `/api/chat/artifact` | Found | Found |
 | chat | User-facing | POST | `/api/chat/research-record` | Found | Found |
 | agents | User-facing + advanced permissions | GET | `/api/agents` | Found | Found |
-| agents | User-facing + advanced permissions | POST | `/api/agents/run` | Found | Found |
-| agents | User-facing + advanced permissions | POST | `/api/agents/run-checked` | Found | Found |
+| agents | User-facing + advanced permissions | GET | `/api/agent-runs` | No literal | Found |
+| agents | User-facing + advanced permissions | GET | `/api/agents/jobs` | No literal | Found |
+| agents | User-facing + advanced permissions | GET | `/api/agents/jobs/{id}` | No literal | No literal |
+| agents | User-facing + advanced permissions | GET | `/api/agents/jobs/{id}/events` | No literal | Found |
+| agents | User-facing + advanced permissions | GET | `/api/agents/jobs/{id}/events/stream` | No literal | No literal |
+| agents | User-facing + advanced permissions | POST | `/api/agents/run` | No literal | No literal |
+| agents | User-facing + advanced permissions | POST | `/api/agents/run-checked` | Found | No literal |
+| agents | User-facing + advanced permissions | POST | `/api/agents/jobs` | No literal | Found |
+| agents | User-facing + advanced permissions | POST | `/api/agents/jobs/{id}/cancel` | No literal | No literal |
+| agents | User-facing + advanced permissions | POST | `/api/agents/jobs/{id}/retry` | No literal | No literal |
 | agents | User-facing + advanced permissions | POST | `/api/agents/delegate` | Found | Found |
 | agents | User-facing + advanced permissions | POST | `/api/agents/parallel` | No literal | No literal |
 | agents | User-facing + advanced permissions | GET | `/api/agents/marketplace` | Found | No literal |
@@ -137,14 +142,22 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | workflows | User-facing | GET | `/api/workflows/layout` | No literal | No literal |
 | workflows | User-facing | POST | `/api/workflows/layout` | No literal | No literal |
 | workflows | User-facing | GET | `/api/workflow-runs` | Found | Found |
+| workflows | User-facing | GET | `/api/workflows/runs/{id}/events` | No literal | No literal |
+| workflows | User-facing | GET | `/api/workflows/runs/{id}/events/stream` | No literal | No literal |
 | knowledge | User-facing | GET | `/api/knowledge/status` | Found | Found |
 | knowledge | User-facing | GET | `/api/knowledge/documents` | Found | Found |
+| knowledge | User-facing | GET | `/api/knowledge/documents/{document_id}` | No literal | Found |
 | knowledge | User-facing | GET | `/api/knowledge/search` | No literal | Found |
 | knowledge | User-facing | GET | `/api/knowledge/graph` | Found | Found |
 | knowledge | User-facing | GET | `/api/knowledge/tags` | Found | Found |
 | knowledge | User-facing | GET | `/api/knowledge/timeline` | Found | Found |
+| knowledge | User-facing | GET | `/api/knowledge/collections` | No literal | No literal |
 | knowledge | User-facing | POST | `/api/knowledge/ingest` | Found | Found |
 | knowledge | User-facing | POST | `/api/knowledge/upload` | Found | Found |
+| knowledge | User-facing | POST | `/api/knowledge/collections/{collection_name}/rename` | No literal | No literal |
+| knowledge | User-facing | PUT | `/api/knowledge/documents/{document_id}` | No literal | Found |
+| knowledge | User-facing | DELETE | `/api/knowledge/documents/{document_id}` | No literal | Found |
+| knowledge | User-facing | DELETE | `/api/knowledge/collections/{collection_name}` | No literal | No literal |
 | knowledge | User-facing | POST | `/api/knowledge/semantic-search` | No literal | Found |
 | knowledge | User-facing | POST | `/api/knowledge/hybrid-search` | Found | Found |
 | knowledge | User-facing | POST | `/api/knowledge/synthesize` | Found | Found |
@@ -156,6 +169,9 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | semantic | Advanced user | POST | `/api/semantic/memories` | No literal | No literal |
 | semantic | Advanced user | GET | `/api/semantic/collections` | No literal | Found |
 | semantic | Advanced user | POST | `/api/semantic/collections` | No literal | Found |
+| semantic | Advanced user | POST | `/api/semantic/collections/{collection_name}/rename` | No literal | Found |
+| semantic | Advanced user | POST | `/api/semantic/collections/{collection_name}/archive` | No literal | Found |
+| semantic | Advanced user | DELETE | `/api/semantic/collections/{collection_name}` | No literal | Found |
 | semantic | Advanced user | GET | `/api/semantic/graph-analytics` | No literal | No literal |
 | semantic | Advanced user | POST | `/api/semantic/consolidate` | No literal | No literal |
 | semantic | Advanced user | POST | `/api/semantic/vectors` | No literal | No literal |
@@ -163,6 +179,8 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | semantic | Advanced user | POST | `/api/semantic/rerank` | No literal | No literal |
 | media | User-facing | GET | `/api/media/status` | No literal | No literal |
 | media | User-facing | GET | `/api/media/assets` | No literal | Found |
+| media | User-facing | DELETE | `/api/media/assets/{id}` | No literal | Found |
+| media | User-facing | GET | `/api/voice/assets/{id}/content` | No literal | Found |
 | media | User-facing | GET | `/api/media/analyses` | No literal | No literal |
 | media | User-facing | POST | `/api/media/ingest` | No literal | Found |
 | media | User-facing | POST | `/api/media/analyze` | No literal | No literal |
@@ -181,6 +199,9 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | media | User-facing | POST | `/api/voice/stt` | Found | Found |
 | media | User-facing | POST | `/api/voice/tts` | Found | Found |
 | media | User-facing | POST | `/api/voice/translate` | Found | No literal |
+| media | User-facing | POST | `/api/voice/stream/start` | No literal | Found |
+| media | User-facing | POST | `/api/voice/stream/chunk` | No literal | Found |
+| media | User-facing | POST | `/api/voice/stream/finish` | No literal | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/models` | Found | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/model-policy` | Found | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/settings/runtime` | Found | Found |
@@ -194,6 +215,7 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | local_ai | Advanced user / admin actions | GET | `/api/local-ai/setup/status` | Found | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/local-ai/smooth-runtime` | No literal | No literal |
 | local_ai | Advanced user / admin actions | GET | `/api/local-ai/models` | Found | Found |
+| local_ai | Advanced user / admin actions | GET | `/api/local-ai/benchmarks` | No literal | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/local-ai/models/{id}/probe` | Found | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/local-ai/hardware` | Found | Found |
 | local_ai | Advanced user / admin actions | GET | `/api/local-ai/adapters` | Found | Found |
@@ -231,15 +253,17 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | developer | Advanced / admin | GET | `/api/developer/webhook-deliveries` | No literal | Found |
 | developer | Advanced / admin | GET | `/api/developer/plugins` | Found | Found |
 | developer | Advanced / admin | GET | `/api/developer/tools` | Found | Found |
-| developer | Advanced / admin | GET | `/api/developer/mcp` | Found | Found |
+| developer | Advanced / admin | GET | `/api/developer/mcp` | No literal | Found |
 | developer | Advanced / admin | GET | `/api/developer/mcp/servers` | Found | Found |
 | developer | Advanced / admin | GET | `/api/developer/extensions` | Found | Found |
 | developer | Advanced / admin | GET | `/api/developer/sdk` | Found | No literal |
 | developer | Advanced / admin | GET | `/api/developer/api-keys` | Found | Found |
 | developer | Advanced / admin | POST | `/api/developer/api-keys` | Found | Found |
-| developer | Advanced / admin | POST | `/api/developer/api-keys/verify` | No literal | No literal |
+| developer | Advanced / admin | POST | `/api/developer/api-keys/verify` | No literal | Found |
 | developer | Advanced / admin | POST | `/api/developer/webhooks` | Found | Found |
-| developer | Advanced / admin | POST | `/api/developer/webhooks/dispatch` | No literal | No literal |
+| developer | Advanced / admin | POST | `/api/developer/webhooks/dispatch` | No literal | Found |
+| developer | Advanced / admin | PUT | `/api/developer/webhooks/{id}` | No literal | Found |
+| developer | Advanced / admin | DELETE | `/api/developer/webhooks/{id}` | No literal | Found |
 | developer | Advanced / admin | POST | `/api/developer/plugins` | Found | Found |
 | developer | Advanced / admin | POST | `/api/developer/tools` | Found | Found |
 | developer | Advanced / admin | POST | `/api/developer/tools/invoke` | No literal | No literal |
@@ -248,13 +272,18 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | developer | Advanced / admin | POST | `/api/developer/sdk` | Found | No literal |
 | developer | Advanced / admin | POST | `/api/graphql` | No literal | No literal |
 | developer | Advanced / admin | POST | `/api/developer/graphql` | No literal | No literal |
+| legacy_attribution | Review required | GET | `/api/legacy-attribution/policy` | No literal | No literal |
+| legacy_attribution | Review required | GET | `/api/legacy-attribution/verify` | No literal | No literal |
+| legacy_attribution | Review required | POST | `/api/legacy-attribution/validate-ownership` | No literal | No literal |
+| legacy_attribution | Review required | POST | `/api/legacy-attribution/validate-creation` | No literal | No literal |
+| legacy_attribution | Review required | POST | `/api/legacy-attribution/validate-modification` | No literal | No literal |
 | security | Admin-only / security-sensitive | GET | `/api/audit` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/status` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/secrets` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/retention` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/shares` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/egress` | Found | Found |
-| security | Admin-only / security-sensitive | GET | `/api/security/audit-chain` | Found | Found |
+| security | Admin-only / security-sensitive | GET | `/api/security/audit-chain` | No literal | No literal |
 | security | Admin-only / security-sensitive | GET | `/api/security/audit-chain/verify` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/privacy-reports` | Found | Found |
 | security | Admin-only / security-sensitive | GET | `/api/security/privacy-report` | Found | Found |
@@ -276,18 +305,27 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | calendar | User-facing | GET | `/api/calendar/status` | Found | No literal |
 | calendar | User-facing | GET | `/api/calendar/calendars` | Found | Found |
 | calendar | User-facing | GET | `/api/calendar/events` | Found | Found |
+| calendar | User-facing | GET | `/api/calendar/events/{id}/occurrences` | No literal | No literal |
 | calendar | User-facing | POST | `/api/calendar/events` | Found | Found |
+| calendar | User-facing | PATCH | `/api/calendar/events/{event_id}` | No literal | Found |
+| calendar | User-facing | DELETE | `/api/calendar/events/{event_id}` | No literal | Found |
 | calendar | User-facing | POST | `/api/calendar/ical-import` | No literal | No literal |
 | calendar | User-facing | POST | `/api/calendar/ical-export` | No literal | No literal |
 | calendar | User-facing | GET | `/api/calendar/free-slots` | Found | Found |
 | calendar | User-facing | GET | `/api/calendar/reminders` | Found | Found |
+| calendar | User-facing | POST | `/api/calendar/reminders/{reminder_id}/acknowledge` | No literal | Found |
+| calendar | User-facing | POST | `/api/calendar/reminders/schedule` | No literal | No literal |
 | calendar | User-facing | GET | `/api/calendar/optimize` | No literal | Found |
 | calendar | User-facing | GET | `/api/calendar/providers` | Found | Found |
 | calendar | User-facing | POST | `/api/calendar/providers/register` | No literal | Found |
+| calendar | User-facing | DELETE | `/api/calendar/providers/{provider_id}` | No literal | Found |
+| calendar | User-facing | POST | `/api/calendar/providers/{provider_id}/reauth` | No literal | Found |
 | calendar | User-facing | GET | `/api/calendar/conflicts` | Found | Found |
 | calendar | User-facing | POST | `/api/calendar/conflicts/{conflict_id}/resolve` | Found | Found |
 | calendar | User-facing | POST | `/api/calendar/sync` | Found | Found |
 | calendar | User-facing | GET | `/api/calendar/sync/{sync_job_id}` | No literal | Found |
+| calendar | User-facing | POST | `/api/calendar/events/{event_id}/override` | No literal | Found |
+| calendar | User-facing | POST | `/api/calendar/reminders/deliver` | No literal | Found |
 | communication | User-facing + external-send approval | GET | `/api/communication/connectors` | Found | Found |
 | communication | User-facing + external-send approval | GET | `/api/communication/inbox` | Found | Found |
 | communication | User-facing + external-send approval | GET | `/api/communication/drafts` | Found | Found |
@@ -309,7 +347,8 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | communication | User-facing + external-send approval | POST | `/api/communication/connectors/configure` | No literal | No literal |
 | communication | User-facing + external-send approval | POST | `/api/communication/contacts` | Found | Found |
 | communication | User-facing + external-send approval | POST | `/api/communication/messages/import` | No literal | No literal |
-| communication | User-facing + external-send approval | POST | `/api/communication/drafts/reply` | No literal | No literal |
+| communication | User-facing + external-send approval | POST | `/api/communication/messages/update` | No literal | Found |
+| communication | User-facing + external-send approval | POST | `/api/communication/drafts/reply` | No literal | Found |
 | communication | User-facing + external-send approval | POST | `/api/communication/drafts` | Found | Found |
 | communication | User-facing + external-send approval | POST | `/api/communication/send/request-approval` | Found | Found |
 | communication | User-facing + external-send approval | POST | `/api/communication/send/resolve` | Found | Found |
@@ -323,10 +362,13 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | communication | User-facing + external-send approval | POST | `/api/communication/oauth/refresh` | No literal | No literal |
 | communication | User-facing + external-send approval | POST | `/api/communication/attachments` | No literal | No literal |
 | communication | User-facing + external-send approval | POST | `/api/communication/messages/state` | No literal | Found |
+| communication | User-facing + external-send approval | POST | `/api/communication/messages/{id}/send` | No literal | No literal |
 | communication | User-facing + external-send approval | POST | `/api/communication/scheduled` | Found | Found |
 | communication | User-facing + external-send approval | POST | `/api/communication/scheduled/process` | No literal | Found |
+| communication | User-facing + external-send approval | DELETE | `/api/communication/messages/{message_id}` | No literal | Found |
 | assistant | User-facing | GET | `/api/assistant/tasks` | Found | Found |
 | assistant | User-facing | GET | `/api/assistant/goals` | Found | Found |
+| assistant | User-facing | GET | `/api/assistant/activity` | No literal | Found |
 | assistant | User-facing | GET | `/api/assistant/daily-brief` | Found | Found |
 | assistant | User-facing | GET | `/api/assistant/coach` | Found | No literal |
 | assistant | User-facing | GET | `/api/assistant/crm` | Found | No literal |
@@ -334,28 +376,37 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | assistant | User-facing | POST | `/api/assistant/goals` | Found | Found |
 | assistant | User-facing | POST | `/api/assistant/tasks` | Found | Found |
 | assistant | User-facing | POST | `/api/assistant/tasks/complete` | Found | Found |
+| assistant | User-facing | PATCH | `/api/assistant/tasks/{task_id}` | No literal | Found |
+| assistant | User-facing | DELETE | `/api/assistant/tasks/{task_id}` | No literal | Found |
+| assistant | User-facing | PATCH | `/api/assistant/goals/{goal_id}` | No literal | Found |
+| assistant | User-facing | DELETE | `/api/assistant/goals/{goal_id}` | No literal | Found |
 | assistant | User-facing | POST | `/api/assistant/meeting/brief` | Found | No literal |
 | assistant | User-facing | POST | `/api/assistant/meeting/summary` | No literal | No literal |
 | assistant | User-facing | POST | `/api/assistant/travel/plan` | No literal | No literal |
 | assistant | User-facing | POST | `/api/assistant/crm` | Found | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/status` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/presets` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/presets` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/signatures` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/signatures` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/drafts` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/drafts` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/drafts/{id}/versions` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/notes` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/notes` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/gallery` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/gallery` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/gallery/favorite` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/compare` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/compare/start` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/compare/vote` | No literal | No literal |
-| personal_os | Advanced user | GET | `/api/personal-os/export` | No literal | No literal |
-| personal_os | Advanced user | POST | `/api/personal-os/import` | No literal | No literal |
+| personal_os | Advanced user | GET | `/api/personal-os/status` | No literal | Found |
+| personal_os | Advanced user | GET | `/api/personal-os/presets` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/presets` | No literal | Found |
+| personal_os | Advanced user | PUT | `/api/personal-os/presets/{id}` | No literal | Found |
+| personal_os | Advanced user | DELETE | `/api/personal-os/presets/{id}` | No literal | Found |
+| personal_os | Advanced user | GET | `/api/personal-os/signatures` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/signatures` | No literal | Found |
+| personal_os | Advanced user | DELETE | `/api/personal-os/signatures/{id}` | No literal | No literal |
+| personal_os | Advanced user | GET | `/api/personal-os/drafts` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/drafts` | No literal | Found |
+| personal_os | Advanced user | DELETE | `/api/personal-os/drafts/{id}` | No literal | No literal |
+| personal_os | Advanced user | GET | `/api/personal-os/drafts/{id}/versions` | No literal | Found |
+| personal_os | Advanced user | GET | `/api/personal-os/notes` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/notes` | No literal | Found |
+| personal_os | Advanced user | DELETE | `/api/personal-os/notes/{id}` | No literal | Found |
+| personal_os | Advanced user | GET | `/api/personal-os/gallery` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/gallery` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/gallery/favorite` | No literal | Found |
+| personal_os | Advanced user | GET | `/api/personal-os/compare` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/compare/start` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/compare/vote` | No literal | Found |
+| personal_os | Advanced user | GET | `/api/personal-os/export` | No literal | Found |
+| personal_os | Advanced user | POST | `/api/personal-os/import` | No literal | Found |
 | production | Internal / operator | GET | `/api/production/status` | No literal | No literal |
 | production | Internal / operator | GET | `/api/production/policies` | No literal | No literal |
 | production | Internal / operator | GET | `/api/production/queue` | No literal | No literal |
@@ -401,26 +452,38 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | twin | Advanced user / privacy-sensitive | POST | `/api/twin/predict` | Found | Found |
 | twin | Advanced user / privacy-sensitive | POST | `/api/twin/goals` | Found | Found |
 | twin | Advanced user / privacy-sensitive | POST | `/api/twin/consolidate` | Found | Found |
+| fact_provenance | Advanced user / privacy-sensitive | GET | `/api/fact-provenance/facts` | No literal | Found |
+| fact_provenance | Advanced user / privacy-sensitive | GET | `/api/fact-provenance/facts/{id}` | No literal | Found |
+| fact_provenance | Advanced user / privacy-sensitive | GET | `/api/fact-provenance/search` | No literal | Found |
+| fact_provenance | Advanced user / privacy-sensitive | GET | `/api/fact-provenance/statistics` | No literal | Found |
+| fact_provenance | Advanced user / privacy-sensitive | POST | `/api/fact-provenance/facts` | No literal | Found |
+| fact_provenance | Advanced user / privacy-sensitive | POST | `/api/fact-provenance/facts/{id}/retract` | No literal | Found |
+| fact_provenance | Advanced user / privacy-sensitive | POST | `/api/fact-provenance/facts/{id}/restore` | No literal | Found |
 | vault | Advanced / security-sensitive | GET | `/api/vault/status` | Found | Found |
 | vault | Advanced / security-sensitive | GET | `/api/vault/entries` | Found | Found |
 | vault | Advanced / security-sensitive | GET | `/api/vault/access-log` | No literal | Found |
+| vault | Advanced / security-sensitive | GET | `/api/vault/access-requests` | No literal | Found |
 | vault | Advanced / security-sensitive | POST | `/api/vault/entries` | Found | Found |
 | vault | Advanced / security-sensitive | POST | `/api/vault/store` | Found | Found |
 | vault | Advanced / security-sensitive | POST | `/api/vault/retrieve` | Found | Found |
 | vault | Advanced / security-sensitive | POST | `/api/vault/rotate-key` | Found | Found |
 | vault | Advanced / security-sensitive | POST | `/api/vault/export` | Found | Found |
+| vault | Advanced / security-sensitive | POST | `/api/vault/access-requests` | No literal | Found |
+| vault | Advanced / security-sensitive | PATCH | `/api/vault/access-requests/{request_id}` | No literal | Found |
 | scraper | Advanced user / network-sensitive | GET | `/api/scraper/status` | Found | Found |
 | scraper | Advanced user / network-sensitive | GET | `/api/scraper/jobs` | Found | Found |
+| scraper | Advanced user / network-sensitive | POST | `/api/scraper/jobs/{job_id}/cancel` | No literal | Found |
 | scraper | Advanced user / network-sensitive | GET | `/api/scraper/history` | No literal | Found |
 | scraper | Advanced user / network-sensitive | POST | `/api/scraper/scrape` | Found | Found |
 | scraper | Advanced user / network-sensitive | POST | `/api/scraper/schedule` | Found | Found |
 | scraper | Advanced user / network-sensitive | POST | `/api/scraper/run-due` | Found | Found |
 | research | User-facing | GET | `/api/research/status` | No literal | No literal |
 | research | User-facing | GET | `/api/research/sessions` | Found | Found |
-| research | User-facing | GET | `/api/research/sessions/{id}` | Found | Found |
+| research | User-facing | GET | `/api/research/sessions/{id}` | No literal | No literal |
 | research | User-facing | GET | `/api/research/sessions/{id}/report` | No literal | Found |
 | research | User-facing | GET | `/api/research/sessions/{id}/checkpoints` | No literal | Found |
 | research | User-facing | GET | `/api/research/sessions/{id}/source-graph` | No literal | Found |
+| research | User-facing | GET | `/api/research/sessions/{id}/source-notes` | No literal | Found |
 | research | User-facing | GET | `/api/research/sessions/{id}/stream` | No literal | Found |
 | research | User-facing | POST | `/api/research/run` | No literal | No literal |
 | research | User-facing | POST | `/api/research/sessions` | Found | Found |
@@ -429,27 +492,37 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | research | User-facing | POST | `/api/research/sessions/{id}/branch` | No literal | No literal |
 | research | User-facing | POST | `/api/research/sessions/{id}/archive` | No literal | No literal |
 | research | User-facing | POST | `/api/research/sessions/{id}/delete` | No literal | No literal |
+| research | User-facing | POST | `/api/research/sessions/{id}/source-notes/{source_id}` | No literal | Found |
 | finetune | Advanced user / admin actions | GET | `/api/finetune/status` | Found | Found |
 | finetune | Advanced user / admin actions | GET | `/api/finetune/datasets` | Found | Found |
 | finetune | Advanced user / admin actions | POST | `/api/finetune/datasets` | Found | Found |
 | finetune | Advanced user / admin actions | POST | `/api/finetune/examples` | Found | Found |
 | finetune | Advanced user / admin actions | GET | `/api/finetune/jobs` | Found | Found |
 | finetune | Advanced user / admin actions | POST | `/api/finetune/jobs` | Found | Found |
+| finetune | Advanced user / admin actions | POST | `/api/finetune/jobs/{job_id}/cancel` | No literal | Found |
+| finetune | Advanced user / admin actions | POST | `/api/finetune/jobs/{job_id}/train` | No literal | No literal |
+| finetune | Advanced user / admin actions | POST | `/api/finetune/jobs/{job_id}/run-cpu` | No literal | Found |
+| finetune | Advanced user / admin actions | GET | `/api/finetune/jobs/{job_id}/stream-status` | No literal | Found |
+| finetune | Advanced user / admin actions | GET | `/api/finetune/checkpoints` | No literal | Found |
+| finetune | Advanced user / admin actions | GET | `/api/finetune/checkpoints/{checkpoint_id}` | No literal | No literal |
 | finetune | Advanced user / admin actions | GET | `/api/finetune/adapters` | Found | Found |
 | finetune | Advanced user / admin actions | POST | `/api/finetune/adapters` | Found | Found |
 | finetune | Advanced user / admin actions | POST | `/api/finetune/adapters/activate` | Found | Found |
-| finetune | Advanced user / admin actions | GET | `/api/finetune/templates` | Found | No literal |
+| finetune | Advanced user / admin actions | GET | `/api/finetune/templates` | Found | Found |
 | workspace | User-facing | GET | `/api/workspace/items` | Found | Found |
 | workspace | User-facing | POST | `/api/workspace/items` | Found | Found |
 | workspace | User-facing | POST | `/api/workspace/items/update` | Found | Found |
+| workspace | User-facing | POST | `/api/workspace/items/{item_id}/archive` | No literal | No literal |
+| workspace | User-facing | POST | `/api/workspace/items/{item_id}/restore` | No literal | No literal |
+| workspace | User-facing | DELETE | `/api/workspace/items/{item_id}` | No literal | Found |
 | workspace | User-facing | POST | `/api/workspace/templates/instantiate` | No literal | No literal |
 | workspace | User-facing | GET | `/api/workspace/dashboard` | No literal | No literal |
 | workspace | User-facing | GET | `/api/workspace/canvas` | No literal | No literal |
 | auth | Admin-only / security-sensitive | POST | `/api/auth/register` | No literal | No literal |
-| auth | Admin-only / security-sensitive | POST | `/api/auth/login` | No literal | No literal |
-| auth | Admin-only / security-sensitive | POST | `/api/auth/refresh` | No literal | No literal |
-| auth | Admin-only / security-sensitive | POST | `/api/auth/logout` | No literal | No literal |
-| auth | Admin-only / security-sensitive | GET | `/api/auth/me` | Found | No literal |
+| auth | Admin-only / security-sensitive | POST | `/api/auth/login` | No literal | Found |
+| auth | Admin-only / security-sensitive | POST | `/api/auth/refresh` | No literal | Found |
+| auth | Admin-only / security-sensitive | POST | `/api/auth/logout` | No literal | Found |
+| auth | Admin-only / security-sensitive | GET | `/api/auth/me` | Found | Found |
 | auth | Admin-only / security-sensitive | GET | `/api/auth/sessions` | No literal | Found |
 | auth | Admin-only / security-sensitive | POST | `/api/auth/sessions/revoke` | No literal | No literal |
 | auth | Admin-only / security-sensitive | POST | `/api/auth/2fa/setup` | No literal | No literal |
@@ -509,18 +582,18 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | inference | Internal / operator | POST | `/api/inference/benchmark` | No literal | No literal |
 | inference | Internal / operator | POST | `/api/inference/cache/clear` | No literal | No literal |
 | inference | Internal / operator | POST | `/api/inference/warmup` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/status` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/manifests` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/plans` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/sessions` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/manifests` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/plan` | No literal | No literal |
+| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/status` | No literal | Found |
+| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/manifests` | No literal | Found |
+| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/plans` | No literal | Found |
+| ultra_model | Advanced user / admin actions | GET | `/api/ultra-model/sessions` | No literal | Found |
+| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/manifests` | No literal | Found |
+| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/plan` | No literal | Found |
 | ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/route` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/calibrate` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/launch` | No literal | No literal |
+| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/calibrate` | No literal | Found |
+| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/launch` | No literal | Found |
 | ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/warmup` | No literal | No literal |
 | ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/verify` | No literal | No literal |
-| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/sessions/{id}/stop` | No literal | No literal |
+| ultra_model | Advanced user / admin actions | POST | `/api/ultra-model/sessions/{id}/stop` | No literal | Found |
 | adaptive_engine | Advanced user / operator | GET | `/api/adaptive-engine/status` | Found | Found |
 | adaptive_engine | Advanced user / operator | GET | `/api/adaptive-engine/hardware` | Found | Found |
 | adaptive_engine | Advanced user / operator | GET | `/api/adaptive-engine/plans` | Found | Found |
@@ -550,28 +623,29 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | adaptive_engine | Advanced user / operator | POST | `/api/adaptive-engine/direct/stop` | No literal | No literal |
 | adaptive_engine | Advanced user / operator | POST | `/api/adaptive-engine/roles` | Found | No literal |
 | adaptive_engine | Advanced user / operator | POST | `/api/adaptive-engine/orchestrate` | No literal | No literal |
-| contacts | User-facing | GET | `/api/contacts` | No literal | No literal |
-| contacts | User-facing | POST | `/api/contacts` | No literal | No literal |
+| contacts | User-facing | GET | `/api/contacts` | No literal | Found |
+| contacts | User-facing | POST | `/api/contacts` | No literal | Found |
 | contacts | User-facing | GET | `/api/contacts/search` | No literal | No literal |
 | contacts | User-facing | POST | `/api/contacts/import` | No literal | No literal |
-| contacts | User-facing | GET | `/api/contacts/export` | No literal | No literal |
-| contacts | User-facing | PATCH | `/api/contacts/{id}` | No literal | No literal |
-| contacts | User-facing | DELETE | `/api/contacts/{id}` | No literal | No literal |
+| contacts | User-facing | GET | `/api/contacts/export` | No literal | Found |
+| contacts | User-facing | PATCH | `/api/contacts/{id}` | No literal | Found |
+| contacts | User-facing | DELETE | `/api/contacts/{id}` | No literal | Found |
 | backup_restore | Admin-only / destructive confirmation | GET | `/api/backups` | Found | Found |
 | backup_restore | Admin-only / destructive confirmation | POST | `/api/backups/create` | Found | Found |
 | backup_restore | Admin-only / destructive confirmation | POST | `/api/backups/restore-dry-run` | Found | Found |
 | backup_restore | Admin-only / destructive confirmation | POST | `/api/backups/restore` | Found | Found |
-| model_cookbook | Advanced user | GET | `/api/model-cookbook/hosts` | No literal | No literal |
-| model_cookbook | Advanced user | POST | `/api/model-cookbook/hosts` | No literal | No literal |
-| model_cookbook | Advanced user | GET | `/api/model-cookbook/cached` | No literal | No literal |
-| model_cookbook | Advanced user | POST | `/api/model-cookbook/serve` | No literal | No literal |
+| model_cookbook | Advanced user | GET | `/api/model-cookbook/hosts` | No literal | Found |
+| model_cookbook | Advanced user | GET | `/api/model-cookbook/sessions` | No literal | Found |
+| model_cookbook | Advanced user | POST | `/api/model-cookbook/hosts` | No literal | Found |
+| model_cookbook | Advanced user | GET | `/api/model-cookbook/cached` | No literal | Found |
+| model_cookbook | Advanced user | POST | `/api/model-cookbook/serve` | No literal | Found |
 | model_cookbook | Advanced user | POST | `/api/model-cookbook/adopt` | No literal | No literal |
-| model_cookbook | Advanced user | POST | `/api/model-cookbook/stop/{id}` | No literal | No literal |
-| model_cookbook | Advanced user | GET | `/api/model-cookbook/logs/{id}` | No literal | No literal |
-| model_cookbook | Advanced user | GET | `/api/model-cookbook/hardware-fit` | No literal | No literal |
-| model_cookbook | Advanced user | GET | `/api/model-cookbook/certifications` | No literal | No literal |
-| model_cookbook | Advanced user | POST | `/api/model-cookbook/certify` | No literal | No literal |
-| model_cookbook | Advanced user | POST | `/api/model-cookbook/certifications/{id}/revoke` | No literal | No literal |
+| model_cookbook | Advanced user | POST | `/api/model-cookbook/stop/{id}` | No literal | Found |
+| model_cookbook | Advanced user | GET | `/api/model-cookbook/logs/{id}` | No literal | Found |
+| model_cookbook | Advanced user | GET | `/api/model-cookbook/hardware-fit` | No literal | Found |
+| model_cookbook | Advanced user | GET | `/api/model-cookbook/certifications` | No literal | Found |
+| model_cookbook | Advanced user | POST | `/api/model-cookbook/certify` | No literal | Found |
+| model_cookbook | Advanced user | POST | `/api/model-cookbook/certifications/{id}/revoke` | No literal | Found |
 | document_processing | Advanced user | POST | `/api/documents/import-pdf` | Found | Found |
 | document_processing | Advanced user | POST | `/api/documents/import` | Found | Found |
 | document_processing | Advanced user | POST | `/api/document/{id}/extract-pdf-text` | No literal | No literal |
@@ -586,28 +660,29 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | document_processing | Advanced user | POST | `/api/document/{id}/export-xlsx` | No literal | No literal |
 | document_processing | Advanced user | POST | `/api/documents/compare` | No literal | No literal |
 | document_processing | Advanced user | POST | `/api/documents/export-zip` | No literal | No literal |
-| image_studio | User-facing | GET | `/api/gallery/library` | No literal | No literal |
-| image_studio | User-facing | GET | `/api/gallery/{id}/operations` | No literal | No literal |
-| image_studio | User-facing | GET | `/api/gallery/{id}/versions` | No literal | No literal |
-| image_studio | User-facing | GET | `/api/gallery/albums` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/upload` | No literal | No literal |
+| image_studio | User-facing | GET | `/api/gallery/library` | No literal | Found |
+| image_studio | User-facing | GET | `/api/gallery/{id}/operations` | No literal | Found |
+| image_studio | User-facing | GET | `/api/gallery/{id}/versions` | No literal | Found |
+| image_studio | User-facing | GET | `/api/gallery/albums` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/upload` | No literal | Found |
 | image_studio | User-facing | POST | `/api/gallery/{id}/rotate` | No literal | No literal |
 | image_studio | User-facing | POST | `/api/gallery/{id}/replace` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/upscale` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/albums` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/albums/{id}/assets` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/{id}/metadata` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/batch-tags` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/{id}/transform` | No literal | No literal |
+| image_studio | User-facing | POST | `/api/gallery/upscale` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/albums` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/albums/{id}/assets` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/{id}/metadata` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/batch-tags` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/{id}/transform` | No literal | Found |
 | image_studio | User-facing | POST | `/api/gallery/{id}/undo` | No literal | No literal |
-| image_studio | User-facing | POST | `/api/gallery/deduplicate` | No literal | No literal |
-| scheduler | User-facing + admin actions | GET | `/api/tasks` | No literal | Found |
+| image_studio | User-facing | POST | `/api/gallery/deduplicate` | No literal | Found |
+| scheduler | User-facing + admin actions | GET | `/api/tasks` | No literal | No literal |
 | scheduler | User-facing + admin actions | GET | `/api/tasks/notifications` | No literal | Found |
 | scheduler | User-facing + admin actions | GET | `/api/tasks/{id}` | No literal | No literal |
 | scheduler | User-facing + admin actions | GET | `/api/tasks/{id}/runs` | No literal | No literal |
 | scheduler | User-facing + admin actions | GET | `/api/tasks/{id}/destinations` | No literal | No literal |
 | scheduler | User-facing + admin actions | GET | `/api/tasks/{id}/deliveries` | No literal | No literal |
-| scheduler | User-facing + admin actions | POST | `/api/tasks` | No literal | Found |
+| scheduler | User-facing + admin actions | GET | `/api/scheduler/autonomous/status` | No literal | No literal |
+| scheduler | User-facing + admin actions | POST | `/api/tasks` | No literal | No literal |
 | scheduler | User-facing + admin actions | POST | `/api/tasks/parse` | No literal | No literal |
 | scheduler | User-facing + admin actions | POST | `/api/tasks/run-due` | No literal | No literal |
 | scheduler | User-facing + admin actions | POST | `/api/tasks/notifications` | No literal | Found |
@@ -621,10 +696,15 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | scheduler | User-facing + admin actions | POST | `/api/tasks/{id}/webhook` | No literal | No literal |
 | scheduler | User-facing + admin actions | POST | `/api/tasks/{id}/destinations` | No literal | No literal |
 | scheduler | User-facing + admin actions | POST | `/api/tasks/{id}/delete` | No literal | No literal |
+| scheduler | User-facing + admin actions | POST | `/api/scheduler/autonomous/start` | No literal | No literal |
+| scheduler | User-facing + admin actions | POST | `/api/scheduler/autonomous/stop` | No literal | No literal |
+| scheduler | User-facing + admin actions | POST | `/api/scheduler/autonomous/execute-once` | No literal | No literal |
 | scheduler | User-facing + admin actions | PATCH | `/api/tasks/{id}` | No literal | No literal |
 | safe_terminal | Advanced user / explicit consent | GET | `/api/terminal/runs` | No literal | Found |
 | safe_terminal | Advanced user / explicit consent | GET | `/api/terminal/runs/{id}` | No literal | Found |
+| safe_terminal | Advanced user / explicit consent | POST | `/api/terminal/runs` | No literal | Found |
 | safe_terminal | Advanced user / explicit consent | POST | `/api/terminal/stream` | No literal | Found |
+| safe_terminal | Advanced user / explicit consent | DELETE | `/api/terminal/runs/{id}` | No literal | Found |
 | mcp_runtime | Advanced / admin | GET | `/api/mcp/servers` | No literal | No literal |
 | mcp_runtime | Advanced / admin | GET | `/api/mcp/tools` | No literal | No literal |
 | mcp_runtime | Advanced / admin | GET | `/api/mcp/permissions` | No literal | No literal |
@@ -690,12 +770,13 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | science | Advanced user | GET | `/api/science/tools` | Found | No literal |
 | science | Advanced user | GET | `/api/science/memory` | Found | Found |
 | science | Advanced user | GET | `/api/science/experiments` | No literal | Found |
+| science | Advanced user | GET | `/api/science/executions` | No literal | Found |
 | science | Advanced user | GET | `/api/science/materials/datasets` | Found | Found |
 | science | Advanced user | GET | `/api/science/materials/catalog` | Found | Found |
 | science | Advanced user | POST | `/api/science/run` | Found | No literal |
 | science | Advanced user | POST | `/api/science/multimodal` | No literal | No literal |
 | science | Advanced user | POST | `/api/science/experiments` | No literal | Found |
-| science | Advanced user | POST | `/api/science/execute` | No literal | No literal |
+| science | Advanced user | POST | `/api/science/execute` | No literal | Found |
 | science | Advanced user | POST | `/api/science/memory` | Found | Found |
 | science | Advanced user | POST | `/api/science/materials/datasets` | Found | Found |
 | science | Advanced user | POST | `/api/science/materials/analyse` | No literal | No literal |
@@ -713,12 +794,14 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | codebase | User-facing + destructive/approval controls | GET | `/api/codebase/projects/{id}/file` | Found | Found |
 | codebase | User-facing + destructive/approval controls | GET | `/api/codebase/runs` | Found | Found |
 | codebase | User-facing + destructive/approval controls | GET | `/api/codebase/runs/{id}` | Found | Found |
-| codebase | User-facing + destructive/approval controls | GET | `/api/codebase/runs/{id}/events` | Found | Found |
+| codebase | User-facing + destructive/approval controls | GET | `/api/codebase/runs/{id}/events` | Found | No literal |
 | codebase | User-facing + destructive/approval controls | GET | `/api/codebase/runs/{id}/events/stream` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/folder-picker` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/preflight` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects/{id}/scan` | Found | Found |
+| codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects/{id}/ask` | No literal | Found |
+| codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects/{id}/propose-edit` | No literal | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects/{id}/file` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects/{id}/paths` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/projects/{id}/tools` | Found | Found |
@@ -728,15 +811,57 @@ The primary app is the existing 22-destination reference frontend. `frontend-sec
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/runs/{id}/tools` | No literal | No literal |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/approvals/{id}/resolve` | Found | Found |
 | codebase | User-facing + destructive/approval controls | POST | `/api/codebase/runs/{id}/snapshots/{snapshot_id}/restore` | Found | Found |
+| voice | User-facing / microphone-sensitive | POST | `/api/voice/stream/continuous` | No literal | Found |
+| voice | User-facing / microphone-sensitive | POST | `/api/voice/websocket/create` | No literal | No literal |
+| voice | User-facing / microphone-sensitive | POST | `/api/voice/websocket/chunk` | No literal | No literal |
+| voice | User-facing / microphone-sensitive | POST | `/api/voice/websocket/finish` | No literal | No literal |
+| voice | User-facing / microphone-sensitive | GET | `/api/voice/websocket/status` | No literal | No literal |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/documents/upload` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/documents` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/documents/{id}` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/documents/{id}/analyze` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/graph/nodes` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/graph/edges` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/graph/query` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/graph/paths` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/rag/index` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/rag/search` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/rag/context` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/reasoning/chains` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/reasoning/analyze` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/reasoning/chains/{id}` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/memory/sessions` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | POST | `/api/g25/memory/store` | No literal | Found |
+| g25_advanced | Advanced user / privacy-sensitive | GET | `/api/g25/memory/history` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/model-serve/plans` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/model-serve/sessions/{id}/start` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/model-serve/sessions/{id}/stop` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/model-serve/sessions/{id}` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/model-serve/sessions` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/ultra-models/models` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/ultra-models/models/{id}/download` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/ultra-models/sessions` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/ultra-models/sessions/{id}/launch` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/ultra-models/sessions/{id}/stop` | No literal | Found |
+| model_serve | Advanced user / model execution | POST | `/api/ultra-models/sessions/{id}/reload` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/ultra-models/sessions/{id}` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/ultra-models/sessions` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/ultra-models/readiness` | No literal | Found |
+| model_serve | Advanced user / model execution | GET | `/api/ultra-models/models/{id}/calibrate` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversations` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | GET | `/api/voice/conversations` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | GET | `/api/voice/conversations/{id}` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversations/{id}/audio` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversations/{id}/respond` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversations/{id}/full-conversation` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversations/{id}/close` | No literal | Found |
+| voice_conversation | User-facing / microphone-sensitive | GET | `/api/voice/conversation-models` | No literal | No literal |
+| voice_conversation | User-facing / microphone-sensitive | GET | `/api/voice/conversation-voices` | No literal | No literal |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversation-models/{id}` | No literal | No literal |
+| voice_conversation | User-facing / microphone-sensitive | POST | `/api/voice/conversation-voices/{id}` | No literal | No literal |
 
-## Highest-priority frontend review areas
+## How to read the matrix
 
-1. **Project scope**: both frontends commonly use `default`; no shared project selector is safe until backend project/workspace identities are formally mapped.
-2. **Execution feedback**: CodeQ and Research have real SSE. Generic agent/workflow records are polled and do not expose a common incremental event stream. The second frontend must show only statuses supported by returned run records.
-3. **Communications**: the second frontend now displays Inbox/Sent/Drafts records and persists read state; Inbox polls. Compare provider accounts, approvals, scheduled messages, analytics and dead-letter actions against route rows before exposing them.
-4. **Calendar**: the second frontend now filters events by calendar and requests backend free-slot suggestions. Providers, conflicts, reminders, sync and iCalendar actions remain separate review items.
-5. **Specialist/admin APIs**: enterprise identity, integrations, worker queues, model lifecycle, backup/restore, adaptive engine and developer/security actions need explicit role/scope review; route existence alone is not a product UI requirement.
-
-## Recommended closure workflow
-
-For each candidate route, inspect the route handler and service, verify its permission/scope behavior, map it to a user workflow, wire it to the intended frontend with honest loading/error/empty/success states, add focused component and backend contract tests, then update the status here. Keep missing backend capabilities in `BACKEND_CAPABILITY_GAPS.md` instead of building simulated UI responses.
+- “Found” means a path pattern appears in production source. It does not establish the HTTP method, mounted control, response schema, authorization, or a successful Python request.
+- “No literal” may indicate dynamic URL construction or an intentionally internal/admin route. It does not itself establish a frontend feature gap.
+- The [master map](FRONTEND_BACKEND_MASTER_GAPS.md) records verified workflows, remaining backend contracts, frontend omissions, test evidence and product/permission boundaries.

@@ -155,32 +155,27 @@ class ModelServeManager:
                 )
                 session.pid = process.pid
                 session.started_at = time.time()
-
-                # Capture process identity for verification
-                try:
-                    proc_info = subprocess.run(
-                        ["tasklist", "/v", f"/PID {process.pid}"] if os.name == "nt" else ["ps", "-p", str(process.pid), "-o", "pid,cmd"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    session.process_identity = {
-                        "pid": process.pid,
-                        "executable": cmd[0],
-                        "started_at": session.started_at,
-                    }
-                except Exception as e:
-                    logger.warning(f"Could not capture process identity: {e}")
-
+                # Recorded from what was actually launched. An earlier version
+                # also shelled out to tasklist/ps here and then threw the output
+                # away, and its Windows arguments were malformed besides.
+                session.process_identity = {
+                    "pid": process.pid,
+                    "executable": cmd[0],
+                    "started_at": session.started_at,
+                }
                 session.status = "running"
                 session.logs.append(f"Process started with PID {process.pid}")
 
             except FileNotFoundError:
-                # llama-server not available - set up for mock mode
-                session.status = "ready"
-                session.pid = 0  # Mock PID
-                session.logs.append("llama-server not found - using mock mode")
-                session.logs.append("To enable real serving, install llama-server")
+                # No runtime, so nothing is serving. This used to report the
+                # session as "ready" with a pid of 0 and call it mock mode, so
+                # the screen showed a model as ready to answer when no process
+                # existed. Say it is unavailable instead.
+                session.status = "unavailable"
+                session.pid = None
+                session.process_identity = {}
+                session.logs.append(f"{cmd[0]} is not installed, so no model is being served")
+                session.logs.append(f"Install {cmd[0]} to serve a downloaded model")
 
         except Exception as e:
             session.status = "failed"

@@ -40,6 +40,20 @@ def _first(params: dict[str, list[str]], key: str) -> str:
     values = params.get(key) or []
     return values[0] if values else ""
 
+def _conversation_status(error: str) -> HTTPStatus:
+    """Pick the status a conversation refusal deserves.
+
+    Every refusal used to be answered with 400, so a conversation belonging to
+    another owner or project read as a malformed request rather than one the
+    caller may not make, and an unknown id read the same way.
+    """
+    if "does not belong" in error:
+        return HTTPStatus.FORBIDDEN
+    if "not found" in error:
+        return HTTPStatus.NOT_FOUND
+    return HTTPStatus.BAD_REQUEST
+
+
 def handle_get(path: str, query: str, deps: VoiceConversationRouteDependencies) -> JsonRouteResult | None:
     """Handle GET requests."""
     params = parse_qs(query)
@@ -56,7 +70,9 @@ def handle_get(path: str, query: str, deps: VoiceConversationRouteDependencies) 
         return JsonRouteResult(deps.manager.get_synthesis_voices(project=project, owner=owner))
 
     if path.startswith("/api/voice/conversations/"):
-        conv_id = unquote(path.removeprefix("/api/voice/conversations/")).strip()
+        conv_id = unquote(path.removeprefix("/api/voice/conversations/")).strip("/")
+        if not conv_id or "/" in conv_id:
+            return None
         conv = deps.manager.get_conversation(conv_id, project=project, owner=owner)
         if not conv:
             return JsonRouteResult({"error": f"Conversation {conv_id} not found"}, HTTPStatus.NOT_FOUND)
@@ -103,7 +119,7 @@ def handle_post(path: str, deps: VoiceConversationRouteDependencies) -> JsonRout
 
         result = deps.manager.process_audio_input(conv_id, audio_bytes, project=project, owner=owner)
         if "error" in result:
-            return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
+            return JsonRouteResult(result, _conversation_status(str(result["error"])))
         return JsonRouteResult(result)
 
     if path.startswith("/api/voice/conversations/") and path.endswith("/respond"):
@@ -115,7 +131,7 @@ def handle_post(path: str, deps: VoiceConversationRouteDependencies) -> JsonRout
 
         result = deps.manager.generate_speech_response(conv_id, response_text, project=project, owner=owner)
         if "error" in result:
-            return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
+            return JsonRouteResult(result, _conversation_status(str(result["error"])))
 
         import base64
         audio_b64 = base64.b64encode(result.get("audio_bytes", b"")).decode()
@@ -137,7 +153,7 @@ def handle_post(path: str, deps: VoiceConversationRouteDependencies) -> JsonRout
 
         result = deps.manager.full_voice_conversation(conv_id, audio_bytes, response_text, project=project, owner=owner)
         if "error" in result:
-            return JsonRouteResult(result, HTTPStatus.BAD_REQUEST)
+            return JsonRouteResult(result, _conversation_status(str(result["error"])))
 
         import base64
         response_b64 = base64.b64encode(result.get("response_audio_bytes", b"")).decode()

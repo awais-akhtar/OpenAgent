@@ -25,6 +25,7 @@ from openagent.adaptive_engine.phase1_observations import (
 from openagent.adaptive_engine.universal_engine import ModelRoute
 from tests.test_native_segment_executor import build_executor
 from tests.test_olmoe_batch import checkpoint
+from tests.support.optional_backends import numba_missing
 
 ROUTE = ModelRoute("olmoe", "olmoe", "native", "fp32", "F32", "int8-row")
 
@@ -61,6 +62,11 @@ class CanonicalCaptureRowTests(unittest.TestCase):
             canonical_row(route, case_id="mixtral/foreign/revision")
 
 
+# Every capture below goes through the explicit native low-bit consumer. Without
+# the optional engine-native group, setUpClass raised CaptureError and the whole
+# class was reported as 30 errors, which reads as a regression in capture rather
+# than an absent optional backend.
+@unittest.skipIf(numba_missing(), f"route capture {numba_missing()}")
 class Phase1CaptureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
