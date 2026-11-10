@@ -33,6 +33,10 @@ export default defineConfig(({ mode }) => {
     host: '127.0.0.1',
     port: 5180,
     strictPort: true,
+    // Browser tests write paired screenshots and measurements while the app is
+    // open. Those artifacts are not app source; watching them reloads the page
+    // in the middle of a dialog or form submission.
+    watch: { ignored: ['**/evidence/**', '**/test-results/**', '**/.qa/**', '**/playwright-report/**'] },
     proxy: {
       '/api': {
         target: env.OPENAGENT_API_TARGET || 'http://127.0.0.1:8765',

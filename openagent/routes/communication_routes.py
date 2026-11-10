@@ -261,8 +261,14 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             )
             return JsonRouteResult({"connector": connector})
         if path == "/api/communication/contacts":
+            name = str(payload.get("name", "")).strip()
+            # A contact is identified by its name, and upsert keys on it, so an
+            # empty body used to create a nameless contact that a second empty
+            # body would then silently overwrite.
+            if not name:
+                return JsonRouteResult({"error": "name is required."}, HTTPStatus.BAD_REQUEST)
             contact = communication.upsert_contact(
-                str(payload.get("name", "")).strip(),
+                name,
                 project=str(payload.get("project", "default")).strip() or "default",
                 owner=owner_for(),
                 handles=payload.get("handles") if isinstance(payload.get("handles"), dict) else {},
@@ -292,11 +298,21 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             )
             return JsonRouteResult({"draft": draft}, HTTPStatus.CREATED)
         if path == "/api/communication/drafts":
+            recipients = [str(item) for item in payload.get("recipients", [])] if isinstance(payload.get("recipients"), list) else []
+            subject = str(payload.get("subject", ""))
+            body = str(payload.get("body", ""))
+            # A draft that names nobody and says nothing is not a message. An
+            # empty body used to create one, ready to be sent.
+            if not [item for item in recipients if item.strip()] and not subject.strip() and not body.strip():
+                return JsonRouteResult(
+                    {"error": "a draft needs at least one of recipients, subject or body."},
+                    HTTPStatus.BAD_REQUEST,
+                )
             draft = communication.create_draft(
                 platform=str(payload.get("platform", "email")).strip() or "email",
-                recipients=[str(item) for item in payload.get("recipients", [])] if isinstance(payload.get("recipients"), list) else [],
-                subject=str(payload.get("subject", "")),
-                body=str(payload.get("body", "")),
+                recipients=recipients,
+                subject=subject,
+                body=body,
                 project=str(payload.get("project", "default")).strip() or "default",
                 owner=owner_for(),
                 message_id=str(payload.get("message_id", "")).strip(),
@@ -326,9 +342,15 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             )
             return JsonRouteResult({"sent": sent}, HTTPStatus.CREATED)
         if path == "/api/communication/calendar":
+            title = str(payload.get("title", "")).strip()
+            starts_at = str(payload.get("starts_at", "")).strip()
+            # An event with no title and no start is not a calendar entry. An
+            # empty body used to store one, with calendar_id defaulted to local.
+            if not title or not starts_at:
+                return JsonRouteResult({"error": "title and starts_at are required."}, HTTPStatus.BAD_REQUEST)
             event = communication.add_calendar_event(
-                title=str(payload.get("title", "")).strip(),
-                starts_at=str(payload.get("starts_at", "")).strip(),
+                title=title,
+                starts_at=starts_at,
                 ends_at=str(payload.get("ends_at", "")).strip(),
                 project=str(payload.get("project", "default")).strip() or "default",
                 owner=owner_for(),
@@ -358,16 +380,28 @@ def handle_post(path: str, deps: CommunicationRouteDependencies) -> JsonRouteRes
             status = HTTPStatus.OK if result.get("status") == "dead_lettered" else HTTPStatus.CREATED
             return JsonRouteResult(result, status)
         if path in {"/api/communication/oauth/configure", "/api/communication/oauth/accounts/configure"}:
+            client_id = str(payload.get("client_id", ""))
+            auth_endpoint = str(payload.get("auth_endpoint", ""))
+            token_endpoint = str(payload.get("token_endpoint", ""))
+            # A stored account with no client id and no endpoints is a
+            # credential record that can never authenticate, and an empty body
+            # used to create one. These three are what an OAuth flow needs
+            # before any of it can run.
+            if not client_id.strip() or not auth_endpoint.strip() or not token_endpoint.strip():
+                return JsonRouteResult(
+                    {"error": "client_id, auth_endpoint and token_endpoint are required."},
+                    HTTPStatus.BAD_REQUEST,
+                )
             account = communication.configure_oauth_account(
                 provider=str(payload.get("provider", "generic")),
                 platform=str(payload.get("platform", "email")),
                 project=str(payload.get("project", "default")).strip() or "default",
                 owner=owner_for(),
                 label=str(payload.get("label", "")),
-                client_id=str(payload.get("client_id", "")),
+                client_id=client_id,
                 client_secret=str(payload.get("client_secret", "")),
-                auth_endpoint=str(payload.get("auth_endpoint", "")),
-                token_endpoint=str(payload.get("token_endpoint", "")),
+                auth_endpoint=auth_endpoint,
+                token_endpoint=token_endpoint,
                 redirect_uri=str(payload.get("redirect_uri", "")),
                 scopes=[str(item) for item in payload.get("scopes", [])] if isinstance(payload.get("scopes"), list) else None,
                 mailbox_policy=payload.get("mailbox_policy") if isinstance(payload.get("mailbox_policy"), dict) else None,

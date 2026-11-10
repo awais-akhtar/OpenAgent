@@ -134,18 +134,31 @@ class DesktopTests(unittest.TestCase):
                 open_window.assert_not_called()
 
     def test_managed_openvino_configuration_requires_complete_local_model(self) -> None:
+        # Discovery can find a real model in the checkout and set managed
+        # routing variables even while probing an incomplete temporary model.
+        # Restore the process environment before subsequent test modules run.
+        import os
+        from unittest.mock import patch
+        environment = patch.dict(os.environ, {}, clear=False)
+        environment.start()
+        self.addCleanup(environment.stop)
         with TemporaryDirectory() as tmp:
             model = Path(tmp) / "models" / "openvino" / "qwen2.5-1.5b-instruct-int4-ov"
             model.mkdir(parents=True)
             self.assertNotEqual(configure_managed_openvino_model(Path(tmp)), str(model.resolve()))
             (model / "openvino_model.xml").write_text("model", encoding="ascii")
             (model / "openvino_model.bin").write_bytes(b"weights")
+            self.assertNotEqual(configure_managed_openvino_model(Path(tmp)), str(model.resolve()))
+            (model / "config.json").write_text("{}", encoding="ascii")
+            (model / "tokenizer.json").write_text("{}", encoding="ascii")
             import os
             from unittest.mock import patch
 
             with patch.dict(os.environ, {"OPENAGENT_OPENVINO_MODEL_DIR": str(model)}, clear=False):
                 selected = configure_managed_openvino_model(Path(tmp))
                 self.assertEqual(selected, str(model.resolve()))
+                self.assertEqual(os.environ.get("OPENAGENT_MODEL_ROUTING"), "cpu-baseline")
+                self.assertEqual(os.environ.get("OPENAGENT_MODEL_FALLBACK"), "none")
 
     def test_installed_runtime_discovers_manifest_source_accelerator_and_model(self) -> None:
         import os
@@ -162,6 +175,8 @@ class DesktopTests(unittest.TestCase):
             model.mkdir(parents=True)
             (model / "openvino_model.xml").write_text("model", encoding="ascii")
             (model / "openvino_model.bin").write_bytes(b"weights")
+            (model / "config.json").write_text("{}", encoding="ascii")
+            (model / "tokenizer.json").write_text("{}", encoding="ascii")
             manifest = local_app_data / "OpenAgent" / "install-manifest.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(json.dumps({"source": str(source)}), encoding="utf-8")

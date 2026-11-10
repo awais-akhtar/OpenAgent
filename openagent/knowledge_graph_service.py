@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 from uuid import uuid4
+
+from .storage import OpenAgentStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,17 +45,34 @@ class Edge:
 class KnowledgeGraphService:
     """Neo4j-style knowledge graph for reasoning and semantic understanding."""
 
-    def __init__(self):
+    def __init__(self, store: OpenAgentStore | None = None):
+        self.store = store
         self.nodes: dict[str, Node] = {}
         self.edges: dict[str, Edge] = {}
         self.indexes = {}
         self.node_metadata: dict[str, dict[str, Any]] = {}
         self.edge_metadata: dict[str, dict[str, Any]] = {}
+        if store is not None:
+            with store.session() as connection:
+                stored_nodes = connection.execute("SELECT * FROM g25_graph_nodes").fetchall()
+                stored_edges = connection.execute("SELECT * FROM g25_graph_edges").fetchall()
+            for row in stored_nodes:
+                self.nodes[row["id"]] = Node(row["id"], row["label"], json.loads(row["properties_json"]))
+                self.node_metadata[row["id"]] = {"project": row["project"], "owner": row["owner"]}
+            for row in stored_edges:
+                self.edges[row["id"]] = Edge(row["id"], row["source"], row["target"], row["type"], json.loads(row["properties_json"]))
+                self.edge_metadata[row["id"]] = {"project": row["project"], "owner": row["owner"]}
 
     def create_node(self, label: str, properties: dict[str, Any], project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create knowledge graph node."""
         node_id = str(uuid4())
         node = Node(node_id, label, properties)
+        if self.store is not None:
+            with self.store.session() as connection:
+                connection.execute(
+                    "INSERT INTO g25_graph_nodes (id, project, owner, label, properties_json) VALUES (?, ?, ?, ?, ?)",
+                    (node_id, project, owner, label, json.dumps(properties)),
+                )
         self.nodes[node_id] = node
         self.node_metadata[node_id] = {"project": project, "owner": owner}
         logger.info(f"Created node: {label} ({node_id}) (project={project}, owner={owner})")
@@ -75,6 +95,14 @@ class KnowledgeGraphService:
 
         edge_id = str(uuid4())
         edge = Edge(edge_id, source_id, target_id, rel_type, properties or {})
+        if self.store is not None:
+            with self.store.session() as connection:
+                connection.execute(
+                    """INSERT INTO g25_graph_edges
+                       (id, project, owner, source, target, type, properties_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (edge_id, project, owner, source_id, target_id, rel_type, json.dumps(properties or {})),
+                )
         self.edges[edge_id] = edge
         self.edge_metadata[edge_id] = {"project": project, "owner": owner}
         logger.info(f"Created edge: {rel_type} ({source_id} -> {target_id}) (project={project}, owner={owner})")

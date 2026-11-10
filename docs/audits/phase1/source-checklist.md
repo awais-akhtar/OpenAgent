@@ -1,6 +1,51 @@
 # Phase 1 source implementation checklist
 
+## CPU release and sandbox restore audit — 2026-11-05
+
+The current CPU production source was recaptured with the local OpenVINO checkpoint: seven callers and the enforced 8 GiB Job Object pass, and the canonical verifier exits 0 for the CPU baseline. `SandboxManager.restore()` rejects tar links, duplicate members and unsafe paths, then copies only regular files/directories; a malicious link archive leaves the workspace unchanged. Focused CodeQ and CPU tests pass 58/58. A GitHub model-route issue template requests exact checkpoint/format/backend and reproduction details. The separate publisher audit stays 10/17 because 126 admitted routes lack exact runtime receipts; P13/P15 for that optional matrix remain open. No downloads.
+
+## CPU CodeQ edit verification — 2026-11-02
+
+The bounded CPU product path has seven measured callers. `openagent/codebase/service.py` now provides an owner/hash/syntax-checked edit proposal with no write before review, and source/workspace save rollback; `openagent/routes/codebase_routes.py` and `frontend-second/src/screens/WorkspaceScreens.tsx` expose proposal, diff review and manual save. The local OpenVINO CPU smoke captured a correct `hello.py` edit and scratch save. The refreshed enforced 8 GiB receipt records 2,453,635,072 bytes peak job commit. Focused Python tests passed 57/57, TypeScript and diff checks passed, and `phase1_verify.py` exited 0 for the CPU baseline. Autonomous CodeQ edits remain excluded. The publisher family audit remains 10/17, with 126 exact route receipts missing; no dense CPU observation substitutes for them. No downloads.
+
 ## CPU-first scope correction — 2026-11-01
+
+CURRENT CPU PRODUCT SCOPE: the bounded local baseline is VERIFIED by `phase1_verify.py` (exit 0) after a real Windows Job Object run with an 8 GiB aggregate process limit. Six production caller contracts, completion/streaming, cancellation/reload, current source/model pins and whole-app memory checks pass. The bounded receipt records 2,326,634,496 bytes app RSS and 2,446,725,120 bytes job commit; a separate 64 MiB regression denied a 128 MiB allocation. Focused suite: 131 tests, 129 pass and 2 skips. The physical host has 32 GiB RAM; no claim is made for every 16 GiB host or CPU speed. Autonomous CodeQ edits are explicitly excluded from this small-model baseline; manual edit and read-only CodeQ remain available. The flagship publisher route matrix is a separate optional research audit and remains OPEN at 10/17 with 126 missing receipts; its P15 row is not relabelled by dense CPU evidence. No downloads. Older OPEN entries below are historical.
+
+CPU task acceptance extension: a real second chat turn must reuse the conversation and recall the codeword. The validator requires this, and the refreshed six-caller local receipt passes with 2,262,196,224 bytes worker peak RSS and 2,320,232,448 bytes app peak RSS on this 32 GiB host. A 16 GiB host receipt remains missing.
+
+Current CPU gate now validates whole-app sampled RSS, actual bundle byte count,
+and bounded task-answer contracts, and capture refuses source/model changes
+during the run. A fresh no-download production run passed on this 32 GiB host:
+936,001,237 model bytes, 2,253,582,336 bytes worker peak RSS, and
+2,314,113,024 bytes app-tree peak RSS, with five production callers.
+`phase1_verify.py` now names a distinct 16 GiB-host observation file and will
+report CPU baseline closure only when that real low-RAM receipt passes the
+same source/model/task gate. That file is absent, so CPU baseline is OPEN.
+The 171-route publisher research audit remains 10/17 and is reported
+separately; the small dense CPU receipt is never treated as MoE evidence.
+
+CPU observation gate (1 November): `cpu_product_gate.py` checks the captured product smoke against current production source pins, the local checkpoint bundle hash, exact direct CPU routing, bounded model files and sampled worker RSS, cancellation/reload, all five caller outputs/latencies and CodeQ read-only integrity. The current local receipt passes with 2,253,676,544 bytes sampled peak on a 33,685,618,688-byte RAM host. It is not P13 publisher-route evidence or direct 16 GiB-host evidence. The canonical legacy gate remains 10/17; CPU product closure remains open pending 16 GiB qualification and broader task acceptance. Recapture the receipt when pinned source or model files change.
+
+CPU CodeQ reconciliation (1 November): real autonomous edit attempts on the small CPU model failed after 40.14 and 61.22 seconds in scratch projects, with source unchanged. `create_run` now rejects `cpu-baseline` before persisting a run, naming the read-only question/manual editor alternatives. A bounded `ask_project` consumer and `POST /api/codebase/projects/{id}/ask` route use saved selected files, owner checks, local-only gateway inference and no writes; the CodeQ UI calls this path. The real CPU model answered a `hello.py` question correctly, and the product observation now includes that caller. Nine focused CodeQ route/service tests and the frontend TypeScript check passed. The CPU baseline does not claim autonomous code edits; 16 GiB qualification and a reviewed CPU gate remain open.
+
+CPU caller observation (1 November): the no-download product smoke exercised actual ChatService and coding, research and executive AgentRegistry calls with exact `openvino-direct` provider checks. A measured, model-hashed local observation is stored at `docs/audits/phase1/cpu-product-observation-2026-11-01.json` (33,685,618,688-byte host RAM; 2,253,676,544-byte sampled worker-tree peak; current task times 2.159/2.973/6.540/3.220 seconds for chat/coding/research/executive, plus 2.422 seconds for CodeQ ask). The observation is not a publisher-route receipt and does not qualify a 16 GiB host. Managed workbench startup uses strict `cpu-baseline` auto routing for the admitted local CPU model, with no fallback to another provider; gateway tests passed 29/29 and desktop tests 27/27. CPU product closure still requires 16 GiB qualification, task-quality and codebase workflow acceptance, and a reviewed gate.
+
+Current CPU production path: shared bounded OpenVINO bundle admission runs
+before CPU worker startup and rejects incomplete, symlinked, or over-4-GiB
+bundles. Completion and streaming propagate this configuration refusal rather
+than silently using deterministic fallback; agents also propagate it. Legacy
+Tk chat and agent actions now run away from the UI thread and publish UI
+changes on Tk's thread, with close cancellation forwarded to generation.
+Managed workbench model discovery now applies the same bundle check and its
+27 desktop tests pass; an incomplete configured directory is not marked ready.
+Focused 79-test suite passed (2 platform skips); focused 44-test follow-up
+passed (2 skips). No-download local CPU smoke generated and streamed text,
+cancelled and reloaded the worker, and measured 2,202,234,880 bytes peak RSS.
+The revised recursive bundle total was 936,001,237 bytes. This host result
+does not certify 16 GiB machines or any publisher route. Canonical verifier
+remains 10/17 with 126 missing route receipts; CPU product closure remains
+open pending end-to-end resource and task evidence.
 
 Follow-up CPU lifecycle source work: direct worker completion and streaming
 accept cancellation, retire an interrupted worker, and gateway reuse checks

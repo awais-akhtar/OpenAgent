@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from tempfile import TemporaryDirectory
 import threading
 import unittest
@@ -14,6 +15,14 @@ from openagent.storage import OpenAgentStore
 
 
 class InferenceAcceleratorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._routing_env = patch.dict(os.environ, {
+            "OPENAGENT_MODEL_ROUTING": "local-first",
+            "OPENAGENT_MODEL_FALLBACK": "local",
+        })
+        self._routing_env.start()
+        self.addCleanup(self._routing_env.stop)
+
     def test_long_conversation_is_compacted_while_latest_turn_is_preserved(self) -> None:
         messages = [{"role": "system", "content": "Keep answers grounded."}]
         messages.extend(

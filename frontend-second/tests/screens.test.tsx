@@ -46,64 +46,26 @@ describe('reference screen set', () => {
     } finally { useWorkspaceState.getState().setDataMode(originalMode); }
   });
 
-  it('renders the Home screen and navigates only through explicit actions', () => {
-    const go = vi.fn();
-    renderWithClient(<HomeScreen go={go} />);
-    expect(screen.getByRole('heading', { name: 'Welcome to OpenAgent' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: /Create an agent/i }));
-    expect(go).toHaveBeenCalledWith('agents');
-    expect(screen.getByRole('heading', { name: /Recent activity/i })).toBeVisible();
+  it('renders the technical Home dashboard without duplicate workspace shortcuts', async () => {
+    renderWithClient(<HomeScreen />);
+    expect(await screen.findByRole('meter', { name: 'CPU utilization' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Local runtime' })).toBeVisible();
+    expect(screen.queryByText('Recent activity')).not.toBeInTheDocument();
+    expect(screen.queryByText('Projects')).not.toBeInTheDocument();
   });
 
-  it('keeps Home section geometry and retry controls when backend data is unavailable', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ detail: 'temporarily rate limited' }), { status: 429 }));
+  it('shows an honest unavailable state when telemetry requests fail', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ detail: 'temporarily unavailable' }), { status: 503 }));
     try {
       renderWithClient(<HomeScreen />);
-      const unavailable = await screen.findByText('Projects unavailable');
-      const card = unavailable.closest('.home-project-empty');
-      expect(card).toHaveAttribute('role', 'alert');
-      expect(card).toHaveClass('home-project-empty');
-      const beforeRetry = fetchMock.mock.calls.length;
-      fireEvent.click(within(card as HTMLElement).getByRole('button', { name: 'Try again' }));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(beforeRetry + 1));
-      expect(await screen.findByText('Activity unavailable')).toBeVisible();
-      expect(screen.getByText('Today unavailable')).toBeVisible();
-      expect(screen.getByText('Agents unavailable')).toBeVisible();
-    } finally {
-      fetchMock.mockRestore();
-    }
+      await waitFor(() => expect(screen.getByRole('meter', { name: 'CPU utilization' })).not.toHaveAttribute('aria-valuenow'));
+      expect(screen.getByRole('meter', { name: 'CPU utilization' })).not.toHaveAttribute('aria-valuenow');
+    } finally { fetchMock.mockRestore(); }
   });
-
-  it('completes an assistant task through the project-scoped backend contract', async () => {
-    const task = { id: 'task-42', title: 'Review launch notes', status: 'open', due_at: '2026-10-15T09:00:00Z' };
-    let completed = false;
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.includes('/api/assistant/tasks?')) return new Response(JSON.stringify({ tasks: [{ ...task, status: completed ? 'completed' : 'open' }] }), { status: 200 });
-      if (url.includes('/api/assistant/tasks/complete')) { completed = true; return new Response(JSON.stringify({ task: { ...task, status: 'completed' } }), { status: 200 }); }
-      if (url.includes('/api/')) return new Response(JSON.stringify({}), { status: 200 });
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    try {
-      renderWithClient(<HomeScreen />);
-      const complete = await screen.findByRole('checkbox', { name: 'Mark Review launch notes complete' });
-      fireEvent.click(complete);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('/api/assistant/tasks/complete'),
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ task_id: 'task-42', project: 'default' }) }),
-      ));
-      expect(await screen.findByRole('checkbox', { name: 'Mark Review launch notes incomplete' })).toBeChecked();
-    } finally {
-      fetchMock.mockRestore();
-    }
-  });
-
   it('loads the connected chat composer without claiming a local draft is an assistant reply', () => {
     renderWithClient(<ChatScreen />);
     expect(screen.getByRole('textbox', { name: 'Message OpenAgent' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Desktop preview unavailable' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Expand preview unavailable' })).toBeDisabled();
   });
 
   it('provides truthful CodeQ and file empty states', () => {

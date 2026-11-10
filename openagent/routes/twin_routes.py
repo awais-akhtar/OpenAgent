@@ -81,9 +81,14 @@ def handle_post(path: str, deps: TwinRouteDependencies) -> JsonRouteResult | Non
             str(payload.get("context", "")).strip(), project=project,
         ))
     if path == "/api/twin/goals":
+        title = str(payload.get("title", "")).strip()
+        # A goal with no title is a row nobody can act on, and an empty body
+        # used to create one.
+        if not title:
+            return JsonRouteResult({"error": "title is required."}, HTTPStatus.BAD_REQUEST)
         try:
             goal = deps.twin.create_goal(
-                str(payload.get("title", "")).strip(), project=project,
+                title, project=project,
                 description=str(payload.get("description", "")),
                 target_date=str(payload.get("target_date", "")),
             )

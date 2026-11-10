@@ -879,6 +879,81 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX IF NOT EXISTS idx_fact_retractions_fact ON fact_retractions(fact_id, created_at DESC)",
         ),
     ),
+    Migration(
+        35,
+        "persist-g25-documents-and-rag-index",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS g25_documents (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                format TEXT NOT NULL,
+                text TEXT NOT NULL,
+                analysis_json TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_g25_documents_scope ON g25_documents(project, owner)",
+            """
+            CREATE TABLE IF NOT EXISTS g25_rag_indexed_documents (
+                doc_id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                indexed_at TEXT NOT NULL,
+                FOREIGN KEY(doc_id) REFERENCES g25_documents(id) ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_g25_rag_scope ON g25_rag_indexed_documents(project, owner)",
+        ),
+    ),
+    Migration(
+        36,
+        "persist-g25-knowledge-graph",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS g25_graph_nodes (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                label TEXT NOT NULL,
+                properties_json TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_g25_graph_nodes_scope ON g25_graph_nodes(project, owner)",
+            """
+            CREATE TABLE IF NOT EXISTS g25_graph_edges (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                source TEXT NOT NULL,
+                target TEXT NOT NULL,
+                type TEXT NOT NULL,
+                properties_json TEXT NOT NULL,
+                FOREIGN KEY(source) REFERENCES g25_graph_nodes(id) ON DELETE CASCADE,
+                FOREIGN KEY(target) REFERENCES g25_graph_nodes(id) ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_g25_graph_edges_scope ON g25_graph_edges(project, owner)",
+        ),
+    ),
+    Migration(
+        37,
+        "persist-g25-reasoning-chains",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS g25_reasoning_chains (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                conclusions_json TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_g25_reasoning_scope ON g25_reasoning_chains(project, owner)",
+        ),
+    ),
 )
 
 

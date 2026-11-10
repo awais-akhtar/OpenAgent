@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from uuid import uuid4
+
+from .models import utc_now
+from .storage import OpenAgentStore
 
 logger = logging.getLogger(__name__)
 
@@ -12,10 +14,11 @@ logger = logging.getLogger(__name__)
 class RAGService:
     """Retrieval-Augmented Generation: semantic search with context."""
 
-    def __init__(self, embeddings_service, document_processor, knowledge_graph):
+    def __init__(self, embeddings_service, document_processor, knowledge_graph, store: OpenAgentStore | None = None):
         self.embeddings = embeddings_service
         self.documents = document_processor
         self.knowledge_graph = knowledge_graph
+        self.store = store
         # Keyed by the (project, owner, doc_id) triple rather than a joined
         # string: a project or owner name containing a colon would otherwise
         # produce the same key as a different pairing, and one scope's chunks
@@ -46,6 +49,14 @@ class RAGService:
                 "owner": owner,
             })
 
+        if self.store is not None:
+            with self.store.session() as connection:
+                connection.execute(
+                    """INSERT INTO g25_rag_indexed_documents (doc_id, project, owner, indexed_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(doc_id) DO UPDATE SET indexed_at = excluded.indexed_at""",
+                    (doc_id, project, owner, utc_now()),
+                )
         self.retrieval_index[(project, owner, doc_id)] = chunk_embeddings
         logger.info(f"Indexed document {doc_id} with {len(chunks)} chunks (project={project}, owner={owner})")
 
@@ -58,10 +69,23 @@ class RAGService:
     def search(self, query: str, top_k: int = 5, project: str = "default", owner: str = "default",
                doc_id: str = "") -> dict[str, Any]:
         """Search documents semantically, optionally within one document."""
+        if self.store is not None:
+            with self.store.session() as connection:
+                stored = connection.execute(
+                    """SELECT doc_id FROM g25_rag_indexed_documents
+                       WHERE project = ? AND owner = ? AND (? = '' OR doc_id = ?)""",
+                    (project, owner, doc_id, doc_id),
+                ).fetchall()
+            for row in stored:
+                indexed_id = row["doc_id"]
+                if (project, owner, indexed_id) not in self.retrieval_index:
+                    # The indexed-document marker is durable. Rebuild derived
+                    # embeddings lazily from the owner-bound saved text.
+                    self.index_document(indexed_id, project=project, owner=owner)
         query_embedding = self.embeddings.embed_text(query)
 
         results = []
-        for (indexed_project, indexed_owner, indexed_doc), chunks in self.retrieval_index.items():
+        for (indexed_project, indexed_owner, indexed_doc), chunks in list(self.retrieval_index.items()):
             # Only search documents in this project/owner
             if indexed_project != project or indexed_owner != owner:
                 continue

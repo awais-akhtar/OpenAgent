@@ -1,66 +1,16 @@
 import { expect, test } from '@playwright/test';
 
-test('Home automation shortcut uses the approved bolt icon and navigates to Automations', async ({ page }) => {
-  await page.addInitScript(() => window.localStorage.setItem('oa-second-data-mode', 'demo'));
-  await page.setViewportSize({ width: 1440, height: 900 });
+test('Home shows measured local telemetry without workspace shortcut lists', async ({ page }) => {
   await page.goto('/?view=home');
-  const automationShortcut = page.locator('.shortcut-card[data-nav="automations"]');
-  await expect(automationShortcut).toBeVisible();
-  await expect(automationShortcut.locator('svg.lucide-zap')).toHaveCount(1);
-  await automationShortcut.click();
-  await expect(page).toHaveURL(/view=automations/);
+  await expect(page.getByRole('meter', { name: 'CPU utilization' })).toBeVisible();
+  await expect(page.getByRole('meter', { name: 'CPU utilization' })).toBeVisible();
+  await expect(page.getByRole('meter', { name: 'Memory utilization' })).toBeVisible();
+  await expect(page.getByRole('meter', { name: 'Disk utilization' })).toBeVisible();
+  await expect(page.getByText('Projects', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Recent activity', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '5 min' }).click();
+  await expect(page.getByRole('button', { name: '5 min' })).toHaveAttribute('aria-pressed', 'true');
 });
-
-test('Home project picker and attachment affordance are complete in demo mode without backend calls', async ({ page }, testInfo) => {
-  await page.addInitScript(() => window.localStorage.setItem('oa-second-data-mode', 'demo'));
-  const apiRequests: string[] = [];
-  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url()); });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/?view=home');
-  await page.getByRole('button', { name: 'View projects' }).click();
-  let picker = page.getByRole('dialog', { name: 'Choose workspace' });
-  await expect(picker).toBeVisible();
-  await testInfo.attach('home-project-picker-demo', { body: await page.screenshot(), contentType: 'image/png' });
-  await page.keyboard.press('Escape');
-  await expect(picker).toBeHidden();
-  await page.getByRole('button', { name: 'View projects' }).click();
-  picker = page.getByRole('dialog', { name: 'Choose workspace' });
-  const researchProject = picker.getByRole('button', { name: /AI Research Assistant Python/ });
-  await researchProject.click();
-  await expect(picker).toBeHidden();
-  await expect(page.getByRole('status').filter({ hasText: 'Live project scope is unchanged' })).toBeVisible();
-  const demoAttachment = page.getByRole('button', { name: 'Attachments require Live mode' });
-  await expect(demoAttachment).toBeDisabled();
-  await expect(demoAttachment).toHaveAttribute('title', /Demo never uploads files/);
-
-  await page.getByRole('button', { name: 'View projects' }).click();
-  picker = page.getByRole('dialog', { name: 'Choose workspace' });
-  await picker.getByRole('button', { name: 'New project (preview)' }).click();
-  const createDialog = page.getByRole('dialog', { name: 'Create a project' });
-  await testInfo.attach('home-create-project-demo', { body: await page.screenshot(), contentType: 'image/png' });
-  await createDialog.getByLabel('Project name').fill('Milestone A local sample');
-  await createDialog.getByRole('button', { name: 'Create preview' }).click();
-  picker = page.getByRole('dialog', { name: 'Choose workspace' });
-  const newProject = picker.getByRole('button', { name: /Milestone A local sample Demo project/ });
-  await expect(newProject).toBeVisible();
-  await newProject.click();
-  expect(apiRequests).toEqual([]);
-});
-
-test('Home project picker states its Live limitation while file upload is available', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/?view=home');
-  await page.getByRole('button', { name: 'View projects' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Choose workspace' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/does not provide a confirmed project-switch operation/i)).toBeVisible();
-  await expect(dialog.getByRole('button', { name: /New project/ })).toHaveCount(0);
-  await dialog.getByRole('button', { name: 'Close' }).click();
-  const attachment = page.getByRole('button', { name: 'Attach a file' });
-  await expect(attachment).toBeEnabled();
-  await expect(attachment).toHaveAttribute('title', 'Upload files to attach in Chat');
-});
-
 test('All Tools desktop labels, group hierarchy and card affordances match the approved screen', async ({ page }, testInfo) => {
   await page.addInitScript(() => window.localStorage.setItem('oa-second-data-mode', 'demo'));
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {

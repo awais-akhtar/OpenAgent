@@ -126,6 +126,15 @@ def main() -> int:
         "twin": token("smoke-twin", ["twin:read", "twin:write"]),
         "securityAdmin": token("smoke-security-admin", ["security:admin"]),
         "securityRead": token("smoke-security-read", ["security:read"]),
+        # The Vault and Developer screens had no React-to-Python coverage at
+        # all, so each needs its own least-privilege credential.
+        "vault": token("smoke-vault", ["vault:read", "vault:admin"]),
+        "developer": token("smoke-developer", ["developer:read", "developer:admin"]),
+        # Production Readiness reads voice, calendar, fine-tuning and
+        # ultra-model status, so it needs each of those read scopes.
+        "readiness": token("smoke-readiness", [
+            "voice:read", "calendar:read", "finetune:read", "models:read", "local_ai:read",
+        ]),
         "otherAgentRead": foreign_auth.create_api_token(
             foreign_user["user_id"], "smoke-foreign-agent-history", scopes=["agents:read"],
         )["token"],

@@ -170,9 +170,15 @@ def handle_post(path: str, deps: SchedulerRouteDependencies) -> JsonRouteResult 
                 )
             )
         if path == "/api/tasks/notifications":
+            body_text = str(payload.get("body", ""))
+            # The title was defaulted and the body was not required, so an
+            # empty body queued a notification reading "OpenAgent notification"
+            # with nothing in it.
+            if not body_text.strip():
+                return JsonRouteResult({"error": "body is required."}, HTTPStatus.BAD_REQUEST)
             notification = deps.scheduler.add_notification(
                 title=str(payload.get("title", "")).strip() or "OpenAgent notification",
-                body=str(payload.get("body", "")),
+                body=body_text,
                 project=project,
                 owner=owner,
                 task_id=str(payload.get("task_id", "")),

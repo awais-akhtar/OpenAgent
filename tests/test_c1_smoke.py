@@ -219,7 +219,10 @@ class C1SmokeTest(TestCase):
                 self.assertEqual(status, HTTPStatus.OK)
                 self.assertEqual(status_resp["job_id"], job_id)
                 self.assertIn(status_resp["status"], ["queued", "running"])
-                self.assertEqual(status_resp["progress"], 0.0)
+                # The background worker may record its first real milestone before
+                # this status request completes; a running job need not remain at 0.
+                self.assertGreaterEqual(status_resp["progress"], 0.0)
+                self.assertLessEqual(status_resp["progress"], 1.0)
 
                 # Get adapters list
                 status, adapters_resp = get(f"/api/finetune/adapters?project=smoke_test_http")

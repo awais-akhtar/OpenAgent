@@ -1,6 +1,56 @@
 # Phase 1 — current audit and completion queue
 
+## CPU release hardening — 5 November 2026
+
+Current-source local OpenVINO CPU task capture and an enforced 8 GiB Windows Job Object capture pass again after the intervening source changes; `phase1_verify.py` exits 0 for the seven-caller CPU baseline. The focused CodeQ/CPU suite passes 58/58. Sandbox snapshot restore now copies only ordinary tar files and directories after validating all members, rejecting links and unsafe duplicates before changing the workspace; a malicious symlink/hardlink regression passes. `.github/ISSUE_TEMPLATE/model-route.md` records the exact route, artifact, backend, state, and reproduction fields needed for user reports. The publisher research audit remains 10/17 with 126 exact-route receipts missing. The local dense CPU receipt is not used for those routes. No downloads.
+
+## CPU CodeQ edit closure — 2 November 2026
+
+The CPU baseline now supports a bounded, reviewable CodeQ edit proposal for saved Python/JSON files. `propose_file_edit()` validates owner, path, source/workspace hash and syntax, returns a diff without writing, and the UI loads a chosen proposal into the manual editor. The save path now checks source/workspace agreement and rolls back the workspace if source replacement fails. A real local OpenVINO CPU capture exercised proposal, review boundary and scratch save as the seventh production caller; the refreshed 8 GiB Windows Job Object run peaked at 2,453,635,072 bytes commit. The 57 focused tests, frontend `npm run check`, `git diff --check`, and `phase1_verify.py` pass. Autonomous CodeQ runs remain restricted. The separate publisher research matrix remains OPEN at 10/17 with 126 of 171 admitted routes lacking exact runtime receipts; this CPU result does not supply them. No downloads.
+
 ## Scope correction — 1 November 2026
+
+CURRENT CPU BASELINE: VERIFIED on this host under an enforced 8 GiB Windows Job Object. `phase1_verify.py` now exits 0 for the CPU product scope while separately reporting the optional large-publisher research audit at 10/17. The local Qwen2.5-1.5B INT4 bundle is 936,001,237 bytes; six real production callers (chat, two-turn chat, coding, research, executive agent, read-only CodeQ) passed pinned task checks, completion/streaming and cancellation/reload. The bounded run reported 2,326,634,496 bytes sampled whole-app peak RSS and 2,446,725,120 bytes peak job commit, below its 8 GiB enforced cap. The 64 MiB job regression denied a 128 MiB child allocation. Focused suite: 131 tests, 129 pass and 2 platform skips. This establishes a bounded CPU baseline on the current 32 GiB physical host; it does not prove latency on every CPU or a physical 16 GiB host. Autonomous CodeQ edits remain explicitly restricted; manual editing and read-only CodeQ are supported. No downloads. Older OPEN notes below are historical snapshots.
+
+CPU task acceptance extension (1 November): the local CPU smoke now includes a real second chat turn in the same conversation and requires recall of a codeword; the gate checks it independently. The refreshed six-caller receipt passes with 2,262,196,224 bytes sampled worker peak and 2,320,232,448 bytes whole-app peak on this 32 GiB host. This strengthens task acceptance but does not replace the missing 16 GiB host run.
+
+CPU product gate hardening (1 November): the validator now recomputes model
+bundle bytes, checks whole-app RSS as well as worker RSS, and checks that the
+recorded coding, chat, research, executive, and CodeQ answers satisfy the
+specific smoke prompts. Capture rejects source/model changes during a run.
+The refreshed real local receipt passes with 936,001,237 model bytes,
+2,253,582,336 worker peak RSS and 2,314,113,024 whole-app peak RSS on this
+32 GiB host. The CPU baseline verifier now has a concrete 16 GiB-host gate:
+run `python -m scripts.verify_cpu_baseline --tasks --receipt
+docs/audits/phase1/cpu-product-16g-observation.json` on a host with at most
+16 GiB RAM using the same pinned source and local checkpoint. No low-RAM
+receipt exists here, so CPU baseline remains OPEN; the old 10/17 publisher
+research audit remains separate. Gate unit test passes. No downloads.
+
+CPU observation gate (1 November): `openagent/cpu_product_gate.py` validates the real smoke receipt against current source hashes, the local model bundle hash, direct CPU routing, 4 GiB model-file and 8 GiB sampled-worker budgets, cancellation/reload, five production callers, their 15-second per-call ceiling and read-only CodeQ integrity. The fresh receipt passed this gate with 2,253,676,544 bytes sampled peak on the 33,685,618,688-byte RAM host. It is a CPU product observation, not an exact publisher-route receipt. The canonical legacy audit remains 10/17; CPU product remains OPEN because a 16 GiB host has not been qualified and broader task acceptance is not established. The source-pinned receipt should be recaptured after any pinned implementation change.
+
+CPU CodeQ caller update (1 November): a one-iteration autonomous scratch run failed after 40.14 seconds and an eight-iteration simple-edit run failed after 61.22 seconds; neither changed the scratch source. The small CPU baseline now rejects autonomous `create_run` before persistence with a specific reason. `CodebaseService.ask_project()` and `POST /api/codebase/projects/{id}/ask` provide a bounded, owner-checked, read-only question against 1–4 selected files; the CodeQ UI exposes it beside the manual editor. A real local CPU run explained `hello.py` correctly without changing it; the final product smoke receipt records `codebase_ask` through `openvino-direct` at 2.614 seconds in one run. The current receipt includes synthetic task answers for review and a model bundle SHA-256; it is not publisher-route evidence. The CodeQ route/service tests passed 9/9 and the frontend TypeScript check passed. Remaining CPU closure: independent 16 GiB host/resource qualification and a reviewed product gate; autonomous edit remains an explicit baseline restriction.
+
+CPU caller evidence (1 November): `scripts/verify_cpu_baseline.py --tasks` ran real production ChatService and coding, research, and executive AgentRegistry calls through the local Qwen2.5-1.5B INT4 OpenVINO CPU worker. All reported `openvino-direct`, with measured caller times 2.159s, 2.973s, 6.540s and 3.220s, respectively; CodeQ ask took 2.422s; sampled process-tree peak was 2,253,676,544 bytes on a 33,685,618,688-byte RAM host. The model-hashed observation is `docs/audits/phase1/cpu-product-observation-2026-11-01.json`, explicitly separate from publisher-route receipts. Managed workbench startup now selects strict `cpu-baseline` auto routing when the bounded local bundle is present: only OpenVINO CPU is eligible, and unavailability cannot silently route to a different provider. Focused gateway tests passed 29/29 and desktop tests 27/27. Still missing: 16 GiB host qualification, task-quality acceptance, codebase editing workflow evidence and a reviewed CPU product closure gate.
+
+CPU production batch (1 November): `openagent/cpu_model_admission.py` now
+checks required OpenVINO files, nested model bytes, and symlinks against a
+4 GiB default file budget before the gateway starts a CPU worker. Explicit
+CPU admission errors cannot silently turn into deterministic fallback text in
+completion, streaming, or agents. The legacy Tk desktop runs chat and agent
+work on a background thread, returns widget updates to the UI thread, and
+signals cancellation on close; chat and agent callers forward that signal.
+Workbench managed-model discovery now uses the same admission check instead
+of treating two weight files or any configured directory as ready; its 27
+desktop tests pass.
+The baseline smoke uses the same admission code. Focused suite: 79 tests,
+77 pass and 2 platform skips; later gateway/agent suite: 44 tests, 42 pass
+and 2 skips. Real local CPU smoke passed completion, streaming, cancellation,
+and reload with 936,001,237 model bytes and 2,202,234,880 sampled peak RSS.
+No model or dependency was downloaded. Still open: product-wide model budgets
+for other local providers, a 16 GiB host qualification, measured chat/code/
+research/agent responsiveness, and an evidence-backed CPU Phase 1 gate.
+Historical publisher audit remains 10/17 with 126 missing route receipts.
 
 Latest CPU lifecycle pass: the direct pipe client now accepts a cancellation
 callback for completion and streaming, retires an interrupted worker, and the

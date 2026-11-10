@@ -1547,6 +1547,7 @@ class ModelGateway:
             "routing_policy": self.routing_policy,
             "fallback_policy": self.fallback_policy,
             "routes": {
+                "cpu-baseline": ["openvino-direct"],
                 "local-first": ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
                 "local-server-first": ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
                 "offline": ["local"],
@@ -1832,6 +1833,8 @@ class ModelGateway:
             # Cancellation is a request outcome, not a provider failure to
             # recover by replaying the prompt against a fallback backend.
             if isinstance(exc, (InterruptedError, ExecutionCancelled, _ModelStreamCancelled)):
+                raise
+            if provider.id == "openvino-direct" and isinstance(exc, ProviderConfigurationError):
                 raise
             check_cancelled()
             fallback = self.select_fallback(provider.id)
@@ -2167,6 +2170,8 @@ class ModelGateway:
             # after the client has gone away would create fresh work with no
             # consumer and could publish a second provider's output later.
             check_cancelled()
+            if provider.id == "openvino-direct" and isinstance(exc, ProviderConfigurationError):
+                raise
             fallback = self.select_fallback(provider.id)
             if fallback is None or stream_started:
                 raise
@@ -2367,12 +2372,20 @@ class ModelGateway:
 
     def select_provider(self, provider_id: str, *, allow_external: bool = False) -> ModelProvider:
         if provider_id == "auto":
+            if self.routing_policy == "cpu-baseline":
+                direct = self.providers.get("openvino-direct")
+                if not isinstance(direct, OpenVINODirectProvider) or direct.device.upper() != "CPU":
+                    raise ProviderConfigurationError("cpu-baseline routing requires the local OpenVINO CPU device")
             for candidate_id in self.route_order(allow_external=allow_external):
                 provider = self.providers[candidate_id]
                 with _approve_model_egress(allow_external):
                     available = provider.available()
                 if available:
                     return provider
+            if self.routing_policy == "cpu-baseline":
+                raise ProviderConfigurationError(
+                    "The bounded local CPU model is unavailable; configure a complete OpenVINO model and runtime."
+                )
             return self.providers["local"]
 
         provider = self.providers.get(provider_id)
@@ -2389,14 +2402,14 @@ class ModelGateway:
     def route_order(self, *, allow_external: bool) -> list[str]:
         policies = self.policies()["routes"]
         configured = policies.get(self.routing_policy, policies["local-first"])
-        if "hf-moe-direct" in self.providers and self.routing_policy != "local":
+        if "hf-moe-direct" in self.providers and self.routing_policy not in {"local", "cpu-baseline"}:
             configured = ["hf-moe-direct", *configured]
         if allow_external:
             return list(configured)
         return [provider_id for provider_id in configured if self.providers[provider_id].local]
 
     def select_fallback(self, failed_provider_id: str) -> ModelProvider | None:
-        if self.fallback_policy == "none":
+        if self.fallback_policy == "none" or self.routing_policy == "cpu-baseline":
             return None
         fallback = self.providers.get("local")
         if fallback and fallback.id != failed_provider_id:

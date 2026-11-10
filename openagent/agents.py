@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Protocol
 
 from .context import ContextEngine
-from .model_gateway import ModelGateway
+from .model_gateway import ModelGateway, ProviderConfigurationError
 from .models import AgentResponse, AuditEvent
 from .science.agent import ScientificAgent
 from .storage import OpenAgentStore
@@ -379,11 +380,14 @@ class AgentRegistry:
             },
         ]
         try:
+            # Keep routine CPU agent turns bounded. Explicitly raising this
+            # limit remains possible for tasks that need longer output.
+            max_output = max(32, min(640, int(os.environ.get("OPENAGENT_AGENT_MAX_OUTPUT_TOKENS", "192"))))
             result = self.gateway.complete(
                 messages,
                 provider_id="auto",
                 allow_external=False,
-                max_output_tokens=640,
+                max_output_tokens=max_output,
                 **({"cancelled": cancelled} if cancelled is not None else {}),
             )
             content = result.content.strip()
@@ -415,6 +419,8 @@ class AgentRegistry:
         except Exception as exc:
             if cancelled is not None and cancelled():
                 raise InterruptedError("agent run cancelled") from exc
+            if isinstance(exc, ProviderConfigurationError):
+                raise
             return AgentResponse(
                 agent=fallback.agent,
                 goal=fallback.goal,

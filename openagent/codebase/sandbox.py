@@ -131,15 +131,28 @@ class SandboxManager:
         staging = Path(tempfile.mkdtemp(prefix="openagent-restore-", dir=str(workspace.parent)))
         try:
             with tarfile.open(archive_path, "r:gz") as archive:
+                members: list[tuple[tarfile.TarInfo, Path]] = []
+                seen: set[Path] = set()
                 for member in archive.getmembers():
                     destination = (staging / member.name).resolve()
-                    if destination != staging and staging not in destination.parents:
+                    if destination == staging or staging not in destination.parents:
                         raise RepositoryBoundaryError("snapshot contains an unsafe path")
-                # Snapshots are created by this manager and addressed from its
-                # private snapshot directory. Path validation above keeps the
-                # restore compatible with Python 3.11 without relying on the
-                # newer tarfile extraction filter API.
-                archive.extractall(staging)
+                    if destination in seen or not (member.isdir() or member.isfile()):
+                        raise RepositoryBoundaryError("snapshot contains an unsafe member")
+                    seen.add(destination)
+                    members.append((member, destination))
+                # Copy only ordinary files and directories. tarfile.extractall
+                # permits link members whose target escapes this staging root.
+                for member, destination in members:
+                    if member.isdir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                        continue
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise RepositoryBoundaryError("snapshot file is unreadable")
+                    with source, destination.open("xb") as target:
+                        shutil.copyfileobj(source, target)
             replacement = workspace.with_name("workspace-restored")
             if replacement.exists():
                 shutil.rmtree(replacement)
@@ -273,6 +286,11 @@ class SandboxManager:
         elif proc is None and self._recovered_process_is_alive(record):
             self._terminate_recovered_process(record)
         self._close_process_logs(record)
+        # A recovered process may still have its log files open in the
+        # original manager (or another process). Only this manager can
+        # guarantee release of handles it created.
+        if proc is not None:
+            self._wait_for_process_log_release(record)
         result = self.process_status(workspace_id, process_id)
         with self._process_lock:
             self._processes.pop(process_id, None)
@@ -572,6 +590,28 @@ class SandboxManager:
                 handle.close()
             except OSError:
                 pass
+
+    @staticmethod
+    def _wait_for_process_log_release(record: dict[str, Any]) -> None:
+        """Wait for Windows to release a stopped child's inherited log handles.
+
+        A process can be signalled and reaped before Windows permits deletion of
+        its redirected log files. A workspace may be discarded immediately after
+        stop, so check delete sharing without removing the logs themselves.
+        """
+        if os.name != "nt":
+            return
+        deadline = time.monotonic() + 1.0
+        for key in ("stdout_path", "stderr_path"):
+            path = str(record[key])
+            while True:
+                try:
+                    os.replace(path, path)
+                    break
+                except PermissionError as exc:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"managed process stopped but its {key} remains locked") from exc
+                    time.sleep(0.01)
 
     @staticmethod
     def _native_command(command: list[str]) -> list[str]:

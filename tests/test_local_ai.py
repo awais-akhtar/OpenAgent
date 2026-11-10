@@ -244,6 +244,14 @@ class LocalAIInfrastructureTests(unittest.TestCase):
             self.assertTrue(source.exists())
             self.assertIsNone(infra.get_model(model["id"]))
 
+    def test_missing_local_model_path_is_registered_not_available(self) -> None:
+        with TemporaryDirectory() as tmp:
+            infra = LocalAIInfrastructure(OpenAgentStore(Path(tmp) / "data"))
+            missing = Path(tmp) / "not-installed.gguf"
+            model = infra.register_model(name="Missing local model", provider="local", local_path=str(missing))
+            self.assertEqual(model["status"], "registered")
+            self.assertEqual(model["size_bytes"], 0)
+
     def test_ollama_http_pull_works_when_cli_is_not_on_path(self) -> None:
         with TemporaryDirectory() as tmp:
             infra = LocalAIInfrastructure(OpenAgentStore(tmp))

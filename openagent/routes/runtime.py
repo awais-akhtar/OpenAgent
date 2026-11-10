@@ -28,7 +28,8 @@ from ..adaptive_engine.runtime import AdaptiveExecutionEngine
 from ..agent_bridge import AgentBridge
 from ..agents import AgentRegistry
 from ..assistant import AssistantManager
-from ..auth import AuthError, AuthManager, personal_remote_public_route, required_scope_for_path
+from ..auth import (AuthError, AuthManager, acceptable_scopes_for_path, personal_remote_public_route,
+                    required_scope_for_path)
 from ..backup_restore import BackupRestoreManager
 from ..calendar_sync import CalendarSyncError, CalendarSyncManager
 from ..calendar_system import CalendarSystem
@@ -501,12 +502,12 @@ def build_http_server(
     from ..vector_embeddings_service import VectorEmbeddingsService
 
     voice_conversation_manager = VoiceConversationManager(state_dir=store.data_dir)
-    doc_processor_service = DocumentProcessorService()
-    knowledge_graph_service = KnowledgeGraphService()
+    doc_processor_service = DocumentProcessorService(store)
+    knowledge_graph_service = KnowledgeGraphService(store)
     embeddings_service = VectorEmbeddingsService()
-    reasoning_service = AdvancedReasoningService()
+    reasoning_service = AdvancedReasoningService(store)
     memory_service = SemanticMemoryService(state_dir=store.data_dir)
-    rag_service = RAGService(embeddings_service, doc_processor_service, knowledge_graph_service)
+    rag_service = RAGService(embeddings_service, doc_processor_service, knowledge_graph_service, store=store)
     document_processing = DocumentProcessing(store, knowledge=knowledge)
     image_studio = ImageStudio(store)
     scheduler = Scheduler(store)
@@ -3499,11 +3500,27 @@ def build_http_server(
                 return
             if parsed.path == "/api/local-ai/models/register":
                 payload = self.read_json()
+                # This dispatch is reached before the one in local_ai_routes,
+                # which validates a different field set, so the validation that
+                # actually runs is the one written here. An empty body used to
+                # store a nameless model, which nothing can refer to again.
+                #
+                # Only the name is required. Registering metadata with neither a
+                # local_path nor a source_url is a supported flow -- the
+                # Marketplace & runtime form offers exactly that, and the
+                # React-to-Python smoke asserts the stored record has neither --
+                # so requiring a source here would remove a working capability.
+                name = str(payload.get("name", "")).strip()
+                source_url = str(payload.get("source_url", "")).strip()
+                local_path = str(payload.get("local_path", "")).strip()
+                if not name:
+                    self.send_json({"error": "name is required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
                 model = local_ai.register_model(
-                    name=str(payload.get("name", "")).strip(),
+                    name=name,
                     provider=str(payload.get("provider", "local")).strip() or "local",
-                    source_url=str(payload.get("source_url", "")).strip(),
-                    local_path=str(payload.get("local_path", "")).strip(),
+                    source_url=source_url,
+                    local_path=local_path,
                     metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
                 )
                 self.send_json({"model": model}, status=HTTPStatus.CREATED)
@@ -4551,7 +4568,11 @@ def build_http_server(
                     self._send_route_auth_error(path, "route has no approved personal-remote permission mapping",
                         HTTPStatus.FORBIDDEN, "permission_error")
                     return False
-            if scope not in user.get("scopes", []):
+            # Almost every route is reachable by exactly one scope. The few
+            # with an alternative are listed in ALTERNATIVE_ROUTE_SCOPES, with
+            # the reason each one is there.
+            held = user.get("scopes", [])
+            if not any(candidate in held for candidate in acceptable_scopes_for_path(path, method)):
                 self._send_route_auth_error(path, "insufficient scope",
                     HTTPStatus.FORBIDDEN, "permission_error")
                 return False

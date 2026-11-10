@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from threading import Event, Timer, get_ident
@@ -57,6 +58,37 @@ def write_tiny_openvino_bundle(directory: str) -> None:
 
 
 class ModelGatewayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Full-suite desktop tests may configure the managed CPU installation.
+        # These gateway cases exercise the default local-first contract unless
+        # a case explicitly changes the policy itself.
+        self._routing_env = patch.dict(os.environ, {
+            "OPENAGENT_MODEL_ROUTING": "local-first",
+            "OPENAGENT_MODEL_FALLBACK": "local",
+        })
+        self._routing_env.start()
+        self.addCleanup(self._routing_env.stop)
+
+    def test_cpu_baseline_auto_routes_only_to_bounded_direct_model(self) -> None:
+        client = FakeDirectHardware()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
+        ):
+            write_tiny_openvino_bundle(temp)
+            gateway = ModelGateway(direct_hardware=client)
+            gateway.routing_policy = "cpu-baseline"
+            self.assertEqual(gateway.route_order(allow_external=False), ["openvino-direct"])
+            self.assertIsNone(gateway.select_fallback("openvino-direct"))
+            result = gateway.complete([{"role": "user", "content": "hello"}], provider_id="auto")
+            self.assertEqual(result.provider, "openvino-direct")
+            gateway.providers["openvino-direct"].device = "GPU"
+            with self.assertRaisesRegex(ProviderConfigurationError, "CPU device"):
+                gateway.select_provider("auto")
+            gateway.providers["openvino-direct"].device = "CPU"
+            with patch.object(gateway.providers["openvino-direct"], "available", return_value=False):
+                with self.assertRaisesRegex(ProviderConfigurationError, "unavailable"):
+                    gateway.select_provider("auto")
+
     def test_cpu_bundle_admission_rejects_missing_and_oversized_before_worker_start(self) -> None:
         client = FakeDirectHardware()
         with tempfile.TemporaryDirectory() as temp, patch.dict(
@@ -64,7 +96,10 @@ class ModelGatewayTests(unittest.TestCase):
         ):
             gateway = ModelGateway(direct_hardware=client)
             with self.assertRaisesRegex(ProviderConfigurationError, "missing a regular"):
-                gateway.providers["openvino-direct"]._ensure_loaded("test-model")
+                gateway.complete([{"role": "user", "content": "hello"}], provider_id="openvino-direct")
+            with self.assertRaisesRegex(ProviderConfigurationError, "missing a regular"):
+                list(gateway.stream_complete(
+                    [{"role": "user", "content": "hello"}], provider_id="openvino-direct"))
             self.assertEqual(client.load_calls, 0)
             write_tiny_openvino_bundle(temp)
             with self.assertRaisesRegex(CPUModelAdmissionError, "more than"):

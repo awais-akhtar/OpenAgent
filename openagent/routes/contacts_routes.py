@@ -78,8 +78,13 @@ def handle_post(path: str, deps: ContactsRouteDependencies) -> JsonRouteResult |
     owner = deps.payload_owner(payload, "local")
     try:
         if path == "/api/contacts":
+            name = str(payload.get("name", "")).strip()
+            # A contact with no name cannot be found again by the person who
+            # created it. An empty body used to create one.
+            if not name:
+                return JsonRouteResult({"error": "name is required."}, HTTPStatus.BAD_REQUEST)
             contact = deps.contacts.create_contact(
-                name=str(payload.get("name", "")).strip(),
+                name=name,
                 project=project,
                 owner=owner,
                 handles=payload.get("handles") if isinstance(payload.get("handles"), dict) else {},

@@ -26,6 +26,7 @@ import webbrowser
 
 from . import __version__
 from .config import desktop_home, web_root
+from .cpu_model_admission import CPUModelAdmissionError, admit_cpu_openvino_bundle
 from .models import AuditEvent
 from .storage import OpenAgentStore
 
@@ -336,7 +337,14 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
     """Select a verified local OpenVINO model without crossing the network."""
 
     configured = os.environ.get("OPENAGENT_OPENVINO_MODEL_DIR", "").strip()
-    if configured and Path(configured).is_dir():
+    if configured:
+        try:
+            admit_cpu_openvino_bundle(Path(configured))
+        except CPUModelAdmissionError:
+            return ""
+        os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "CPU")
+        os.environ.setdefault("OPENAGENT_MODEL_ROUTING", "cpu-baseline")
+        os.environ.setdefault("OPENAGENT_MODEL_FALLBACK", "none")
         return str(Path(configured).resolve())
     project_root = Path(__file__).resolve().parents[1]
     candidates = [data_dir / "models" / "openvino" / "qwen2.5-1.5b-instruct-int4-ov"]
@@ -345,11 +353,16 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
         candidates.append(source_root / "models" / "openvino" / "qwen2.5-1.5b-instruct-int4-ov")
     candidates.append(project_root / "models" / "openvino" / "qwen2.5-1.5b-instruct-int4-ov")
     for candidate in candidates:
-        if (candidate / "openvino_model.xml").is_file() and (candidate / "openvino_model.bin").is_file():
-            os.environ["OPENAGENT_OPENVINO_MODEL_DIR"] = str(candidate.resolve())
-            os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "CPU")
-            os.environ.setdefault("OPENAGENT_OPENVINO_MODEL_ID", "openagent-qwen2.5-1.5b-int4")
-            return str(candidate.resolve())
+        try:
+            admit_cpu_openvino_bundle(candidate)
+        except CPUModelAdmissionError:
+            continue
+        os.environ["OPENAGENT_OPENVINO_MODEL_DIR"] = str(candidate.resolve())
+        os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "CPU")
+        os.environ.setdefault("OPENAGENT_OPENVINO_MODEL_ID", "openagent-qwen2.5-1.5b-int4")
+        os.environ.setdefault("OPENAGENT_MODEL_ROUTING", "cpu-baseline")
+        os.environ.setdefault("OPENAGENT_MODEL_FALLBACK", "none")
+        return str(candidate.resolve())
     return ""
 
 

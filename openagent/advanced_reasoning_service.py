@@ -7,6 +7,8 @@ import json
 from typing import Any
 from uuid import uuid4
 
+from .storage import OpenAgentStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,15 +46,33 @@ class ReasoningChain:
 class AdvancedReasoningService:
     """Multi-turn reasoning and semantic understanding."""
 
-    def __init__(self):
+    def __init__(self, store: OpenAgentStore | None = None):
+        self.store = store
         self.chains: dict[str, ReasoningChain] = {}
         self.memory_store = {}
         self.chain_metadata: dict[str, dict[str, Any]] = {}
+        if store is not None:
+            with store.session() as connection:
+                saved = connection.execute("SELECT * FROM g25_reasoning_chains").fetchall()
+            for row in saved:
+                chain = ReasoningChain(row["id"], row["topic"])
+                chain.steps = json.loads(row["steps_json"])
+                chain.conclusions = json.loads(row["conclusions_json"])
+                self.chains[chain.id] = chain
+                self.chain_metadata[chain.id] = {"project": row["project"], "owner": row["owner"]}
 
     def create_reasoning_chain(self, topic: str, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Create new reasoning chain."""
         chain_id = str(uuid4())
         chain = ReasoningChain(chain_id, topic)
+        if self.store is not None:
+            with self.store.session() as connection:
+                connection.execute(
+                    """INSERT INTO g25_reasoning_chains
+                       (id, project, owner, topic, steps_json, conclusions_json)
+                       VALUES (?, ?, ?, ?, '[]', '[]')""",
+                    (chain_id, project, owner, topic),
+                )
         self.chains[chain_id] = chain
         self.chain_metadata[chain_id] = {"project": project, "owner": owner}
         logger.info(f"Created reasoning chain: {topic} (project={project}, owner={owner})")
@@ -64,7 +84,17 @@ class AdvancedReasoningService:
             return {"error": "Chain not found"}
         
         chain = self.chains[chain_id]
-        chain.add_step(step_type, input_data, output_data)
+        next_steps = [*chain.steps, {
+            "type": step_type, "input": input_data, "output": output_data,
+            "step_num": len(chain.steps) + 1,
+        }]
+        if self.store is not None:
+            with self.store.session() as connection:
+                connection.execute(
+                    "UPDATE g25_reasoning_chains SET steps_json = ? WHERE id = ?",
+                    (json.dumps(next_steps), chain_id),
+                )
+        chain.steps = next_steps
         
         return {
             "chain_id": chain_id,

@@ -35,11 +35,13 @@ describe('chat provider, privacy and attachment controls', () => {
     }));
 
     renderChat();
-    fireEvent.click(screen.getByRole('button', { name: /Select model/ }));
-    expect(await screen.findByRole('option', { name: 'Cloud test (external)' })).toBeVisible();
-    fireEvent.change(screen.getByLabelText('Model provider'), { target: { value: 'cloud-test' } });
+    fireEvent.click(screen.getByRole('button', { name: /^(Auto|Select model)/ }));
+    const externalOption = await screen.findByRole('option', { name: /model-explicit/ });
+    expect(externalOption).toBeVisible();
+    expect(externalOption).toHaveTextContent('External');
+    fireEvent.click(externalOption);
+    fireEvent.click(screen.getByRole('button', { name: /^model-explicit/ }));
     expect(await screen.findByRole('alert')).toHaveTextContent('prompt and attachment content over the network');
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'model-explicit' } });
 
     fireEvent.change(screen.getByLabelText('Choose files to attach'), { target: { files: [new File(['memo'], 'notes.txt', { type: 'text/plain' })] } });
     expect(await screen.findByTestId('chat-attachment')).toHaveTextContent('notes.txt');
@@ -103,9 +105,12 @@ describe('chat provider, privacy and attachment controls', () => {
       return json({ error: `Unexpected request ${url}` }, 404);
     }));
     renderChat();
-    fireEvent.click(screen.getByRole('button', { name: /Select model/ }));
-    expect(await screen.findByRole('option', { name: 'Ollama (local server)' })).toBeVisible();
-    fireEvent.change(screen.getByLabelText('Model provider'), { target: { value: 'ollama' } });
+    fireEvent.click(screen.getByRole('button', { name: /^(Auto|Select model)/ }));
+    // A local Ollama server reports network: true, which must still read as
+    // local in the list and must not demand egress consent.
+    const localOption = await screen.findByRole('option', { name: /local-model/ });
+    expect(localOption).toHaveTextContent('Local');
+    fireEvent.click(localOption);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Message OpenAgent'), { target: { value: 'Use the local server' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));

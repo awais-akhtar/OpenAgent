@@ -874,6 +874,14 @@ async function run() {
     const snapshot = await requestJson(fixture.baseUrl, `/api/agents/jobs/${retriedJob.id}`, fixture.tokens.agentsReadOnly);
     return snapshot.payload.job?.status === 'completed' ? snapshot.payload.job : null;
   }, 'retried agent lifecycle to complete', 15_000);
+  await page.reload();
+  const jobHistory = page.locator('details.agent-run-history').first();
+  await jobHistory.getByRole('button', { name: /Cancel and retry integration fixture/ }).first().click();
+  await expect(page.getByRole('heading', { name: 'Cancel and retry integration fixture [integration-agent-cancel]', exact: true })).toBeVisible();
+  const runHistory = page.locator('details.agent-run-history').nth(1);
+  await runHistory.locator('summary').click();
+  await runHistory.getByRole('button', { name: new RegExp(actualAgentGoal) }).click();
+  await expect(page.getByRole('heading', { name: actualAgentGoal, exact: true })).toBeVisible();
   // A real provider exception may return a safe local fallback, which must be
   // visibly marked degraded rather than presented as genuine model output.
   await open('agents', fixture.tokens.agents);
@@ -1847,14 +1855,29 @@ async function run() {
   await page.getByRole('button', { name: 'Create node' }).click();
   const g25NodeResponse = await g25NodePromise;
   assert(g25NodeResponse.status() === 201, `G25 graph node create returned HTTP ${g25NodeResponse.status()}: ${await g25NodeResponse.text()}`);
-  results.push({ workflow: 'G25 advanced documents and knowledge graph', result: 'PASS', evidence: `React uploaded a document through /api/g25/documents/upload with a g25-scoped credential, rendered the returned record, and a fresh authenticated Python read returned document ${g25DocumentId}. A knowledge-scoped token was refused with 403, and a knowledge-graph node was created through the same screen. No model provider was contacted.` });
-  // L07 asks for each accepted G25 tab to be driven from React, not only the
-  // Documents and Knowledge graph ones. The retrieval index and the reasoning
-  // chains live in the running server, so they are exercised here and the
-  // screen labels them session-only; semantic memory is read back from disk by
-  // tests/test_semantic_memory_durability.py.
+  const g25SourceNode = await g25NodeResponse.json();
+  const g25SourceId = String(g25SourceNode.id ?? '');
+  assert(g25SourceId, `G25 node response omitted its id: ${JSON.stringify(g25SourceNode)}`);
+  await expect(page.getByLabel('Source node id')).toHaveValue(g25SourceId);
+  await page.getByLabel('Node label').fill('IntegrationTarget');
+  const g25TargetPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/graph/nodes' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create node' }).click();
+  const g25TargetResponse = await g25TargetPromise;
+  assert(g25TargetResponse.status() === 201, `G25 target node create returned HTTP ${g25TargetResponse.status()}`);
+  const g25TargetNode = await g25TargetResponse.json();
+  const g25TargetId = String(g25TargetNode.id ?? '');
+  assert(g25TargetId, `G25 target node response omitted its id: ${JSON.stringify(g25TargetNode)}`);
+  await expect(page.getByLabel('Target node id')).toHaveValue(g25TargetId);
+  await page.getByLabel('Relationship').fill('references');
+  const g25EdgePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/graph/edges' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create edge' }).click();
+  const g25EdgeResponse = await g25EdgePromise;
+  assert(g25EdgeResponse.status() === 201, `G25 edge create returned HTTP ${g25EdgeResponse.status()}: ${await g25EdgeResponse.text()}`);
+  results.push({ workflow: 'G25 advanced documents and knowledge graph', result: 'PASS', evidence: `React uploaded document ${g25DocumentId} with a g25-scoped credential and a fresh authenticated Python read found it. The screen carried the actual source and target node IDs into the edge form and created their relationship through Python. A knowledge-scoped token was refused with 403. No model provider was contacted.` });
+  // Exercise the saved retrieval index and reasoning chain through the same
+  // React controls. An authenticated stop/restart readback is tested by Python.
   await page.getByRole('tab', { name: 'RAG' }).click();
-  await page.getByLabel('Document id').fill(g25DocumentId);
+  await expect(page.getByLabel('Document id')).toHaveValue(g25DocumentId);
   const ragIndexPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/g25/rag/index' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Index document' }).click();
   const ragIndexResponse = await ragIndexPromise;
@@ -1879,7 +1902,7 @@ async function run() {
   const chainBody = await chainResponse.json();
   const g25ChainId = String(chainBody.chain_id ?? chainBody.id ?? '');
   assert(g25ChainId, `Reasoning chain response omitted its id: ${JSON.stringify(chainBody)}`);
-  await page.getByLabel('Chain id').fill(g25ChainId);
+  await expect(page.getByLabel('Chain id')).toHaveValue(g25ChainId);
   const chainDetailPromise = responseWhen(page, response => new URL(response.url()).pathname === `/api/g25/reasoning/chains/${g25ChainId}`);
   await page.getByRole('button', { name: 'Load chain' }).click();
   const chainDetailResponse = await chainDetailPromise;
@@ -1912,7 +1935,7 @@ async function run() {
   assert(memoryForeignProject.response.status === 403, `Reading a default-project memory session under another project returned HTTP ${memoryForeignProject.response.status}: ${JSON.stringify(memoryForeignProject.payload)}`);
   const memoryUnknownSession = await requestJson(fixture.baseUrl, '/api/g25/memory/history?session_id=no-such-session&project=default', fixture.tokens.g25);
   assert(memoryUnknownSession.response.status === 404, `An unknown memory session returned HTTP ${memoryUnknownSession.response.status}`);
-  results.push({ workflow: 'G25 retrieval, reasoning and semantic memory', result: 'PASS', evidence: `React indexed document ${g25DocumentId} through /api/g25/rag/index and retrieved it again through /api/g25/rag/search; it created reasoning chain ${g25ChainId} and loaded its detail, and created memory session ${g25SessionId}, stored an entry and read it back from the history. The same chain and session were refused under another project. The retrieval index and chains are server-process state and the screen says so; memory durability across a restart is covered by a Python test. No model provider was contacted.` });
+  results.push({ workflow: 'G25 retrieval, reasoning and semantic memory', result: 'PASS', evidence: `React carried Python document ID ${g25DocumentId} into RAG indexing and retrieved it through /api/g25/rag/search; it carried reasoning chain ID ${g25ChainId} into detail loading, then created a memory session, stored an entry and read its history. The same chain and session were refused under another project. Restart durability is covered separately by an authenticated Python HTTP test. No model provider was contacted.` });
 
 
   await open('voiceconv', fixture.tokens.voice);
@@ -2086,6 +2109,184 @@ async function run() {
   const factStatistics = await requestJson(fixture.baseUrl, '/api/fact-provenance/statistics?project=default', fixture.tokens.twin);
   assert(factStatistics.response.ok, `Fact provenance statistics returned HTTP ${factStatistics.response.status}`);
   results.push({ workflow: 'Fact provenance record, search, retract and restore', result: 'PASS', evidence: `React recorded fact ${factId} with one source through /api/fact-provenance/facts using a twin-scoped credential; a knowledge-scoped token was refused with 403. The screen searched for it, retracted it with a reason and restored it, and fresh authenticated Python reads confirmed retracted_at appearing and clearing while the retraction history was kept. Statistics were read through the same credential.` });
+
+  // Vault and Developer were two of five destinations the smoke never opened,
+  // so nothing had driven a credential through the real store-and-reveal flow
+  // or an API key through issue-and-verify. Both hold protected material, so
+  // these workflows check what must not be returned as closely as what must.
+  const vaultLabel = `smoke-credential-${Date.now()}`;
+  const vaultSecret = 'integration-secret-value-not-to-be-listed';
+  const vaultPassphrase = 'integration-vault-passphrase';
+  await open('vault', fixture.tokens.vault);
+  await page.getByRole('button', { name: 'Add credential' }).click();
+  await page.getByLabel('Label').fill(vaultLabel);
+  await page.getByLabel('Secret value').fill(vaultSecret);
+  await page.getByLabel('Vault passphrase').first().fill(vaultPassphrase);
+  const vaultStorePromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/vault/store' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Encrypt and store' }).click();
+  const vaultStoreResponse = await vaultStorePromise;
+  assert(vaultStoreResponse.status() === 201, `Vault store returned HTTP ${vaultStoreResponse.status()}: ${await vaultStoreResponse.text()}`);
+  const vaultStoreBody = await vaultStoreResponse.json();
+  const vaultEntry = vaultStoreBody.entry ?? vaultStoreBody.data?.entry ?? {};
+  const vaultEntryId = String(vaultEntry.id ?? vaultEntry.entry_id ?? '');
+  assert(vaultEntryId, `Vault store response omitted its entry id: ${JSON.stringify(vaultStoreBody)}`);
+
+  // The listing is what the screen renders, so the plaintext must not be in it.
+  const vaultEntries = await requestJson(fixture.baseUrl, '/api/vault/entries?project=default', fixture.tokens.vault);
+  assert(vaultEntries.response.ok, `Vault entries returned HTTP ${vaultEntries.response.status}`);
+  const vaultListText = JSON.stringify(vaultEntries.payload);
+  assert(vaultListText.includes(vaultEntryId), `The stored entry was not returned from a fresh Python read: ${vaultListText.slice(0, 400)}`);
+  assert(!vaultListText.includes(vaultSecret), 'The vault listing returned the stored secret in plaintext');
+  assert(!vaultListText.includes(vaultPassphrase), 'The vault listing returned the vault passphrase');
+  await expect(page.getByText(vaultLabel).first()).toBeVisible();
+  // The rendered page must not carry the plaintext either.
+  const vaultPageText = await page.content();
+  assert(!vaultPageText.includes(vaultSecret), 'The rendered Vault screen contained the stored secret before any reveal');
+
+  // A wrong passphrase must be refused rather than returning anything.
+  const vaultWrongPassphrase = await requestJson(fixture.baseUrl, '/api/vault/retrieve', fixture.tokens.vault, {
+    method: 'POST',
+    body: { entry_id: vaultEntryId, passphrase: 'not-the-passphrase', project: 'default' },
+  });
+  assert(vaultWrongPassphrase.response.status === 400, `A wrong vault passphrase returned HTTP ${vaultWrongPassphrase.response.status}`);
+  assert(!JSON.stringify(vaultWrongPassphrase.payload).includes(vaultSecret), 'A refused vault reveal leaked the secret');
+
+  // The reveal flow itself, driven from the screen.
+  const vaultRow = page.locator(`text=${vaultLabel}`).first();
+  await vaultRow.scrollIntoViewIfNeeded();
+  const vaultRevealPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/vault/retrieve' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Reveal', exact: true }).first().click();
+  await page.getByLabel('Vault passphrase').first().fill(vaultPassphrase);
+  await page.getByRole('button', { name: 'Reveal for 15 seconds' }).click();
+  const vaultRevealResponse = await vaultRevealPromise;
+  assert(vaultRevealResponse.ok(), `Vault reveal returned HTTP ${vaultRevealResponse.status()}: ${await vaultRevealResponse.text()}`);
+  const vaultRevealBody = await vaultRevealResponse.json();
+  const revealedSecret = JSON.stringify(vaultRevealBody.secret ?? vaultRevealBody.data?.secret ?? {});
+  assert(revealedSecret.includes(vaultSecret), `The correct passphrase did not return the stored value: ${revealedSecret.slice(0, 200)}`);
+
+  // A credential without the vault scopes must not reach any of it.
+  const vaultForbidden = await requestJson(fixture.baseUrl, '/api/vault/entries?project=default', fixture.tokens.knowledge);
+  assert(vaultForbidden.response.status === 403, `A knowledge-scoped token reached the vault with HTTP ${vaultForbidden.response.status}`);
+  const vaultForbiddenRetrieve = await requestJson(fixture.baseUrl, '/api/vault/retrieve', fixture.tokens.knowledge, {
+    method: 'POST',
+    body: { entry_id: vaultEntryId, passphrase: vaultPassphrase, project: 'default' },
+  });
+  assert(vaultForbiddenRetrieve.response.status === 403, `A knowledge-scoped token revealed a vault secret with HTTP ${vaultForbiddenRetrieve.response.status}`);
+  results.push({ workflow: 'Vault store, masked listing and authorised reveal', result: 'PASS', evidence: `React stored credential ${vaultEntryId} through /api/vault/store with a vault-scoped credential. A fresh authenticated Python read returned the entry without the plaintext secret or the passphrase, and the rendered screen did not contain the secret before a reveal. A wrong passphrase was refused with 400 and leaked nothing; the correct one returned the value through the screen's own reveal control. A knowledge-scoped token was refused both the listing and the reveal with 403.` });
+
+  // Developer: an API key is issued once and then only verifiable.
+  await open('developer', fixture.tokens.developer);
+  await page.getByRole('tab', { name: 'API keys' }).click();
+  const developerKeyPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/developer/api-keys' && response.request().method() === 'POST');
+  await page.getByLabel('Key label').fill('smoke-integration-key');
+  // The control stays disabled until at least one permission is chosen, which
+  // is the least-privilege behaviour the screen is meant to enforce.
+  const scopeBoxes = page.getByRole('group', { name: 'Permissions' }).getByRole('checkbox');
+  await expect(scopeBoxes.first()).toBeVisible();
+  await scopeBoxes.first().check();
+  await page.getByRole('button', { name: 'Create API key' }).click();
+  const developerKeyResponse = await developerKeyPromise;
+  assert(developerKeyResponse.status() === 201, `API key create returned HTTP ${developerKeyResponse.status()}: ${await developerKeyResponse.text()}`);
+  const developerKeyBody = await developerKeyResponse.json();
+  const issued = developerKeyBody.api_key ?? developerKeyBody.data?.api_key ?? {};
+  const issuedSecret = String(issued.key ?? issued.secret ?? issued.token ?? '');
+  assert(issuedSecret, `The API key response omitted the key itself: ${JSON.stringify(developerKeyBody)}`);
+
+  // The stored record must not carry the key back on a later read.
+  const developerKeys = await requestJson(fixture.baseUrl, '/api/developer/api-keys', fixture.tokens.developer);
+  assert(developerKeys.response.ok, `API key listing returned HTTP ${developerKeys.response.status}`);
+  assert(!JSON.stringify(developerKeys.payload).includes(issuedSecret), 'The API key listing returned the issued key in plaintext');
+
+  const verified = await requestJson(fixture.baseUrl, '/api/developer/api-keys/verify', fixture.tokens.developer, {
+    method: 'POST',
+    body: { key: issuedSecret },
+  });
+  assert(verified.response.ok, `API key verify returned HTTP ${verified.response.status}`);
+  const verdict = verified.payload.data ?? verified.payload;
+  assert(verdict.valid === true, `The issued key did not verify: ${JSON.stringify(verified.payload)}`);
+  const rejected = await requestJson(fixture.baseUrl, '/api/developer/api-keys/verify', fixture.tokens.developer, {
+    method: 'POST',
+    body: { key: 'not-an-issued-key' },
+  });
+  const rejectedVerdict = rejected.payload.data ?? rejected.payload;
+  assert(rejectedVerdict.valid === false, `An unissued key verified as valid: ${JSON.stringify(rejected.payload)}`);
+  const developerForbidden = await requestJson(fixture.baseUrl, '/api/developer/api-keys', fixture.tokens.knowledge);
+  assert(developerForbidden.response.status === 403, `A knowledge-scoped token read developer API keys with HTTP ${developerForbidden.response.status}`);
+  results.push({ workflow: 'Developer API key issue, masked listing and verify', result: 'PASS', evidence: `React issued an API key through /api/developer/api-keys with a developer-scoped credential. The key itself was returned once on creation and was absent from a fresh authenticated listing. Verification accepted the issued key and rejected an unissued one, and a knowledge-scoped token was refused the listing with 403.` });
+
+  // Adaptive engine, Ultra Model and Production Readiness were the last three
+  // destinations the smoke never opened. None of them launches a process here:
+  // what is checked is that each screen's reads reach Python and that the
+  // compute planner returns a plan without serving anything.
+  await open('engine', fixture.tokens.models);
+  await page.getByRole('tab', { name: 'Hardware' }).click();
+  const engineHardware = await requestJson(fixture.baseUrl, '/api/adaptive-engine/hardware?project=default', fixture.tokens.models);
+  assert(engineHardware.response.ok, `Adaptive engine hardware returned HTTP ${engineHardware.response.status}`);
+  const engineStatus = await requestJson(fixture.baseUrl, '/api/adaptive-engine/status?project=default', fixture.tokens.models);
+  assert(engineStatus.response.ok, `Adaptive engine status returned HTTP ${engineStatus.response.status}`);
+  // Only the task is filled. The other three inputs were marked required even
+  // though the planner treats them as optional, which failed the browser's own
+  // constraint validation and meant this button fired no request at all.
+  await page.getByRole('tab', { name: 'Plans' }).click();
+  const taskField = page.getByLabel('Task type');
+  await expect(taskField).toHaveCount(1);
+  await taskField.fill('chat');
+  const planButton = page.getByRole('button', { name: 'Ask backend for a compute plan' });
+  await expect(planButton).toBeEnabled();
+  const computePlanPromise = responseWhen(page, response => new URL(response.url()).pathname === '/api/compute/plan' && response.request().method() === 'POST');
+  await planButton.click();
+  const computePlanResponse = await computePlanPromise;
+  assert(computePlanResponse.ok(), `Compute plan returned HTTP ${computePlanResponse.status()}: ${await computePlanResponse.text()}`);
+  const computePlanBody = await computePlanResponse.json();
+  const planCandidates = computePlanBody.candidates ?? computePlanBody.data?.candidates ?? [];
+  assert(Array.isArray(planCandidates) && planCandidates.length > 0, `The planner returned no candidate: ${JSON.stringify(computePlanBody).slice(0, 300)}`);
+  // The planner returns the whole candidate list and says why each one was or
+  // was not offered, which is the better contract: a non-local candidate has
+  // to come back unavailable with the request's own refusal named, not simply
+  // be absent from the list.
+  const externalCandidates = planCandidates.filter(row => row.local === false);
+  assert(externalCandidates.length > 0, `The planner reported no external candidate to refuse: ${JSON.stringify(planCandidates).slice(0, 300)}`);
+  for (const candidate of externalCandidates) {
+    assert(candidate.available === false, `A local-only plan offered external provider ${candidate.provider} as available`);
+    assert(
+      (candidate.reasons ?? []).some(reason => String(reason).includes('external provider is disabled')),
+      `External provider ${candidate.provider} was refused without saying the request disabled it: ${JSON.stringify(candidate)}`,
+    );
+  }
+  const localCandidates = planCandidates.filter(row => row.local === true);
+  assert(localCandidates.some(row => row.available === true), `No local provider was offered as available: ${JSON.stringify(localCandidates).slice(0, 300)}`);
+  const engineForbidden = await requestJson(fixture.baseUrl, '/api/adaptive-engine/status?project=default', fixture.tokens.knowledge);
+  assert(engineForbidden.response.status === 403, `A knowledge-scoped token read the adaptive engine with HTTP ${engineForbidden.response.status}`);
+  results.push({ workflow: 'Adaptive engine reads and compute planning', result: 'PASS', evidence: `React opened the Adaptive engine screen with a models-scoped credential and its hardware and status reads reached Python. The Plans tab's compute-plan form was driven with only its Task type filled, leaving the three inputs the planner treats as optional blank, and it returned ${planCandidates.length} candidates, of which ${localCandidates.length} local with at least one available and ${externalCandidates.length} external, every external one unavailable and each naming this request's own external refusal, so no external provider was offered and nothing was served. A knowledge-scoped token was refused with 403.` });
+
+  await open('ultramodel', fixture.tokens.models);
+  const ultraStatus = await requestJson(fixture.baseUrl, '/api/ultra-model/status?project=default', fixture.tokens.models);
+  assert(ultraStatus.response.ok, `Ultra model status returned HTTP ${ultraStatus.response.status}`);
+  for (const tab of ['Manifests', 'Plans', 'Sessions']) {
+    await page.getByRole('tab', { name: tab }).click();
+    const read = await requestJson(fixture.baseUrl, `/api/ultra-model/${tab.toLowerCase()}?project=default`, fixture.tokens.models);
+    assert(read.response.ok, `Ultra model ${tab} returned HTTP ${read.response.status}`);
+  }
+  // Launching a process is gated on an explicit approval, and the refusal must
+  // say so rather than starting anything.
+  const ultraLaunch = await requestJson(fixture.baseUrl, '/api/ultra-model/launch', fixture.tokens.models, {
+    method: 'POST',
+    body: { project: 'default' },
+  });
+  assert(ultraLaunch.response.status >= 400, `An unapproved ultra-model launch returned HTTP ${ultraLaunch.response.status}`);
+  assert(JSON.stringify(ultraLaunch.payload).includes('approved'), `The launch refusal must name the approval it needs: ${JSON.stringify(ultraLaunch.payload)}`);
+  results.push({ workflow: 'Ultra model reads and gated launch refusal', result: 'PASS', evidence: `React opened the Ultra Model screen with a models-scoped credential and its status, manifests, plans and sessions reads all reached Python. A launch without an explicit approval was refused and the refusal names the approval it requires, so no model process was started and no model was downloaded.` });
+
+  // Production Readiness reads four services and must report only what they
+  // return; three of its tabs used to display invented data.
+  await open('readiness', fixture.tokens.readiness);
+  const voiceStatus = await requestJson(fixture.baseUrl, '/api/voice/status?project=default', fixture.tokens.readiness);
+  assert(voiceStatus.response.ok, `Voice status returned HTTP ${voiceStatus.response.status}`);
+  const readinessPage = await page.content();
+  for (const invented of ['Sample transcription', '24ms', 'Team Meeting', 'GPT-2 Fine-tune', '2.4GB', 'Llama-7B', '4h 32m']) {
+    assert(!readinessPage.includes(invented), `The Production Readiness screen still renders the invented value ${JSON.stringify(invented)}`);
+  }
+  results.push({ workflow: 'Production Readiness reports only backend values', result: 'PASS', evidence: `React opened the Production Readiness screen, whose Voice STT, Auto Scheduling and Fine-tuning tabs previously rendered a hardcoded transcript, a random confidence and waveform, a fixed 24ms latency, invented reminders and invented training jobs. The rendered page contains none of those values, and /api/voice/status was read through the same credential.` });
 
   const demoArtifactCalls = apiRequests.filter(request => request.url().includes('/demo/'));
   assert(demoArtifactCalls.length === 0, 'Live integration unexpectedly requested Demo fixture assets');

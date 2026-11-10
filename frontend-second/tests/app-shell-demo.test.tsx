@@ -31,7 +31,10 @@ it('opens Chat to a clean offline state instead of replaying shell conversation 
     window.history.replaceState({}, '', '/?view=chat');
     render(<QueryClientProvider client={client}><BrowserRouter><App /></BrowserRouter></QueryClientProvider>);
     expect(await screen.findByRole('heading', { name: 'Start a conversation' }, { timeout: 5000 })).toBeVisible();
-    expect(screen.getByRole('combobox', { name: 'Conversation' }).querySelectorAll('option')).toHaveLength(1);
+    // The header's conversation select moved into the conversations panel, so
+    // the clean-Demo assertion is that the panel lists nothing and says why.
+    expect(document.querySelectorAll('.chat-recent-row')).toHaveLength(0);
+    expect(screen.getByText('Switch to Live mode to use saved conversations.')).toBeVisible();
     expect(document.querySelectorAll('#content .chat-thread .chat-message')).toHaveLength(0);
     expect(screen.getByText('Chat is not simulated in offline Demo mode. Switch to Live to use the connected chat service.')).toBeVisible();
     expect(screen.getByText('DESIGN PREVIEW')).toBeVisible();

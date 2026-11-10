@@ -1,6 +1,18 @@
 # Desktop interaction-state coverage report
 
-## Latest verification — 2026-10-25 (current source)
+## Current audit boundary — 1–2 November 2026
+
+The navigation now contains **32 destinations** (the approved 23 plus nine newer workspaces). This report's older control-by-control and desktop runs are historical evidence, not a claim that all current controls passed on this source revision. The authoritative remaining UI/backend classification is [FRONTEND_BACKEND_MASTER_GAPS.md](FRONTEND_BACKEND_MASTER_GAPS.md).
+
+For completion, use the master map's **L01–L13 one-pass closure board**. L06 is the control activation rule: each release-critical Live action needs an actual React click, Python method/path/status/schema, fresh persisted readback, denied-scope/project check where applicable, and matching desktop state. Preserve `Not tested` for controls that have only been discovered or rendered.
+
+Current-tree checks: `npm run check` passed; full Vitest **205/205 across 26 files** passed on the final frontend source ([TypeScript](.qa/full-gap-audit-20261101/typescript-final.log), [Vitest](.qa/full-gap-audit-20261101/units-final.log)); focused Python auth/ownership/contract selection **20/20** passed. The route inventory now has 783 declarations/54 groups and 413 second-frontend bounded route-string candidates. Neither a visible control nor a route string proves a completed workflow.
+
+**Recent evidence, before later CodeQ backend edits:** complete desktop Playwright **269/269 passed** with two workers and zero retries ([log](.qa/full-gap-audit-20261101/playwright-full-final.log)); isolated React-to-Python smoke **49 workflows / 505 API responses / zero Demo fixture requests, PASS** with auth enforced and external providers off ([log](.qa/full-gap-audit-20261101/real-python-smoke-final2.log)); isolated production build passed ([log](.qa/full-gap-audit-20261101/build.log)). Browser cases mix intercepted responses with selected disposable-Python cases; the smoke is the broader real-Python evidence. Its G25 document/graph, Voice conversation create/read, and Model serving *plan*/readiness checks do not certify RAG/reasoning/memory, speech synthesis, or launched model sessions. Three focused Python tests passed after the CodeQ tool/teardown changes; full discovery and the real autonomous edit run remain open in the master map.
+
+**Still not rerun on this working tree:** full Python discovery and all equivalent canonical/React interaction-state pairs at 1440×900 and 1280×800 in both themes. The nine newer destinations and remaining controls, CodeQ read-only question click-through, provider/hardware paths, permission and persistence edge cases remain individually unverified unless a dated workflow in the master map says otherwise. Owner-approved idle sample-trace suppression is an intentional presentation difference. Do not classify an untested control as broken or working.
+
+## Historical verification — 2026-10-25 (source at that date)
 
 - `npm run check`: passed after the current Fine-tuning and Assistant test corrections.
 - `npm test -- --reporter=dot --maxWorkers=1`: **199/199 passed across 25 files**.
@@ -11,7 +23,7 @@
 - The first smoke attempt timed out looking for a Calendar event scheduled four hours after current time (19:00, outside the rendered 08:00–18:00 weekly grid). The fixture was moved to 10:00 the following day; the complete rerun passed. This was a smoke fixture correction, not a product UI workaround.
 - These checks do not certify every visible control or 100% pixel parity. Remaining `Not tested`, `Partially working`, and backend-blocked items below remain open; mocked E2E responses are not counted as real integration.
 
-## Latest incremental verification — 2026-10-25
+## Historical incremental verification — 2026-10-25
 
 - Full backend regression after the receipt-verifier fix: `.venv\Scripts\python.exe -m unittest discover -s tests -v` — **2,035 passed, 97 skipped**, 818.142 seconds, exit code 0. The previous run had one Phase 1 receipt-validation-order failure; the verifier now reports duplicate observations before checkpoint contents while keeping both validations strict.
 - Full frontend checks after the current corrections: `npm run check` passed; **180/180 Vitest tests across 22 files**; **229/229 desktop Playwright tests** (`npm run test:e2e -- --workers=1 --retries=0`); and isolated production build passed.
@@ -19,7 +31,7 @@
 - Real React-to-Python smoke: **36 workflows / 368 responses / zero Demo fixture requests**. Added CodeQ create/save/rename/delete through the real Monaco UI and verified each state with fresh authenticated Python reads. Missing CodeQ files return 404 after deletion. Calendar lifecycle smoke now uses a DST-safe near-future datetime; create/edit/delete, availability scope and reminder acknowledgement passed.
 - The current tests exercise the mapped workflows; they do not prove every listed screen control or full pixel acceptance. The remaining unverified controls and backend capabilities below remain open.
 
-## Latest complete verification — 2026-10-24 (desktop frontend; latest backend regressions below)
+## Historical complete verification — 2026-10-24
 
 Security Audit Live verification was added after the prior counts: the Audit tab now reads only `project=default` using `security:admin`, omits metadata from rendered rows, and surfaces a denied-scope response. The final totals below include this change.
 

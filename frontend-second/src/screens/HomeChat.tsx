@@ -1,37 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { handleTabListKeyDown, tabIndex } from '../components/tabKeyboard';
-import { apiConnectionMessage, apiDelete, apiGet, apiPatch, apiPost, apiStreamPost, type StreamEvent } from '../api/client';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiConnectionMessage, apiDelete, apiGet, apiGetBlob, apiPatch, apiPost, apiStreamPost, type StreamEvent } from '../api/client';
 import { useWorkspaceState } from '../state';
 import { demoQuery } from '../demo/api';
-import { demoProvider } from '../demo/provider';
 import {
-  Activity, ArrowRight, Archive, Bot, BookOpen, Box, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight,
-  Clock3, Code2, Copy, FileCode2, Folder, Globe2, Layers3, MessageCircle, MoreHorizontal, Pin, ThumbsUp,
-  FileCheck2, GitPullRequest, Home, Info, Maximize2, Monitor, Network, Paperclip, PanelRight, Plus, Search, Send, Shield, Sparkles, Sun, Terminal, Trash2, X,
-  Zap, type LucideIcon,
+  Archive, AudioLines, Bot, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight,
+  Copy, FileText, Globe2, Mic, MoreHorizontal, Pin, Square, ThumbsUp,
+  Paperclip, Plus, Search, Send, Sparkles, Trash2, Wrench,
 } from 'lucide-react';
 
 type Go = (id: string) => void;
 type ScreenProps = { go?: Go };
 const noNavigation: Go = () => undefined;
-const quickLinks = [
-  { title: 'Start a new chat', detail: 'Ask, plan and solve problems', id: 'chat', Icon: MessageCircle, tone: 'blue' },
-  { title: 'Create an agent', detail: 'Configure a specialist assistant', id: 'agents', Icon: Network, tone: 'violet' },
-  { title: 'Start research', detail: 'Explore a topic with sources', id: 'research', Icon: Search, tone: 'green' },
-  { title: 'Set up automation', detail: 'Schedule repeatable work', id: 'automations', Icon: Zap, tone: 'orange' },
-];
-const pinned = [
-  { title: 'Web search', id: 'research', Icon: Globe2 }, { title: 'CodeQ', id: 'codeq', Icon: Code2 },
-  { title: 'Files', id: 'files', Icon: Folder }, { title: 'Developer', id: 'developer', Icon: Terminal },
-  { title: 'Knowledge', id: 'knowledge', Icon: BookOpen }, { title: 'Calendar', id: 'calendar', Icon: CalendarDays },
-];
-const homeActivityIcons: Record<string, LucideIcon> = {
-  'git-pull-request': GitPullRequest, search: Search, bot: Bot, 'file-check': FileCheck2, activity: Activity,
-};
-const homeAgentIcons: Record<string, LucideIcon> = { sparkles: Sparkles, search: Search, code: Code2, 'book-open': BookOpen, bot: Bot };
 let stagedPrompt = '';
 const stagedPromptStorageKey = 'openagent.chat.stagedPrompt';
+/**
+ * End-of-speech detection for hands-free voice. The backend transcribes only
+ * when a stream is finished and returns no interim text, so the end of an
+ * utterance is decided here from the microphone's own level.
+ */
+const LIVE_SPEECH_LEVEL = 0.025;
+const LIVE_SILENCE_MS = 1200;
 let stagedAttachments: ChatAttachment[] = [];
 const stagedAttachmentsStorageKey = 'openagent.chat.stagedAttachments';
 
@@ -41,253 +30,49 @@ function ActionButton({ children, onClick, className = '', title, nav }: { child
 function IconSquare({ children, tone = 'blue', size }: { children: ReactNode; tone?: string; size?: string }) {
   return <span className={`square-icon ${size ?? ''} ${tone}`}>{children}</span>;
 }
-function EmptyCard({ icon, title, text, className = '' }: { icon: ReactNode; title: string; text: string; className?: string }) {
-  return <div className={`card empty ${className}`}><IconSquare>{icon}</IconSquare><strong>{title}</strong><p>{text}</p></div>;
-}
-function HomeStateCard({ icon, title, text, className = '', error = false, onRetry }: { icon: ReactNode; title: string; text: string; className: string; error?: boolean; onRetry?: () => void }) {
-  return <div className={`card empty home-state-card ${className}`} role={error ? 'alert' : 'status'}>
-    <IconSquare>{icon}</IconSquare><strong>{title}</strong><p>{text}</p>
-    {onRetry && <button type="button" className="btn sm" onClick={onRetry}>Try again</button>}
-  </div>;
+
+function renderInlineChatMarkdown(value: string): ReactNode[] {
+  const parts = value.split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`')) return <code key={index}>{part.slice(1, -1)}</code>;
+    if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    return <span key={index}>{part}</span>;
+  });
 }
 
-export function HomeScreen({ go = noNavigation }: ScreenProps = {}) {
-  const dataMode = useWorkspaceState(state => state.dataMode);
-  const [prompt, setPrompt] = useState('');
-  const [homeAttachments, setHomeAttachments] = useState<ChatAttachment[]>([]);
-  const [homeUploading, setHomeUploading] = useState(false);
-  const [homeUploadError, setHomeUploadError] = useState('');
-  const homeFileInputRef = useRef<HTMLInputElement | null>(null);
-  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
-  const selectedDemoProject = useWorkspaceState(state => state.selectedDemoProject);
-  const setSelectedDemoProject = useWorkspaceState(state => state.setSelectedDemoProject);
-  const demoProjectCreateRequest = useWorkspaceState(state => state.demoProjectCreateRequest);
-  const consumeDemoProjectCreateRequest = useWorkspaceState(state => state.consumeDemoProjectCreateRequest);
-  const [homeNotice, setHomeNotice] = useState('');
-  const [newProjectError, setNewProjectError] = useState('');
-  const pickerDialogRef = useRef<HTMLElement>(null);
-  const newProjectDialogRef = useRef<HTMLElement>(null);
-  const queryClient = useQueryClient();
-  const completeTask = useMutation({
-    mutationFn: async ({ taskId, completed }: { taskId: string; completed: boolean }) => {
-      if (dataMode !== 'demo') return apiPost('/api/assistant/tasks/complete', { task_id: taskId, project: 'default' });
-      const tasks = await demoProvider.updateShellCollection<Record<string, unknown>>('homeTasks', current => {
-        let found = false;
-        const updated = current.map(task => {
-          if (String(task.id ?? '') !== taskId) return task;
-          found = true;
-          return { ...task, completed };
-        });
-        if (!found) throw new Error('That demo task could not be found.');
-        return updated;
-      });
-      const task = tasks.find(item => String(item.id ?? '') === taskId);
-      if (!task) throw new Error('That demo task could not be found.');
-      return { task };
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['assistant', 'tasks'] }),
+function renderChatMarkdown(text: string): ReactNode {
+  const blocks: ReactNode[] = [];
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let code: string[] = [];
+  let language = '';
+  let inCode = false;
+  let list: string[] = [];
+  const flushList = () => { if (list.length) { blocks.push(<ul key={`list-${blocks.length}`}>{list.map((item, index) => <li key={index}>{renderInlineChatMarkdown(item)}</li>)}</ul>); list = []; } };
+  const flushCode = () => { if (code.length) { blocks.push(<pre className="chat-code-block" key={`code-${blocks.length}`}><code data-language={language || undefined}>{code.join('\n')}</code></pre>); code = []; language = ''; } };
+  lines.forEach((line, index) => {
+    if (line.trimStart().startsWith('```')) { if (inCode) { flushCode(); inCode = false; } else { flushList(); language = line.trim().slice(3).trim(); code = []; inCode = true; } return; }
+    if (inCode) { code.push(line); return; }
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) { list.push(bullet[1]); return; }
+    flushList();
+    const heading = line.match(/^\s*(#{1,3})\s+(.*)$/);
+    if (heading) { blocks.push(<h3 key={`heading-${index}`}>{renderInlineChatMarkdown(heading[2])}</h3>); return; }
+    if (!line.trim()) return;
+    blocks.push(<p key={`paragraph-${index}`}>{renderInlineChatMarkdown(line)}</p>);
   });
-  const createDemoProject = useMutation({
-    mutationFn: async (name: string) => demoProvider.updateShellCollection<Record<string, unknown>>('projects', current => {
-      const normalized = name.trim().toLocaleLowerCase();
-      if (current.some(project => String(project.name ?? '').trim().toLocaleLowerCase() === normalized)) {
-        throw new Error('A project with this name already exists. Choose a different name.');
-      }
-      const slug = name.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project';
-      return [...current, { id: `demo-project-${slug}`, name: name.trim(), tag: 'Demo project', color: 'blue', files: 0, updated: 'Just now' }];
-    }),
-    onSuccess: projects => {
-      queryClient.setQueryData(['home', 'projects', 'demo'], { projects });
-      void queryClient.invalidateQueries({ queryKey: ['home', 'projects', 'demo'] });
-      const added = projects.at(-1);
-      if (added) setSelectedDemoProject(String(added.name ?? 'Personal Workspace'));
-      setNewProjectName('');
-      setNewProjectError('');
-      setNewProjectOpen(false);
-      setProjectPickerOpen(true);
-      setHomeNotice('New local project created.');
-    },
-    onError: error => setNewProjectError(error instanceof Error ? error.message : 'Could not create this local demo project.'),
-  });
-  const queryOptions = { retry: false as const, refetchInterval: 30_000 };
-  const projectsQuery = useQuery({ queryKey: ['home', 'projects', dataMode], queryFn: ({ signal }) => demoQuery<Record<string, unknown>>(dataMode, 'shell.projects', s => apiGet<{ projects?: unknown[] }>('/api/codebase/projects?project=default', s), signal).then(data => dataMode === 'demo' ? { projects: Array.isArray(data) ? data : Array.isArray(data.projects) ? data.projects : [] } : data), ...queryOptions });
-  // Home's reference-only recent-chat fixtures must not share a cache key with
-  // Chat's actual conversation collection. Otherwise fixture rows without IDs
-  // can leak into Chat's selector and be mistaken for saved conversations.
-  const conversationsQuery = useQuery({ queryKey: ['home', 'recent-conversations', dataMode], queryFn: async ({ signal }): Promise<{ conversations?: unknown[] }> => dataMode === 'demo' ? { conversations: await demoQuery<Record<string, unknown>>(dataMode, 'shell.chats', s => apiGet<Record<string, unknown>>('/api/conversations?project=default&limit=5', s), signal).then(data => Array.isArray(data) ? data : Array.isArray(data.chats) ? data.chats : []) } : apiGet<{ conversations?: unknown[] }>('/api/conversations?project=default&limit=5', signal), ...queryOptions });
-  const agentsQuery = useQuery({ queryKey: ['agents', dataMode], queryFn: ({ signal }) => demoQuery<Record<string, unknown>>(dataMode, 'shell.agents', s => apiGet<{ agents?: unknown[] }>('/api/agents', s), signal).then(data => dataMode === 'demo' ? { agents: (Array.isArray(data) ? data : Array.isArray(data.agents) ? data.agents : []).map((item, index) => { const agent = item && typeof item === 'object' ? item as Record<string, unknown> : {}; return { ...agent, id: agent.id ?? `demo-agent-${index + 1}`, description: agent.description ?? agent.role ?? '' }; }) } : data), ...queryOptions });
-  const runsQuery = useQuery({ queryKey: ['agent-runs', dataMode], queryFn: ({ signal }) => dataMode === 'demo' ? demoQuery<Record<string, unknown>>('demo', 'shell.runs', s => apiGet<{ runs?: unknown[] }>('/api/agent-runs?project=default&limit=5', s), signal).then(data => ({ runs: Array.isArray(data) ? data : Array.isArray(data.runs) ? data.runs : [] })) : Promise.resolve({ runs: [] }), ...queryOptions, enabled: dataMode === 'demo' });
-  const eventsQuery = useQuery({ queryKey: ['home', 'activity', dataMode], queryFn: async ({ signal }): Promise<{ events?: unknown[] }> => dataMode === 'demo' ? { events: await demoQuery<Record<string, unknown>>(dataMode, 'shell.activity', s => apiGet<Record<string, unknown>>('/api/events?project=default&limit=5', s), signal).then(data => Array.isArray(data) ? data : Array.isArray(data.activity) ? data.activity : []) } : apiGet<{ events?: unknown[] }>('/api/events?project=default&limit=5', signal), ...queryOptions });
-  const tasksQuery = useQuery({ queryKey: ['assistant', 'tasks', dataMode], queryFn: async ({ signal }) => {
-    if (dataMode !== 'demo') return apiGet<{ tasks?: unknown[] }>('/api/assistant/tasks?project=default&limit=5', signal);
-    const fixture = await demoQuery<Record<string, unknown>>(dataMode, 'shell.homeTasks', s => apiGet<{ tasks?: unknown[] }>('/api/assistant/tasks?project=default&limit=5', s), signal);
-    const rows = Array.isArray(fixture) ? fixture : Array.isArray(fixture.homeTasks) ? fixture.homeTasks : [];
-    return { tasks: rows.map(item => { const task = item && typeof item === 'object' ? item as Record<string, unknown> : {}; return { ...task, title: task.title ?? 'Task', status: task.completed === true ? 'Completed' : 'Todo' }; }) };
-  }, ...queryOptions });
-  const today = useMemo(() => {
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    const end = new Date(start); end.setDate(end.getDate() + 1); end.setMilliseconds(-1);
-    return { key: start.toISOString().slice(0, 10), from: start.toISOString(), to: end.toISOString() };
-  }, []);
-  const calendarQuery = useQuery({ queryKey: ['calendar', 'events', 'home', today.key, dataMode], queryFn: ({ signal }) => demoQuery<Record<string, unknown>>(dataMode, 'shell.calendar', s => apiGet<{ events?: unknown[] }>(`/api/calendar/events?project=default&from=${encodeURIComponent(today.from)}&to=${encodeURIComponent(today.to)}&limit=5`, s), signal).then(data => dataMode === 'demo' ? { events: Array.isArray(data) ? data : Array.isArray(data.events) ? data.events : [] } : data), ...queryOptions });
-  const projects = records(projectsQuery.data?.projects);
-  useEffect(() => {
-    if (!homeNotice) return;
-    const timer = window.setTimeout(() => setHomeNotice(''), 3600);
-    return () => window.clearTimeout(timer);
-  }, [homeNotice]);
-  useEffect(() => {
-    if (!demoProjectCreateRequest || dataMode !== 'demo') return;
-    setProjectPickerOpen(false);
-    setNewProjectName('');
-    setNewProjectError('');
-    setNewProjectOpen(true);
-    consumeDemoProjectCreateRequest(demoProjectCreateRequest);
-  }, [consumeDemoProjectCreateRequest, dataMode, demoProjectCreateRequest]);
-  useEffect(() => {
-    const currentDialog = newProjectOpen ? newProjectDialogRef.current : projectPickerOpen ? pickerDialogRef.current : null;
-    if (!currentDialog) return;
-    const getFocusable = () => Array.from(currentDialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'));
-    getFocusable()[0]?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        if (newProjectOpen) setNewProjectOpen(false); else setProjectPickerOpen(false);
-      } else if (event.key === 'Tab') {
-        const focusable = getFocusable();
-        const first = focusable[0]; const last = focusable.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [newProjectOpen, projectPickerOpen]);
-  const conversations = records(conversationsQuery.data?.conversations);
-  const agents = records(agentsQuery.data?.agents);
-  const agentRuns = records(runsQuery.data?.runs);
-  const contextEvents = records(eventsQuery.data?.events);
-  const assistantTasks = records(tasksQuery.data?.tasks);
-  const calendarEvents = records(calendarQuery.data?.events);
-  const activity = dataMode === 'demo'
-    ? contextEvents.map(item => ({ kind: String(item.detail ?? 'Activity'), label: String(item.title ?? 'Activity'), when: String(item.time ?? ''), detail: String(item.detail ?? ''), icon: String(item.icon ?? 'activity'), tone: String(item.tone ?? 'blue') }))
-    : [
-      ...agentRuns.map(item => ({ kind: String(item.kind ?? 'Run'), label: String(item.goal ?? item.task ?? item.info ?? item.agent ?? 'Agent run'), when: String(item.created_at ?? item.time ?? ''), detail: '', icon: 'activity', tone: 'blue' })),
-      ...contextEvents.map(item => ({ kind: String(item.type ?? item.source ?? 'Activity'), label: String(item.title ?? item.content ?? 'Activity'), when: String(item.created_at ?? item.time ?? ''), detail: String(item.detail ?? ''), icon: 'activity', tone: 'blue' })),
-      ...conversations.map(item => ({ kind: 'Conversation', label: String(item.title ?? 'Conversation'), when: String(item.updated_at ?? item.time ?? item.created_at ?? ''), detail: '', icon: 'activity', tone: 'blue' })),
-    ].sort((a, b) => (Date.parse(b.when) || 0) - (Date.parse(a.when) || 0)).slice(0, 5);
-  const allActivityUnavailable = dataMode === 'live'
-    ? eventsQuery.isError && conversationsQuery.isError
-    : runsQuery.isError && eventsQuery.isError && conversationsQuery.isError;
-  const uploadHomeFiles = async (files: FileList | File[]) => {
-    const selected = Array.from(files);
-    const remaining = Math.max(0, 12 - homeAttachments.length);
-    if (selected.length > remaining) setHomeUploadError('A chat can include up to 12 attachments.');
-    const accepted = selected.slice(0, remaining);
-    if (!accepted.length) return;
-    setHomeUploadError('');
-    setHomeUploading(true);
-    for (const file of accepted) {
-      try {
-        const response = await apiPost<{ asset?: Record<string, unknown> }>('/api/media/ingest', {
-          filename: file.name,
-          data_base64: await fileToBase64(file),
-          project: 'default',
-          source: 'chat',
-        });
-        const asset = response.asset;
-        if (!asset || typeof asset.id !== 'string' || !asset.id) throw new Error('The backend did not return an uploaded asset ID.');
-        setHomeAttachments(current => [...current, {
-          id: asset.id as string,
-          name: String(asset.title || file.name),
-          media_type: String(asset.media_type ?? 'binary'),
-          mime_type: String(asset.mime_type ?? file.type ?? 'application/octet-stream'),
-          ...(typeof asset.size_bytes === 'number' ? { size_bytes: asset.size_bytes } : {}),
-        }]);
-      } catch (error) {
-        setHomeUploadError(`${file.name}: ${apiConnectionMessage(error)}`);
-      }
-    }
-    setHomeUploading(false);
-  };
-  const submit = (event?: FormEvent) => {
-    event?.preventDefault();
-    if (homeUploading) return;
-    if (prompt.trim()) {
-      stagedPrompt = prompt.trim();
-      stagedAttachments = homeAttachments;
-      try {
-        sessionStorage.setItem(stagedPromptStorageKey, stagedPrompt);
-        if (homeAttachments.length) sessionStorage.setItem(stagedAttachmentsStorageKey, JSON.stringify(homeAttachments));
-        else sessionStorage.removeItem(stagedAttachmentsStorageKey);
-      } catch { /* The in-memory handoff remains available. */ }
-      setHomeAttachments([]);
-      go('chat');
-    }
-  };
-  const enter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) submit(); };
-  const selectDemoProject = (name: string) => {
-    if (dataMode !== 'demo') return;
-    setSelectedDemoProject(name);
-    setProjectPickerOpen(false);
-    setHomeNotice('Project selected in the local demo picker. Live project scope is unchanged.');
-  };
-  const submitNewDemoProject = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const name = newProjectName.trim();
-    if (dataMode !== 'demo') { setNewProjectError('Project creation is unavailable until a workspace service is connected.'); return; }
-    if (!name) { setNewProjectError('Enter a project name.'); return; }
-    if (name.length > 80) { setNewProjectError('Project names must be 80 characters or fewer.'); return; }
-    setNewProjectError('');
-    createDemoProject.mutate(name);
-  };
-  return <div className="page">
-    <div className="home-grid">
-      <section>
-        <div className="home-intro"><IconSquare tone="orange"><Sun size={19}/></IconSquare><div><h1>Welcome to OpenAgent</h1><p>What would you like to work on?</p></div></div>
-        <form className="home-composer" onSubmit={submit}>
-          <textarea value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={enter} aria-label="Ask OpenAgent" placeholder="Ask OpenAgent anything..." />
-          {(homeAttachments.length > 0 || homeUploading || homeUploadError) && <div className="row gap6" style={{ flexWrap: 'wrap', padding: '0 12px 8px' }}>{homeAttachments.map(attachment => <span className="tag" key={attachment.id} data-testid="home-chat-attachment"><Paperclip size={13}/>{attachment.name}<button type="button" className="icon-button" aria-label={`Remove ${attachment.name}`} onClick={() => setHomeAttachments(current => current.filter(item => item.id !== attachment.id))}><span aria-hidden="true">×</span></button></span>)}{homeUploading && <span className="caption" role="status">Uploading attachment…</span>}{homeUploadError && <span className="caption" role="alert">{homeUploadError}</span>}</div>}
-          <div className="composer-tools"><input ref={homeFileInputRef} type="file" multiple aria-label="Choose files for chat" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }} onChange={event => { if (event.currentTarget.files) void uploadHomeFiles(event.currentTarget.files); event.currentTarget.value = ''; }} /><button type="button" className="btn sm icon-only" title={dataMode === 'live' ? 'Upload files to attach in Chat' : 'Attachments require Live mode; Demo never uploads files'} aria-label={dataMode === 'live' ? 'Attach a file' : 'Attachments require Live mode'} disabled={dataMode !== 'live' || homeUploading || homeAttachments.length >= 12} onClick={() => homeFileInputRef.current?.click()}><Plus size={16}/></button>
-            {['Agents', 'Web', 'Files', 'Research', 'CodeQ'].map((label, i) => {
-              const icons = [Network, Globe2, Folder, Search, Code2]; const Icon = icons[i]; const target = ['agents', 'research', 'files', 'research', 'codeq'][i];
-              return <ActionButton key={label} className="btn sm" nav={target} onClick={() => go(target)}><Icon size={14}/>{label}</ActionButton>;
-            })}
-            <button className="send-button" type="submit" aria-label="Open prompt in chat" disabled={homeUploading || (!prompt.trim() && homeAttachments.length === 0)}><Send size={16}/></button>
-          </div>
-        </form>
-        <div className="grid-4 section-space">{quickLinks.map(({ title, detail, id, Icon, tone }) => <button type="button" data-nav={id} key={id} onClick={() => go(id)} className="card shortcut-card hover-card"><IconSquare tone={tone}><Icon size={18}/></IconSquare><h3>{title}</h3><p>{detail}</p></button>)}</div>
-        <div className="section-head section-space"><h2><Box size={18}/> Projects</h2><ActionButton onClick={() => setProjectPickerOpen(true)} className="text-link">View projects <ArrowRight size={13}/></ActionButton></div>
-        {projectsQuery.isLoading ? <HomeStateCard className="home-project-empty" icon={<Folder size={20}/>} title="Loading projects" text="Fetching projects for this workspace." /> : projectsQuery.isError ? <HomeStateCard className="home-project-empty" icon={<Folder size={20}/>} title="Projects unavailable" text={apiConnectionMessage(projectsQuery.error)} error onRetry={() => void projectsQuery.refetch()} /> : <div className="grid-4">{projects.length ? projects.slice(0, 4).map((project, index) => <button key={String(project.id ?? project.name ?? index)} className="card project-card hover-card" type="button" onClick={() => go('codeq')}><IconSquare tone={String(project.color ?? 'blue')}><Folder size={18}/></IconSquare><h3>{String(project.name ?? project.title ?? project.id ?? 'Project')}</h3><p className="muted small truncate" title={String(project.tag ?? project.description ?? project.path ?? project.root_path ?? '')}>{String(project.tag ?? project.description ?? project.path ?? project.root_path ?? 'Workspace project')}</p><div className="row between section-space"><span className="caption">{String(project.updated ?? (relativeTimestamp(project.updated_at) || 'Connected project'))}</span><MoreHorizontal size={15}/></div></button>) : <div className="card project-card home-no-project" role="status"><IconSquare><Folder size={18}/></IconSquare><h3>No projects yet</h3><p className="muted small">Projects linked to this workspace will appear here.</p></div>}</div>}
-        <div className="section-head section-space"><h2><Clock3 size={18}/> Recent activity</h2><ActionButton nav="tools" onClick={() => go('tools')} className="text-link">View all</ActionButton></div>
-        {dataMode === 'live' && <p className="caption" role="status">Agent run history is shown in Agents when this account has the explicit agents:read scope for the active project. Home does not load agent runs.</p>}
-        {runsQuery.isLoading || eventsQuery.isLoading || conversationsQuery.isLoading ? <HomeStateCard className="home-activity-empty" icon={<Activity size={20}/>} title="Loading recent activity" text="Checking available events and conversations." /> : allActivityUnavailable ? <HomeStateCard className="home-activity-empty" icon={<Activity size={20}/>} title="Activity unavailable" text={apiConnectionMessage(eventsQuery.error ?? conversationsQuery.error ?? runsQuery.error)} error onRetry={() => { void runsQuery.refetch(); void eventsQuery.refetch(); void conversationsQuery.refetch(); }} /> : <>{(runsQuery.isError || eventsQuery.isError || conversationsQuery.isError) && <p className="caption" role="alert">Some activity could not be loaded: {apiConnectionMessage(eventsQuery.error ?? conversationsQuery.error ?? runsQuery.error)}</p>}{activity.length ? <div className="card activity-list">{activity.map((item, index) => { const Icon = homeActivityIcons[item.icon] ?? Activity; return <div className="list-row" key={`${item.kind}-${item.when}-${index}`}><IconSquare tone={item.tone} size="sm"><Icon size={16}/></IconSquare><div className="flex1"><div className="row-title">{item.label}</div><div className="row-sub">{item.detail || item.kind}</div></div><span className="caption">{item.when}</span></div>; })}</div> : <EmptyCard className="home-activity-empty" icon={<Activity size={20}/>} title="No recent activity" text={dataMode === 'live' ? 'No recent events or conversations were returned.' : 'The backend returned no recent agent runs, events or conversations.'} />}</>}
-      </section>
-      <aside className="right-stack home-right">
-        <section className="card" style={{ padding: 15 }}><div className="section-head"><h2><CheckCircle2 size={18}/> Today</h2><ActionButton nav="calendar" onClick={() => go('calendar')} className="text-link">Calendar</ActionButton></div>
-          {tasksQuery.isLoading || calendarQuery.isLoading ? <HomeStateCard className="home-today-empty" icon={<CheckCircle2 size={20}/>} title="Loading today" text="Checking tasks and calendar events." /> : tasksQuery.isError && calendarQuery.isError ? <HomeStateCard className="home-today-empty" icon={<CheckCircle2 size={20}/>} title="Today unavailable" text={apiConnectionMessage(tasksQuery.error ?? calendarQuery.error)} error onRetry={() => { void tasksQuery.refetch(); void calendarQuery.refetch(); }} /> : <>{(tasksQuery.isError || calendarQuery.isError) && <p className="caption" role="alert">Some activity could not be loaded: {apiConnectionMessage(tasksQuery.error ?? calendarQuery.error)}</p>}{completeTask.error && <p className="caption" role="alert">Task could not be completed: {apiConnectionMessage(completeTask.error)}</p>}{assistantTasks.length || calendarEvents.length ? <div>{assistantTasks.slice(0, 4).map(task => {
-            const taskId = String(task.id ?? '');
-            const taskTitle = String(task.title ?? 'Task');
-            const isComplete = typeof task.completed === 'boolean' ? task.completed : String(task.status ?? '').toLowerCase() === 'completed';
-            return <label className="task-check" key={taskId || taskTitle}><input className="checkbox" type="checkbox" checked={isComplete} disabled={completeTask.isPending || (dataMode === 'live' && isComplete)} onChange={event => { if (taskId) completeTask.mutate({ taskId, completed: event.currentTarget.checked }); }} aria-label={`Mark ${taskTitle} ${isComplete ? 'incomplete' : 'complete'}`} /><span className="flex1">{taskTitle}</span>{isComplete && <span className="tag green">Done</span>}</label>;
-          })}{calendarEvents.slice(0, 4).map(item => <div className="list-row" key={`calendar-${String(item.id)}`}><CalendarDays size={16}/><span className="flex1"><strong>{String(item.title ?? 'Calendar event')}</strong><small>{String(item.starts_at ?? '')}</small></span></div>)}</div> : <div className="empty home-today-empty" role="status"><CheckCircle2 size={20}/><strong>Nothing scheduled today</strong></div>}</>}
-        </section>
-        <section className="card" style={{ padding: 15 }}><div className="section-head"><h2><Network size={18}/> Your agents</h2><ActionButton nav="agents" onClick={() => go('agents')} className="text-link">View all</ActionButton></div>{agentsQuery.isLoading ? <HomeStateCard className="home-agents-empty" icon={<Bot size={20}/>} title="Loading agents" text="Checking the available workspace agents." /> : agentsQuery.isError ? <HomeStateCard className="home-agents-empty" icon={<Bot size={20}/>} title="Agents unavailable" text={apiConnectionMessage(agentsQuery.error)} error onRetry={() => void agentsQuery.refetch()} /> : agents.length ? agents.map((agent, index) => { const AgentIcon = homeAgentIcons[String(agent.icon ?? '')] ?? Bot; return <div className="agent-mini" key={String(agent.id ?? agent.name ?? index)}><span className={`square-icon sm ${String(agent.tone ?? 'violet')}`}><AgentIcon size={16}/></span><div className="flex1"><div className="agent-name">{String(agent.name ?? agent.id ?? 'Agent')}</div><div className="caption home-agent-description">{String(agent.description ?? agent.role ?? '')}</div></div><span className="status-dot" title="Illustration only"/></div>; }) : <EmptyCard className="home-agents-empty" icon={<Bot size={20}/>} title="No agents available" text="Workspace agents will appear here when available." />}</section>
-        <section className="card" style={{ padding: 15 }}><div className="section-head"><h2><Layers3 size={18}/> Pinned tools</h2></div><div className="tool-grid">{pinned.map(({ title, id, Icon }) => <button key={id} type="button" data-nav={id} className="tool-tile" onClick={() => go(id)}><Icon size={21}/>{title}</button>)}</div></section>
-      </aside>
-    </div>
-    {projectPickerOpen && <div className="overlay-root" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setProjectPickerOpen(false); }}><section className="palette" role="dialog" aria-modal="true" aria-label="Choose workspace" ref={pickerDialogRef} onMouseDown={event => event.stopPropagation()}><div className="palette-search"><strong className="flex1">{dataMode === 'demo' ? 'Choose a project' : 'Project switching unavailable'}</strong><button className="icon-button" type="button" aria-label="Close" onClick={() => setProjectPickerOpen(false)}><X size={16}/></button></div>{dataMode === 'demo' ? <><div className="palette-list"><button type="button" className="palette-option" aria-pressed={selectedDemoProject === 'Personal Workspace'} onClick={() => selectDemoProject('Personal Workspace')}><IconSquare size="sm" tone="blue"><Home size={16}/></IconSquare><strong className="flex1">Personal Workspace</strong>{selectedDemoProject === 'Personal Workspace' && <Check size={15}/>}</button>{projects.map((project, index) => { const name = String(project.name ?? project.title ?? project.id ?? `Project ${index + 1}`); return <button type="button" className="palette-option" aria-pressed={selectedDemoProject === name} key={String(project.id ?? name)} onClick={() => selectDemoProject(name)}><IconSquare size="sm" tone={String(project.color ?? 'blue')}><Folder size={16}/></IconSquare><span className="flex1"><strong>{name}</strong><small className="caption" style={{ display: 'block' }}>{String(project.tag ?? project.description ?? 'Demo project')}</small></span>{selectedDemoProject === name && <Check size={15}/>}</button>; })}{projectsQuery.isLoading && <div className="empty" role="status">Loading example projects…</div>}{projectsQuery.isError && <div className="empty" role="alert">{apiConnectionMessage(projectsQuery.error)}</div>}</div><div style={{ padding: '13px 15px', borderTop: '1px solid var(--line)' }}><button type="button" className="btn sm wide" onClick={() => { setNewProjectName(''); setNewProjectError(''); setProjectPickerOpen(false); setNewProjectOpen(true); }}><Plus size={14}/> New project (preview)</button></div></> : <div className="palette-list"><p className="small muted">The current backend integration does not provide a confirmed project-switch operation. This screen keeps the existing project scope.</p><button type="button" className="btn sm" onClick={() => { setProjectPickerOpen(false); go('codeq'); }}>Open CodeQ projects</button></div>}</section></div>}
-    {newProjectOpen && <div className="overlay-root" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setNewProjectOpen(false); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="home-create-project-title" ref={newProjectDialogRef} onMouseDown={event => event.stopPropagation()}><div className="row between"><h2 id="home-create-project-title">Create a project</h2><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setNewProjectOpen(false)}><X size={16}/></button></div><p>This design preview stores the selected project name locally.</p>{dataMode === 'demo' ? <form onSubmit={submitNewDemoProject}><div className="field"><label htmlFor="home-new-project-name">Project name</label><input id="home-new-project-name" name="name" className="input" autoFocus maxLength={80} required value={newProjectName} onChange={event => { setNewProjectName(event.target.value); setNewProjectError(''); }} placeholder="My new project" /></div>{newProjectError && <p role="alert" className="caption">{newProjectError}</p>}<div className="modal-actions"><button className="btn" type="button" onClick={() => setNewProjectOpen(false)}>Cancel</button><button className="btn primary" type="submit" disabled={createDemoProject.isPending}>{createDemoProject.isPending ? 'Creating…' : 'Create preview'}</button></div></form> : <><p role="alert">Project creation is unavailable until a workspace service is connected.</p><div className="modal-actions"><button className="btn" type="button" onClick={() => setNewProjectOpen(false)}>Close</button></div></>}</section></div>}
-    {homeNotice && <div id="toast-region" aria-live="polite" aria-atomic="true"><div className="toast" role="status"><Info size={17}/><span className="flex1">{homeNotice}</span></div></div>}
-  </div>;
+  flushList(); flushCode();
+  return blocks.length ? blocks : <p />;
 }
 
-type ChatLine = { role: 'user' | 'assistant'; text: string };
+export { HomeDashboard as HomeScreen } from './HomeDashboard';
+
+type ChatLine = { role: 'user' | 'assistant'; text: string; createdAt?: string };
 type ChatLineWithId = ChatLine & { id?: string; serverId?: string };
+type ToolOutput = { id: string; title: string; text: string };
 type Conversation = { id: string; title?: string; pinned?: boolean; archived?: boolean; updated_at?: string; semantic_score?: number };
 type Provider = { id: string; label?: string; default_model?: string; selected_model?: string; installed_models?: string[]; available?: boolean; local?: boolean; network?: boolean; privacy_warning?: string };
+/** One selectable entry in the composer's model list, including Auto. */
+type ModelChoice = { key: string; providerId: string; model: string; label: string; detail: string; local: boolean; available: boolean };
 type ChatAttachment = { id: string; name: string; media_type: string; mime_type: string; size_bytes?: number };
 const storedConversationKey = 'oa-second-conversation-id';
 function records(value: unknown): Record<string, unknown>[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : []; }
@@ -336,10 +121,23 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
   const [providerId, setProviderId] = useState('auto');
   const [modelId, setModelId] = useState('');
   const [allowExternal, setAllowExternal] = useState(false);
-  const [tab, setTab] = useState<'Files' | 'Preview' | 'Context'>('Preview');
-  const [previewViewport, setPreviewViewport] = useState<'desktop' | 'mobile'>('desktop');
-  const [previewExpanded, setPreviewExpanded] = useState(false);
   const [inspector, setInspector] = useState(true);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolBusy, setToolBusy] = useState('');
+  const [toolError, setToolError] = useState('');
+  const [toolQuery, setToolQuery] = useState('');
+  const [activeTool, setActiveTool] = useState<'knowledge' | 'research' | 'document' | ''>('');
+  const [recording, setRecording] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceError, setVoiceError] = useState('');
+  const [toolOutputs, setToolOutputs] = useState<ToolOutput[]>([]);
+  const [recentLimit, setRecentLimit] = useState(8);
+  const [liveVoice, setLiveVoice] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<'' | 'listening' | 'thinking' | 'speaking'>('');
+  const [rowMenuId, setRowMenuId] = useState('');
+  const [pendingDeleteId, setPendingDeleteId] = useState('');
+  const [renamingId, setRenamingId] = useState('');
+  const [renameValue, setRenameValue] = useState('');
   const [streamError, setStreamError] = useState('');
   const [completionNotice, setCompletionNotice] = useState('');
   const [waitingForContent, setWaitingForContent] = useState(false);
@@ -353,14 +151,19 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
   const [showArchived, setShowArchived] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [historyBusyId, setHistoryBusyId] = useState('');
-  const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
   const [conversationActionMessage, setConversationActionMessage] = useState('');
   const [conversationActionError, setConversationActionError] = useState('');
   const [actionMessageId, setActionMessageId] = useState('');
-  const [replayData, setReplayData] = useState<Record<string, unknown> | null>(null);
-  const [replayBusy, setReplayBusy] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const voiceSessionRef = useRef('');
+  const liveActiveRef = useRef(false);
+  const liveRecorderRef = useRef<MediaRecorder | null>(null);
+  const liveStreamRef = useRef<MediaStream | null>(null);
+  const liveContextRef = useRef<AudioContext | null>(null);
+  const liveFrameRef = useRef<number | null>(null);
+  const speakerRef = useRef<HTMLAudioElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const requestSequenceRef = useRef(0);
@@ -384,7 +187,10 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
     if (prompt.trim()) setDraft(current => current || prompt);
     if (dataMode === 'live' && pendingAttachments.length) setAttachments(current => current.length ? current : pendingAttachments);
   }, [dataMode]);
-  const conversationsQuery = useQuery({ queryKey: ['chat', 'conversations', dataMode], queryFn: ({ signal }) => dataMode === 'demo' ? Promise.resolve({ conversations: [] }) : apiGet<{ conversations?: unknown[] }>('/api/conversations?project=default&limit=100', signal), retry: false });
+  // The recent list reads the organized route because the plain conversations
+  // route returns neither `pinned` nor `archived`, so a pinned conversation
+  // could never show as pinned or sort to the top.
+  const conversationsQuery = useQuery({ queryKey: ['chat', 'conversations', dataMode], queryFn: ({ signal }) => dataMode === 'demo' ? Promise.resolve({ conversations: [] }) : apiGet<{ conversations?: unknown[] }>('/api/conversations/organized?project=default&limit=100&sort=pinned&include_archived=false&archived_only=false', signal), retry: false });
   const historyQuery = useQuery({
     queryKey: ['chat', 'organized-history', dataMode, historySearch, showArchived],
     queryFn: ({ signal }) => dataMode === 'demo' ? Promise.resolve({ conversations: [] }) : apiGet<{ conversations?: unknown[] }>(`/api/conversations/organized?project=default&limit=100&sort=${historySearch.trim() ? 'semantic' : 'pinned'}&include_archived=${showArchived ? 'true' : 'false'}&archived_only=${showArchived ? 'true' : 'false'}&q=${encodeURIComponent(historySearch.trim())}`, signal),
@@ -422,7 +228,49 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
   const providers = useMemo(() => records(providersQuery.data?.providers) as Provider[], [providersQuery.data]);
   const selectedProvider = providers.find(provider => provider.id === providerId);
   const selectedNeedsEgress = selectedProvider?.local === false && providerId !== 'auto';
-  const modelOptions = Array.from(new Set([selectedProvider?.selected_model, selectedProvider?.default_model, ...(Array.isArray(selectedProvider?.installed_models) ? selectedProvider.installed_models : [])].filter((item): item is string => Boolean(item))));
+  // One flat list of every model the backend reports, the way a provider's own
+  // picker reads, instead of a provider select and then a model select. Auto
+  // stays first and leaves the choice to the backend's routing policy.
+  const modelChoices = useMemo(() => {
+    const choices: ModelChoice[] = [{
+      key: 'auto', providerId: 'auto', model: '', label: 'Auto',
+      detail: 'Let the backend route this request', local: true, available: true,
+    }];
+    for (const provider of providers) {
+      // Only providers that can actually run a request. Listing the rest just
+      // showed names that could never be selected.
+      if (provider.id === 'auto' || provider.available === false) continue;
+      const names = Array.from(new Set([
+        provider.selected_model, provider.default_model,
+        ...(Array.isArray(provider.installed_models) ? provider.installed_models : []),
+      ].filter((name): name is string => Boolean(name))));
+      for (const model of names) {
+        choices.push({
+          key: `${provider.id}:${model}`, providerId: provider.id, model, label: model,
+          detail: provider.label || provider.id,
+          local: provider.local !== false,
+          // Unavailable providers are skipped above, so anything listed runs.
+          available: true,
+        });
+      }
+    }
+    return choices;
+  }, [providers]);
+  const selectedChoiceKey = providerId === 'auto'
+    ? 'auto'
+    : `${providerId}:${modelId || selectedProvider?.selected_model || selectedProvider?.default_model || ''}`;
+  const selectedChoice = modelChoices.find(choice => choice.key === selectedChoiceKey);
+  const modelButtonLabel = providerId === 'auto'
+    ? 'Auto'
+    : modelId || selectedProvider?.selected_model || selectedProvider?.default_model || 'Select model';
+  const chooseModel = (choice: ModelChoice) => {
+    setProviderId(choice.providerId);
+    setModelId(choice.model);
+    // Selecting a concrete external model is the explicit routing choice;
+    // no separate consent checkbox is needed in the model picker.
+    setAllowExternal(!choice.local);
+    setModelControlsOpen(false);
+  };
   const messagesQuery = useQuery({ queryKey: ['chat', 'messages', conversationId, dataMode], queryFn: ({ signal }) => apiGet<{ messages?: unknown[] }>(`/api/messages?conversation_id=${encodeURIComponent(conversationId)}`, signal), enabled: Boolean(conversationId) && dataMode === 'live', retry: false });
   // Do not render any cached Live messages during the render that changes
   // modes; the effect below also clears their selection and local state.
@@ -430,10 +278,13 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
   useEffect(() => {
     if (streaming) return;
     const messages = records(messagesQuery.data?.messages);
-    if (!messages.length) { if (!conversationId) setLines([]); return; }
+    // A stream can return real text before (or without) a persisted
+    // conversation ID. Ending that stream must not erase its received rows.
+    // Explicit conversation/mode changes clear lines in selectConversation.
+    if (!messages.length) return;
     setLines(messages.flatMap(message => {
       const role = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
-      return role && typeof message.content === 'string' ? [{ role, text: message.content, ...(typeof message.id === 'string' ? { id: message.id, serverId: message.id } : {}) } as ChatLineWithId] : [];
+      return role && typeof message.content === 'string' ? [{ role, text: message.content, createdAt: typeof message.created_at === 'string' ? message.created_at : undefined, ...(typeof message.id === 'string' ? { id: message.id, serverId: message.id } : {}) } as ChatLineWithId] : [];
     }));
   }, [messagesQuery.data, conversationId, streaming]);
   const clearWaitingTimer = () => {
@@ -445,7 +296,7 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
     requestSequenceRef.current += 1;
     clearWaitingTimer();
     abortRef.current?.abort(); abortRef.current = null; setStreaming(false); setWaitingForContent(false); setStreamError(''); setCompletionNotice('');
-    setConversationId(id); setLines([]);
+    setConversationId(id); setLines([]); setToolOutputs([]);
     const url = new URL(location.href);
     if (id) url.searchParams.set('conversation_id', id); else url.searchParams.delete('conversation_id');
     window.history.replaceState({}, '', url);
@@ -457,8 +308,9 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
     // when the mounted Chat workspace switches into its offline Demo mode.
     selectConversation('');
     setAttachments([]); setUploadError(''); setHistoryOpen(false); setHistoryError('');
-    setConversationMenuOpen(false); setConversationActionMessage(''); setConversationActionError('');
-    setActionMessageId(''); setReplayData(null); setReplayBusy(false); setHistoryBusyId('');
+    setToolOutputs([]);
+    setConversationActionMessage(''); setConversationActionError('');
+    setActionMessageId(''); setHistoryBusyId('');
   }, [dataMode, selectConversation]);
   useEffect(() => {
     const syncConversation = () => {
@@ -483,7 +335,8 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
     } finally { setHistoryBusyId(''); }
   };
   const deleteConversation = async (item: Conversation) => {
-    if (!item.id || !window.confirm(`Delete “${item.title || 'conversation'}”? This permanently removes the conversation and its messages.`)) return;
+    if (!item.id) return;
+    setPendingDeleteId(''); setRowMenuId('');
     setHistoryBusyId(item.id); setHistoryError(''); setConversationActionError(''); setConversationActionMessage('');
     try {
       await apiDelete(`/api/conversations/${encodeURIComponent(item.id)}`);
@@ -493,15 +346,18 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
         queryClient.removeQueries({ queryKey: ['chat', 'messages', item.id] }),
       ]);
       if (item.id === conversationId) selectConversation('');
-      setConversationActionMessage('Conversation deleted.');
     } catch (error) {
       setHistoryError(apiConnectionMessage(error));
     } finally { setHistoryBusyId(''); }
   };
-  const renameConversation = async (item: Conversation) => {
-    const title = window.prompt('Rename conversation', item.title || 'Conversation');
-    if (title === null) return;
+  const renameConversation = async (item: Conversation, nextTitle?: string) => {
+    const title = nextTitle ?? renameValue;
+    if (nextTitle === undefined && renamingId !== item.id) {
+      setRenamingId(item.id); setRenameValue(item.title || 'Conversation'); setRowMenuId('');
+      return;
+    }
     if (!title.trim()) { setHistoryError('Conversation title cannot be empty.'); return; }
+    setRowMenuId(''); setRenamingId(''); setRenameValue('');
     await updateConversation(item, { title: title.trim() });
   };
   const download = (name: string, content: BlobPart, type: string) => {
@@ -509,26 +365,16 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click();
     URL.revokeObjectURL(url);
   };
-  const exportConversation = async () => {
-    if (!conversationId) return;
+  const exportConversation = async (id = conversationId) => {
+    if (!id) return;
     setConversationActionError(''); setConversationActionMessage('Preparing export…');
     try {
-      const response = await apiGet<{ export?: Record<string, unknown> }>(`/api/chat/export?conversation_id=${encodeURIComponent(conversationId)}&write_file=false`);
+      const response = await apiGet<{ export?: Record<string, unknown> }>(`/api/chat/export?conversation_id=${encodeURIComponent(id)}&write_file=false`);
       if (!response.export || response.export.format !== 'openagent.conversation.v1') throw new Error('The backend returned an unsupported conversation export.');
       const title = String((response.export.conversation as Record<string, unknown> | undefined)?.title || 'conversation').replace(/[^a-z0-9-_]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60) || 'conversation';
       download(`${title}.openagent.json`, JSON.stringify(response.export, null, 2), 'application/json');
-      setConversationActionMessage('Conversation export downloaded.'); setConversationMenuOpen(false);
+      setConversationActionMessage('Conversation export downloaded.');
     } catch (error) { setConversationActionMessage(''); setConversationActionError(apiConnectionMessage(error)); }
-  };
-  const replayConversation = async () => {
-    if (!conversationId) return;
-    setConversationActionError(''); setConversationActionMessage(''); setReplayBusy(true);
-    try {
-      const response = await apiGet<{ replay?: Record<string, unknown> }>(`/api/chat/replay?conversation_id=${encodeURIComponent(conversationId)}`);
-      if (!response.replay || !Array.isArray(response.replay.timeline)) throw new Error('The backend returned an invalid conversation replay.');
-      setReplayData(response.replay); setConversationMenuOpen(false);
-    } catch (error) { setConversationActionError(apiConnectionMessage(error)); }
-    finally { setReplayBusy(false); }
   };
   const importConversation = async (file?: File) => {
     if (!file) return;
@@ -547,29 +393,8 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
       const importedId = response.imported?.conversation?.id;
       if (typeof importedId !== 'string' || !importedId) throw new Error('The backend did not return the imported conversation ID.');
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['chat', 'conversations'] }), queryClient.invalidateQueries({ queryKey: ['chat', 'organized-history'] })]);
-      selectConversation(importedId); setConversationMenuOpen(false); setConversationActionMessage('Conversation imported.');
+      selectConversation(importedId); setConversationActionMessage('Conversation imported.');
     } catch (error) { setConversationActionError(error instanceof SyntaxError ? 'The selected file is not valid JSON.' : apiConnectionMessage(error)); }
-  };
-  const branchFromMessage = async (line: ChatLineWithId) => {
-    if (!conversationId || !line.serverId) return;
-    setConversationActionError(''); setConversationActionMessage('Creating branch…');
-    try {
-      const response = await apiPost<{ branch?: { conversation?: { id?: string } } }>('/api/chat/branch', { conversation_id: conversationId, at_message_id: line.serverId });
-      const branchId = response.branch?.conversation?.id;
-      if (typeof branchId !== 'string' || !branchId) throw new Error('The backend did not return the branch conversation ID.');
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ['chat', 'conversations'] }), queryClient.invalidateQueries({ queryKey: ['chat', 'organized-history'] })]);
-      selectConversation(branchId); setConversationActionMessage('Branch created from this message.'); setActionMessageId('');
-    } catch (error) { setConversationActionMessage(''); setConversationActionError(apiConnectionMessage(error)); }
-  };
-  const saveReplyAsMarkdown = async (line: ChatLineWithId) => {
-    setConversationActionError('');
-    try {
-      const response = await apiPost<{ artifact?: { filename?: string; content_type?: string; base64?: string } }>('/api/chat/artifact', { title: 'OpenAgent reply', content: line.text, format: 'md', project: 'default' });
-      const artifact = response.artifact;
-      if (!artifact || typeof artifact.base64 !== 'string' || typeof artifact.filename !== 'string') throw new Error('The backend did not return the generated document.');
-      const bytes = Uint8Array.from(atob(artifact.base64), char => char.charCodeAt(0));
-      download(artifact.filename, bytes, artifact.content_type || 'text/markdown'); setConversationActionMessage('Markdown document created and downloaded.'); setActionMessageId('');
-    } catch (error) { setConversationActionError(apiConnectionMessage(error)); }
   };
   useEffect(() => {
     const onSelectConversation = (event: Event) => {
@@ -615,8 +440,313 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
     }
     setUploading(false);
   };
-  const submit = async (event?: FormEvent) => {
-    event?.preventDefault(); const content = draft.trim(); if (!content || streaming || uploading || dataMode !== 'live') return;
+  /**
+   * Adds a line to the thread without sending it to the model. Tool output is
+   * real backend output, so it is shown as its own assistant line rather than
+   * folded into a reply the model did not produce.
+   */
+  const appendToolResult = (title: string, text: string) => {
+    setToolOutputs(current => [...current, { id: `tool-${Date.now()}-${current.length}`, title, text }]);
+  };
+  /** Runs one composer tool against its own backend route. */
+  const runTool = async (tool: 'knowledge' | 'research' | 'document') => {
+    const input = toolQuery.trim();
+    if (!input || toolBusy) return;
+    setToolBusy(tool); setToolError('');
+    try {
+      if (tool === 'knowledge') {
+        const found = await apiGet<{ results?: unknown[]; documents?: unknown[] }>(
+          `/api/knowledge/search?project=default&q=${encodeURIComponent(input)}&limit=5`);
+        const rows = records(found.results ?? found.documents);
+        appendToolResult('Knowledge search', rows.length
+          ? `Knowledge search for "${input}" returned ${rows.length} indexed ${rows.length === 1 ? 'source' : 'sources'}:\n${rows.map((row, index) => `${index + 1}. ${String(row.title ?? row.id ?? 'Untitled')}${row.snippet ? ` — ${String(row.snippet)}` : ''}`).join('\n')}`
+          : `Knowledge search for "${input}" returned no indexed sources.`);
+      } else if (tool === 'research') {
+        const run = await apiPost<Record<string, unknown>>('/api/research/run', { query: input, project: 'default', allow_external: allowExternal });
+        const report = String(run.report ?? (run.session as Record<string, unknown> | undefined)?.report ?? '');
+        const sources = records(run.sources);
+        if (!report) throw new Error('The research service did not return a report.');
+        appendToolResult('Research report', `Research on "${input}":\n${report}${sources.length ? `\n\nSources: ${sources.map(source => String(source.title ?? source.url ?? '')).filter(Boolean).join(', ')}` : ''}`);
+        if (report && conversationId) {
+          // Keep the record with the conversation it was run for.
+          await apiPost('/api/chat/research-record', {
+            query: input, report, conversation_id: conversationId, project: 'default',
+            sources: sources.map(source => ({ title: String(source.title ?? ''), url: String(source.url ?? '') })),
+          });
+        }
+      } else {
+        const made = await apiPost<{ artifact?: Record<string, unknown> }>('/api/chat/artifact', {
+          title: input.slice(0, 80), content: lines.map(line => `${line.role === 'user' ? 'You' : 'OpenAgent'}: ${line.text}`).join('\n\n') || input,
+          format: 'pdf', project: 'default',
+        });
+        const artifact = made.artifact ?? {};
+        if (typeof artifact.base64 !== 'string' || typeof artifact.filename !== 'string') throw new Error('The backend did not return a downloadable document.');
+        const bytes = Uint8Array.from(atob(artifact.base64), char => char.charCodeAt(0));
+        download(artifact.filename, bytes, String(artifact.content_type ?? 'application/pdf'));
+        appendToolResult('Document', `Downloaded ${artifact.filename}`);
+      }
+      setToolQuery(''); setActiveTool(''); setToolsOpen(false);
+    } catch (error) {
+      setToolError(apiConnectionMessage(error));
+    } finally {
+      setToolBusy('');
+    }
+  };
+  /**
+   * Speaks a reply through the backend's own synthesiser, resolving when the
+   * audio has finished so a hands-free turn does not listen to itself.
+   */
+  const speak = async (text: string) => {
+    try {
+      const spoken = await apiPost<{ script?: Record<string, unknown> }>('/api/voice/tts', { text, project: 'default' });
+      const script = spoken.script ?? {};
+      // Prefer the browser's installed local voice. The backend's legacy
+      // generated WAV may be a tone placeholder, so never play it as speech.
+      if ('speechSynthesis' in window) {
+        await new Promise<void>(resolve => {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.lang = 'en-US'; utterance.rate = 1; utterance.pitch = 1;
+          utterance.onend = () => resolve(); utterance.onerror = () => resolve();
+          window.speechSynthesis.cancel(); window.speechSynthesis.speak(utterance);
+        });
+        return;
+      }
+      const assetId = String(script.audio_asset_id ?? '');
+      if (!assetId) return;
+      const blob = await apiGetBlob(`/api/voice/assets/${encodeURIComponent(assetId)}/content?project=default`);
+      const player = new Audio(URL.createObjectURL(blob)); speakerRef.current = player;
+      await new Promise<void>(resolve => { player.onended = () => resolve(); player.onerror = () => resolve(); void player.play().catch(() => resolve()); });
+    } catch { /* a reply that cannot be spoken is still shown as text */ }
+    finally { speakerRef.current = null; }
+  };
+  /** Opens a voice session and a stream session to push chunks into. */
+  const openStreamSession = async () => {
+    if (!voiceSessionRef.current) {
+      const created = await apiPost<{ session?: Record<string, unknown> }>('/api/voice/sessions', { project: 'default', mode: 'always_listening', always_listening: true, language: 'en' });
+      const id = String((created.session ?? {}).id ?? (created.session ?? {}).session_id ?? '');
+      if (!id) throw new Error('The backend did not return a voice session.');
+      voiceSessionRef.current = id;
+    }
+    const stream = await apiPost<Record<string, unknown>>('/api/voice/websocket/create', {
+      voice_session_id: voiceSessionRef.current, project: 'default', language: 'en',
+    });
+    const streamId = String(stream.stream_id ?? '');
+    if (!streamId) throw new Error('The backend did not return a stream session.');
+    return streamId;
+  };
+  /**
+   * Hands-free voice: listen, answer aloud, listen again.
+   *
+   * The backend buffers streamed chunks and transcribes only when the stream
+   * is finished, so it returns no interim text. End of speech is therefore
+   * detected here from the microphone's own level, and each finished utterance
+   * is transcribed, sent as a message, and the reply spoken before listening
+   * resumes. Nothing is shown as text until the backend transcribes it.
+   */
+  const stopLiveVoice = useCallback(() => {
+    liveActiveRef.current = false;
+    if (liveFrameRef.current !== null) { cancelAnimationFrame(liveFrameRef.current); liveFrameRef.current = null; }
+    try { liveRecorderRef.current?.stop(); } catch { /* already stopped */ }
+    liveRecorderRef.current = null;
+    liveStreamRef.current?.getTracks().forEach(track => track.stop());
+    liveStreamRef.current = null;
+    void liveContextRef.current?.close().catch(() => undefined);
+    liveContextRef.current = null;
+    speakerRef.current?.pause();
+    speakerRef.current = null;
+    setLiveVoice(false); setLiveStatus('');
+  }, []);
+  const startLiveVoice = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) { setVoiceError('This browser offers no microphone access.'); return; }
+    setVoiceError('');
+    let media: MediaStream;
+    try {
+      media = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (error) {
+      setVoiceError(error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone permission was declined.' : `Live voice could not start: ${String(error)}`);
+      return;
+    }
+    liveStreamRef.current = media;
+    liveActiveRef.current = true;
+    setLiveVoice(true);
+
+    const context = new AudioContext();
+    liveContextRef.current = context;
+    // Chromium can create the analyser in a suspended state until the first
+    // user gesture is fully resolved; resume explicitly so speech detection
+    // works in the desktop shell as well as a normal browser tab.
+    void context.resume().catch(() => undefined);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 1024;
+    context.createMediaStreamSource(media).connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+
+    // One utterance: record until the level stays low long enough to count as
+    // the end of speech, then transcribe, answer, and speak the answer.
+    const listenOnce = async () => {
+      if (!liveActiveRef.current) return;
+      setLiveStatus('listening');
+      let streamId = '';
+      try { streamId = await openStreamSession(); }
+      catch (error) { setVoiceError(apiConnectionMessage(error)); stopLiveVoice(); return; }
+
+      const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported?.(type));
+      const recorder = new MediaRecorder(media, mimeType ? { mimeType } : undefined);
+      liveRecorderRef.current = recorder;
+      const pending: Promise<unknown>[] = [];
+      recorder.ondataavailable = async event => {
+        if (!event.data.size || !liveActiveRef.current) return;
+        const chunk = fileToBase64(new File([event.data], 'chunk.webm', { type: event.data.type || 'audio/webm' }))
+          .then(audio_base64 => apiPost('/api/voice/websocket/chunk', { stream_id: streamId, audio_base64 }))
+          .catch(() => undefined);
+        pending.push(chunk);
+      };
+
+      const finished = new Promise<void>(resolve => { recorder.onstop = () => resolve(); });
+      recorder.start(400);
+
+      let spokeAtAll = false;
+      let quietSince = 0;
+      await new Promise<void>(resolve => {
+        const tick = () => {
+          if (!liveActiveRef.current) { resolve(); return; }
+          analyser.getByteTimeDomainData(samples);
+          let sum = 0;
+          for (const sample of samples) { const centred = (sample - 128) / 128; sum += centred * centred; }
+          const level = Math.sqrt(sum / samples.length);
+          const now = performance.now();
+          if (level > LIVE_SPEECH_LEVEL) { spokeAtAll = true; quietSince = 0; }
+          else if (spokeAtAll) {
+            if (!quietSince) quietSince = now;
+            else if (now - quietSince > LIVE_SILENCE_MS) { resolve(); return; }
+          }
+          liveFrameRef.current = requestAnimationFrame(tick);
+        };
+        liveFrameRef.current = requestAnimationFrame(tick);
+      });
+      if (liveFrameRef.current !== null) { cancelAnimationFrame(liveFrameRef.current); liveFrameRef.current = null; }
+
+      try { recorder.stop(); } catch { /* already stopped */ }
+      await finished;
+      await Promise.all(pending);
+      liveRecorderRef.current = null;
+      if (!liveActiveRef.current) return;
+      if (!spokeAtAll) { void listenOnce(); return; }
+
+      setLiveStatus('thinking');
+      let transcript = '';
+      try {
+        const result = await apiPost<Record<string, unknown>>('/api/voice/websocket/finish', { stream_id: streamId });
+        transcript = String(result.transcription ?? '').trim();
+        if (!transcript) setVoiceError(String(result.message ?? 'No local speech-to-text engine returned text. Install one from the Voice screen.'));
+      } catch (error) { setVoiceError(apiConnectionMessage(error)); }
+      if (!liveActiveRef.current) return;
+      if (!transcript) { void listenOnce(); return; }
+
+      const reply = await submit(undefined, transcript);
+      if (!liveActiveRef.current) return;
+      if (reply) { setLiveStatus('speaking'); await speak(reply); }
+      if (liveActiveRef.current) void listenOnce();
+    };
+    void listenOnce();
+  };
+  /**
+   * Records from the microphone and transcribes it through the buffered
+   * speech-to-text route. The continuous socket transport is not an accepted
+   * contract, so capture is explicit: press to start, press again to send.
+   */
+  const toggleRecording = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    setVoiceError('');
+    if (!navigator.mediaDevices?.getUserMedia) { setVoiceError('This browser offers no microphone access.'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        setRecording(false);
+        recorderRef.current = null;
+        if (!chunks.length) return;
+        setVoiceBusy(true);
+        try {
+          if (!voiceSessionRef.current) {
+            const created = await apiPost<{ session?: Record<string, unknown> }>('/api/voice/sessions', { project: 'default', mode: 'push_to_talk', language: 'en' });
+            const id = String((created.session ?? {}).id ?? (created.session ?? {}).session_id ?? '');
+            if (!id) throw new Error('The backend did not return a voice session.');
+            voiceSessionRef.current = id;
+          }
+          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+          const audio_base64 = await fileToBase64(new File([blob], 'speech.webm', { type: blob.type }));
+          const result = await apiPost<{ transcription?: Record<string, unknown> }>('/api/voice/stt', {
+            session_id: voiceSessionRef.current, audio_base64, filename: 'speech.webm', language: 'en', project: 'default',
+          });
+          const transcription = result.transcription ?? {};
+          const text = String(transcription.transcript ?? transcription.display_text ?? '').trim();
+          if (text) {
+            setDraft(current => (current ? `${current} ${text}` : text));
+          }
+          else setVoiceError(String(transcription.stt_message ?? 'No local speech-to-text engine returned text. Install one from the Voice screen.'));
+        } catch (error) {
+          setVoiceError(apiConnectionMessage(error));
+        } finally {
+          setVoiceBusy(false);
+        }
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch (error) {
+      setVoiceError(error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone permission was declined.' : `Recording could not start: ${String(error)}`);
+    }
+  };
+  useEffect(() => () => { recorderRef.current?.stop(); stopLiveVoice(); }, [stopLiveVoice]);
+  useEffect(() => {
+    if (!toolsOpen && !modelControlsOpen) return;
+    const dismiss = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      // A click inside either panel, or on the button that opened it, keeps it.
+      if (target.closest('#chat-tools-menu, #chat-model-controls, .chat-tools-trigger, .chat-model-trigger')) return;
+      setToolsOpen(false); setModelControlsOpen(false);
+    };
+    document.addEventListener('mousedown', dismiss);
+    return () => document.removeEventListener('mousedown', dismiss);
+  }, [toolsOpen, modelControlsOpen]);
+  useEffect(() => {
+    if (!rowMenuId && !actionMessageId) return;
+    const dismissActionMenus = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      // Keep an open menu alive while interacting with its items or its
+      // trigger; any other click should close it before the next action.
+      if (target.closest('.chat-row-menu, .chat-message-menu, [aria-label^="More actions"], [aria-label^="Actions for"]')) return;
+      setRowMenuId('');
+      setActionMessageId('');
+      setPendingDeleteId('');
+      setRenamingId('');
+      setRenameValue('');
+    };
+    document.addEventListener('mousedown', dismissActionMenus);
+    return () => document.removeEventListener('mousedown', dismissActionMenus);
+  }, [rowMenuId, actionMessageId]);
+  useEffect(() => {
+    if (!liveVoice) return;
+    const dismissLiveVoice = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('.chat-live-voice-overlay, [aria-label="Stop live voice"]')) return;
+      stopLiveVoice();
+    };
+    document.addEventListener('mousedown', dismissLiveVoice);
+    return () => document.removeEventListener('mousedown', dismissLiveVoice);
+  }, [liveVoice, stopLiveVoice]);
+  const submit = async (event?: FormEvent, spokenText?: string) => {
+    event?.preventDefault(); const content = (spokenText ?? draft).trim(); if (!content || streaming || uploading || dataMode !== 'live') return;
     if (selectedNeedsEgress && !allowExternal) { setStreamError('External provider access is off. Opt in before sending prompt or attachment content to a network provider.'); return; }
     clearWaitingTimer();
     const requestId = ++requestSequenceRef.current;
@@ -685,24 +815,133 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
         if (abortRef.current === controller) abortRef.current = null;
       }
     }
+    return assistantText;
   };
-  const enter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void submit(); };
+  const enter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      void submit();
+    }
+  };
+  const regenerateResponse = (index: number) => {
+    const prompt = [...visibleLines.slice(0, index)].reverse().find(item => item.role === 'user')?.text;
+    setActionMessageId('');
+    if (prompt) void submit(undefined, prompt);
+  };
+  const searchWeb = async (line: ChatLineWithId) => {
+    setActionMessageId(''); setToolError(''); setToolBusy('web');
+    try {
+      const result = await apiPost<Record<string, unknown>>('/api/research/run', { query: line.text, project: 'default', allow_external: true });
+      const report = String(result.report ?? '');
+      appendToolResult('Web search', report || 'The research service returned no web result.');
+    } catch (error) { setToolError(apiConnectionMessage(error)); }
+    finally { setToolBusy(''); }
+  };
   return <div className={`split-layout chat-demo-${dataMode} ${inspector ? 'has-inspector' : ''}`}>
     <section className="split-main">
-      <header className="split-top"><div className="row chat-toolbar-title"><select aria-label="Conversation" className="select" value={conversationId} onChange={event => selectConversation(event.target.value)}><option key="new-conversation" value="">New conversation</option>{conversations.map(item => <option key={item.id} value={item.id}>{item.title || item.id}</option>)}</select>{conversationId && <span className="tag chat-conversation-tag">Conversation</span>}</div><div className="row"><ActionButton title={inspector ? 'Hide context panel' : 'Show context panel'} onClick={() => setInspector(!inspector)} className="icon-button"><PanelRight size={17}/></ActionButton><button type="button" title="Conversation actions" aria-label="Conversation actions" className="icon-button" aria-expanded={conversationMenuOpen} onClick={() => { setConversationMenuOpen(value => !value); setConversationActionError(''); }}><MoreHorizontal size={19}/></button>{dataMode === 'demo' && <span className="tag"><span className="status-dot"/>Offline demo · chat not connected</span>}</div></header>
-      {conversationMenuOpen && <section className="card" aria-label="Conversation actions" style={{ margin: '8px 12px 0', padding: 10 }}>
-        <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
-          <button type="button" className="btn sm" aria-expanded={historyOpen} onClick={() => { setHistoryOpen(value => !value); setHistoryError(''); }}>Conversation history</button>
-          <button type="button" className="btn sm" onClick={() => void exportConversation()} disabled={!conversationId}>Export JSON</button>
-          <button type="button" className="btn sm" onClick={() => void replayConversation()} disabled={!conversationId || replayBusy}>{replayBusy ? 'Loading replay…' : 'Replay timeline'}</button>
-          <input ref={importInputRef} type="file" accept=".json,application/json" aria-label="Choose conversation export" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }} onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importConversation(file); event.currentTarget.value = ''; }} />
-          <button type="button" className="btn sm" onClick={() => importInputRef.current?.click()}>Import conversation…</button>
+      <header className="split-top"><div className="row chat-toolbar-title"/><div className="row">{dataMode === 'demo' && <span className="tag"><span className="status-dot"/>Offline demo · chat not connected</span>}</div></header>
+      {liveVoice && <div className="chat-live-voice-overlay" role="status" aria-live="polite">
+        <button type="button" className={`chat-live-voice-orb ${liveStatus || 'listening'}`} aria-label="Stop live voice" onClick={stopLiveVoice}>
+          <AudioLines size={30} aria-hidden="true" />
+        </button>
+        <strong>{liveStatus === 'speaking' ? 'Speaking' : liveStatus === 'thinking' ? 'Thinking' : 'Listening'}</strong>
+        <span>Tap to stop</span>
+      </div>}
+      <div className="split-scroll" ref={chatScrollRef}><div className="chat-thread">
+        {messagesQuery.isLoading && <div className="caption" role="status">Loading conversation…</div>}
+        {messagesQuery.isError && <div className="card padded small" role="alert">{apiConnectionMessage(messagesQuery.error)}</div>}
+        {!visibleLines.length && !toolOutputs.length && !messagesQuery.isLoading ? <div className="empty"><IconSquare><Sparkles size={20}/></IconSquare><h2>Start a conversation</h2><p>{dataMode === 'demo' ? 'Chat is not simulated in offline Demo mode. Switch to Live to use the connected chat service.' : 'Send a message to begin.'}</p></div> : visibleLines.map((line, i) => <article className={`chat-message chat-message-${line.role}`} key={line.id ?? `${conversationId}-${i}-${line.role}`}><span className={`avatar ${line.role === 'assistant' ? 'blue' : ''}`}>{line.role === 'user' ? 'Y' : '◉'}</span><div className="flex1"><div className="message-head"><strong>{line.role === 'user' ? 'You' : 'OpenAgent'}</strong><small>{line.role}</small><time>{line.createdAt ? new Date(line.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}</time><button type="button" className="icon-button" aria-label={`Actions for ${line.role} message ${i + 1}`} aria-expanded={actionMessageId === line.id} disabled={!conversationId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={15}/></button></div><div className="message-body">{line.text && (line.role === 'assistant' ? renderChatMarkdown(line.text) : <p>{line.text}</p>)}{waitingForContent && streaming && line.role === 'assistant' && i === visibleLines.length - 1 && <div className="chat-generation-indicator" role="status"><span aria-hidden="true"/>Thinking…</div>}</div>{line.role === 'assistant' && <div className="message-actions"><button type="button" className="icon-button" aria-label="Copy message" title="Copy message" onClick={() => line.text && void navigator.clipboard.writeText(line.text)}><Copy size={14}/></button><button type="button" className="icon-button" aria-label="Useful response" disabled title="Feedback is not available yet"><ThumbsUp size={14}/></button><button type="button" className="icon-button" aria-label="More actions" aria-expanded={actionMessageId === line.id} disabled={!line.serverId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={14}/></button></div>}{actionMessageId === line.id && <div className="chat-message-menu" role="menu" aria-label={`Actions for ${line.role} message`}><button type="button" role="menuitem" onClick={() => { setActionMessageId(''); void speak(line.text); }}>Read aloud</button><button type="button" role="menuitem" onClick={() => regenerateResponse(i)}>Regenerate response</button><button type="button" role="menuitem" onClick={() => void searchWeb(line)}>Search web</button></div>}</div></article>)}
+        {toolOutputs.map(output => <section className="card padded chat-tool-output" key={output.id} aria-label={output.title}><strong>{output.title}</strong><p>{output.text}</p><small>Tool output from this session · not saved as an assistant reply</small></section>)}
+        {streamError && <div className="card padded small" role="alert">{streamError}</div>}
+        {completionNotice && !streaming && <div className="caption" role="status">{completionNotice}</div>}
+      </div></div>
+      <form className="chat-composer-outer" onSubmit={event => void submit(event)}>
+        <div className="chat-composer">
+          <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={enter} onFocus={() => { setToolsOpen(false); setModelControlsOpen(false); }} placeholder="Message OpenAgent..." aria-label="Message OpenAgent" disabled={streaming}/>
+          {(attachments.length > 0 || uploading || uploadError) && <div className="row gap6" style={{ flexWrap: 'wrap', padding: '0 12px 8px' }}>{attachments.map(attachment => <span key={attachment.id} className="tag" data-testid="chat-attachment"><Paperclip size={13}/>{attachment.name}<button type="button" className="icon-button" aria-label={`Remove ${attachment.name}`} onClick={() => setAttachments(current => current.filter(item => item.id !== attachment.id))}><span aria-hidden="true">×</span></button></span>)}{uploading && <span className="caption" role="status">Uploading attachment…</span>}{uploadError && <span className="caption" role="alert">{uploadError}</span>}</div>}
+          <div className="row between" style={{ flexWrap: 'wrap' }}>
+            <div className="row gap6">
+              <input ref={fileInputRef} type="file" multiple aria-label="Choose files to attach" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }} onChange={event => { if (event.currentTarget.files) void uploadFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />
+              <button type="button" className="icon-button" title="Attach files" aria-label="Attach a file" onClick={() => fileInputRef.current?.click()} disabled={dataMode !== 'live' || streaming || uploading || attachments.length >= 12}><Paperclip size={16}/></button>
+              <button type="button" className="btn sm chat-model-trigger" aria-expanded={modelControlsOpen} aria-controls="chat-model-controls" onClick={() => { setModelControlsOpen(value => !value); setToolsOpen(false); }}><Bot size={14}/>{modelButtonLabel}{dataMode !== 'demo' && <ChevronDown size={13}/>}</button>
+              <button type="button" className="btn sm chat-tools-trigger" aria-expanded={toolsOpen} aria-controls="chat-tools-menu" onClick={() => { setToolsOpen(value => !value); setModelControlsOpen(false); setToolError(''); }}><Wrench size={14}/>Tools{dataMode !== 'demo' && <ChevronDown size={13}/>}</button>
+            </div>
+            <div className="row gap6">
+              <button type="button" className={`icon-button${recording ? ' is-recording' : ''}`} aria-label={recording ? 'Stop recording and transcribe' : 'Record a spoken message'} aria-pressed={recording} title={dataMode === 'demo' ? 'Voice input requires Live mode' : recording ? 'Stop and transcribe' : 'Record a spoken message'} disabled={dataMode !== 'live' || streaming || voiceBusy} onClick={() => void toggleRecording()}>{recording ? <Square size={15}/> : <Mic size={16}/>}</button>
+              {/* Hands-free: listen, answer aloud, listen again, until stopped. */}
+              {(!draft.trim() || liveVoice) && <button type="button" className={`icon-button${liveVoice ? ' is-live' : ''}`} aria-label={liveVoice ? 'Stop live voice' : 'Start live voice'} aria-pressed={liveVoice} title={dataMode === 'demo' ? 'Live voice requires Live mode' : liveVoice ? 'Stop live voice' : 'Live voice: listen and answer aloud'} disabled={dataMode !== 'live' || recording || voiceBusy} onClick={() => { if (liveVoice) stopLiveVoice(); else void startLiveVoice(); }}>{liveVoice ? <Square size={15}/> : <AudioLines size={16}/>}</button>}
+              {streaming ? <button className="btn sm" type="button" onClick={stopStream}>Cancel</button> : draft.trim() ? <button className="send-button" type="submit" aria-label="Send message" title={dataMode === 'demo' ? 'Chat requires Live mode' : undefined} disabled={dataMode !== 'live' || uploading || (selectedNeedsEgress && !allowExternal)}><Send size={16}/></button> : null}
+            </div>
+          </div>
+          {(voiceBusy || voiceError || recording || liveStatus) && <div className="row gap6" style={{ padding: '0 12px 8px' }}>
+            {liveStatus === 'listening' && <span className="caption" role="status">Listening… stop speaking and it will answer.</span>}
+            {liveStatus === 'thinking' && <span className="caption" role="status">Transcribing and answering…</span>}
+            {liveStatus === 'speaking' && <span className="caption" role="status">Speaking the reply…</span>}
+            {recording && <span className="caption" role="status">Recording… press the stop button to transcribe.</span>}
+            {voiceBusy && <span className="caption" role="status">Transcribing with a local engine…</span>}
+            {voiceError && <span className="caption" role="alert">{voiceError}</span>}
+          </div>}
+          {toolsOpen && <div className="chat-model-controls chat-tools-menu" id="chat-tools-menu" aria-label="Chat tools">
+            <div className="chat-tools-list">
+              <button type="button" className="chat-tool-row" disabled={dataMode !== 'live' || uploading || attachments.length >= 12} onClick={() => { fileInputRef.current?.click(); setToolsOpen(false); }}>
+                <span className="square-icon sm"><Paperclip size={15}/></span>
+                <span><strong>Attach files</strong><small>Uploads to this workspace and sends with the message</small></span>
+              </button>
+              <button type="button" className="chat-tool-row" aria-expanded={activeTool === 'knowledge'} disabled={dataMode !== 'live'} onClick={() => { setActiveTool(current => current === 'knowledge' ? '' : 'knowledge'); setToolError(''); }}>
+                <span className="square-icon sm"><BookOpen size={15}/></span>
+                <span><strong>Search knowledge</strong><small>Reads this project&apos;s indexed sources</small></span>
+              </button>
+              <button type="button" className="chat-tool-row" aria-expanded={activeTool === 'research'} disabled={dataMode !== 'live'} onClick={() => { setActiveTool(current => current === 'research' ? '' : 'research'); setToolError(''); }}>
+                <span className="square-icon sm"><Globe2 size={15}/></span>
+                <span><strong>Research a question</strong><small>Runs the research service and records its report{allowExternal ? '' : ' · external access off'}</small></span>
+              </button>
+              <button type="button" className="chat-tool-row" aria-expanded={activeTool === 'document'} disabled={dataMode !== 'live'} onClick={() => { setActiveTool(current => current === 'document' ? '' : 'document'); setToolError(''); }}>
+                <span className="square-icon sm"><FileText size={15}/></span>
+                <span><strong>Make a document</strong><small>Renders this conversation as a file</small></span>
+              </button>
+            </div>
+            {activeTool && <div className="row gap6" style={{ marginTop: 8 }}>
+              {/* Deliberately not a form: this panel sits inside the composer's
+                  own form, and a nested form is not a valid form owner, so its
+                  submit navigated the page instead of running the tool. */}
+              <input className="field flex1" aria-label={activeTool === 'knowledge' ? 'Knowledge search terms' : activeTool === 'research' ? 'Research question' : 'Document title'} placeholder={activeTool === 'knowledge' ? 'What to look for in indexed sources' : activeTool === 'research' ? 'What to investigate' : 'Title for the document'} value={toolQuery} onChange={event => setToolQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void runTool(activeTool); } }} />
+              <button type="button" className="btn sm primary" disabled={!toolQuery.trim() || Boolean(toolBusy)} onClick={() => void runTool(activeTool)}>{toolBusy ? 'Running…' : 'Run'}</button>
+            </div>}
+            {toolError && <p className="caption" role="alert">{toolError}</p>}
+          </div>}
+          {modelControlsOpen && <div className="chat-model-controls" id="chat-model-controls" aria-label="Model and privacy settings">
+            <div className="chat-model-list" role="listbox" aria-label="Model">
+              {modelChoices.map(choice => <button
+                key={choice.key}
+                type="button"
+                role="option"
+                aria-selected={choice.key === selectedChoiceKey}
+                className={`chat-model-option${choice.key === selectedChoiceKey ? ' is-selected' : ''}`}
+                disabled={streaming || !choice.available}
+                onClick={() => chooseModel(choice)}
+              >
+                <span className="square-icon sm">{choice.providerId === 'auto' ? <Sparkles size={14}/> : <Bot size={14}/>}</span>
+                <span className="flex1"><strong>{choice.label}</strong><small>{choice.detail}</small></span>
+                {!choice.available ? <span className="badge">Unavailable</span> : choice.local ? <span className="badge">Local</span> : <span className="badge">External</span>}
+                {choice.key === selectedChoiceKey && <Check size={14}/>}
+              </button>)}
+              {modelChoices.length === 1 && <p className="caption" role="status">No provider reported an installed model. Auto leaves the choice to the backend.</p>}
+            </div>
+            <div className="row between" style={{ marginTop: 6 }}>
+              <ActionButton nav="models" onClick={() => go('models')} className="btn sm">Manage models</ActionButton>
+              {selectedChoice && <span className="caption">{selectedChoice.providerId === 'auto' ? 'Routed by the backend policy' : `${selectedChoice.detail} · ${selectedChoice.local ? 'local' : 'external'}`}</span>}
+            </div>
+            {providersQuery.isError && <span className="caption" role="alert">{apiConnectionMessage(providersQuery.error)}</span>}
+          </div>}
         </div>
-        {conversationActionMessage && <p className="caption" role="status">{conversationActionMessage}</p>}
-        {conversationActionError && <p className="caption" role="alert">{conversationActionError}</p>}
-      </section>}
-      {dataMode === 'live' && replayData && <dialog open aria-label="Conversation replay" className="card" style={{ position: 'fixed', zIndex: 20, inset: '12% 10%', width: '80%', maxWidth: 900, maxHeight: '76vh', overflow: 'auto', padding: 18, boxShadow: '0 16px 48px #0003' }}><div className="row between"><h2>Conversation replay</h2><button type="button" className="icon-button" aria-label="Close replay" onClick={() => setReplayData(null)}>×</button></div><p className="caption">{String(replayData.message_count ?? 0)} messages · backend replay data</p><div>{records(replayData.timeline).map((event, index) => <article key={`${String(event.created_at)}-${index}`} className="chat-message"><span className="avatar">{event.role === 'user' ? 'Y' : '◉'}</span><div className="flex1"><div className="message-head"><strong>{String(event.role ?? 'Message')}</strong><small>{String(event.created_at ?? '')}</small></div><div className="message-body"><p>{String(event.content ?? '')}</p></div></div></article>)}</div></dialog>}
-      {historyOpen && <section className="card" aria-label="Conversation history" style={{ margin: '8px 12px 0', padding: 12 }}>
+      </form>
+    </section>
+    {!inspector && <button type="button" className="chat-panel-edge-toggle" aria-label="Show conversations panel" title="Show conversations panel" onClick={() => setInspector(true)}><ChevronLeft size={15}/></button>}
+    {inspector && <aside className="inspector chat-conversation-panel">
+      <div className="section-head"><button type="button" className="chat-panel-inline-toggle" aria-label="Hide conversations panel" title="Hide conversations panel" onClick={() => setInspector(false)}><ChevronRight size={15}/></button><button type="button" className="btn sm primary" onClick={() => { selectConversation(''); setRecentLimit(8); }} disabled={dataMode !== 'live'}><Plus size={14}/>New conversation</button></div>
+      <div className="inspector-content">
+      {historyOpen && <section className="card chat-sidebar-history" aria-label="Conversation history">
+
         <div className="row between" style={{ gap: 8, flexWrap: 'wrap' }}>
           <label className="row" style={{ flex: '1 1 220px', minWidth: 0, gap: 8 }}><Search size={15}/><input className="field" aria-label="Search conversation history" placeholder="Search conversations" value={historySearch} onChange={event => setHistorySearch(event.target.value)} /></label>
           <button type="button" className="btn sm" aria-pressed={showArchived} onClick={() => setShowArchived(value => !value)}>{showArchived ? 'Archived' : 'Active'}</button>
@@ -712,53 +951,56 @@ export function ChatScreen({ go = noNavigation }: ScreenProps = {}) {
           <button type="button" className="nav-link truncate" aria-current={conversationId === item.id ? 'true' : undefined} style={{ flex: 1, minWidth: 0 }} onClick={() => { selectConversation(item.id); setHistoryOpen(false); }} title={item.title || item.id}>{item.title || item.id}</button>
           <button type="button" className="icon-button" aria-label={`${item.pinned ? 'Unpin' : 'Pin'} ${item.title || 'conversation'}`} title={item.pinned ? 'Unpin conversation' : 'Pin conversation'} disabled={historyBusyId === item.id} onClick={() => void updateConversation(item, { pinned: !item.pinned })}><Pin size={14}/></button>
           <button type="button" className="icon-button" aria-label={`Rename ${item.title || 'conversation'}`} title="Rename conversation" disabled={historyBusyId === item.id} onClick={() => void renameConversation(item)}><MoreHorizontal size={15}/></button>
+          {renamingId === item.id && <span className="chat-inline-rename"><input autoFocus aria-label={`Rename ${item.title || 'conversation'}`} value={renameValue} onChange={event => setRenameValue(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void renameConversation(item, renameValue); if (event.key === 'Escape') { setRenamingId(''); setRenameValue(''); } }} /><button type="button" className="btn sm primary" onClick={() => void renameConversation(item, renameValue)}>Save</button><button type="button" className="btn sm" onClick={() => { setRenamingId(''); setRenameValue(''); }}>Cancel</button></span>}
           <button type="button" className="icon-button" aria-label={`${item.archived ? 'Restore' : 'Archive'} ${item.title || 'conversation'}`} title={item.archived ? 'Restore conversation' : 'Archive conversation'} disabled={historyBusyId === item.id} onClick={() => void updateConversation(item, { archived: !item.archived })}><Archive size={14}/></button>
-          <button type="button" className="icon-button" aria-label={`Delete ${item.title || 'conversation'}`} title="Delete conversation" disabled={historyBusyId === item.id} onClick={() => void deleteConversation(item)}><Trash2 size={14}/></button>
+          {/* Deleting confirms in place, the same way the recent rows do. */}
+          <button type="button" className="icon-button" aria-label={`Delete ${item.title || 'conversation'}`} title="Delete conversation" disabled={historyBusyId === item.id} onClick={() => setPendingDeleteId(item.id)}><Trash2 size={14}/></button>
+          {pendingDeleteId === item.id && <span className="chat-row-confirm is-inline" role="group" aria-label={`Confirm deleting ${item.title || 'conversation'}`}>
+            <button type="button" className="btn sm is-destructive" disabled={historyBusyId === item.id} onClick={() => void deleteConversation(item)}>Delete</button>
+            <button type="button" className="btn sm" onClick={() => setPendingDeleteId('')}>Cancel</button>
+          </span>}
         </div>)}</div> : <p className="caption" role="status">{historySearch.trim() ? 'No conversations match this search.' : showArchived ? 'No archived conversations.' : 'No saved conversations yet.'}</p>}
       </section>}
-      <div className="split-scroll" ref={chatScrollRef}><div className="chat-thread">
-        {messagesQuery.isLoading && <div className="caption" role="status">Loading conversation…</div>}
-        {messagesQuery.isError && <div className="card padded small" role="alert">{apiConnectionMessage(messagesQuery.error)}</div>}
-        {!visibleLines.length && !messagesQuery.isLoading ? <div className="empty"><IconSquare><Sparkles size={20}/></IconSquare><h2>Start a conversation</h2><p>{dataMode === 'demo' ? 'Chat is not simulated in offline Demo mode. Switch to Live to use the connected chat service.' : 'Send a message to begin.'}</p></div> : visibleLines.map((line, i) => <article className="chat-message" key={line.id ?? `${conversationId}-${i}-${line.role}`}><span className={`avatar ${line.role === 'assistant' ? 'blue' : ''}`}>{line.role === 'user' ? 'Y' : '◉'}</span><div className="flex1"><div className="message-head"><strong>{line.role === 'user' ? 'You' : 'OpenAgent'}</strong><small>{line.role}</small><button type="button" className="icon-button" aria-label={`Actions for ${line.role} message ${i + 1}`} aria-expanded={actionMessageId === line.id} disabled={!line.serverId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={15}/></button></div><div className="message-body">{line.text && <p>{line.text}</p>}{waitingForContent && streaming && line.role === 'assistant' && i === visibleLines.length - 1 && <div className="chat-generation-indicator" role="status"><span aria-hidden="true"/>Working…</div>}</div>{line.role === 'assistant' && <div className="message-actions"><button type="button" className="icon-button" aria-label="Copy message" title="Copy message" onClick={() => line.text && void navigator.clipboard.writeText(line.text)}><Copy size={14}/></button><button type="button" className="icon-button" aria-label="Useful response" title="Useful response"><ThumbsUp size={14}/></button><button type="button" className="icon-button" aria-label="More actions" aria-expanded={actionMessageId === line.id} disabled={!line.serverId || streaming} onClick={() => setActionMessageId(current => current === line.id ? '' : line.id || '')}><MoreHorizontal size={14}/></button></div>}{actionMessageId === line.id && <div className="row" style={{ gap: 6, marginTop: 6 }}>{line.serverId && <button type="button" className="btn sm" onClick={() => void branchFromMessage(line)}>Branch from here</button>}{line.role === 'assistant' && <button type="button" className="btn sm" onClick={() => void saveReplyAsMarkdown(line)}>Save as Markdown</button>}</div>}</div></article>)}
-        {streamError && <div className="card padded small" role="alert">{streamError}</div>}
-        {completionNotice && !streaming && <div className="caption" role="status">{completionNotice}</div>}
-      </div></div>
-      <form className="chat-composer-outer" onSubmit={event => void submit(event)}>
-        <div className="chat-composer">
-          <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={enter} placeholder="Message OpenAgent..." aria-label="Message OpenAgent" disabled={streaming}/>
-          {(attachments.length > 0 || uploading || uploadError) && <div className="row gap6" style={{ flexWrap: 'wrap', padding: '0 12px 8px' }}>{attachments.map(attachment => <span key={attachment.id} className="tag" data-testid="chat-attachment"><Paperclip size={13}/>{attachment.name}<button type="button" className="icon-button" aria-label={`Remove ${attachment.name}`} onClick={() => setAttachments(current => current.filter(item => item.id !== attachment.id))}><span aria-hidden="true">×</span></button></span>)}{uploading && <span className="caption" role="status">Uploading attachment…</span>}{uploadError && <span className="caption" role="alert">{uploadError}</span>}</div>}
-          <div className="row between" style={{ flexWrap: 'wrap' }}>
-            <div className="row gap6">
-              <input ref={fileInputRef} type="file" multiple aria-label="Choose files to attach" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }} onChange={event => { if (event.currentTarget.files) void uploadFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />
-              <button type="button" className="icon-button" title="Attach files" aria-label="Attach a file" onClick={() => fileInputRef.current?.click()} disabled={dataMode !== 'live' || streaming || uploading || attachments.length >= 12}><Paperclip size={16}/></button>
-              <button type="button" className="btn sm chat-model-trigger" aria-expanded={modelControlsOpen} aria-controls="chat-model-controls" onClick={() => setModelControlsOpen(value => !value)}><Bot size={14}/>{modelId || selectedProvider?.selected_model || selectedProvider?.default_model || 'Select model'}{dataMode !== 'demo' && <ChevronRight size={13}/>}</button>
-              <ActionButton nav="tools" onClick={() => go('tools')} className="btn sm"><Globe2 size={14}/> Tools</ActionButton>
-            </div>
-            {streaming ? <button className="btn sm" type="button" onClick={stopStream}>Cancel</button> : <button className="send-button" type="submit" aria-label="Send message" title={dataMode === 'demo' ? 'Chat requires Live mode' : undefined} disabled={dataMode !== 'live' || !draft.trim() || uploading || (selectedNeedsEgress && !allowExternal)}><Send size={16}/></button>}
-          </div>
-          {modelControlsOpen && <div className="chat-model-controls" id="chat-model-controls" aria-label="Model and privacy settings">
-            <div className="chat-model-selects">
-              <label className="caption">Provider <select aria-label="Model provider" className="select" value={providerId} onChange={event => { setProviderId(event.target.value); setModelId(''); }} disabled={streaming}>{providers.length ? providers.map(provider => <option key={provider.id} value={provider.id} disabled={provider.available === false}>{provider.label || provider.id}{provider.id === 'auto' ? '' : provider.available === false ? ' (unavailable)' : provider.local === false ? ' (external)' : provider.network ? ' (local server)' : ' (local)'}</option>) : <option key="auto-local" value="auto">Auto route · local only</option>}</select></label>
-              {providerId !== 'auto' && modelOptions.length > 0 && <label className="caption">Model <select aria-label="Model" className="select" value={modelId || selectedProvider?.selected_model || selectedProvider?.default_model || ''} onChange={event => setModelId(event.target.value)} disabled={streaming}><option key="provider-default" value="">Provider default</option>{modelOptions.map(model => <option key={model} value={model}>{model}</option>)}</select></label>}
-              <ActionButton nav="models" onClick={() => go('models')} className="btn sm">Browse models</ActionButton>
-            </div>
-            {providersQuery.isError && <span className="caption" role="alert">{apiConnectionMessage(providersQuery.error)}</span>}
-            <div className="row between caption" style={{ gap: 10, flexWrap: 'wrap' }}>
-              <label className="row" style={{ gap: 6 }}><input type="checkbox" aria-label="Allow external provider calls" checked={allowExternal} onChange={event => setAllowExternal(event.target.checked)} disabled={streaming}/><span>Allow external provider calls</span></label>
-              <span>Off by default · enabled only for this request</span>
-            </div>
-            {selectedNeedsEgress && !allowExternal && <p className="caption" role="alert">This provider sends prompt and attachment content over the network. Opt in above to continue.</p>}
-            {selectedNeedsEgress && allowExternal && <p className="caption" role="status">{String(selectedProvider?.privacy_warning ?? 'External provider access is enabled for this request. Prompt and attachments may leave this server.')}</p>}
-            {providerId === 'auto' && allowExternal && <p className="caption" role="status">External routing is permitted for this request when allowed by the backend model policy.</p>}
-          </div>}
+      {dataMode !== 'live' ? <div className="empty"><Sparkles size={20}/><strong>Offline demo</strong><p>Switch to Live mode to use saved conversations.</p></div> : <>
+        <div className="chat-recent-list">
+          {conversationsQuery.isLoading ? <p className="caption" role="status">Loading conversations…</p>
+            : conversationsQuery.isError ? <p className="caption" role="alert">{apiConnectionMessage(conversationsQuery.error)}</p>
+              : conversations.length ? <>
+                {conversations.slice(0, recentLimit).map(item => <div key={item.id} className={`chat-recent-row${conversationId === item.id ? ' is-active' : ''}`}>
+                  <button type="button" className="chat-recent-open" aria-current={conversationId === item.id ? 'true' : undefined} title={item.title || item.id} onClick={() => selectConversation(item.id)}>
+                    <strong className="truncate">{item.title || item.id}</strong>
+                    {item.updated_at ? <small>{relativeTimestamp(item.updated_at)}</small> : null}
+                  </button>
+                  {/* Pinning shows its result by filling the icon, not by
+                      reporting it in a message. */}
+                  <button type="button" className={`icon-button${item.pinned ? ' is-pinned' : ''}`} aria-label={`${item.pinned ? 'Unpin' : 'Pin'} ${item.title || 'conversation'}`} aria-pressed={Boolean(item.pinned)} title={item.pinned ? 'Unpin conversation' : 'Pin conversation'} disabled={historyBusyId === item.id} onClick={() => void updateConversation(item, { pinned: !item.pinned })}><Pin size={13}/></button>
+                  <button type="button" className="icon-button" aria-label={`More actions for ${item.title || 'conversation'}`} aria-expanded={rowMenuId === item.id} title="More actions" disabled={historyBusyId === item.id} onClick={() => { setRowMenuId(current => current === item.id ? '' : item.id); setPendingDeleteId(''); }}><MoreHorizontal size={14}/></button>
+                  {rowMenuId === item.id && <div className="chat-row-menu" role="menu" aria-label={`Actions for ${item.title || 'conversation'}`}>
+                    <button type="button" role="menuitem" onClick={() => { setRowMenuId(''); void exportConversation(item.id); }}>Export JSON</button>
+                    <button type="button" role="menuitem" onClick={() => void renameConversation(item)}>Rename</button>
+                    <button type="button" role="menuitem" onClick={() => { setRowMenuId(''); void updateConversation(item, { archived: true }); }}>Archive</button>
+                    <button type="button" role="menuitem" className="is-destructive" onClick={() => { setRowMenuId(''); setPendingDeleteId(item.id); }}>Delete</button>
+                  </div>}
+                  {pendingDeleteId === item.id && <div className="chat-row-confirm" role="group" aria-label={`Confirm deleting ${item.title || 'conversation'}`}>
+                    <span>Delete permanently?</span>
+                    <button type="button" className="btn sm is-destructive" disabled={historyBusyId === item.id} onClick={() => void deleteConversation(item)}>Delete</button>
+                    <button type="button" className="btn sm" onClick={() => setPendingDeleteId('')}>Cancel</button>
+                  </div>}
+                  {renamingId === item.id && <span className="chat-inline-rename"><input autoFocus aria-label={`Rename ${item.title || 'conversation'}`} value={renameValue} onChange={event => setRenameValue(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void renameConversation(item, renameValue); if (event.key === 'Escape') { setRenamingId(''); setRenameValue(''); } }} /><button type="button" className="btn sm primary" onClick={() => void renameConversation(item, renameValue)}>Save</button><button type="button" className="btn sm" onClick={() => { setRenamingId(''); setRenameValue(''); }}>Cancel</button></span>}
+                </div>)}
+                {conversations.length > recentLimit && <button type="button" className="btn sm chat-recent-more" onClick={() => setRecentLimit(conversations.length)}>Load all {conversations.length} conversations</button>}
+              </> : <div className="empty"><Sparkles size={20}/><strong>No conversations yet</strong><p>Send a message to start one.</p></div>}
+          {/* Always offered: archived conversations are reachable even when
+              nothing is active, which is also what the history panel searches. */}
+          <button type="button" className="btn sm chat-recent-more" aria-expanded={historyOpen && showArchived} onClick={() => { setShowArchived(true); setHistoryOpen(true); setHistoryError(''); }}>Archived chats</button>
         </div>
-      </form>
-    </section>
-    {inspector && <aside className="inspector"><div className="inspector-tabs"><div className="tabs" role="tablist" aria-label="Conversation details" onKeyDown={handleTabListKeyDown}>{(['Files', 'Preview', 'Context'] as const).map(name => <button key={name} type="button" role="tab" aria-selected={tab === name} tabIndex={tabIndex(tab === name)} className={`tab ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}>{name}</button>)}</div></div><div className="inspector-content">
-      {tab === 'Files' && <><div className="section-head"><h3>Project files</h3><button type="button" className="icon-button" aria-label="Add files" title={dataMode === 'demo' ? 'Add files (demo)' : 'Adding files requires a connected workspace'} disabled={dataMode !== 'demo'}><Plus size={15}/></button></div>{dataMode === 'demo' ? <div className="file-tree"><div className="tree-row"><ChevronDown size={12}/><Folder size={14}/> <strong>ecommerce-platform</strong></div>{(['src', 'components', 'ProductCard.tsx', 'hooks', 'useCart.ts', 'pages', 'page.tsx', 'styles', 'package.json', 'README.md'] as const).map((name, i) => <div key={name} className={`tree-row ${[0, 5, 7].includes(i) ? 'level1' : 'level2'}${name === 'ProductCard.tsx' ? ' active' : ''}`}>{name.includes('.') ? <FileCode2 size={13}/> : <Folder size={13}/>}{name}</div>)}</div> : <div className="empty"><Folder size={20}/><strong>No workspace connected</strong><p>Connect a workspace to browse its files.</p></div>}</>}
-      {tab === 'Preview' && <><div className="row between chat-preview-toolbar" style={{ marginBottom: 12 }}><span className="tag"><Globe2 size={13}/> Web preview</span><div className="row gap4"><button type="button" className="icon-button" aria-label={dataMode === 'demo' ? `${previewViewport === 'desktop' ? 'Desktop' : 'Mobile'} preview` : 'Desktop preview unavailable'} title={dataMode === 'demo' ? 'Toggle preview viewport' : 'Desktop preview unavailable'} disabled={dataMode !== 'demo'} aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport(value => value === 'desktop' ? 'mobile' : 'desktop')}><Monitor size={16}/></button><button type="button" className="icon-button" aria-label={dataMode === 'demo' ? `${previewExpanded ? 'Collapse' : 'Expand'} preview` : 'Expand preview unavailable'} title={dataMode === 'demo' ? 'Toggle expanded preview' : 'Expand preview unavailable'} disabled={dataMode !== 'demo'} aria-pressed={previewExpanded} onClick={() => setPreviewExpanded(value => !value)}><Maximize2 size={16}/></button></div></div>{dataMode === 'demo' ? <><div className={`browser-preview ${previewViewport === 'mobile' ? 'chat-preview-mobile' : ''} ${previewExpanded ? 'chat-preview-expanded' : ''}`}><div className="mock-nav"><strong>◉ OpenAgent</strong><span>Product · Docs · Start</span></div><h2>Build better work with AI</h2><p>One workspace for research, planning and development.</p><button type="button" className="btn primary sm" onClick={() => go('home')}>Explore workspace →</button><div style={{ height: 86, borderRadius: 9, marginTop: 32, background: 'var(--blue-soft)', display: 'grid', placeItems: 'center', color: 'var(--blue)' }}><Layers3 size={32}/></div></div><div className="card padded section-space"><h3>Design notes</h3><p className="small muted" style={{ marginTop: 8 }}>Use a consistent navigation pattern, sensible content widths, and purposeful detail panels.</p></div></> : <div className="browser-preview chat-preview-unavailable"><div className="mock-nav"><strong>◉ Workspace preview</strong><span>Unavailable</span></div><div className="empty"><Layers3 size={28}/><h2>No live preview</h2><p>Connect a running workspace preview to view this panel.</p></div></div>}</>}
-      {tab === 'Context' && <div className="card padded"><h3>Conversation context</h3><p className="muted small" style={{ margin: '9px 0 16px' }}>Project scope · default</p><div className="list-row"><Folder size={16}/><span className="flex1">Project file browser</span><span className="badge">No project file endpoint in chat contract</span></div><div className="list-row"><Bot size={16}/><span className="flex1">Provider / model</span><span className="badge">{selectedProvider?.label ?? providerId}{modelId || selectedProvider?.selected_model || selectedProvider?.default_model ? ` · ${modelId || selectedProvider?.selected_model || selectedProvider?.default_model}` : ''}</span></div><div className="list-row"><Shield size={16}/><span className="flex1">External routing</span><span className="badge">{allowExternal ? 'Allowed by request' : 'Blocked by request'}</span></div><div className="list-row"><CheckCircle2 size={16}/><span className="flex1">Backend connection</span><span className="badge">{conversationsQuery.isLoading || providersQuery.isLoading ? 'Checking' : conversationsQuery.isError || providersQuery.isError ? 'Unavailable' : 'Connected'}</span></div></div>}
+        <div className="chat-conversation-actions">
+          <input ref={importInputRef} type="file" accept=".json,application/json" aria-label="Choose conversation export" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }} onChange={event => { const file = event.currentTarget.files?.[0]; if (file) void importConversation(file); event.currentTarget.value = ''; }} />
+          <button type="button" className="btn sm" onClick={() => importInputRef.current?.click()}>Import conversation…</button>
+        </div>
+        {conversationActionMessage && <p className="caption" role="status">{conversationActionMessage}</p>}
+        {conversationActionError && <p className="caption" role="alert">{conversationActionError}</p>}
+      </>}
     </div></aside>}
   </div>;
 }
-

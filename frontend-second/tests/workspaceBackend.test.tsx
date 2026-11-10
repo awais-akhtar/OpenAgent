@@ -160,6 +160,42 @@ describe('workspace backend integrations', () => {
     expect(screen.queryByRole('textbox', { name: 'CodeQ acceptance criteria' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Run framework preflight' })).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Ask CodeQ' })).toBeDisabled();
+    expect(screen.getByText('Auto model')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /^(Auto|Select model)/ })).not.toBeInTheDocument();
+  });
+  it('blocks an autonomous CodeQ run when the real backend reports CPU admission denied', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'blocked', reason: 'The installed small CPU baseline model cannot reliably complete autonomous CodeQ edits.' });
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Local project' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
+      return json({ error: `Unexpected request ${url} ${init?.method ?? 'GET'}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CodeQScreen/>);
+    expect(await screen.findByText(/small CPU baseline model cannot reliably complete autonomous CodeQ edits/)).toBeVisible();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ask CodeQ' }), { target: { value: 'Review this project' } });
+    expect(screen.getByRole('button', { name: 'Send to CodeQ' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/api/codebase/runs') && init?.method === 'POST')).toBe(false);
+  });
+  it('keeps autonomous CodeQ controls unavailable when admission cannot be verified', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/codebase/run-admission')) return json({ error: 'unavailable' }, 503);
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Local project' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
+      return json({ error: 'unavailable' }, 503);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CodeQScreen/>);
+    expect(await screen.findByText(/run availability could not be verified/i)).toBeVisible();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ask CodeQ' }), { target: { value: 'Review this project' } });
+    expect(screen.getByRole('button', { name: 'Send to CodeQ' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/codebase/runs'))).toBe(false);
   });
   it('loads project files from CodeQ tree and requests the selected file', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -182,6 +218,7 @@ describe('workspace backend integrations', () => {
     let conflict = true;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [{ path: 'src/main.ts', type: 'file' }] });
       if (url.endsWith('/api/codebase/projects/p1/file?path=src%2Fmain.ts')) return json({ file: { path: 'src/main.ts', content: 'export const value = 1;', sha256: 'original-hash' } });
@@ -331,6 +368,7 @@ describe('workspace backend integrations', () => {
     const restoreCalls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/runs') && init?.method === 'POST') return json({ run: { id: 'r1', status: 'queued' } }, 202);
@@ -357,6 +395,7 @@ describe('workspace backend integrations', () => {
     let approvalResolved = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/runs') && init?.method === 'POST') return json({ run: { id: 'r1', status: 'queued' } }, 202);
@@ -1109,6 +1148,22 @@ describe('workspace backend integrations', () => {
     expect(await screen.findByText('Actual backend report')).toBeVisible();
     const startRequest = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/api/research/sessions') && init?.method === 'POST');
     expect(JSON.parse(String(startRequest?.[1]?.body))).toMatchObject({ query: 'Compare battery chemistries', allow_external: false });
+  });
+
+  it('does not offer an unimplemented unowned-session bypass in Live research', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/research/sessions?')) return json({ sessions: [] });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<ResearchScreen/>);
+    fireEvent.click(screen.getByText('New research', { exact: true }));
+    expect(screen.queryByRole('checkbox', { name: 'Include unowned' })).not.toBeInTheDocument();
+    expect(screen.getByText('Legacy sessions require owner attribution')).toBeVisible();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include archived' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('include_archived=true'))).toBe(true));
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('include_unowned'))).toBe(true);
   });
 
   it('sends external research consent only after the user opts in', async () => {

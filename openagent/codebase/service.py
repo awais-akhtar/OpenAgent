@@ -617,9 +617,30 @@ class CodebaseService:
             if "role_models_json" not in columns:
                 connection.execute("ALTER TABLE codebase_runs ADD COLUMN role_models_json TEXT NOT NULL DEFAULT '{}'")
 
-    def pick_source_folder(self) -> str:
-        """Open the operating-system folder chooser after an explicit UI action."""
+    # How long the native chooser may hold the request open. The dialog is
+    # modal, so without a bound the HTTP thread serving it waits for a human
+    # indefinitely and a caller never gets an answer.
+    FOLDER_PICKER_TIMEOUT_SECONDS = 120
 
+    def pick_source_folder(self) -> str:
+        """Open the operating-system folder chooser after an explicit UI action.
+
+        The dialog appears on the desktop of the machine running the server,
+        which is only the caller's own desktop in a local single-user install.
+        In any other deployment mode a caller would raise a window on someone
+        else's screen and hold a server thread while it stood open, so this
+        refuses and the caller supplies the path instead -- which is what
+        create_project takes and validates anyway.
+        """
+
+        from ..config import deployment_mode
+
+        mode = deployment_mode()
+        if mode != "single_user":
+            raise ValueError(
+                "The native folder chooser is only available in a local single_user install; "
+                f"this server runs in {mode} mode. Send source_path to /api/codebase/projects instead."
+            )
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -628,6 +649,9 @@ class CodebaseService:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        # Tk has no timeout of its own, so a scheduled quit closes the dialog
+        # and releases the thread if nobody is at the machine to answer it.
+        root.after(self.FOLDER_PICKER_TIMEOUT_SECONDS * 1000, root.quit)
         try:
             selected = filedialog.askdirectory(parent=root, title="Open a project in CodeQ", mustexist=True)
         finally:
@@ -750,6 +774,22 @@ class CodebaseService:
             ),
             project_map,
         )
+
+    def run_admission(self) -> dict[str, Any]:
+        """Report the current backend admission gate, not predicted run success."""
+        if getattr(self.gateway, "routing_policy", "") == "cpu-baseline":
+            return {
+                "autonomous_run": "blocked",
+                "reason": "The installed small CPU baseline model cannot reliably complete autonomous CodeQ edits. Use read-only questions or reviewed manual edits.",
+                "read_only_questions": True,
+                "manual_editor": True,
+            }
+        return {
+            "autonomous_run": "eligible",
+            "reason": "A run may start; model availability and validation are checked during execution.",
+            "read_only_questions": True,
+            "manual_editor": True,
+        }
 
     def file_tree(self, codebase_project_id: str, *, owner: str = "local") -> dict[str, Any]:
         project = self.get_project(codebase_project_id, owner=owner)

@@ -275,9 +275,13 @@ class LocalAIInfrastructure:
     ) -> dict[str, Any]:
         model_id = stable_id("model", name, provider, source_url or local_path)
         now = utc_now()
-        status = "available" if local_path else "registered"
-        size = Path(local_path).stat().st_size if local_path and Path(local_path).exists() else 0
-        digest = file_sha256(Path(local_path)) if local_path and Path(local_path).exists() else ""
+        local_file = Path(local_path) if local_path else None
+        # A path is a locator, not proof of an installed model. Missing files
+        # must not appear runnable in Live Models after registration.
+        file_available = bool(local_file and local_file.is_file())
+        status = "available" if file_available else "registered"
+        size = local_file.stat().st_size if file_available and local_file else 0
+        digest = file_sha256(local_file) if file_available and local_file else ""
         with self.store.session() as connection:
             connection.execute(
                 """
@@ -542,6 +546,14 @@ class LocalAIInfrastructure:
                 "runtime": "local-model-server",
             },
         )
+        # An Ollama URI is not a local file. The successful pull above, rather
+        # than the URI alone, is the evidence that this model is available.
+        with self.store.session() as connection:
+            connection.execute(
+                "UPDATE local_models SET status = ? WHERE id = ?",
+                ("available", model["id"]),
+            )
+        model = self.get_model(model["id"]) or model
         self.store.add_audit_event(
             AuditEvent(
                 actor="local_ai",

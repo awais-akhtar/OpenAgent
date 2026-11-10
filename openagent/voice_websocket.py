@@ -115,17 +115,19 @@ class VoiceWebSocketSession:
             )
 
             self.transcription = transcription_result.get("transcript", "")
-            self.is_final = True
+            transcript_status = str(transcription_result.get("transcript_status", "unavailable"))
+            transcribed = transcript_status == "transcribed" and bool(self.transcription.strip())
+            self.is_final = transcribed
             self.status = "closed"
 
             result.update(
                 {
                     "transcription": self.transcription,
-                    "is_final": True,
-                    "status": "transcribed",
+                    "is_final": transcribed,
+                    "status": "transcribed" if transcribed else "closed",
                     "stt_engine": transcription_result.get("stt_engine", ""),
                     "confidence": transcription_result.get("confidence", "unknown"),
-                    "transcript_status": transcription_result.get("transcript_status", ""),
+                    "transcript_status": transcript_status,
                     "stt_message": transcription_result.get("stt_message", ""),
                     "audio_profile": transcription_result.get("audio_profile", {}),
                     "turn_id": transcription_result.get("turn", {}).get("id", ""),

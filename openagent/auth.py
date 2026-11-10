@@ -1010,6 +1010,40 @@ def personal_remote_public_route(path: str, method: str) -> bool:
     return (method.upper(), path) in PERSONAL_REMOTE_PUBLIC_ROUTES
 
 
+# Routes a second scope may also reach. The gate is otherwise single-scope, so
+# every route is reachable by exactly one permission -- which coupled unrelated
+# capabilities together. The API-keys tab of the Developer screen needs the
+# permission catalogue to offer the checkboxes a key's scopes are chosen from,
+# but the catalogue required settings:read, so a credential holding only
+# developer:read and developer:admin rendered an empty catalogue and a
+# permanently disabled Create button: the feature could not be used at all.
+#
+# The catalogue is 61 static {scope, description} pairs -- the product's own
+# vocabulary, carrying no account state and no user data -- so letting a
+# developer credential read it grants no access to anything else. Anything
+# added here must be as free of user data as that.
+ALTERNATIVE_ROUTE_SCOPES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("GET", "/api/auth/scopes"): ("settings:read", "developer:read"),
+}
+
+
+def acceptable_scopes_for_path(path: str, method: str = "GET") -> tuple[str, ...]:
+    """Every scope that may reach *path*/*method*.
+
+    The gate checks membership in this set. ``required_scope_for_path`` keeps
+    returning the single primary scope, because the route inventory and the
+    gating invariant test both report one permission per route.
+    """
+    primary = required_scope_for_path(path, method)
+    if primary is None:
+        return ()
+    alternatives = ALTERNATIVE_ROUTE_SCOPES.get((method.upper(), path))
+    if not alternatives:
+        return (primary,)
+    # The primary stays first so the reported permission never changes.
+    return (primary, *(scope for scope in alternatives if scope != primary))
+
+
 def required_scope_for_path(path: str, method: str = "GET") -> str | None:
     """Return the scope required for *path*/*method*, or None if it is not gated."""
     verb = method.upper()

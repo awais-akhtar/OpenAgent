@@ -43,20 +43,10 @@ function readDemoProject() {
 }
 
 const readDataMode = (): DataMode => {
-  // Demo data is an explicit local development choice; deployed builds always start live.
-  if (!import.meta.env.DEV) {
-    // A same-origin production upgrade may inherit a development Demo flag.
-    // Production has no Demo mode, so remove the stale preference where
-    // storage is available and remain Live even when storage is denied.
-    try { localStorage.removeItem(STORAGE_DATA_MODE); } catch { /* Production mode remains Live in memory. */ }
-    return 'live';
-  }
-  try {
-    const stored = localStorage.getItem(STORAGE_DATA_MODE);
-    if (stored === 'live') return 'live';
-    if (stored !== 'demo') localStorage.setItem(STORAGE_DATA_MODE, 'demo');
-    return 'demo';
-  } catch { return 'demo'; }
+  // The installed application is a local single-user Live product. Remove
+  // any stale development preference and fail closed to Live in every build.
+  try { localStorage.removeItem(STORAGE_DATA_MODE); } catch { /* Live remains in memory. */ }
+  return 'live';
 };
 
 const readTheme = (): ThemeMode => {
@@ -87,11 +77,10 @@ export const useWorkspaceState = create<WorkspaceState>((set) => ({
     try { localStorage.setItem(STORAGE_REDUCE_MOTION, String(reduceMotion)); } catch { /* Session preference still applies. */ }
     set({ reduceMotion });
   },
-  setDataMode: (dataMode) => {
-    const resolvedMode = import.meta.env.DEV ? dataMode : 'live';
+  setDataMode: (_dataMode) => {
+    const resolvedMode: DataMode = 'live';
     try {
-      if (resolvedMode === 'demo') localStorage.setItem(STORAGE_DATA_MODE, 'demo');
-      else localStorage.removeItem(STORAGE_DATA_MODE);
+      localStorage.removeItem(STORAGE_DATA_MODE);
     } catch { /* The selected mode remains available in memory for this session. */ }
     set({ dataMode: resolvedMode });
     if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('openagent-data-mode-changed', { detail: resolvedMode }));

@@ -5,6 +5,7 @@ import unittest
 
 from openagent.context import ContextEngine
 from openagent.agents import AgentRegistry
+from openagent.model_gateway import ProviderConfigurationError
 from openagent.storage import OpenAgentStore
 
 
@@ -15,6 +16,18 @@ class AgentTests(unittest.TestCase):
             registry = AgentRegistry(store)
             with self.assertRaises(InterruptedError):
                 registry.run("executive", "Plan a task", cancelled=lambda: True)
+            self.assertEqual(store.health()["agent_run_count"], 0)
+
+    def test_invalid_cpu_provider_does_not_become_successful_fallback_run(self) -> None:
+        class RejectedGateway:
+            def complete(self, *_args, **_kwargs):
+                raise ProviderConfigurationError("CPU model exceeds storage budget")
+
+        with TemporaryDirectory() as tmp:
+            store = OpenAgentStore(tmp)
+            registry = AgentRegistry(store, RejectedGateway())
+            with self.assertRaisesRegex(ProviderConfigurationError, "storage budget"):
+                registry.run("executive", "Plan a task")
             self.assertEqual(store.health()["agent_run_count"], 0)
 
     def test_executive_agent_uses_local_context(self) -> None:

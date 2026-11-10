@@ -38,8 +38,6 @@ for (const viewport of [
             expect(request.searchParams.get('project')).toBe('default');
             expect(request.searchParams.has('owner')).toBe(false);
           }
-        } else {
-          await expect(page.getByText(/Agent run history is shown in Agents when this account has the explicit agents:read scope for the active project/i)).toBeVisible();
         }
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         if (view === 'home') expect(historyRequests).toEqual([]);

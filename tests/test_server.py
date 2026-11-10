@@ -1266,6 +1266,7 @@ class ServerTests(unittest.TestCase):
                         {
                             "name": "API Local Model",
                             "provider": "local",
+                            "local_path": str(Path(tmp) / "model-fixture.bin"),
                         }
                     ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},

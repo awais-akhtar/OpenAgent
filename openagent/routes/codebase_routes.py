@@ -8,12 +8,14 @@ from typing import Any
 from urllib.parse import parse_qs, unquote
 
 from ..codebase import CodebaseService
+from ..model_gateway import ProviderConfigurationError, ProviderUnavailableError
 from . import JsonRouteResult
 from ._contracts import route_contract
 
 
 ROUTE_GROUP = "codebase"
 ROUTES = (
+    ("GET", "/api/codebase/run-admission"),
     ("GET", "/api/codebase/frameworks"),
     ("GET", "/api/codebase/projects"),
     ("GET", "/api/codebase/project-identities"),
@@ -28,6 +30,8 @@ ROUTES = (
     ("POST", "/api/codebase/folder-picker"),
     ("POST", "/api/codebase/preflight"),
     ("POST", "/api/codebase/projects/{id}/scan"),
+    ("POST", "/api/codebase/projects/{id}/ask"),
+    ("POST", "/api/codebase/projects/{id}/propose-edit"),
     ("POST", "/api/codebase/projects/{id}/file"),
     ("POST", "/api/codebase/projects/{id}/paths"),
     ("POST", "/api/codebase/projects/{id}/tools"),
@@ -61,6 +65,8 @@ def handle_get(path: str, query: str, deps: CodebaseRouteDependencies) -> JsonRo
     params = parse_qs(query)
     owner = deps.query_owner(params) or "local"
     try:
+        if path == "/api/codebase/run-admission":
+            return JsonRouteResult(deps.codebase.run_admission())
         if path == "/api/codebase/frameworks":
             return JsonRouteResult({"frameworks": deps.codebase.framework_catalog()})
         if path == "/api/codebase/project-identities":
@@ -138,6 +144,21 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
         if path.startswith("/api/codebase/projects/") and path.endswith("/scan"):
             project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/scan")).strip("/")
             return JsonRouteResult({"project_map": deps.codebase.refresh_project_map(project_id, owner=owner)})
+        if path.startswith("/api/codebase/projects/") and path.endswith("/ask"):
+            project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/ask")).strip("/")
+            paths = payload.get("paths")
+            if not isinstance(paths, list):
+                raise ValueError("paths must be a list")
+            return JsonRouteResult(deps.codebase.ask_project(
+                project_id, str(payload.get("question", "")), paths=paths, owner=owner,
+            ))
+        if path.startswith("/api/codebase/projects/") and path.endswith("/propose-edit"):
+            project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/propose-edit")).strip("/")
+            return JsonRouteResult(deps.codebase.propose_file_edit(
+                project_id, str(payload.get("path", "")).strip(),
+                str(payload.get("instruction", "")), owner=owner,
+                expected_sha256=str(payload.get("expected_sha256", "")).strip(),
+            ))
         if path.startswith("/api/codebase/projects/") and path.endswith("/file"):
             project_id = unquote(path.removeprefix("/api/codebase/projects/").removesuffix("/file")).strip("/")
             return JsonRouteResult({"change": deps.codebase.write_file(project_id, str(payload.get("path", "")).strip(), str(payload.get("content", "")), owner=owner, expected_sha256=str(payload.get("expected_sha256", "")).strip())})
@@ -171,6 +192,8 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
                 return JsonRouteResult(deps.codebase.restore_run_snapshot(run_id, snapshot_id, owner=owner))
     except KeyError as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+    except (ProviderConfigurationError, ProviderUnavailableError) as exc:
+        return JsonRouteResult({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
     except (ValueError, PermissionError, OSError) as exc:
         return JsonRouteResult({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
     except Exception as exc:

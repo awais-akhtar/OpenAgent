@@ -140,7 +140,11 @@ class ModelGatewayEgressTests(unittest.TestCase):
             connect.assert_not_called()
 
     def test_remote_ollama_setting_requires_approval_even_when_provider_is_local(self):
-        with patch.dict(os.environ, {"OPENAGENT_OLLAMA_URL": "http://8.8.8.8:11434"}), patch(
+        with patch.dict(os.environ, {
+            "OPENAGENT_OLLAMA_URL": "http://8.8.8.8:11434",
+            "OPENAGENT_MODEL_ROUTING": "local-first",
+            "OPENAGENT_MODEL_FALLBACK": "local",
+        }), patch(
             "openagent.egress.EgressClient._open_response"
         ) as connect:
             gateway = ModelGateway()

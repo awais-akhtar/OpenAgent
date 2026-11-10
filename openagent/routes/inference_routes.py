@@ -85,8 +85,18 @@ def handle_get(path: str, query: str, deps: InferenceRouteDependencies) -> JsonR
     if path == "/v1/models" or path.startswith("/v1/models/"):
         provider = deps.gateway.providers.get("native-publisher")
         if provider is None:
-            return JsonRouteResult({"error": {"message": "native publisher is not configured", "type": "server_error"}},
-                                   HTTPStatus.SERVICE_UNAVAILABLE)
+            # The native publisher is opt-in through
+            # OPENAGENT_NATIVE_PUBLISHER_CONFIG, and it is the only source of a
+            # published model id, so without it nothing is published. This used
+            # to answer 503 with type "server_error", which told an
+            # OpenAI-compatible client that the server was broken -- and
+            # /v1/models is exactly what such a client calls first. An empty
+            # catalogue is the correct answer to "list the models", and a
+            # request for one named model is a 404 for that model.
+            if path == "/v1/models":
+                return JsonRouteResult({"object": "list", "data": []})
+            return JsonRouteResult({"error": {"message": "model not found", "type": "invalid_request_error"}},
+                                   HTTPStatus.NOT_FOUND)
         try:
             config = provider._configuration()
         except (ProviderConfigurationError, ProviderUnavailableError, OSError, ValueError) as exc:

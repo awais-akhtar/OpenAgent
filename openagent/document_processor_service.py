@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+from .storage import OpenAgentStore
 
 logger = logging.getLogger(__name__)
 
@@ -13,10 +16,11 @@ logger = logging.getLogger(__name__)
 class DocumentProcessorService:
     """Process documents: extract info, analyze, summarize."""
 
-    def __init__(self):
+    def __init__(self, store: OpenAgentStore | None = None):
+        self.store = store
         self.supported_formats = [".txt", ".pdf", ".docx", ".md"]
         self.max_file_size = 100 * 1024 * 1024  # 100MB
-        self.documents = {}
+        self.documents: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def process_document(self, file_path: str, file_content: bytes, project: str = "default", owner: str = "default") -> dict[str, Any]:
         """Process uploaded document."""
@@ -41,8 +45,8 @@ class DocumentProcessorService:
             doc_id = str(uuid4())
             analysis = self._analyze_document(text)
 
-            storage_key = f"{project}:{owner}:{doc_id}"
-            self.documents[storage_key] = {
+            storage_key = (project, owner, doc_id)
+            document = {
                 "id": doc_id,
                 "filename": path.name,
                 "format": path.suffix,
@@ -51,6 +55,15 @@ class DocumentProcessorService:
                 "project": project,
                 "owner": owner,
             }
+            if self.store is not None:
+                with self.store.session() as connection:
+                    connection.execute(
+                        """INSERT INTO g25_documents
+                           (id, project, owner, filename, format, text, analysis_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (doc_id, project, owner, path.name, path.suffix, text, json.dumps(analysis)),
+                    )
+            self.documents[storage_key] = document
 
             logger.info(f"Processed document: {path.name} (project={project}, owner={owner})")
             return {
@@ -82,14 +95,14 @@ class DocumentProcessorService:
     def _extract_pdf_text(self, file_content: bytes) -> str:
         """Extract text from PDF."""
         try:
-            import PyPDF2
+            from pypdf import PdfReader
             import io
-            reader = PyPDF2.PdfReader(io.BytesIO(file_content))
-            text = "\n".join(page.extract_text() for page in reader.pages)
+            reader = PdfReader(io.BytesIO(file_content))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
             return text
         except Exception as e:
-            logger.warning(f"PDF extraction failed: {e}. Using fallback.")
-            return "[PDF content - install PyPDF2 for extraction]"
+            logger.warning("PDF extraction failed: %s", e)
+            raise ValueError("Could not extract text from this PDF") from e
 
     def _extract_docx_text(self, file_content: bytes) -> str:
         """Extract text from DOCX."""
@@ -100,8 +113,8 @@ class DocumentProcessorService:
             text = "\n".join(para.text for para in doc.paragraphs)
             return text
         except Exception as e:
-            logger.warning(f"DOCX extraction failed: {e}. Using fallback.")
-            return "[DOCX content - install python-docx for extraction]"
+            logger.warning("DOCX extraction failed: %s", e)
+            raise ValueError("Could not extract text from this DOCX") from e
 
     def _analyze_document(self, text: str) -> dict[str, Any]:
         """Analyze document content."""
@@ -131,7 +144,20 @@ class DocumentProcessorService:
 
     def get_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
         """Get document details."""
-        storage_key = f"{project}:{owner}:{doc_id}"
+        storage_key = (project, owner, doc_id)
+        if self.store is not None:
+            with self.store.session() as connection:
+                row = connection.execute(
+                    "SELECT * FROM g25_documents WHERE id = ? AND project = ? AND owner = ?",
+                    (doc_id, project, owner),
+                ).fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row["id"], "filename": row["filename"], "format": row["format"],
+                "text": row["text"], "analysis": json.loads(row["analysis_json"]),
+                "project": row["project"], "owner": row["owner"],
+            }
         return self.documents.get(storage_key)
 
     def analyze_document(self, doc_id: str, project: str = "default", owner: str = "default") -> dict[str, Any] | None:
@@ -143,7 +169,13 @@ class DocumentProcessorService:
 
     def list_documents(self, project: str = "default", owner: str = "default") -> list[dict[str, Any]]:
         """List all processed documents."""
-        prefix = f"{project}:{owner}:"
+        if self.store is not None:
+            with self.store.session() as connection:
+                records = connection.execute(
+                    "SELECT id, filename, analysis_json FROM g25_documents WHERE project = ? AND owner = ? ORDER BY rowid DESC",
+                    (project, owner),
+                ).fetchall()
+            return [{"id": row["id"], "filename": row["filename"], "analysis": json.loads(row["analysis_json"])} for row in records]
         return [
             {"id": d["id"], "filename": d["filename"], "analysis": d["analysis"]}
             for d in self.documents.values()

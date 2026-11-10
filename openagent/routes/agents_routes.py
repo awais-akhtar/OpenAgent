@@ -273,10 +273,15 @@ def handle_post(path: str, deps: AgentRouteDependencies) -> JsonRouteResult | No
                 job = multi_agent.retry_job(remainder.removesuffix("/retry").strip("/"), owner=deps.owner)
                 return JsonRouteResult({"job": job}, HTTPStatus.ACCEPTED)
         if path == "/api/agents/delegate":
+            goal = str(payload.get("goal", "")).strip()
+            # A delegation with no goal is a record of nothing. An empty body
+            # used to create one, with both agents defaulted.
+            if not goal:
+                return JsonRouteResult({"error": "goal is required."}, HTTPStatus.BAD_REQUEST)
             result = multi_agent.delegate(
                 str(payload.get("from_agent", "executive")).strip() or "executive",
                 str(payload.get("to_agent", "planning")).strip() or "planning",
-                str(payload.get("goal", "")).strip(), project=project,
+                goal, project=project,
             )
             return JsonRouteResult(result, HTTPStatus.CREATED)
         if path == "/api/agents/parallel":
@@ -288,16 +293,29 @@ def handle_post(path: str, deps: AgentRouteDependencies) -> JsonRouteResult | No
             )
             return JsonRouteResult(result, HTTPStatus.CREATED)
         if path == "/api/agents/permissions/grant":
+            agent = str(payload.get("agent", "")).strip()
+            scope = str(payload.get("scope", "")).strip()
+            # A grant names who may do what. An empty body used to store a
+            # permission row with an empty agent and an empty scope, which is a
+            # permission record that cannot be reasoned about or revoked by
+            # name.
+            if not agent or not scope:
+                return JsonRouteResult({"error": "agent and scope are required."}, HTTPStatus.BAD_REQUEST)
             permission = multi_agent.grant(
-                str(payload.get("agent", "")).strip(),
-                str(payload.get("scope", "")).strip(), project=project,
+                agent, scope, project=project,
                 granted_by=str(payload.get("granted_by", "user")).strip() or "user",
             )
             return JsonRouteResult({"permission": permission}, HTTPStatus.CREATED)
         if path == "/api/agents/approvals/request":
+            action = str(payload.get("action", "")).strip()
+            # An approval request is a question about a specific action. One
+            # with an empty action cannot be answered meaningfully, and an
+            # empty body used to create exactly that.
+            if not action:
+                return JsonRouteResult({"error": "action is required."}, HTTPStatus.BAD_REQUEST)
             approval = multi_agent.request_approval(
                 requested_by=str(payload.get("requested_by", "user")).strip() or "user",
-                action=str(payload.get("action", "")).strip(),
+                action=action,
                 reason=str(payload.get("reason", "")).strip(), project=project,
                 payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
             )

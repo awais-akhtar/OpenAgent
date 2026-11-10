@@ -14,7 +14,9 @@ test('all 23 reference routes render from deep links', async ({ page }) => {
     await expect(page.locator('#content')).toBeVisible();
     // Wait for the lazy-loaded screen itself. The Suspense fallback also uses
     // `.page`, so asserting that class alone can pass before the route renders.
-    if (route === 'chat') {
+    if (route === 'home') {
+      await expect(page.getByRole('meter', { name: 'CPU utilization' })).toBeVisible();
+    } else if (route === 'chat') {
       await expect(page.locator('#content .split-layout')).toBeVisible();
     } else if (route === 'codeq') {
       await expect(page.locator('#content .codeq-root')).toBeVisible();
@@ -87,11 +89,8 @@ test('keyboard navigation, sidebar controls, and mobile drawer are operable', as
 });
 
 test('workspace forms and panels use backend-backed chat and keep unsupported panels honest', async ({ page }) => {
-  await page.goto('/?view=home');
-  await page.getByRole('textbox', { name: 'Ask OpenAgent' }).fill('Plan a local task');
-  await page.getByRole('button', { name: 'Open prompt in chat' }).click();
-  await expect(page).toHaveURL(/view=chat/);
-  await expect(page.getByRole('textbox', { name: 'Message OpenAgent' })).toHaveValue('Plan a local task');
+  await page.goto('/?view=chat');
+  await page.getByRole('textbox', { name: 'Message OpenAgent' }).fill('Plan a local task');
   await page.route('**/api/chat/stream', async route => route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'data: {"type":"conversation","conversation":{"id":"e2e-chat-1"}}\n\ndata: {"type":"chunk","content":"Connected reply"}\n\ndata: {"type":"done","done":true}\n\n' }));
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.getByRole('paragraph').filter({ hasText: 'Plan a local task' })).toBeVisible();
@@ -132,7 +131,11 @@ test('workspace forms and panels use backend-backed chat and keep unsupported pa
   });
   expect(assistantComposerBottomGap).toBe(0);
   await page.getByRole('tab', { name: 'Preview' }).click();
-  await expect(page.getByRole('heading', { name: 'Open a project to preview' })).toBeVisible();
+  if (await page.locator('.codeq-live-preview-session').isVisible()) {
+    await expect(page.getByRole('textbox', { name: 'Preview command' })).toBeVisible();
+  } else {
+    await expect(page.getByRole('heading', { name: 'Open a project to preview' })).toBeVisible();
+  }
   await page.locator('.codeq-assistant').getByRole('button', { name: 'Close assistant' }).click();
   await expect(page.locator('.codeq-assistant')).toHaveCount(0);
   await page.getByRole('button', { name: 'Open assistant' }).click();
@@ -196,18 +199,18 @@ test('Chat demo opens cleanly without replaying the HTML showcase conversation',
   expect(apiRequests).toEqual([]);
 });
 
-test('Home recent-chat fixtures stay out of Chat conversation state', async ({ page }) => {
+test('Home telemetry Demo stays out of Chat conversation state', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('oa-second-data-mode', 'demo'));
   const apiRequests: string[] = [];
   const keyWarnings: string[] = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url()); });
   page.on('console', message => { if (message.type() === 'error' && /unique ["']key["'] prop/i.test(message.text())) keyWarnings.push(message.text()); });
   await page.goto('/?view=home');
-  await page.waitForResponse(response => new URL(response.url()).pathname === '/demo/approved-shell-fixtures.json');
+  await expect(page.getByText('Simulated demo')).toBeVisible();
   await page.getByRole('button', { name: 'Chat', exact: true }).first().click();
   await expect(page).toHaveURL(/view=chat/);
   await expect(page.getByRole('heading', { name: 'Start a conversation' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Conversation' }).locator('option')).toHaveCount(1);
+  await expect(page.locator('.chat-thread .chat-message')).toHaveCount(0);
   expect(apiRequests).toEqual([]);
   expect(keyWarnings).toEqual([]);
 });

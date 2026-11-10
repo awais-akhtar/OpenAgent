@@ -155,12 +155,12 @@ def handle_post(path: str, deps: G25RouteDependencies) -> JsonRouteResult | None
             return JsonRouteResult({"error": "Content required"}, HTTPStatus.BAD_REQUEST)
 
         try:
-            content_bytes = base64.b64decode(content_b64)
+            content_bytes = base64.b64decode(content_b64, validate=True)
         except Exception as e:
             return JsonRouteResult({"error": f"Invalid content: {e}"}, HTTPStatus.BAD_REQUEST)
 
         result = deps.doc_processor.process_document(filename, content_bytes, project=project, owner=owner)
-        return JsonRouteResult(result, HTTPStatus.CREATED)
+        return JsonRouteResult(result, HTTPStatus.BAD_REQUEST if "error" in result else HTTPStatus.CREATED)
 
     if path.startswith("/api/g25/documents/") and path.endswith("/analyze"):
         doc_id = unquote(path.removeprefix("/api/g25/documents/").removesuffix("/analyze")).strip()
@@ -171,10 +171,12 @@ def handle_post(path: str, deps: G25RouteDependencies) -> JsonRouteResult | None
 
     if path == "/api/g25/graph/nodes":
         label = str(payload.get("label", "")).strip()
-        properties = dict(payload.get("properties", {}))
+        properties = payload.get("properties", {})
 
         if not label:
             return JsonRouteResult({"error": "Label required"}, HTTPStatus.BAD_REQUEST)
+        if not isinstance(properties, dict):
+            return JsonRouteResult({"error": "Properties must be an object"}, HTTPStatus.BAD_REQUEST)
 
         node = deps.knowledge_graph.create_node(label, properties, project=project, owner=owner)
         return JsonRouteResult(node, HTTPStatus.CREATED)
@@ -191,6 +193,10 @@ def handle_post(path: str, deps: G25RouteDependencies) -> JsonRouteResult | None
             )
 
         edge = deps.knowledge_graph.create_edge(source_id, target_id, relationship, project=project, owner=owner)
+        if "error" in edge:
+            # A missing node and another owner's node have the same outward
+            # result, so callers cannot use edge creation to enumerate ids.
+            return JsonRouteResult({"error": "Node not found"}, HTTPStatus.NOT_FOUND)
         return JsonRouteResult(edge, HTTPStatus.CREATED)
 
     if path == "/api/g25/rag/index":

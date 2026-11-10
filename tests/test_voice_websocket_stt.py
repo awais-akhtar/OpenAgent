@@ -7,6 +7,7 @@ import unittest
 import wave
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from openagent.storage import OpenAgentStore
@@ -145,6 +146,24 @@ class VoiceWebSocketSTTTests(unittest.TestCase):
             assert finish_result["confidence"] in {"high", "medium", "low"}
             assert "turn_id" in finish_result
             assert "audio_profile" in finish_result
+
+    def test_unavailable_stt_does_not_claim_transcription(self) -> None:
+        stream_result = self.websocket_manager.create_session(
+            self.voice_session_id, project="test-voice-ws", owner="test-user",
+        )
+        stream_id = stream_result["stream_id"]
+        self.websocket_manager.push_chunk(stream_id, synthesize_tone_wav("quiet test"))
+        with patch.object(self.voice, "transcribe_audio", return_value={
+            "transcript": "", "transcript_status": "unavailable",
+            "stt_engine": "", "stt_message": "No local STT provider is configured.",
+            "confidence": "none", "turn": {},
+        }):
+            result = self.websocket_manager.finish(stream_id)
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(result["transcript_status"], "unavailable")
+        self.assertEqual(result["transcription"], "")
+        self.assertFalse(result["is_final"])
+        self.assertEqual(result["confidence"], "none")
 
     def test_websocket_stt_produces_transcript(self) -> None:
         """Test that STT contract returns actual transcription."""

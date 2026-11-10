@@ -161,9 +161,15 @@ def handle_post(path: str, deps: PersonalOSRouteDependencies) -> JsonRouteResult
             return JsonRouteResult({"signature": signature}, HTTPStatus.CREATED)
 
         if path == "/api/personal-os/drafts":
+            content = str(payload.get("content", ""))
+            title = str(payload.get("title", "")).strip()
+            # Both fields were defaulted, so an empty body stored a draft
+            # titled "Untitled draft" with nothing in it.
+            if not content.strip() and not title:
+                return JsonRouteResult({"error": "title or content is required."}, HTTPStatus.BAD_REQUEST)
             draft = pos.save_draft(
-                title=str(payload.get("title", "")).strip() or "Untitled draft",
-                content=str(payload.get("content", "")),
+                title=title or "Untitled draft",
+                content=content,
                 status=str(payload.get("status", "draft")),
                 draft_id=str(payload.get("draft_id", "")).strip(),
                 project=project,

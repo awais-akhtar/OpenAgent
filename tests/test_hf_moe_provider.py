@@ -10,6 +10,14 @@ from openagent.model_gateway import ModelGateway, ProviderConfigurationError
 
 
 class ProviderConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self._routing_env = patch.dict(os.environ, {
+            "OPENAGENT_MODEL_ROUTING": "local-first",
+            "OPENAGENT_MODEL_FALLBACK": "local",
+        })
+        self._routing_env.start()
+        self.addCleanup(self._routing_env.stop)
+
     def test_unconfigured_provider_is_unavailable(self):
         with patch.dict(os.environ, {"OPENAGENT_HF_MOE_MODEL_DIR": ""}):
             self.assertFalse(HFMoeProvider().available())

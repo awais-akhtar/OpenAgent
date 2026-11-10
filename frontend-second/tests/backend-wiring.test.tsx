@@ -32,7 +32,7 @@ describe('backend connected screens', () => {
 
     renderWithQuery(<AdvancedScreen route="assistant" />);
 
-    expect(await screen.findByText('assistant.task.create')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('assistant.task.create')).toBeVisible());
     expect(requests).toContain('/api/assistant/activity?project=default&limit=20');
     expect(requests.some(url => url.startsWith('/api/audit'))).toBe(false);
   });
@@ -150,33 +150,30 @@ describe('backend connected screens', () => {
     expect(requests.find(request => request.url.endsWith('/api/agents/delegate'))?.body).toMatchObject({ from_agent: 'executive', to_agent: 'research', goal: 'Research the release risks', project: 'default' });
   });
 
-  it('loads project-scoped Home data without requesting agent history', async () => {
+  it('loads actual local telemetry and active job statuses without requesting workspace lists', async () => {
     const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       requests.push(url);
-      if (url.includes('/api/codebase/projects')) return json({ projects: [{ id: 'project-1', name: 'Atlas workspace', path: 'D:/atlas' }] });
-      if (url.includes('/api/conversations')) return json({ conversations: [{ id: 'conversation-1', title: 'Planning notes', updated_at: '2026-10-14T09:00:00Z' }] });
-      if (url.includes('/api/agents')) return json({ agents: [{ id: 'executive', name: 'Executive agent', description: 'Plans work' }] });
-      if (url.includes('/api/agent-runs')) return json({ runs: [{ id: 'run-home-1', agent: 'executive', goal: 'Review launch plan', created_at: '2026-10-14T10:00:00Z' }] });
-      if (url.includes('/api/events')) return json({ events: [{ id: 'event-home-1', type: 'note', title: 'Reviewed milestones', created_at: '2026-10-14T08:00:00Z' }] });
-      if (url.includes('/api/assistant/tasks')) return json({ tasks: [{ id: 'task-home-1', title: 'Prepare agenda', status: 'open', due_at: '2026-10-14T13:00:00Z' }] });
-      if (url.includes('/api/calendar/events')) return json({ events: [{ id: 'calendar-home-1', title: 'Design review', starts_at: '2026-10-14T15:00:00Z' }] });
+      if (url.includes('/api/system/metrics')) return json({ cpu: { count: 16, usage_percent: 27.5 }, memory: { used_percent: 54, used_gb: 17, total_gb: 32 }, disk: { used_percent: 57, free_gb: 168, total_gb: 393 }, platform: { system: 'Windows', release: '11' } });
+      if (url.includes('/api/health')) return json({ status: 'ok', checked_at: '2026-10-14T09:00:00Z' });
+      if (url.includes('/api/local-ai/setup/status')) return json({ ollama: { server_available: true, model_ready: true, selected_model: 'local-model' }, llamacpp: { available: false } });
+      if (url.includes('/api/agents/jobs')) return json({ jobs: [{ id: 'agent-1', goal: 'Review code', status: 'running' }] });
+      if (url.includes('/api/local-ai/jobs')) return json({ jobs: [] });
       return json({ error: `Unexpected request ${url}` }, 404);
     }));
-
     renderWithQuery(<HomeScreen />);
-    expect(await screen.findByText('Atlas workspace')).toBeVisible();
-    expect(await screen.findByText('Executive agent')).toBeVisible();
-    expect(await screen.findByText('Prepare agenda')).toBeVisible();
-    expect(await screen.findByText('Design review')).toBeVisible();
-    expect(await screen.findByText('Planning notes')).toBeVisible();
-    expect(await screen.findByText('Reviewed milestones')).toBeVisible();
-    expect(screen.getByText(/Agent run history is shown in Agents when this account has the explicit agents:read scope for the active project/i)).toBeVisible();
-    expect(screen.queryByText('Review launch plan')).not.toBeInTheDocument();
-    expect(requests.some(url => url.includes('/api/agent-runs'))).toBe(false);
+    await waitFor(() => expect(screen.getByRole('meter', { name: 'CPU utilization' })).toHaveAttribute('aria-valuenow', '27.5'));
+    expect(await screen.findByText('local-model')).toBeVisible();
+    expect(await screen.findByText(/Review code/)).toBeVisible();
+    expect(requests).toEqual(expect.arrayContaining([
+      expect.stringContaining('/api/system/metrics'),
+      expect.stringContaining('/api/health'),
+      expect.stringContaining('/api/local-ai/setup/status'),
+      expect.stringContaining('/api/agents/jobs'),
+    ]));
+    expect(requests.some(url => url.includes('/api/codebase/projects') || url.includes('/api/assistant/tasks') || url.includes('/api/events'))).toBe(false);
   });
-
   it('posts a selected Image Studio upscale to the backend global upscale route', async () => {
     const requests: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -284,7 +281,7 @@ describe('backend connected screens', () => {
     fireEvent.change(await screen.findByPlaceholderText('Write a note…'), { target: { value: 'Keep the weekly review concise.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save note' }));
 
-    expect(await screen.findByText('Keep the weekly review concise.')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('Keep the weekly review concise.')).toBeVisible());
     expect(requests.find(request => request.url === '/api/personal-os/notes' && request.method === 'POST')?.body).toMatchObject({ title: 'Personal note', body: 'Keep the weekly review concise.', project: 'default' });
   });
 
@@ -403,8 +400,10 @@ describe('backend connected screens', () => {
     }));
 
     renderWithQuery(<ChatScreen />);
-    fireEvent.click(screen.getByRole('button', { name: /Select model/ }));
-    expect(await screen.findByRole('option', { name: 'Automatic routing' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: /^(Auto|Select model)/ }));
+    // Auto is the list's own first entry; a provider's label is shown as the
+    // detail line of its models rather than as a selectable row of its own.
+    expect(await screen.findByRole('option', { name: /^Auto/ })).toBeVisible();
     fireEvent.change(screen.getByRole('textbox', { name: 'Message OpenAgent' }), { target: { value: 'Hello backend' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText('A real response.')).toBeVisible();
@@ -664,7 +663,7 @@ describe('backend connected screens', () => {
     }));
     renderWithQuery(<AdvancedScreen route="communications" />);
     fireEvent.click(screen.getByRole('tab', { name: 'Contacts' }));
-    expect(await screen.findByText('Ada Lovelace')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('Ada Lovelace')).toBeVisible());
     fireEvent.change(screen.getByRole('textbox', { name: 'Search communication contacts' }), { target: { value: 'Ada' } });
     expect(screen.getByText('Ada Lovelace')).toBeVisible();
     fireEvent.change(screen.getByRole('textbox', { name: 'Search communication contacts' }), { target: { value: 'not found' } });
@@ -692,7 +691,7 @@ describe('backend connected screens', () => {
 
     renderWithQuery(<AdvancedScreen route="communications" />);
     fireEvent.click(screen.getByRole('tab', { name: 'Contacts' }));
-    expect(await screen.findByText('Ada Lovelace')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('Ada Lovelace')).toBeVisible());
     expect(screen.getByText('ada@example.org')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByPlaceholderText('Email'), { target: { value: 'ada.new@example.org' } });
@@ -1477,7 +1476,7 @@ describe('backend connected screens', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithQuery(<AdvancedScreen route="engine" />);
 
-    expect(await screen.findByText(/Test workstation/)).toBeVisible();
+    await waitFor(() => expect(screen.getByText(/Test workstation/)).toBeVisible());
     expect((await screen.findAllByText('Verified CPU backend')).length).toBeGreaterThan(0);
     expect(screen.getByText('18 GB')).toBeVisible();
     fireEvent.click(screen.getByRole('tab', { name: 'Hardware' }));

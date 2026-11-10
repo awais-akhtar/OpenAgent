@@ -1,9 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { AnimatePresence, LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react';
 import {
-  Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, ChevronDown, Code2, Cpu,
-  FlaskConical, Folder, FolderOpen, Globe2, House, Image, Layers3, LockKeyhole, Mail,
-  Menu, MessageCircle, Mic, Network, Package, PanelLeftClose, Command, FileText, BookMarked,
+  Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, Code2, Cpu,
+  FlaskConical, Folder, Globe2, House, Image, Layers3, LockKeyhole, Mail,
+  Menu, MessageCircle, Mic, Network, Package, ChevronLeft, ChevronRight, BookMarked,
   Plus, Search, Settings2, Shield, SlidersHorizontal, Terminal, Workflow, X, Bell, Sun, Moon, User, Zap,
 } from 'lucide-react';
 import * as Dialog from './components/ui/dialog';
@@ -12,7 +12,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useWorkspaceState } from './state';
 import { apiGet, apiPost, apiConnectionMessage } from './api/client';
 import { demoAwareRequest } from './demo/api';
-import { LivingActivityCenter } from './components/LivingActivityCenter';
 
 const HomeScreen = lazy(() => import('./screens/HomeChat').then(module => ({ default: module.HomeScreen })));
 const ChatScreen = lazy(() => import('./screens/HomeChat').then(module => ({ default: module.ChatScreen })));
@@ -47,18 +46,6 @@ titles.set('settings', 'Settings');
 titles.set('tools', 'All tools');
 const allViews = [...primary, ...advanced, ['settings', 'Settings', Settings2], ['tools', 'All tools', Layers3]] as const;
 
-function relativeTimestamp(value: unknown) {
-  const timestamp = typeof value === 'string' || typeof value === 'number' ? Date.parse(String(value)) : Number.NaN;
-  if (!Number.isFinite(timestamp)) return typeof value === 'string' ? value : '';
-  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  if (hours < 48) return 'Yesterday';
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 const getView = (search: string) => {
   const requested = new URLSearchParams(search).get('view') || 'home';
   return titles.has(requested) ? requested : 'home';
@@ -67,7 +54,7 @@ const getView = (search: string) => {
 function ToolsScreen() {
   const [query, setQuery] = useState('');
   const groups = [
-    { name: 'Everyday', ids: ['home', 'chat', 'assistant', 'agents', 'calendar'], details: ['Your workspace and recent work', 'Conversations and projects', 'Tasks, goals and priorities', 'Runs and collaboration', 'Plan and schedule'] },
+    { name: 'Everyday', ids: ['home', 'chat', 'assistant', 'agents', 'calendar'], details: ['Live local telemetry and runtime', 'Conversations and projects', 'Tasks, goals and priorities', 'Runs and collaboration', 'Plan and schedule'] },
     { name: 'Create & research', ids: ['research', 'files', 'knowledge', 'codeq', 'voice', 'science'], details: ['Evidence and reports', 'Documents and previews', 'Indexed project sources', 'Coding and Git review', 'Recordings and transcripts', 'Datasets and experiments'] },
     { name: 'Run & connect', ids: ['automations', 'communications', 'scraper', 'finetune', 'engine'], details: ['Scheduled workflows', 'Connected messages', 'Permitted extraction jobs', 'Datasets and training', 'Compute compatibility'] },
     { name: 'Platform & privacy', ids: ['models', 'security', 'vault', 'twin', 'factprovenance', 'developer', 'settings'], details: ['Providers and capabilities', 'Access and audit', 'Protected credentials', 'Personal context', 'Fact sources, retraction and restore', 'Integrations and APIs', 'Workspace preferences'] },
@@ -100,27 +87,10 @@ export function App() {
   const setTheme = useWorkspaceState(state => state.setTheme);
   const reduceMotionPreference = useWorkspaceState(state => state.reduceMotion);
   const dataMode = useWorkspaceState(state => state.dataMode);
-  const setDataMode = useWorkspaceState(state => state.setDataMode);
   const selectedDemoProject = useWorkspaceState(state => state.selectedDemoProject);
   const setSelectedDemoProject = useWorkspaceState(state => state.setSelectedDemoProject);
   const requestDemoProjectCreate = useWorkspaceState(state => state.requestDemoProjectCreate);
-  const currentProject = dataMode === 'demo' ? selectedDemoProject : 'Personal Workspace';
   const reduceMotion = useReducedMotion() || reduceMotionPreference;
-  const backendHealth = useQuery({
-    queryKey: ['backend', 'health'],
-    queryFn: ({ signal }) => apiGet('/api/health', signal),
-    enabled: dataMode === 'live',
-    retry: false,
-    refetchInterval: 30_000,
-  });
-  const recentChatsQuery = useQuery({
-    queryKey: ['chat', 'conversations', dataMode],
-    queryFn: async ({ signal }): Promise<{ conversations?: unknown[] }> => dataMode === 'demo' ? { conversations: await demoAwareRequest<{ chats?: unknown[] }>('demo', 'GET', 'shell', undefined, signal).then(data => data.chats ?? []) } : apiGet<{ conversations?: unknown[] }>('/api/conversations?project=default&limit=100', signal),
-    retry: false,
-  });
-  const recentChats = Array.isArray(recentChatsQuery.data?.conversations)
-    ? recentChatsQuery.data.conversations.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    : [];
   const demoProjectsQuery = useQuery({
     queryKey: ['home', 'projects', 'demo'],
     queryFn: async ({ signal }) => {
@@ -158,11 +128,6 @@ export function App() {
     setQuery('');
   }, [navigate]);
 
-  const openProjectPicker = (trigger: HTMLButtonElement) => {
-    if (dataMode !== 'demo') return;
-    projectPickerTriggerRef.current = trigger;
-    setProjectPickerOpen(true);
-  };
   const closeProjectPicker = () => {
     setProjectPickerOpen(false);
     requestAnimationFrame(() => projectPickerTriggerRef.current?.focus());
@@ -213,7 +178,12 @@ export function App() {
       if (event.key === 'Escape') { setPaletteOpen(false); setMobileOpen(false); }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const onOpenPalette = () => setPaletteOpen(true);
+    window.addEventListener('openagent:open-command-palette', onOpenPalette);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('openagent:open-command-palette', onOpenPalette);
+    };
   }, [go]);
   const filtered = useMemo(() => allViews.filter(([id, label]) => `${id} ${label}`.toLowerCase().includes(query.trim().toLowerCase())), [query]);
 
@@ -242,30 +212,19 @@ export function App() {
 
   return <div className="app-shell"><div className="app-frame">
     <LazyMotion features={domAnimation}>
-      <m.aside ref={sidebarRef} inert={mobileLayout && !mobileOpen} onClick={onContentClick} className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`} id="sidebar" animate={{ width: collapsed ? 72 : 252, flexBasis: collapsed ? 72 : 252 }} transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 360, damping: 34 }} aria-label="Primary navigation">
+      <m.aside ref={sidebarRef} inert={mobileLayout && !mobileOpen} onClick={onContentClick} className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`} id="sidebar" animate={{ width: collapsed ? 72 : 170, flexBasis: collapsed ? 72 : 170 }} transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 360, damping: 34 }} aria-label="Primary navigation">
         <div className="sidebar-top">
-          <div className="brand"><span className="brand-mark" aria-hidden="true" /><div className="sidebar-copy"><strong>OpenAgent</strong><small>Local AI Workspace</small></div>
-            <button className="icon-button sidebar-collapse" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={toggleCollapsed}><PanelLeftClose size={17} /></button>
+          <div className="brand"><span className="brand-mark" aria-hidden="true" /><div className="sidebar-copy"><strong>OpenAgent</strong><small>Local AI</small></div>
+            <button className="icon-button sidebar-collapse" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={toggleCollapsed}>{collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}</button>
           </div>
-          <button ref={projectPickerTriggerRef} className="sidebar-project" type="button" aria-label={dataMode === 'demo' ? `Choose project, current ${currentProject}` : 'Current workspace, switching unavailable'} title={dataMode === 'demo' ? 'Choose a local Demo project' : 'Live project switching is unavailable until a verified workspace scope operation is connected'} disabled={dataMode !== 'demo'} onClick={event => openProjectPicker(event.currentTarget)}><FolderOpen size={15} /><span className="sidebar-copy">{currentProject}</span><ChevronDown className="project-chevron" size={14} /></button>
-          <button className="sidebar-new" type="button" title="New chat (N)" onClick={() => {
-            if (dataMode === 'live') {
-              sessionStorage.removeItem('oa-second-conversation-id');
-              window.dispatchEvent(new CustomEvent('openagent:select-conversation', { detail: '' }));
-            }
-            go('chat');
-          }}><Plus size={16} /><span className="nav-label">New chat</span><kbd className="sidebar-shortcut">N</kbd></button>
-          <button className="sidebar-search" onClick={() => setPaletteOpen(true)} title="Search pages, files, actions (Ctrl+K)"><Search size={16} /><span className="sidebar-search-label">Search pages, files, actions</span></button>
         </div>
         <div className="sidebar-scroll">
           <nav className="nav-group" aria-label="Main">
             {primary.map(([id, label, Icon]) => <button key={id} className={`nav-link ${currentView === id ? 'active' : ''}`} data-nav={id} aria-current={currentView === id ? 'page' : undefined} title={collapsed ? label : undefined}>{currentView === id && <m.span layoutId="active-navigation" className="nav-active-indicator" transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 36 }} />}<Icon className="icon" size={18} /><span className="nav-label">{label}</span></button>)}
-            <button className={`nav-link ${currentView === 'tools' ? 'active' : ''}`} data-nav="tools">{currentView === 'tools' && <m.span layoutId="active-navigation" className="nav-active-indicator" transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 36 }} />}<Layers3 size={18} /><span className="nav-label">More tools</span></button>
-            <button className={`nav-link ${currentView === 'settings' ? 'active' : ''}`} data-nav="settings">{currentView === 'settings' && <m.span layoutId="active-navigation" className="nav-active-indicator" transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 36 }} />}<Settings2 size={18} /><span className="nav-label">Settings</span></button>
+            <button className={`nav-link ${currentView === 'tools' ? 'active' : ''}`} data-nav="tools" title={collapsed ? 'More tools' : undefined}>{currentView === 'tools' && <m.span layoutId="active-navigation" className="nav-active-indicator" transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 36 }} />}<Layers3 size={18} /><span className="nav-label">More tools</span></button>
           </nav>
-          <div className="recent-block"><hr className="sidebar-divider" /><div className="sidebar-section-head"><span className="sidebar-heading-text">Recent chats</span><button className="text-link" type="button" onClick={() => go('chat')}>View all</button></div>{recentChatsQuery.isLoading ? <div className="recent-chats-empty" role="status">Loading conversations…</div> : recentChatsQuery.isError ? <button className="recent-chats-empty recent-chat-link" type="button" onClick={() => void recentChatsQuery.refetch()} title={apiConnectionMessage(recentChatsQuery.error)}>Could not load chats · retry</button> : recentChats.length ? recentChats.slice(0, 5).map((conversation, index) => { const title = String(conversation.title ?? conversation.name ?? 'Untitled conversation'); const id = String(conversation.id ?? title); return <button className="recent-item" type="button" key={id || index} title={title} onClick={() => { if (dataMode !== 'demo') { try { sessionStorage.setItem('oa-second-conversation-id', id); } catch { /* in-memory route navigation remains available */ } if (currentView === 'chat') window.dispatchEvent(new CustomEvent('openagent:select-conversation', { detail: id })); } if (currentView !== 'chat') go('chat'); }}><FileText className="icon" size={15}/><span className="flex1"><strong>{title}</strong><span>{String(conversation.time ?? relativeTimestamp(conversation.updated_at ?? conversation.created_at))}</span></span></button>; }) : <div className="recent-chats-empty" role="status">No conversations yet</div>}</div>
         </div>
-        <div className="sidebar-foot"><button className="profile-pill" type="button" aria-label={dataMode === 'demo' ? `Choose project, current ${currentProject}` : 'Current workspace, switching unavailable'} title={dataMode === 'demo' ? 'Choose a local Demo project' : 'Live project switching is unavailable until a verified workspace scope operation is connected'} disabled={dataMode !== 'demo'} onClick={event => openProjectPicker(event.currentTarget)}><span className="avatar sm">P</span><span className="sidebar-copy flex1 truncate">{currentProject}</span><ChevronDown className="project-chevron" size={14}/></button></div>
+        <div className="sidebar-foot"><div className="row" style={{ gap: 4 }}><button className={`nav-link ${currentView === 'settings' ? 'active' : ''}`} data-nav="settings" title={collapsed ? 'Settings' : undefined}>{currentView === 'settings' && <m.span layoutId="active-navigation" className="nav-active-indicator" transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 36 }} />}<Settings2 size={18} /><span className="nav-label">Settings</span></button><button className="icon-button" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16}/> : <Moon size={16}/>}</button></div></div>
         <button className="icon-button mobile-sidebar-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={18} /></button>
       </m.aside>
     </LazyMotion>
@@ -273,9 +232,6 @@ export function App() {
     <main className="main">
       <header className="topbar">
         <button ref={menuButtonRef} className="icon-button mobile-menu-button" aria-label="Open navigation" aria-expanded={mobileOpen} aria-controls="sidebar" onClick={() => setMobileOpen(true)}><Menu size={18} /></button>
-        <div className="breadcrumbs"><span className="muted"><FolderOpen size={14} /><span>{currentProject}</span></span><span className="slash">/</span><strong>{titles.get(currentView) ?? 'Home'}</strong></div>
-        <div className="topbar-spacer" />
-        <div className="topbar-right"><LivingActivityCenter route={currentView}/>{import.meta.env.DEV && <button type="button" className="demo-chip demo-mode-toggle" aria-label={`Data mode: ${dataMode}. Click to switch to ${dataMode === 'demo' ? 'live' : 'demo'}`} title="Development demo mode. Demo actions use local fixtures and never call the backend." onClick={() => setDataMode(dataMode === 'demo' ? 'live' : 'demo')}>{dataMode === 'demo' ? 'DESIGN PREVIEW' : 'LIVE MODE'}</button>}{dataMode === 'live' && <button type="button" className={`frontend-status status-text ${backendHealth.isSuccess ? 'connected' : 'disconnected'}`} title={backendHealth.isError ? apiConnectionMessage(backendHealth.error) : backendHealth.isSuccess ? 'Connected to the OpenAgent backend' : 'Checking the OpenAgent backend'} onClick={() => void backendHealth.refetch()}><span aria-hidden="true"/>{backendHealth.isSuccess ? 'Backend connected' : backendHealth.isError ? 'Backend offline' : 'Connecting…'}</button>}{dataMode === 'demo' && <span className="frontend-status status-text disconnected" title="Offline reference. Development demo mode uses local fixtures only; no backend data or actions are used."><CheckCircle2 size={13} aria-hidden="true"/>Offline reference</span>}<button className="icon-button" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16}/> : <Moon size={16}/>}</button><button className="icon-button notification-trigger" aria-label="Open notifications" aria-haspopup="dialog" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen(true)}><Bell size={16}/>{notifications.some(item => !item.read_at) && <span className="notification-indicator" aria-label="Unread notifications"/>}</button><button className="icon-button" aria-label="Open command palette" onClick={() => setPaletteOpen(true)}><Command size={16}/></button></div>
       </header>
       <div className="content-area" id="content" onClick={onContentClick}>
         <LazyMotion features={domAnimation}>

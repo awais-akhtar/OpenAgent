@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import shutil
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -422,6 +425,49 @@ class RepositoryIntelligenceTests(unittest.TestCase):
 
 
 class SandboxAndPolicyTests(unittest.TestCase):
+    def test_codeq_empty_edit_values_are_valid_and_patch_feedback_is_actionable(self) -> None:
+        self.assertEqual("", CodebaseService._action_argument_error(
+            "write_file", {"path": "empty.py", "content": ""},
+        ))
+        self.assertEqual("", CodebaseService._action_argument_error(
+            "patch_file", {"path": "calc.py", "search": "return a + b\n", "replace": ""},
+        ))
+        self.assertIn("search", CodebaseService._action_argument_error(
+            "patch_file", {"path": "calc.py", "search": "", "replace": ""},
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            manager = SandboxManager(base / "sandboxes")
+            manager.create("workspace-1", source=source)
+            tools = CodebaseTools(manager, "workspace-1")
+            with self.assertRaisesRegex(ValueError, "Copy the exact text") as mismatch:
+                tools.execute("patch_file", {
+                    "path": "calc.py", "search": "return a - b", "replace": "return a + b",
+                })
+            self.assertIn("def add(a, b):", str(mismatch.exception))
+            tools.execute("patch_file", {
+                "path": "calc.py", "search": "    return a + b\n", "replace": "",
+            })
+            self.assertEqual("def add(a, b):\n", (manager.path("workspace-1") / "calc.py").read_text(encoding="utf-8"))
+            self.assertIn("return a + b", (source / "calc.py").read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows log-release behavior")
+    def test_stopped_process_waits_for_log_release_before_workspace_cleanup(self) -> None:
+        record = {"stdout_path": "stdout.log", "stderr_path": "stderr.log"}
+        with patch("openagent.codebase.sandbox.os.replace", side_effect=[
+            PermissionError("still held"), PermissionError("still held"), None, None,
+        ]) as replace, patch("openagent.codebase.sandbox.time.sleep") as sleep:
+            SandboxManager._wait_for_process_log_release(record)
+        self.assertEqual(4, replace.call_count)
+        self.assertEqual(2, sleep.call_count)
+        with patch("openagent.codebase.sandbox.os.replace", side_effect=PermissionError("still held")), \
+             patch("openagent.codebase.sandbox.time.monotonic", side_effect=[0.0, 2.0]):
+            with self.assertRaisesRegex(RuntimeError, "remains locked"):
+                SandboxManager._wait_for_process_log_release(record)
+
     def test_workspace_is_copied_and_snapshot_restores(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -437,6 +483,32 @@ class SandboxAndPolicyTests(unittest.TestCase):
             manager.restore("workspace-1", snapshot["path"])
             self.assertEqual("after", (manager.path("workspace-1") / "value.txt").read_text(encoding="utf-8"))
             self.assertEqual("before", (source / "value.txt").read_text(encoding="utf-8"))
+
+    def test_restore_rejects_archive_links_without_changing_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "value.txt").write_text("original", encoding="utf-8")
+            manager = SandboxManager(base / "sandboxes")
+            manager.create("workspace-1", source=source)
+            outside = base / "outside"
+            outside.mkdir()
+            for link_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                archive_path = manager.root / "snapshots" / f"malicious-{link_type!r}.tar.gz"
+                with tarfile.open(archive_path, "w:gz") as archive:
+                    link = tarfile.TarInfo("escape")
+                    link.type = link_type
+                    link.linkname = str(outside)
+                    archive.addfile(link)
+                    payload = b"escaped"
+                    member = tarfile.TarInfo("escape/payload.txt")
+                    member.size = len(payload)
+                    archive.addfile(member, io.BytesIO(payload))
+                with self.assertRaises(RepositoryBoundaryError):
+                    manager.restore("workspace-1", archive_path)
+                self.assertFalse((outside / "payload.txt").exists())
+                self.assertEqual("original", (manager.path("workspace-1") / "value.txt").read_text(encoding="utf-8"))
 
     def test_risk_policy_keeps_workspace_changes_autonomous_and_blocks_push(self) -> None:
         policy = ToolPolicy()
@@ -655,6 +727,112 @@ class SandboxAndPolicyTests(unittest.TestCase):
 
 
 class CodebaseServiceTests(unittest.TestCase):
+    def test_cpu_edit_proposal_is_reviewable_and_does_not_write(self) -> None:
+        class ProposalGateway(FakeGateway):
+            routing_policy = "cpu-baseline"
+
+            def complete(self, messages, **kwargs):
+                self.options = kwargs
+                return ModelResult(
+                    "openvino-direct", "small-cpu",
+                    '<replacement>\ndef greet(name):\n    return "Hello, " + name + "!"\n</replacement>',
+                    {},
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            original = 'def greet(name):\n    return "Hello, " + name\n'
+            (source / "hello.py").write_text(original, encoding="utf-8")
+            gateway = ProposalGateway()
+            service = CodebaseService(OpenAgentStore(base / "data"), gateway)  # type: ignore[arg-type]
+            project = service.create_project(name="CPU edit", source_path=str(source))
+            expected = hashlib.sha256(original.encode()).hexdigest()
+            proposal = service.propose_file_edit(
+                project["id"], "hello.py", "Add an exclamation mark", expected_sha256=expected)
+            self.assertIn('+    return "Hello, " + name + "!"', proposal["diff"])
+            self.assertEqual(proposal["expected_sha256"], expected)
+            self.assertTrue(proposal["source_unchanged"])
+            self.assertEqual(gateway.options["provider_id"], "auto")
+            self.assertFalse(gateway.options["allow_external"])
+            self.assertEqual((source / "hello.py").read_text(encoding="utf-8"), original)
+            with self.assertRaisesRegex(ValueError, "file changed"):
+                service.propose_file_edit(project["id"], "hello.py", "Add !", expected_sha256="0" * 64)
+
+    def test_cpu_edit_proposal_retries_one_unchanged_model_answer(self) -> None:
+        class RetryGateway(FakeGateway):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, _messages, **_kwargs):
+                self.calls += 1
+                suffix = '' if self.calls == 1 else ' + "!"'
+                return ModelResult(
+                    "openvino-direct", "small-cpu",
+                    f'<replacement>\ndef greet(name):\n    return "Hello, " + name{suffix}\n</replacement>', {},
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            original = 'def greet(name):\n    return "Hello, " + name\n'
+            (source / "hello.py").write_text(original, encoding="utf-8")
+            gateway = RetryGateway()
+            service = CodebaseService(OpenAgentStore(base / "data"), gateway)  # type: ignore[arg-type]
+            project = service.create_project(name="CPU retry", source_path=str(source))
+            proposal = service.propose_file_edit(
+                project["id"], "hello.py", "Add !", expected_sha256=hashlib.sha256(original.encode()).hexdigest())
+            self.assertEqual(gateway.calls, 2)
+            self.assertIn('+ "!"', proposal["proposed_content"])
+            self.assertEqual((source / "hello.py").read_text(encoding="utf-8"), original)
+
+    def test_read_only_code_question_uses_bounded_files_without_run_or_write(self) -> None:
+        class AnswerGateway:
+            def __init__(self):
+                self.messages = None
+
+            def complete(self, messages, **kwargs):
+                self.messages = messages
+                self.options = kwargs
+                return ModelResult("openvino-direct", "cpu-model", "hello.py defines greet(name).", {})
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            original = 'def greet(name):\n    return "Hello, " + name\n'
+            (source / "hello.py").write_text(original, encoding="utf-8")
+            gateway = AnswerGateway()
+            service = CodebaseService(OpenAgentStore(base / "data"), gateway)  # type: ignore[arg-type]
+            project = service.create_project(name="Read-only", source_path=str(source))
+            answer = service.ask_project(project["id"], "What does greet do?", paths=["hello.py"])
+            self.assertEqual(answer["provider"], "openvino-direct")
+            self.assertIn("hello.py", answer["answer"])
+            self.assertIn(original.strip(), gateway.messages[-1]["content"])
+            self.assertEqual(gateway.options["provider_id"], "auto")
+            self.assertFalse(gateway.options["allow_external"])
+            self.assertEqual((source / "hello.py").read_text(encoding="utf-8"), original)
+            self.assertEqual(service.list_runs(project=project["project"]), [])
+            with self.assertRaises(ValueError):
+                service.ask_project(project["id"], "What?", paths=["hello.py"] * 5)
+
+    def test_cpu_baseline_autonomous_edit_fails_before_run_creation(self) -> None:
+        class BaselineGateway(FakeGateway):
+            routing_policy = "cpu-baseline"
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "hello.py").write_text("VALUE = 1\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), BaselineGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="CPU", source_path=str(source))
+            with self.assertRaisesRegex(ValueError, "not admitted"):
+                service.create_run(codebase_project_id=project["id"], prompt="Edit hello.py")
+            self.assertEqual(service.list_runs(project=project["project"]), [])
+
     def test_git_read_tools_do_not_walk_into_parent_repository(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(dir=str(repo_root)) as directory:
@@ -843,6 +1021,45 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertFalse((workspace / "src" / "main.py").exists())
             with self.assertRaises(PermissionError):
                 service.mutate_path(project["id"], action="create_file", path=".env")
+
+    def test_manual_save_rejects_external_source_change_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            target = source / "app.py"
+            target.write_text("print('old')\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Editor", source_path=str(source))
+            workspace_target = Path(project["workspace"]["workspace_path"]) / "app.py"
+            target.write_text("print('external')\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed outside CodeQ"):
+                service.write_file(project["id"], "app.py", "print('new')\n")
+            self.assertEqual(target.read_text(encoding="utf-8"), "print('external')\n")
+            self.assertEqual(workspace_target.read_text(encoding="utf-8"), "print('old')\n")
+
+    def test_manual_save_rolls_back_workspace_when_source_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            target = source / "app.py"
+            target.write_text("print('old')\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Editor", source_path=str(source))
+            workspace_target = Path(project["workspace"]["workspace_path"]) / "app.py"
+            original_replace = Path.replace
+
+            def fail_source_replace(file: Path, destination: Path) -> Path:
+                if destination == target:
+                    raise OSError("source unavailable")
+                return original_replace(file, destination)
+
+            with patch.object(Path, "replace", fail_source_replace):
+                with self.assertRaisesRegex(OSError, "source unavailable"):
+                    service.write_file(project["id"], "app.py", "print('new')\n")
+            self.assertEqual(target.read_text(encoding="utf-8"), "print('old')\n")
+            self.assertEqual(workspace_target.read_text(encoding="utf-8"), "print('old')\n")
 
     def test_review_material_contains_new_untracked_file_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -32,7 +32,10 @@ def admit_cpu_openvino_bundle(path: Path, *, max_bytes: int = CPU_MODEL_FILE_LIM
         if file.is_symlink() or not file.is_file():
             raise CPUModelAdmissionError(f"CPU model bundle is missing a regular {name}: {root}")
     total = 0
-    for current, dirs, files in os.walk(root, followlinks=False):
+    def fail_walk(error: OSError) -> None:
+        raise CPUModelAdmissionError(f"CPU model bundle could not be inspected: {error}") from error
+
+    for current, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
         for directory in dirs:
             if (Path(current) / directory).is_symlink():
                 raise CPUModelAdmissionError("CPU model bundle cannot contain directory symlinks")
