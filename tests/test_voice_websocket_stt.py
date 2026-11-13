@@ -197,6 +197,29 @@ class VoiceWebSocketSTTTests(unittest.TestCase):
         # Verify audio profile is captured
         assert "audio_profile" in result
 
+    def test_cancel_interrupts_a_stream_and_refuses_later_audio(self) -> None:
+        """Interruption: cancelling discards buffered audio and rejects any later chunk."""
+        stream_id = self.websocket_manager.create_session(
+            self.voice_session_id, project="test-voice-ws", owner="test-user", language="en",
+        )["stream_id"]
+        audio = synthesize_tone_wav("interrupt me")
+        self.websocket_manager.push_chunk(stream_id, audio)
+
+        cancelled = self.websocket_manager.cancel(stream_id)
+
+        self.assertEqual("cancelled", cancelled["status"])
+        self.assertEqual("", cancelled["transcription"])
+        with self.assertRaises(ValueError):
+            self.websocket_manager.push_chunk(stream_id, audio)
+        with self.assertRaises(ValueError):
+            self.websocket_manager.get_session_status(stream_id)
+
+    def test_cancel_unknown_stream_is_an_error(self) -> None:
+        with self.assertRaises(ValueError):
+            self.websocket_manager.cancel(uuid4().hex)
+        with self.assertRaises(ValueError):
+            self.websocket_manager.cancel("")
+
     def test_websocket_session_status(self) -> None:
         """Test getting session status before finishing."""
         stream_result = self.websocket_manager.create_session(

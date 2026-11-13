@@ -92,6 +92,7 @@ class DiskExpertStore:
         self.prefetch_depth = prefetch_depth
         self.regions = dict(regions)
         self._file_signatures: dict[Path, tuple[int, int]] = {}
+        self._resolved_paths: dict[tuple[str, str], Path] = {}
         self._verified: set[str] = set()
         self._maps: dict[Path, mmap.mmap] = {}
         for key, region in self.regions.items():
@@ -104,6 +105,7 @@ class DiskExpertStore:
                 raise ValueError("sha256 must be a lowercase hexadecimal digest")
             self._path(region)
         self._entries: OrderedDict[str, _Entry] = OrderedDict()
+        self._resident_bytes = 0
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(max_workers=self.prefetch_workers, thread_name_prefix="expert-read")
         self._pending: dict[str, Future] = {}
@@ -115,6 +117,17 @@ class DiskExpertStore:
                            prefetch_dropped=0, demand_waits=0, read_seconds=0.0)
 
     def _path(self, region: ExpertRegion) -> Path:
+        cache_key = (region.storage, region.path)
+        cached = self._resolved_paths.get(cache_key)
+        if cached is not None:
+            # Validated once at construction. Each read still checks that the
+            # file is the one that was validated and still covers the range.
+            file_stat = cached.stat()
+            if (file_stat.st_size, file_stat.st_mtime_ns) != self._file_signatures.get(cached):
+                raise ValueError("expert file changed while the store was open")
+            if region.offset + region.size > file_stat.st_size:
+                raise ValueError("expert range exceeds file size")
+            return cached
         if (type(region.path) is not str or not region.path or
                 Path(region.path).is_absolute()):
             raise ValueError("expert file path must be a relative non-empty string")
@@ -145,6 +158,7 @@ class DiskExpertStore:
             raise ValueError("expert file changed while the store was open")
         if region.offset + region.size > file_stat.st_size:
             raise ValueError("expert range exceeds file size")
+        self._resolved_paths[cache_key] = path
         return path
 
     def describe_region(self, key: str) -> ResolvedExpertRegion:
@@ -169,7 +183,7 @@ class DiskExpertStore:
             raise RuntimeError("expert store is closed")
 
     def _used(self) -> int:
-        return sum(len(entry.payload) for entry in self._entries.values())
+        return self._resident_bytes
 
     def _make_room(self, size: int, *, prefetch: bool) -> bool:
         needed = self._used() + sum(self._reservations.values()) + size - self.capacity_bytes
@@ -184,6 +198,7 @@ class DiskExpertStore:
                 raise MemoryError("leased or pinned experts occupy the cache; release or unpin them before loading another expert")
             for name in candidates:
                 entry = self._entries.pop(name)
+                self._resident_bytes -= len(entry.payload)
                 needed -= len(entry.payload)
                 self._release(entry)
                 self._stats["evictions"] += 1
@@ -264,6 +279,7 @@ class DiskExpertStore:
         try:
             entry = _Entry(payload, prefetched=prefetch)
             self._entries[key] = entry
+            self._resident_bytes += len(payload)
             return entry
         except BaseException as primary:
             try:
@@ -380,6 +396,7 @@ class DiskExpertStore:
                     self._release_payload(payload)
                     return False
                 self._entries[key] = _Entry(payload, prefetched=True)
+                self._resident_bytes += len(payload)
                 # Ownership has transferred to the cache entry.
                 payload = None
                 return True
@@ -424,6 +441,7 @@ class DiskExpertStore:
             if entry.leases or key in self._pinned:
                 return False
             self._entries.pop(key)
+            self._resident_bytes -= len(entry.payload)
             self._release(entry)
             self._stats["evictions"] += 1
             return True
@@ -469,6 +487,7 @@ class DiskExpertStore:
             for entry in self._entries.values():
                 self._release(entry)
             self._entries.clear()
+            self._resident_bytes = 0
             self._reservations.clear()
             self._pinned.clear()
             for mapping in self._maps.values():

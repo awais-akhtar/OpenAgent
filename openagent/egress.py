@@ -152,10 +152,14 @@ class EgressClient:
         max_redirects: int = 4,
         on_line: Callable[[str], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        max_timeout_seconds: float = 120.0,
     ) -> EgressResponse:
         if cancelled is not None and not callable(cancelled):
             raise TypeError("egress cancellation must be callable")
-        timeout = min(120.0, max(0.25, float(timeout_seconds)))
+        # The default cap stays at 120 s for every caller. A caller may raise it explicitly
+        # (the model gateway does, for local model calls), bounded by 900 s.
+        cap = min(900.0, max(120.0, float(max_timeout_seconds)))
+        timeout = min(cap, max(0.25, float(timeout_seconds)))
         byte_limit = min(100 * 1024 * 1024, max(1, int(max_response_bytes)))
         current = str(url).strip()
         request_method = method.upper().strip() or "GET"

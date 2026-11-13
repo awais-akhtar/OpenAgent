@@ -69,25 +69,22 @@ class ModelGatewayTests(unittest.TestCase):
         self._routing_env.start()
         self.addCleanup(self._routing_env.stop)
 
-    def test_cpu_baseline_auto_routes_only_to_bounded_direct_model(self) -> None:
+    def test_legacy_cpu_baseline_is_migrated_to_local_first_routing(self) -> None:
         client = FakeDirectHardware()
         with tempfile.TemporaryDirectory() as temp, patch.dict(
-            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp}, clear=False
+            "os.environ", {"OPENAGENT_OPENVINO_MODEL_DIR": temp, "OPENAGENT_MODEL_ROUTING": "cpu-baseline"}, clear=False
         ):
             write_tiny_openvino_bundle(temp)
             gateway = ModelGateway(direct_hardware=client)
-            gateway.routing_policy = "cpu-baseline"
-            self.assertEqual(gateway.route_order(allow_external=False), ["openvino-direct"])
-            self.assertIsNone(gateway.select_fallback("openvino-direct"))
-            result = gateway.complete([{"role": "user", "content": "hello"}], provider_id="auto")
+            self.assertEqual(gateway.routing_policy, "local-first")
+            self.assertEqual(os.environ["OPENAGENT_MODEL_ROUTING"], "local-first")
+            self.assertEqual(gateway.route_order(allow_external=False), ["ollama", "llamacpp", "openvino-direct", "olmoe-direct", "local"])
+            self.assertIs(gateway.select_fallback("openvino-direct"), gateway.providers["local"])
+            with patch.object(gateway.providers["ollama"], "available", return_value=False), \
+                 patch.object(gateway.providers["llamacpp"], "available", return_value=False), \
+                 patch.object(gateway.providers["olmoe-direct"], "available", return_value=False):
+                result = gateway.complete([{"role": "user", "content": "hello"}], provider_id="auto")
             self.assertEqual(result.provider, "openvino-direct")
-            gateway.providers["openvino-direct"].device = "GPU"
-            with self.assertRaisesRegex(ProviderConfigurationError, "CPU device"):
-                gateway.select_provider("auto")
-            gateway.providers["openvino-direct"].device = "CPU"
-            with patch.object(gateway.providers["openvino-direct"], "available", return_value=False):
-                with self.assertRaisesRegex(ProviderConfigurationError, "unavailable"):
-                    gateway.select_provider("auto")
 
     def test_cpu_bundle_admission_rejects_missing_and_oversized_before_worker_start(self) -> None:
         client = FakeDirectHardware()
@@ -238,7 +235,7 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertSetEqual(
             provider_ids,
             {
-                "auto", "local", "openvino-direct", "olmoe-direct", "ollama", "llamacpp", "openai-compatible",
+                "auto", "local", "openvino-direct", "olmoe-direct", "qwen3moe-direct", "ollama", "llamacpp", "openai-compatible",
                 "deepseek", "mistral", "groq", "together", "openrouter", "xai", "fireworks", "perplexity", "qwen",
             },
         )
@@ -246,8 +243,9 @@ class ModelGatewayTests(unittest.TestCase):
         self.assertIn("local-server-first", gateway.policies()["routes"])
         self.assertEqual(
             gateway.policies()["routes"]["local-first"],
-            ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
+            ["ollama", "llamacpp", "openvino-direct", "olmoe-direct", "local"],
         )
+        self.assertNotIn("cpu-baseline", gateway.policies()["routes"])
         ollama = next(provider for provider in gateway.specs() if provider["id"] == "ollama")
         self.assertEqual(ollama["default_model"], CPU_MODEL_STACK["chat"])
         settings = runtime_settings_snapshot()
@@ -473,6 +471,36 @@ class ModelGatewayTests(unittest.TestCase):
         sent = captured["payload"]["messages"][-1]
         self.assertEqual(sent["content"], "describe")
         self.assertEqual(sent["images"], ["aW1hZ2UtZGF0YQ=="])
+
+    def test_ollama_releases_large_model_after_short_idle_period(self) -> None:
+        from openagent.model_gateway import OllamaProvider
+
+        provider = OllamaProvider()
+        with patch.object(provider, "resolve_model", return_value="qwen3-coder:30b"), patch(
+            "openagent.model_gateway.post_json",
+            return_value={"message": {"content": "ready"}},
+        ) as post, patch.dict(os.environ, {"OPENAGENT_OLLAMA_KEEP_ALIVE": ""}):
+            provider.complete([{"role": "user", "content": "hello"}])
+            self.assertEqual(post.call_args.args[1]["keep_alive"], "2m")
+        with patch.object(provider, "resolve_model", return_value="qwen3-coder:30b"), patch(
+            "openagent.model_gateway.post_json",
+            return_value={"message": {"content": "ready"}},
+        ) as post, patch.dict(os.environ, {"OPENAGENT_OLLAMA_KEEP_ALIVE": "0"}):
+            provider.complete([{"role": "user", "content": "hello"}])
+            self.assertEqual(post.call_args.args[1]["keep_alive"], "0")
+
+    def test_ollama_completion_forwards_json_output_constraint(self) -> None:
+        from openagent.model_gateway import OllamaProvider
+
+        captured = {}
+        provider = OllamaProvider()
+        with patch.object(provider, "resolve_model", return_value="qwen2.5-coder:7b"), patch(
+            "openagent.model_gateway.post_json",
+            side_effect=lambda _url, payload, **_kwargs: captured.update(payload=payload) or {"message": {"content": "{}"}},
+        ):
+            provider.complete([{"role": "user", "content": "return json"}], response_format="json")
+
+        self.assertEqual(captured["payload"]["format"], "json")
 
     def test_openai_vision_stream_uses_multimodal_payload_and_cancellation(self) -> None:
         from openagent.model_gateway import OpenAICompatibleProvider

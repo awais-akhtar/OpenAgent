@@ -157,7 +157,7 @@ class DesktopTests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENAGENT_OPENVINO_MODEL_DIR": str(model)}, clear=False):
                 selected = configure_managed_openvino_model(Path(tmp))
                 self.assertEqual(selected, str(model.resolve()))
-                self.assertEqual(os.environ.get("OPENAGENT_MODEL_ROUTING"), "cpu-baseline")
+                self.assertEqual(os.environ.get("OPENAGENT_MODEL_ROUTING"), "local-first")
                 self.assertEqual(os.environ.get("OPENAGENT_MODEL_FALLBACK"), "none")
 
     def test_installed_runtime_discovers_manifest_source_accelerator_and_model(self) -> None:

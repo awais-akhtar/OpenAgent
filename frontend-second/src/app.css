@@ -313,6 +313,38 @@
 .codeq-page .terminal-window { min-height:150px; padding:14px 16px; border:1px solid #343434; border-radius:8px; background:#1e1e1e; color:#d4d4d4; box-shadow:inset 0 1px 0 #ffffff0a; font:13px/1.65 "Cascadia Code", Consolas, monospace; }
 .codeq-page .terminal-window::before { content:'OpenAgent Terminal'; display:block; margin-bottom:8px; color:#8ab4f8; font:11px/1.2 var(--font-sans, sans-serif); opacity:.85; }
 .codeq-page .terminal-window .prompt { color:#7ee787; }
+
+/* Phase 6 CodeQ Work Graph: compact, keyboard-friendly views inside the
+   existing IDE panel. Colours come from the same semantic state map as the
+   status legend; no demo/run styling is applied to Live records. */
+.codeq-work-graph { height:100%; min-height:0; overflow:auto; padding:12px 16px; box-sizing:border-box; color:var(--ink); background:var(--surface); }
+.codeq-work-graph-head { display:flex; align-items:center; gap:6px; min-width:0; border-bottom:1px solid var(--line); }
+.codeq-work-graph-head .tab { flex:none; }
+.codeq-work-graph-head > .caption { min-width:0; margin-left:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.codeq-work-graph-run-select { display:flex; align-items:center; gap:8px; margin:10px 0 4px; }
+.codeq-work-graph-run-select select { width:min(520px, 75%); min-width:160px; }
+.codeq-work-graph-legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:10px 0; padding:0; list-style:none; color:var(--muted); font-size:11px; }
+.codeq-work-graph section { max-width:100%; }
+.codeq-work-graph section > p { margin:8px 0; }
+.codeq-work-graph h4 { margin:12px 0 6px; color:var(--ink-strong); font-size:12px; }
+.codeq-work-graph section ul { margin:5px 0 9px; padding-left:20px; }
+.codeq-work-graph section li { margin:4px 0; font-size:12px; }
+.codeq-work-graph-tools { display:flex; align-items:end; gap:9px; margin:8px 0; }
+.codeq-work-graph-tools label { display:grid; flex:1; gap:4px; color:var(--muted); font-size:11px; }
+.codeq-work-graph-tools input { width:100%; min-width:0; }
+.codeq-work-graph-rows { display:grid; gap:2px; max-height:230px; overflow:auto; margin:0; padding:4px; list-style:none; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); }
+.codeq-work-graph-rows button { width:100%; overflow:hidden; padding:5px 8px; border:0; border-radius:5px; background:transparent; color:var(--ink); text-align:left; text-overflow:ellipsis; white-space:nowrap; font:inherit; font-size:12px; }
+.codeq-work-graph-rows button:hover, .codeq-work-graph-rows button:focus-visible, .codeq-work-graph-rows button[aria-selected="true"] { outline:none; background:var(--blue-soft); }
+.codeq-work-graph-detail { margin-top:10px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:var(--surface-2); }
+.codeq-work-graph-detail dl { display:grid; grid-template-columns:minmax(95px, 145px) minmax(0,1fr); gap:5px 12px; margin:8px 0; font-size:11px; }
+.codeq-work-graph-detail dt { color:var(--muted); }
+.codeq-work-graph-detail dd { min-width:0; margin:0; overflow-wrap:anywhere; }
+.codeq-work-graph-detail pre { max-height:180px; overflow:auto; margin:4px 0; padding:8px; border:1px solid var(--line); border-radius:6px; background:var(--surface); font:11px/1.5 var(--font-mono, Consolas, monospace); }
+.codeq-work-graph-events { margin-top:9px; padding:7px 9px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font-size:11px; }
+.codeq-work-graph-events summary { cursor:pointer; color:var(--ink); }
+.codeq-work-graph-events ol { display:grid; gap:3px; margin:7px 0 2px; padding-left:20px; }
+.codeq-work-graph-events li { overflow-wrap:anywhere; }
+@media (max-width:700px) { .codeq-work-graph { padding:9px; } .codeq-work-graph-head { flex-wrap:wrap; } .codeq-work-graph-head > .caption { width:100%; margin:0 0 6px; } .codeq-work-graph-detail dl { grid-template-columns:1fr; gap:2px; } }
 .codeq-real-terminal-head { padding:0 0 8px; }
 .codeq-terminal-tabs { display:flex; align-items:center; gap:18px; margin:-16px -16px 12px; padding:8px 16px; border-bottom:1px solid var(--line); color:var(--muted); font-size:12px; }
 .codeq-terminal-tabs strong { padding:7px 12px; color:var(--ink); background:var(--surface-2); border-radius:6px; font-weight:650; }

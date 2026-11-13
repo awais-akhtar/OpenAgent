@@ -124,6 +124,8 @@ check BLUEPRINT .md
 # application assets remain trackable; only disposable review material is ignored.
 /.qa/batch1-package-staging/
 /.qa/batch1-package-verify/
+/.qa/tree-sitter-grammars/
+/.qa/scip-python/
 /frontend-second/audit/
 /frontend-second/.qa/
 /frontend-second/visual-evidence/

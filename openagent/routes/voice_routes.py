@@ -18,6 +18,7 @@ ROUTES = (
     ("POST", "/api/voice/websocket/create"),
     ("POST", "/api/voice/websocket/chunk"),
     ("POST", "/api/voice/websocket/finish"),
+    ("POST", "/api/voice/websocket/cancel"),
     ("GET", "/api/voice/websocket/status"),
 )
 
@@ -126,6 +127,15 @@ def handle_post(path: str, deps: VoiceRouteDependencies) -> JsonRouteResult | No
                 )
 
             result = voice_websocket.push_chunk(stream_id, audio_data)
+            return JsonRouteResult(result, HTTPStatus.OK)
+
+        elif path == "/api/voice/websocket/cancel":
+            # Interrupt a live stream and discard its buffered audio
+            stream_id = str(payload.get("stream_id", "")).strip()
+            if not stream_id:
+                return JsonRouteResult({"error": "stream_id is required."}, HTTPStatus.BAD_REQUEST)
+
+            result = voice_websocket.cancel(stream_id)
             return JsonRouteResult(result, HTTPStatus.OK)
 
         elif path == "/api/voice/websocket/finish":

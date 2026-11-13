@@ -1,0 +1,3 @@
+{"edges": 141, "files": 21, "graph_build_seconds": 0.017, "nodes": 103, "peak_traced_mb": 1.3, "persist_seconds": 0.02, "scan_seconds": 0.352}
+{"edges": 1401, "files": 201, "graph_build_seconds": 0.417, "nodes": 1003, "peak_traced_mb": 3.1, "persist_seconds": 0.111, "scan_seconds": 1.184}
+{"edges": 7001, "files": 1001, "graph_build_seconds": 7.94, "nodes": 5003, "peak_traced_mb": 14.8, "persist_seconds": 0.2, "scan_seconds": 6.302}

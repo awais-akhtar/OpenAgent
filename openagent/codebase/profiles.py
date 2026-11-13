@@ -221,8 +221,19 @@ def task_needs_file_change(title: str, agent: str) -> bool:
     role = str(agent).lower()
     if role not in {"programmer", "frontend", "backend", "database", "debugger", "tester"}:
         return False
+    write_verbs = (
+        r"create|implement|build|add|update|modify|modifies|modifying|modified|"
+        r"change|changes|changing|changed|edit|edits|editing|edited|"
+        r"rewrite|rewrites|rewriting|rewritten|fix|repair|refactor|integrate|scaffold|style|configure"
+    )
+    # Titles such as "Review existing pages for updates" describe inspection,
+    # not a write. Do not let the noun "updates" turn a review task into a
+    # file-change contract. A compound task remains a write task when it
+    # explicitly asks for an edit after the review ("review and update").
+    if re.match(r"^\s*(review|inspect|analy[sz]e|audit|assess|understand|investigate)\b", text):
+        return bool(re.search(rf"\b(?:then|and)\s+(?:{write_verbs})\b", text))
     if role == "tester":
         # A tester may add a test file, but validation tasks such as
         # "ensure dependencies are configured" must remain evidence tasks.
         return bool(re.search(r"\b(add|create|write|update)\b.*\b(test|tests|test suite|test coverage)\b", text))
-    return bool(re.search(r"\b(create|implement|build|add|update|fix|repair|refactor|integrate|scaffold|style|configure)\b", text))
+    return bool(re.search(rf"\b(?:{write_verbs})\b", text))

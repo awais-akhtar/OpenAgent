@@ -73,6 +73,9 @@ engine-hf-moe = [
   "accelerate>=1.15,<2",
   "safetensors>=0.6,<1",
 ]
+code-index = [
+  "tree-sitter-language-pack>=1.25,<2",
+]
 office = [
   "python-docx>=1.1,<2",
   "python-pptx>=1.0,<2",
@@ -109,6 +112,7 @@ openagent-hard-check = "openagent.hard_check:main"
 openagent-worker = "openagent.worker:main"
 openagent-production-proof = "openagent.production_proof:main"
 openagent-codeq = "openagent.codebase.cli:main"
+openagent-codeq-grammars = "openagent.codebase.tree_sitter_install:main"
 openagent-olmoe = "openagent.adaptive_engine.olmoe_cli:main"
 openagent-native-olmoe = "openagent.adaptive_engine.native_olmoe_cli:main"
 openagent-publisher-v41 = "openagent.adaptive_engine.publisher_v41_cli:main"

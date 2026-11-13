@@ -343,7 +343,7 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
         except CPUModelAdmissionError:
             return ""
         os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "CPU")
-        os.environ.setdefault("OPENAGENT_MODEL_ROUTING", "cpu-baseline")
+        os.environ.setdefault("OPENAGENT_MODEL_ROUTING", "local-first")
         os.environ.setdefault("OPENAGENT_MODEL_FALLBACK", "none")
         return str(Path(configured).resolve())
     project_root = Path(__file__).resolve().parents[1]
@@ -360,7 +360,7 @@ def configure_managed_openvino_model(data_dir: Path) -> str:
         os.environ["OPENAGENT_OPENVINO_MODEL_DIR"] = str(candidate.resolve())
         os.environ.setdefault("OPENAGENT_OPENVINO_DEVICE", "CPU")
         os.environ.setdefault("OPENAGENT_OPENVINO_MODEL_ID", "openagent-qwen2.5-1.5b-int4")
-        os.environ.setdefault("OPENAGENT_MODEL_ROUTING", "cpu-baseline")
+        os.environ.setdefault("OPENAGENT_MODEL_ROUTING", "local-first")
         os.environ.setdefault("OPENAGENT_MODEL_FALLBACK", "none")
         return str(candidate.resolve())
     return ""
@@ -541,7 +541,10 @@ def launch_workbench(
     server = None
     server_thread: threading.Thread | None = None
     try:
-        server = build_http_server(host, port, store, web_root=selected_ui_root, warm_openvino=bool(managed_openvino_model))
+        # Do not start model inference as a side effect of opening the desktop.
+        # Auto/local-first routing loads the chosen CPU model only when a real
+        # user request arrives.
+        server = build_http_server(host, port, store, web_root=selected_ui_root, warm_openvino=False)
         address = f"http://{host}:{server.server_address[1]}"
         build_token = ui_build_token(selected_ui_root)
         launch_url = f"{address}/?openagent_version={__version__}&ui_build={build_token}&ui=core"

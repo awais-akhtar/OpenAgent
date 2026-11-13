@@ -54,6 +54,26 @@ class InferenceAcceleratorTests(unittest.TestCase):
         self.assertTrue(second.metadata["cache_hit"])
         self.assertEqual(second.content, "real local answer")
 
+    def test_completion_cache_separates_structured_output_format(self) -> None:
+        calls = []
+
+        def complete(_provider, _messages, *, model=None, response_format=None):
+            calls.append(response_format)
+            return ModelResult("ollama", model or "tiny", str(response_format), {"local_network": True})
+
+        with patch("openagent.model_gateway.OllamaProvider.available", return_value=True), patch(
+            "openagent.model_gateway.OllamaProvider.complete", complete
+        ):
+            gateway = ModelGateway()
+            messages = [{"role": "user", "content": "same prompt"}]
+            plain = gateway.complete(messages, provider_id="auto")
+            structured = gateway.complete(messages, provider_id="auto", response_format="json")
+
+        self.assertEqual(calls, [None, "json"])
+        self.assertFalse(plain.metadata["cache_hit"])
+        self.assertFalse(structured.metadata["cache_hit"])
+        self.assertEqual(structured.content, "json")
+
     def test_large_attachment_turn_stays_inside_context_budget(self) -> None:
         messages = [
             {"role": "system", "content": "Keep answers grounded. " * 1200},

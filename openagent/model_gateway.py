@@ -281,6 +281,17 @@ class LocalProvider(BaseProvider):
         )
 
 
+def _ollama_think_payload() -> dict[str, bool]:
+    """Ollama's `think` switch. Off only when OPENAGENT_OLLAMA_THINK=false is set.
+
+    Thinking models such as qwen3.5 spend the output budget on hidden reasoning, so a
+    planner call can exceed the egress timeout. Without the variable the request is
+    unchanged, so the default behaviour does not move.
+    """
+    value = os.environ.get("OPENAGENT_OLLAMA_THINK", "").strip().lower()
+    return {"think": False} if value in {"0", "false", "off", "no"} else {}
+
+
 def _ollama_vision_messages(messages: list[dict[str, str]], image: bytes) -> list[dict[str, Any]]:
     """Attach one image to the latest user turn using Ollama's image field."""
     encoded = base64.b64encode(image).decode("ascii")
@@ -331,6 +342,9 @@ class OllamaProvider(BaseProvider):
     local = True
     network = True
     privacy_warning = "Calls the configured Ollama server, normally on localhost."
+    # Release large resident models soon after an idle request. An active
+    # multi-step CodeQ run keeps making calls, so it remains warm while used.
+    DEFAULT_KEEP_ALIVE = "2m"
 
     def __init__(self) -> None:
         self.base_url = os.environ.get("OPENAGENT_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -393,13 +407,24 @@ class OllamaProvider(BaseProvider):
         messages: list[dict[str, str]],
         *,
         model: str | None = None,
+        response_format: str | dict[str, Any] | None = None,
     ) -> ModelResult:
         selected_model = self.resolve_model(model)
         options = provider_request_options(messages)
-        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", self.DEFAULT_KEEP_ALIVE).strip() or self.DEFAULT_KEEP_ALIVE
+        payload = {
+            "model": selected_model,
+            "messages": messages,
+            "stream": False,
+            "options": options,
+            "keep_alive": keep_alive,
+            **_ollama_think_payload(),
+        }
+        if response_format is not None:
+            payload["format"] = response_format
         response = post_json(
             f"{self.base_url}/api/chat",
-            {"model": selected_model, "messages": messages, "stream": False, "options": options, "keep_alive": keep_alive},
+            payload,
             headers={},
         )
         content = response.get("message", {}).get("content", "")
@@ -426,7 +451,7 @@ class OllamaProvider(BaseProvider):
         if max_output_tokens is not None:
             options = {**options, "num_predict": max(1, int(max_output_tokens))}
         vision_messages = _ollama_vision_messages(messages, image)
-        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", self.DEFAULT_KEEP_ALIVE).strip() or self.DEFAULT_KEEP_ALIVE
         response = post_json(
             f"{self.base_url}/api/chat",
             {
@@ -435,6 +460,7 @@ class OllamaProvider(BaseProvider):
                 "stream": False,
                 "options": options,
                 "keep_alive": keep_alive,
+                **_ollama_think_payload(),
             },
             headers={},
             timeout_seconds=vision_model_timeout_seconds(),
@@ -473,7 +499,7 @@ class OllamaProvider(BaseProvider):
         options = provider_request_options(messages)
         if max_output_tokens is not None:
             options = {**options, "num_predict": max(1, int(max_output_tokens))}
-        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", self.DEFAULT_KEEP_ALIVE).strip() or self.DEFAULT_KEEP_ALIVE
         response = stream_json_lines(
             f"{self.base_url}/api/chat",
             {
@@ -482,6 +508,7 @@ class OllamaProvider(BaseProvider):
                 "stream": True,
                 "options": options,
                 "keep_alive": keep_alive,
+                **_ollama_think_payload(),
             },
             headers={},
             cancelled=cancelled,
@@ -536,10 +563,10 @@ class OllamaProvider(BaseProvider):
     ) -> Iterator[StreamChunk]:
         selected_model = self.resolve_model(model)
         options = provider_request_options(messages)
-        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", "30m").strip() or "30m"
+        keep_alive = os.environ.get("OPENAGENT_OLLAMA_KEEP_ALIVE", self.DEFAULT_KEEP_ALIVE).strip() or self.DEFAULT_KEEP_ALIVE
         response = stream_json_lines(
             f"{self.base_url}/api/chat",
-            {"model": selected_model, "messages": messages, "stream": True, "options": options, "keep_alive": keep_alive},
+            {"model": selected_model, "messages": messages, "stream": True, "options": options, "keep_alive": keep_alive, **_ollama_think_payload()},
             headers={},
         )
         primary: BaseException | None = None
@@ -1474,6 +1501,7 @@ class ModelGateway:
             "local": LocalProvider(),
             "openvino-direct": OpenVINODirectProvider(direct_hardware),
             "olmoe-direct": OlmoeDirectProvider(direct_hardware),
+            "qwen3moe-direct": Qwen3MoeDirectProvider(),
             "ollama": OllamaProvider(),
             "llamacpp": LlamaCppProvider(),
             "openai-compatible": OpenAICompatibleProvider(),
@@ -1498,7 +1526,13 @@ class ModelGateway:
             from .adaptive_engine.publisher_provider import NativePublisherProvider
 
             self.providers["native-publisher"] = NativePublisherProvider()
-        self.routing_policy = os.environ.get("OPENAGENT_MODEL_ROUTING", "local-first")
+        self.routing_policy = os.environ.get("OPENAGENT_MODEL_ROUTING", "local-first").strip() or "local-first"
+        # Older desktop launches set cpu-baseline, which silently forced every
+        # Auto request onto the tiny OpenVINO bundle. Keep old installations
+        # working, but interpret that legacy value as the normal local CPU route.
+        if self.routing_policy == "cpu-baseline":
+            self.routing_policy = "local-first"
+            os.environ["OPENAGENT_MODEL_ROUTING"] = self.routing_policy
         self.fallback_policy = os.environ.get("OPENAGENT_MODEL_FALLBACK", "local")
         self.inference = AdaptiveCPUInferenceEngine()
 
@@ -1547,9 +1581,10 @@ class ModelGateway:
             "routing_policy": self.routing_policy,
             "fallback_policy": self.fallback_policy,
             "routes": {
-                "cpu-baseline": ["openvino-direct"],
-                "local-first": ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
-                "local-server-first": ["openvino-direct", "olmoe-direct", "ollama", "llamacpp", "local"],
+                # Prefer configured local model servers. Direct CPU bundles are
+                # still available when a server is absent or the user selects one.
+                "local-first": ["ollama", "llamacpp", "openvino-direct", "olmoe-direct", "local"],
+                "local-server-first": ["ollama", "llamacpp", "openvino-direct", "olmoe-direct", "local"],
                 "offline": ["local"],
                 **({"native-publisher": ["native-publisher"]}
                    if "native-publisher" in self.providers else {}),
@@ -1775,6 +1810,7 @@ class ModelGateway:
         model: str | None = None,
         allow_external: bool = False,
         max_output_tokens: int | None = None,
+        response_format: str | dict[str, Any] | None = None,
         cancelled=None,
     ) -> ModelResult:
         if cancelled is not None and not callable(cancelled):
@@ -1793,6 +1829,7 @@ class ModelGateway:
             model=selected_model,
             allow_external=allow_external,
             max_output_tokens=max_output_tokens,
+            response_format=response_format,
         )
         started = time.perf_counter()
         cached = self.inference.get(plan.cache_key)
@@ -1819,6 +1856,8 @@ class ModelGateway:
         try:
             check_cancelled()
             provider_options = {"model": selected_model}
+            if response_format is not None and provider.id == "ollama":
+                provider_options["response_format"] = response_format
             if provider.id in {"native-publisher", "openvino-direct"} and cancelled is not None:
                 provider_options["cancelled"] = cancelled
             with self.inference.activate(plan), _approve_model_egress(allow_external):
@@ -2128,7 +2167,7 @@ class ModelGateway:
         try:
             check_cancelled()
             provider_options = {"model": selected_model}
-            if provider.id in {'native-publisher', 'openvino-direct'}:
+            if provider.id in {'native-publisher', 'openvino-direct', 'qwen3moe-direct'}:
                 provider_options['cancelled'] = cancelled
             stream = _closing_provider_stream(
                 provider.stream_complete(plan.messages, **provider_options))
@@ -2372,20 +2411,12 @@ class ModelGateway:
 
     def select_provider(self, provider_id: str, *, allow_external: bool = False) -> ModelProvider:
         if provider_id == "auto":
-            if self.routing_policy == "cpu-baseline":
-                direct = self.providers.get("openvino-direct")
-                if not isinstance(direct, OpenVINODirectProvider) or direct.device.upper() != "CPU":
-                    raise ProviderConfigurationError("cpu-baseline routing requires the local OpenVINO CPU device")
             for candidate_id in self.route_order(allow_external=allow_external):
                 provider = self.providers[candidate_id]
                 with _approve_model_egress(allow_external):
                     available = provider.available()
                 if available:
                     return provider
-            if self.routing_policy == "cpu-baseline":
-                raise ProviderConfigurationError(
-                    "The bounded local CPU model is unavailable; configure a complete OpenVINO model and runtime."
-                )
             return self.providers["local"]
 
         provider = self.providers.get(provider_id)
@@ -2402,19 +2433,121 @@ class ModelGateway:
     def route_order(self, *, allow_external: bool) -> list[str]:
         policies = self.policies()["routes"]
         configured = policies.get(self.routing_policy, policies["local-first"])
-        if "hf-moe-direct" in self.providers and self.routing_policy not in {"local", "cpu-baseline"}:
-            configured = ["hf-moe-direct", *configured]
         if allow_external:
             return list(configured)
         return [provider_id for provider_id in configured if self.providers[provider_id].local]
 
     def select_fallback(self, failed_provider_id: str) -> ModelProvider | None:
-        if self.fallback_policy == "none" or self.routing_policy == "cpu-baseline":
+        if self.fallback_policy == "none":
             return None
         fallback = self.providers.get("local")
         if fallback and fallback.id != failed_provider_id:
             return fallback
         return None
+
+
+class Qwen3MoeDirectProvider(BaseProvider):
+    """Run a Qwen3-MoE GGUF with OpenAgent's own decoder and disk-streamed experts.
+
+    Opt-in: nothing routes here implicitly. The provider is used when a run or
+    chat asks for it by id, and it is only available when a GGUF file is set.
+    """
+
+    id = "qwen3moe-direct"
+    label = "Qwen3-MoE Direct"
+    local = True
+    network = False
+    default_model = "qwen3-coder-30b-a3b"
+    privacy_warning = "Runs the configured Qwen3-MoE GGUF entirely on this machine."
+
+    def __init__(self) -> None:
+        self.gguf_path = os.environ.get("OPENAGENT_QWEN3MOE_GGUF", "").strip()
+        self.cache_gb = max(0.25, float(os.environ.get("OPENAGENT_QWEN3MOE_EXPERT_CACHE_GB", "4")))
+        self.context_tokens = max(16, int(os.environ.get("OPENAGENT_QWEN3MOE_CONTEXT", "2048")))
+        self.max_output_tokens = max(1, int(os.environ.get("OPENAGENT_QWEN3MOE_MAX_OUTPUT", "256")))
+        self.io_mode = os.environ.get("OPENAGENT_QWEN3MOE_IO_MODE", "mmap").strip().lower()
+        if self.io_mode not in {"buffered", "mmap", "direct", "uring"}:
+            self.io_mode = "mmap"
+        self._decoder: Any = None
+        self._tokenizer: Any = None
+        self._lock = threading.RLock()
+
+    def available(self) -> bool:
+        return bool(self.gguf_path) and Path(self.gguf_path).is_file()
+
+    def _load(self):
+        if self._decoder is None:
+            from .adaptive_engine.qwen3moe_decoder import ByteLevelBPE, Qwen3MoeDecoder
+            from .adaptive_engine.qwen3moe_gguf import GGUFFile
+
+            self._decoder = Qwen3MoeDecoder(
+                self.gguf_path,
+                context=self.context_tokens,
+                expert_cache_bytes=int(self.cache_gb * (1 << 30)),
+                io_mode=self.io_mode,
+            )
+            self._tokenizer = ByteLevelBPE(self._decoder.gguf)
+        return self._decoder, self._tokenizer
+
+    def stream_complete(self, messages: list[dict[str, str]], *, model: str | None = None,
+                        cancelled=None) -> Iterator[StreamChunk]:
+        """Yield text as tokens are produced. Emits only whole UTF-8 characters."""
+        if not self.available():
+            raise ProviderUnavailableError(
+                "Set OPENAGENT_QWEN3MOE_GGUF to a Qwen3-MoE GGUF file to use the Qwen3-MoE direct provider."
+            )
+        from .adaptive_engine.qwen3moe_decoder import chat_prompt
+
+        started = time.perf_counter()
+        name = model or self.default_model
+        with self._lock:
+            decoder, tokenizer = self._load()
+            prompt_ids = tokenizer.encode(chat_prompt(messages))
+            budget = min(self.max_output_tokens, decoder.context - len(prompt_ids))
+            if budget <= 0:
+                raise ProviderUnavailableError("The prompt does not fit the Qwen3-MoE context window.")
+            produced: list[int] = []
+            emitted = ""
+            first_ms: float | None = None
+            for token in decoder.generate_iter(prompt_ids, max_new_tokens=budget, cancelled=cancelled):
+                if first_ms is None:
+                    first_ms = round((time.perf_counter() - started) * 1000, 3)
+                produced.append(token)
+                text = tokenizer.decode(produced)
+                if text.endswith("�"):
+                    continue
+                delta = text[len(emitted):]
+                emitted = text
+                if delta:
+                    yield StreamChunk(self.id, name, delta, False, {})
+        was_cancelled = bool(cancelled is not None and cancelled())
+        if not was_cancelled and not emitted.strip():
+            raise ProviderUnavailableError("Qwen3-MoE completed without producing text.")
+        yield StreamChunk(
+            self.id, name, "", True,
+            {
+                "network": False,
+                "offline": True,
+                "engine": "openagent-qwen3moe-streaming",
+                "prompt_tokens": len(prompt_ids),
+                "output_tokens": len(produced),
+                "first_token_ms": first_ms,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+                "cancelled": was_cancelled,
+            },
+        )
+
+    def complete(self, messages: list[dict[str, str]], *, model: str | None = None) -> ModelResult:
+        parts: list[str] = []
+        final: StreamChunk | None = None
+        for chunk in self.stream_complete(messages, model=model):
+            if chunk.done:
+                final = chunk
+            else:
+                parts.append(chunk.content)
+        if final is None:
+            raise ProviderUnavailableError("Qwen3-MoE stream ended without a completion event.")
+        return ModelResult(self.id, final.model, "".join(parts), dict(final.metadata))
 
 
 def _olmoe_prompt(messages: list[dict[str, str]]) -> str:
@@ -2678,6 +2811,9 @@ def post_json(
         body=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", **headers},
         timeout_seconds=timeout_seconds or model_timeout_seconds(),
+        # Local models can take longer than the general 120 s egress cap; the operator's
+        # OPENAGENT_MODEL_TIMEOUT_SECONDS is the limit for model calls.
+        max_timeout_seconds=model_timeout_seconds(),
         max_response_bytes=32 * 1024 * 1024, max_redirects=0,
     )
     _require_model_http_success(response.status)
@@ -2858,7 +2994,7 @@ def stream_sse_json(
 
 def model_timeout_seconds() -> float:
     try:
-        return max(5.0, min(120.0, float(os.environ.get("OPENAGENT_MODEL_TIMEOUT_SECONDS", "35"))))
+        return max(5.0, min(900.0, float(os.environ.get("OPENAGENT_MODEL_TIMEOUT_SECONDS", "35"))))
     except ValueError:
         return 35.0
 

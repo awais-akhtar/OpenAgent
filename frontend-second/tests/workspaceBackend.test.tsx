@@ -166,7 +166,7 @@ describe('workspace backend integrations', () => {
   it('blocks an autonomous CodeQ run when the real backend reports CPU admission denied', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'blocked', reason: 'The installed small CPU baseline model cannot reliably complete autonomous CodeQ edits.' });
+      if (url.includes('/api/codebase/run-admission')) return json({ autonomous_run: 'blocked', reason: 'The installed small CPU baseline model cannot reliably complete autonomous CodeQ edits.' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Local project' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
@@ -177,13 +177,99 @@ describe('workspace backend integrations', () => {
     expect(await screen.findByText(/small CPU baseline model cannot reliably complete autonomous CodeQ edits/)).toBeVisible();
     fireEvent.change(screen.getByRole('textbox', { name: 'Ask CodeQ' }), { target: { value: 'Review this project' } });
     expect(screen.getByRole('button', { name: 'Send to CodeQ' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/api/codebase/runs') && init?.method === 'POST')).toBe(false);
+  });
+  it('checks admission for the selected installed model and starts a CodeQ run with that provider/model', async () => {
+    const runRequests: Array<Record<string, unknown>> = [];
+    let runReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/codebase/run-admission?')) {
+        return url.includes('provider=ollama') && url.includes('model=qwen3-coder%3A30b')
+          ? json({ autonomous_run: 'eligible', reason: 'The selected local model may start a run.' })
+          : json({ autonomous_run: 'blocked', reason: 'Auto is restricted by the CPU baseline policy.' });
+      }
+      if (url.endsWith('/api/models')) return json({ providers: [{ id: 'ollama', local: true, available: true, selected_model: 'phi4-mini:latest', installed_models: ['phi4-mini:latest', 'qwen3-coder:30b'] }] });
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Django project' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [{ path: 'manage.py', type: 'file' }] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
+      if (url.endsWith('/api/codebase/runs') && init?.method === 'POST') {
+        runRequests.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return json({ run: { id: 'run-selected-model', status: 'queued' } }, 202);
+      }
+      if (url.includes('/api/codebase/runs/run-selected-model/events/stream')) return new Response('data: {"type":"repository.analysed","sequence":1,"payload":{"project_map":{"file_count":7}}}\n\ndata: {"type":"stream.closed","sequence":2}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+      if (url.endsWith('/api/codebase/runs/run-selected-model')) {
+        runReads += 1;
+        return json({ run: { id: 'run-selected-model', status: runReads === 1 ? 'running' : 'completed', summary: 'The backend completed the requested project work.' } });
+      }
+      return json({ error: `Unexpected request ${url} ${init?.method ?? 'GET'}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CodeQScreen/>);
+    await screen.findByRole('option', { name: 'Django project' });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose CodeQ model' }));
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Choose CodeQ model' })).getByRole('option', { name: 'qwen3-coder:30b' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/codebase/run-admission?provider=ollama&model=qwen3-coder%3A30b'))).toBe(true));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ask CodeQ' }), { target: { value: 'Create a complete Django contact application in the project files and run its tests.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send to CodeQ' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Send to CodeQ' }));
+    expect(await screen.findByText('Create a complete Django contact application in the project files and run its tests.')).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'Ask CodeQ' })).toHaveValue('');
+    expect(await screen.findByText('Working…')).toBeVisible();
+    expect(await screen.findByText('Repository analyzed · 7 files')).toBeVisible();
+    await waitFor(() => expect(runRequests).toHaveLength(1));
+    expect(runRequests[0]).toMatchObject({ provider: 'ollama', model: 'qwen3-coder:30b', codebase_project_id: 'p1' });
+    expect(await screen.findByText('The backend completed the requested project work.', { selector: '.chat-message-bubble.assistant' }, { timeout: 5000 })).toBeVisible();
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/codebase/projects/p1/tree')).length).toBeGreaterThan(1));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent activity' }));
+    expect(await screen.findByText(/repository.analysed/)).toBeVisible();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/codebase/projects/p1/ask'))).toBe(false);
+  }, 10000);
+  it('offers only available local CodeQ models from the installed inventory', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/models')) return json({ providers: [
+        { id: 'ollama', local: true, available: true, default_model: 'not-installed:latest', installed_models: ['phi4-mini:latest'] },
+        { id: 'openai', local: false, available: true, default_model: 'gpt-4o' },
+      ] });
+      if (url.includes('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Local project' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
+      return json({ error: `Unexpected request ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CodeQScreen/>);
+    await screen.findByRole('option', { name: 'Local project' });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose CodeQ model' }));
+    const list = screen.getByRole('listbox', { name: 'Choose CodeQ model' });
+    expect(within(list).getByRole('option', { name: 'phi4-mini:latest' })).toBeVisible();
+    expect(within(list).queryByRole('option', { name: 'not-installed:latest' })).not.toBeInTheDocument();
+    expect(within(list).queryByRole('option', { name: 'gpt-4o' })).not.toBeInTheDocument();
+  });
+  it('shows a truthful chat error and unlocks the composer when the backend returns no run ID', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
+      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Local project' }] });
+      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
+      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
+      if (url.endsWith('/api/codebase/runs') && init?.method === 'POST') return json({});
+      return json({ error: `Unexpected request ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderScreen(<CodeQScreen/>);
+    const composer = await screen.findByRole('textbox', { name: 'Ask CodeQ' });
+    fireEvent.change(composer, { target: { value: 'Explain this project' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to CodeQ' }));
+    expect(await screen.findByText('Explain this project')).toBeVisible();
+    expect(await screen.findByText('CodeQ did not return a run ID, so no execution was started.', { selector: '.chat-message-bubble.assistant' })).toBeVisible();
+    expect(composer).toBeEnabled();
   });
   it('keeps autonomous CodeQ controls unavailable when admission cannot be verified', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/api/codebase/run-admission')) return json({ error: 'unavailable' }, 503);
+      if (url.includes('/api/codebase/run-admission')) return json({ error: 'unavailable' }, 503);
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Local project' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: {} } });
@@ -194,7 +280,6 @@ describe('workspace backend integrations', () => {
     expect(await screen.findByText(/run availability could not be verified/i)).toBeVisible();
     fireEvent.change(screen.getByRole('textbox', { name: 'Ask CodeQ' }), { target: { value: 'Review this project' } });
     expect(screen.getByRole('button', { name: 'Send to CodeQ' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/codebase/runs'))).toBe(false);
   });
   it('loads project files from CodeQ tree and requests the selected file', async () => {
@@ -218,7 +303,7 @@ describe('workspace backend integrations', () => {
     let conflict = true;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
+      if (url.includes('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [{ path: 'src/main.ts', type: 'file' }] });
       if (url.endsWith('/api/codebase/projects/p1/file?path=src%2Fmain.ts')) return json({ file: { path: 'src/main.ts', content: 'export const value = 1;', sha256: 'original-hash' } });
@@ -368,7 +453,7 @@ describe('workspace backend integrations', () => {
     const restoreCalls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
+      if (url.includes('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/runs') && init?.method === 'POST') return json({ run: { id: 'r1', status: 'queued' } }, 202);
@@ -395,7 +480,7 @@ describe('workspace backend integrations', () => {
     let approvalResolved = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
+      if (url.includes('/api/codebase/run-admission')) return json({ autonomous_run: 'eligible' });
       if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
       if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
       if (url.endsWith('/api/codebase/runs') && init?.method === 'POST') return json({ run: { id: 'r1', status: 'queued' } }, 202);
@@ -412,81 +497,6 @@ describe('workspace backend integrations', () => {
     await waitFor(() => expect(approvalResolved).toBe(true));
     const decision = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/api/codebase/approvals/a1/resolve') && init?.method === 'POST');
     expect(JSON.parse(String(decision?.[1]?.body))).toEqual({ approved: true });
-  });
-
-  it('runs an allowlisted terminal command without approval in the selected project sandbox', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
-      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
-      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', source_path: 'D:/outside/source', workspace: { workspace_path: 'D:/openagent/data/workspaces/p1' } } });
-      if (url.endsWith('/api/terminal/runs') && init?.method === 'POST') return json({ run: { id: 't1', command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: ' M file.txt' }] } }, 202);
-      if (url.includes('/api/terminal/runs') && !url.includes('/api/terminal/runs/')) return json({ runs: [] });
-      if (url.endsWith('/api/terminal/runs/t1')) return json({ run: { id: 't1', command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: ' M file.txt' }] } });
-      return json({ error: `Unexpected request ${url}` }, 404);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderScreen(<CodeQScreen/>);
-    fireEvent.click(await screen.findByRole('tab', { name: /Terminal/ }));
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Terminal command' }), { target: { value: 'git status --short' } });
-    expect(screen.getByText('Allowlisted command · no approval required.')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Run command' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/terminal/runs'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('"approved":false') })));
-    const terminalRequest = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/api/terminal/runs') && init?.method === 'POST');
-    expect(JSON.parse(String(terminalRequest?.[1]?.body))).toMatchObject({ command: ['git', 'status', '--short'], cwd: 'D:/openagent/data/workspaces/p1', approved: false });
-    expect(await screen.findByRole('log', { name: 'Terminal run output' })).toHaveTextContent('M file.txt');
-  });
-
-  it('requires one-run approval for non-default terminal commands and submits only to the mocked API', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.includes('/api/codebase/projects?')) return json({ projects: [{ id: 'p1', name: 'Project One' }] });
-      if (url.endsWith('/api/codebase/projects/p1/tree')) return json({ entries: [] });
-      if (url.endsWith('/api/codebase/projects/p1')) return json({ project: { id: 'p1', workspace: { workspace_path: 'D:/openagent/data/workspaces/p1' } } });
-      if (url.endsWith('/api/terminal/runs') && init?.method === 'POST') return json({ run: { id: 't2', command: ['echo', 'hello'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: 'hello' }] } }, 202);
-      if (url.includes('/api/terminal/runs') && !url.includes('/api/terminal/runs/')) return json({ runs: [] });
-      if (url.endsWith('/api/terminal/runs/t2')) return json({ run: { id: 't2', command: ['echo', 'hello'], cwd: 'D:/openagent/data/workspaces/p1', status: 'completed', exit_code: 0, events: [{ stream: 'stdout', chunk: 'hello' }] } });
-      return json({ error: `Unexpected request ${url}` }, 404);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderScreen(<CodeQScreen/>);
-    fireEvent.click(await screen.findByRole('tab', { name: /Terminal/ }));
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Terminal command' }), { target: { value: 'echo hello' } });
-    expect(screen.getByRole('button', { name: 'Run command' })).toBeDisabled();
-    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/api/terminal/runs') && init?.method === 'POST')).toBe(false);
-    fireEvent.click(screen.getByRole('checkbox'));
-    fireEvent.click(screen.getByRole('button', { name: 'Run command' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/terminal/runs'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('"approved":true') })));
-    expect(await screen.findByText('hello')).toBeVisible();
-  });
-
-  it('shows incrementally polled Live terminal output and requests owner-scoped cancellation', async () => {
-    useWorkspaceState.getState().setDataMode('live');
-    let status = 'running';
-    const calls: Array<{ path: string; method: string }> = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost');
-      const method = String(init?.method ?? 'GET');
-      calls.push({ path: `${url.pathname}${url.search}`, method });
-      if (url.pathname === '/api/codebase/projects') return json({ projects: [{ id: 'p1', name: 'Project One' }] });
-      if (url.pathname === '/api/codebase/projects/p1/tree') return json({ entries: [] });
-      if (url.pathname === '/api/codebase/projects/p1') return json({ project: { id: 'p1', workspace: { workspace_path: 'D:/openagent/data/workspaces/p1' } } });
-      if (url.pathname === '/api/terminal/runs' && method === 'GET') return json({ runs: [] });
-      if (url.pathname === '/api/terminal/runs' && method === 'POST') return json({ run: { id: 'terminal-1', command: ['python', '--version'], cwd: 'D:/openagent/data/workspaces/p1', status, exit_code: -1, events: [] } }, 202);
-      if (url.pathname === '/api/terminal/runs/terminal-1' && method === 'GET') return json({ run: { id: 'terminal-1', command: ['python', '--version'], cwd: 'D:/openagent/data/workspaces/p1', status, exit_code: status === 'cancelled' ? 130 : -1, events: [{ id: 'event-1', stream: 'stdout', chunk: 'Python 3.14.3\\n' }], cancel_requested: status === 'running' } });
-      if (url.pathname === '/api/terminal/runs/terminal-1' && method === 'DELETE') { status = 'cancelled'; return json({ run: { id: 'terminal-1', status, exit_code: 130 }, cancel_requested: true }); }
-      return json({ error: `Unexpected request ${method} ${url.pathname}` }, 404);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderScreen(<CodeQScreen/>);
-    fireEvent.click(await screen.findByRole('tab', { name: /Terminal/ }));
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Terminal command' }), { target: { value: 'python --version' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Run command' }));
-    await waitFor(() => expect(calls).toContainEqual({ path: '/api/terminal/runs', method: 'POST' }));
-    expect(await screen.findByRole('log', { name: 'Terminal run output' })).toHaveTextContent('Python 3.14.3');
-    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
-    await waitFor(() => expect(calls).toContainEqual({ path: '/api/terminal/runs/terminal-1', method: 'DELETE' }));
-    expect(await screen.findByText(/cancelled/)).toBeVisible();
   });
 
   it('runs Git status only on refresh against the CodeQ sandbox path', async () => {

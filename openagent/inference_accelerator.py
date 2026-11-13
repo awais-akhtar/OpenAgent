@@ -101,6 +101,7 @@ class AdaptiveCPUInferenceEngine:
         model: str | None,
         allow_external: bool,
         max_output_tokens: int | None = None,
+        response_format: str | dict[str, Any] | None = None,
     ) -> InferencePlan:
         cleaned = [
             {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))}
@@ -129,6 +130,7 @@ class AdaptiveCPUInferenceEngine:
                     "provider": provider_id,
                     "model": model or "",
                     "external": allow_external,
+                    "response_format": response_format,
                     "messages": cleaned,
                     "runtime": {
                         "task": task,

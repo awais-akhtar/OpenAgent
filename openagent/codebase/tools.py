@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import subprocess
+import tempfile
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
 from urllib.parse import urlparse
 from typing import Any, Callable
@@ -111,10 +113,15 @@ class ToolPolicy:
 class CodebaseTools:
     """Filesystem, search, command, Git, and validation tools for one workspace."""
 
-    def __init__(self, sandbox: SandboxManager, workspace_id: str, *, backend: str = "local", event: Callable[..., None] | None = None) -> None:
+    def __init__(self, sandbox: SandboxManager, workspace_id: str, *, backend: str = "local", event: Callable[..., None] | None = None, validate_edits: bool = False) -> None:
         self.sandbox = sandbox
         self.workspace_id = workspace_id
         self.backend = backend
+        # Autonomous CodeQ runs check each edit before saving it; interactive tools do not.
+        self.validate_edits = validate_edits
+        # Files whose last patch_file search did not match. Further patches to them are refused
+        # until write_file replaces the whole file, so a stale search cannot repeat indefinitely.
+        self._stale_search_paths: set[str] = set()
         self.root = sandbox.path(workspace_id)
         self.repo = RepositoryIntelligence(self.root)
         self.policy = ToolPolicy()
@@ -148,20 +155,22 @@ class CodebaseTools:
         """Accept the small vocabulary differences produced by local models."""
         normalized = dict(arguments or {})
         aliases = {
-            "read_file": {"file": "path", "filename": "path"},
+            "read_file": {"file": "path", "filename": "path", "file_path": "path"},
             "read_files": {"files": "paths", "filenames": "paths"},
-            "write_file": {"file": "path", "filename": "path", "text": "content", "body": "content", "code": "content"},
-            "patch_file": {"file": "path", "filename": "path", "old": "search", "new": "replace"},
-            "delete_file": {"file": "path", "filename": "path"},
-            "grep": {"pattern": "query", "text": "query"},
+            "write_file": {"file": "path", "filename": "path", "file_path": "path", "text": "content", "body": "content", "code": "content", "contents": "content"},
+            "patch_file": {"file": "path", "filename": "path", "file_path": "path", "old": "search", "new": "replace", "pattern": "search", "replacement": "replace", "patches": "patch"},
+            "delete_file": {"file": "path", "filename": "path", "file_path": "path"},
+            "grep": {"pattern": "query", "text": "query", "search": "query"},
             "search_symbol": {"query": "name", "symbol": "name"},
             "find_references": {"query": "symbol", "name": "symbol", "text": "symbol"},
             "run_shell": {"cmd": "command", "argv": "command"},
             "start_process": {"cmd": "command", "argv": "command"},
         }.get(tool, {})
         for alias, canonical in aliases.items():
-            if canonical not in normalized and alias in normalized:
-                normalized[canonical] = normalized.pop(alias)
+            if alias in normalized:
+                value = normalized.pop(alias)
+                if canonical not in normalized:
+                    normalized[canonical] = value
         return normalized
 
     def tool_list_directory(self, path: str = "", recursive: bool = False) -> dict[str, Any]:
@@ -184,25 +193,122 @@ class CodebaseTools:
         target = self.repo.resolve(path, must_exist=True)
         if not target.is_file() or target.stat().st_size > 2_000_000:
             raise ValueError("file is not readable text or exceeds 2 MB")
-        text = target.read_text(encoding="utf-8", errors="replace")
+        raw = target.read_bytes()
+        if len(raw) > 2_000_000:
+            raise ValueError("file is not readable text or exceeds 2 MB")
+        # Match text-mode universal-newline normalization while retaining the
+        # exact bytes for graph freshness, using one bounded read for both.
+        text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         lines = text.splitlines()
         start = max(1, int(start_line))
         end = min(len(lines), int(end_line) if int(end_line or 0) > 0 else start + 1000)
         content = "\n".join(lines[start - 1:end])
-        return {"path": path, "start_line": start, "end_line": end, "content": content, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+        # `sha256` remains the normalized text hash used by editor write
+        # conflict checks. `content_sha256` is the exact byte hash used by the
+        # repository/work-graph scanner, so CRLF/LF and a trailing newline do
+        # not make unchanged indexed files appear stale in the Work Graph.
+        return {
+            "path": path,
+            "start_line": start,
+            "end_line": end,
+            "content": content,
+            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+        }
 
     def tool_read_files(self, paths: list[str]) -> dict[str, Any]:
         return {"files": [self.tool_read_file(str(path)) for path in paths[:30]]}
 
-    def tool_write_file(self, path: str, content: str, expected_sha256: str = "") -> dict[str, Any]:
+    def _check_edit(self, path: str, text: str) -> None:
+        """Refuse an edit whose file type has a validity check that fails. Unknown types pass."""
+        if not self.validate_edits:
+            return
+        suffix = Path(str(path)).suffix.lower()
+        if suffix in {".py", ".pyi"}:
+            try:
+                compile(text, str(path), "exec")
+            except SyntaxError as exc:
+                raise ValueError(f"edit leaves a syntax error in {path} at line {exc.lineno}: {exc.msg}. The file was not changed; re-read it and fix the edit.") from exc
+        elif suffix == ".json":
+            try:
+                json.loads(text)
+            except ValueError as exc:
+                raise ValueError(f"edit leaves invalid JSON in {path}: {exc}. The file was not changed; re-read it and fix the edit.") from exc
+        elif suffix in {".js", ".mjs", ".cjs"} and shutil.which("node"):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+                candidate = Path(directory) / f"check{suffix}"
+                candidate.write_text(text, encoding="utf-8")
+                result = subprocess.run(["node", "--check", str(candidate)], capture_output=True, text=True, timeout=30, check=False)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or ["syntax error"]
+                raise ValueError(f"edit leaves a JavaScript syntax error in {path}: {detail[0]}. The file was not changed; re-read it and fix the edit.")
+
+    @staticmethod
+    def _keep_block_indentation(search: str, replace: str) -> str:
+        """Re-apply the indentation of a replaced block when the replacement dropped it.
+
+        Small models often return the replacement for an indented line with no leading
+        indentation, which turns it into module-level code. When the matched block starts
+        indented and the replacement starts at column 0, indent the replacement to match.
+        Replacements that already carry their own indentation are left unchanged.
+        """
+        search_lines = search.split("\n")
+        replace_lines = replace.split("\n")
+        first_search = next((line for line in search_lines if line.strip()), "")
+        first_replace = next((line for line in replace_lines if line.strip()), "")
+        indent = first_search[: len(first_search) - len(first_search.lstrip())]
+        if not indent or not first_replace or first_replace[:1].isspace():
+            return replace
+        return "\n".join((indent + line) if line.strip() else line for line in replace_lines)
+
+    def tool_write_file(
+        self,
+        path: str,
+        content: str,
+        expected_sha256: str = "",
+        preserve_line_numbers: bool = False,
+    ) -> dict[str, Any]:
         self._assert_not_sensitive(path)
+        stripped_context_numbers = preserve_line_numbers is not True and self._looks_like_numbered_context(content)
+        if stripped_context_numbers:
+            content = self._strip_context_line_numbers(content)
         target = self.repo.resolve(path)
         old = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
         if expected_sha256 and hashlib.sha256(old.encode()).hexdigest() != expected_sha256:
             raise ValueError("file changed since it was read")
         target.parent.mkdir(parents=True, exist_ok=True)
+        self._check_edit(path, str(content))
         target.write_text(str(content), encoding="utf-8", newline="\n")
-        return self._change_result(path, old, str(content))
+        self._stale_search_paths.discard(str(path).replace("\\", "/"))
+        new_content = str(content)
+        result = self._change_result(path, old, new_content)
+        result["changed"] = old != new_content
+        if old == new_content:
+            result["no_op"] = True
+            result["message"] = (
+                "No repository change was made because this file already has that exact content. "
+                "Do not repeat the same write. Re-read the current source and make a different "
+                "edit that satisfies the pending behavior."
+            )
+        if stripped_context_numbers:
+            result["context_line_numbers_stripped"] = True
+        return result
+
+    @staticmethod
+    def _looks_like_numbered_context(text: str) -> bool:
+        """Detect a uniformly line-numbered repository excerpt without rewriting it."""
+        lines = str(text).split("\n")
+        offsets: set[int] = set()
+        numbered = 0
+        for index, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            match = re.match(r"^(\d+): ", line)
+            if match is None:
+                return False
+            numbered += 1
+            offsets.add(int(match.group(1)) - index)
+        return numbered >= 2 and len(offsets) == 1
 
     @staticmethod
     def _strip_context_line_numbers(text: str) -> str:
@@ -218,12 +324,64 @@ class CodebaseTools:
         candidates = [line for line in lines if line.strip()]
         if not candidates or not all(re.match(r"^\d+: ", line) for line in candidates):
             return text
-        return "\n".join(re.sub(r"^\d+: ", "", line) if line.strip() else line for line in lines)
+        return "\n".join(re.sub(r"^(?:\d+: )+", "", line) if line.strip() else line for line in lines)
 
-    def tool_patch_file(self, path: str, search: str, replace: str, expected_occurrences: int = 1) -> dict[str, Any]:
+    def tool_patch_file(
+        self,
+        path: str,
+        search: str = "",
+        replace: str = "",
+        expected_occurrences: int = 1,
+        patch: str = "",
+    ) -> dict[str, Any]:
         self._assert_not_sensitive(path)
+        key = str(path).replace("\\", "/")
+        if key in self._stale_search_paths:
+            raise ValueError(
+                f"patch_file is refused for {path} because its last search did not match the file. "
+                "Use write_file with the complete corrected file content instead."
+            )
+        if isinstance(patch, dict):
+            diff_value = patch.get("unified_diff", patch.get("diff"))
+            if isinstance(diff_value, str):
+                patch = diff_value
+            elif isinstance(patch.get("search"), str) and isinstance(patch.get("replace"), str):
+                search, replace, patch = patch["search"], patch["replace"], ""
+            else:
+                raise ValueError("patch must be a unified diff string or an object with search and replace strings")
+        elif isinstance(patch, list) and all(isinstance(line, str) for line in patch):
+            patch = "\n".join(patch)
         target = self.repo.resolve(path, must_exist=True)
         old = target.read_text(encoding="utf-8", errors="replace")
+        if patch and not search and not replace:
+            numbered_source = self._strip_context_line_numbers(patch)
+            if numbered_source != patch:
+                raise ValueError(
+                    "The `patch` value contains numbered source context, not a unified diff. "
+                    "Do not pass `N: ` line prefixes to patch_file. For a full-file edit, "
+                    "use write_file with the complete unnumbered content; for a narrow edit, "
+                    "use patch_file with exact path, search, and replace strings."
+                )
+            try:
+                new = self._apply_unified_patch(old, patch)
+            except ValueError as exc:
+                if not any(marker in str(exc) for marker in (
+                    "line count does not match its header",
+                    "unprefixed blank line",
+                )):
+                    raise
+                # Smaller local models often emit a sound hunk body with a
+                # wrong line count or omit the required prefix on a blank
+                # context line. Retry only those syntax defects using the
+                # actual hunk body. The body still has to match the declared
+                # location or one unique exact context; stale/ambiguous edits
+                # remain rejected.
+                new = self._apply_unified_patch(old, patch, trust_hunk_body=True)
+            self._check_edit(path, new)
+            target.write_text(new, encoding="utf-8", newline="\n")
+            return self._change_result(path, old, new)
+        if not search and not replace:
+            raise ValueError("patch_file requires either search+replace or a unified diff in patch")
         occurrences = old.count(search)
         if occurrences != int(expected_occurrences):
             # Accept a search copied verbatim out of a numbered context excerpt.
@@ -244,10 +402,92 @@ class CodebaseTools:
                     f" Its current content is:\n{excerpt}\n"
                     "Copy the exact text to replace from that content."
                 )
+            self._stale_search_paths.add(key)
             raise ValueError(detail)
+        replace = self._keep_block_indentation(search, replace)
         new = old.replace(search, replace)
+        if new == old:
+            raise ValueError("patch_file would leave the file unchanged")
+        self._check_edit(path, new)
         target.write_text(new, encoding="utf-8", newline="\n")
         return self._change_result(path, old, new)
+
+    @staticmethod
+    def _apply_unified_patch(original: str, patch: str, *, trust_hunk_body: bool = False) -> str:
+        """Apply a bounded, single-file unified diff by exact context matching.
+
+        No shell patch utility is invoked. Every hunk must match the current text at
+        its declared line or at one unique exact location; ambiguous/stale hunks fail.
+        """
+        if not isinstance(patch, str) or len(patch) > 200_000:
+            raise ValueError("patch must be a unified diff no larger than 200 KB")
+        lines = patch.splitlines()
+        source = original.splitlines()
+        hunks: list[tuple[int, int, list[str], list[str]]] = []
+        index = 0
+        while index < len(lines):
+            header = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", lines[index])
+            if header is None:
+                index += 1
+                continue
+            old_start = int(header.group(1))
+            old_count = int(header.group(2) or "1")
+            new_count = int(header.group(4) or "1")
+            old_block: list[str] = []
+            new_block: list[str] = []
+            index += 1
+            while index < len(lines) and not lines[index].startswith("@@ "):
+                line = lines[index]
+                if line.startswith("\\ No newline at end of file"):
+                    index += 1
+                    continue
+                if not line:
+                    if not trust_hunk_body:
+                        raise ValueError("unified diff hunk contains an unprefixed blank line")
+                    marker, content = " ", ""
+                else:
+                    marker, content = line[0], line[1:]
+                if marker == " ":
+                    old_block.append(content)
+                    new_block.append(content)
+                elif marker == "-":
+                    old_block.append(content)
+                elif marker == "+":
+                    new_block.append(content)
+                else:
+                    break
+                index += 1
+            if len(old_block) != old_count and not trust_hunk_body:
+                raise ValueError("unified diff hunk line count does not match its header")
+            if len(new_block) != new_count and not trust_hunk_body:
+                raise ValueError("unified diff replacement line count does not match its header")
+            if trust_hunk_body and not old_block and old_count != 0:
+                raise ValueError("unified diff insertion hunk has no exact context to verify")
+            if old_block == new_block:
+                raise ValueError("unified diff hunk contains no changes")
+            hunks.append((old_start, old_count, old_block, new_block))
+        if not hunks:
+            raise ValueError("patch is not a supported unified diff; use path, search, and replace")
+        delta = 0
+        for old_start, _old_count, old_block, new_block in hunks:
+            position = max(0, old_start - 1 + delta)
+            if source[position:position + len(old_block)] != old_block:
+                matches = [
+                    start for start in range(len(source) - len(old_block) + 1)
+                    if source[start:start + len(old_block)] == old_block
+                ]
+                if len(matches) != 1:
+                    raise ValueError("unified diff context is stale or ambiguous; reread the file and regenerate the patch")
+                position = matches[0]
+            if trust_hunk_body and _old_count > len(old_block) and position + len(old_block) < len(source):
+                # The header claims more original lines than the body shows, and original lines
+                # follow the matched body. Applying only the body would leave those lines in place
+                # beside the new code, so the hunk does not describe this file. Refuse it.
+                raise ValueError("unified diff header claims more original lines than its body and the file continues past it; reread the file and regenerate the patch")
+            source[position:position + len(old_block)] = new_block
+            delta += len(new_block) - len(old_block)
+        result = "\n".join(source)
+        return result + ("\n" if original.endswith("\n") and result else "")
 
     def tool_delete_file(self, path: str) -> dict[str, Any]:
         self._assert_not_sensitive(path)

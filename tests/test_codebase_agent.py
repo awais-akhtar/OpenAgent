@@ -20,7 +20,7 @@ from openagent.codebase.profiles import check_artifact_contract, classify_reques
 from openagent.codebase.sandbox import SandboxManager
 from openagent.codebase.service import CodebaseService
 from openagent.codebase.tools import CodebaseTools, ToolPolicy
-from openagent.model_gateway import ModelResult
+from openagent.model_gateway import ModelResult, ProviderConfigurationError
 from openagent.storage import OpenAgentStore
 
 
@@ -47,7 +47,7 @@ class RepairGateway:
         elif "repair failed completion checks" in user.lower():
             content = json.dumps({"summary": "repaired syntax", "actions": [{"tool": "write_file", "arguments": {"path": "feature.py", "content": "VALUE = 42\n"}}], "done": True})
         else:
-            content = json.dumps({"summary": "first implementation", "actions": [{"tool": "write_file", "arguments": {"path": "feature.py", "content": "VALUE = (\n"}}], "done": True})
+            content = json.dumps({"summary": "first implementation", "actions": [{"tool": "write_file", "arguments": {"path": "feature.py", "content": "VALUE = 1\n"}}], "done": True})
         return ModelResult("fake", kwargs.get("model") or "fake-code", content, {})
 
 
@@ -62,7 +62,12 @@ class NeverDoneGateway(FakeGateway):
 class WritesWithoutDoneGateway(FakeGateway):
     def complete(self, messages, **kwargs):
         system = messages[0]["content"].lower()
-        if "project manager" in system or "independent code reviewer" in system or "final acceptance auditor" in system:
+        if "project manager" in system:
+            payload = {"goal": "modify the existing feature", "tasks": [
+                {"id": "T1", "title": "Modify feature.py implementation", "agent": "programmer", "depends_on": []},
+            ]}
+            return ModelResult("fake", "fake-code", json.dumps(payload), {})
+        if "independent code reviewer" in system or "final acceptance auditor" in system:
             return super().complete(messages, **kwargs)
         payload = {
             "summary": "wrote the requested implementation",
@@ -91,7 +96,12 @@ class EmptyLoginPageGateway(FakeGateway):
         user = messages[-1]["content"].lower()
         if "independent code reviewer" in system:
             return ModelResult("fake", "review", json.dumps({"status": "passed", "findings": []}), {})
-        if "semantic login page markup" in user:
+        if "agent role: tester" in user:
+            payload = {"summary": "verified the generated page files compile and exist", "actions": [{
+                "tool": "run_tests",
+                "arguments": {"command": [sys.executable, "-c", "from pathlib import Path; assert Path('index.html').is_file(); assert Path('styles.css').is_file()"]},
+            }], "done": True}
+        elif "semantic login page markup" in user:
             if "required argument(s) were missing" not in user:
                 payload = {"summary": "inspect the page", "actions": [{"tool": "browser_inspect", "arguments": {}}], "done": True}
             else:
@@ -106,10 +116,16 @@ class EmptyLoginPageGateway(FakeGateway):
 class StaticSiteGateway(FakeGateway):
     def complete(self, messages, **kwargs):
         system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
         if "independent code reviewer" in system:
             payload = {"status": "passed", "findings": []}
         elif "final acceptance auditor" in system:
             payload = {"status": "passed", "missing_tasks": [], "evidence": ["four linked pages and assets verified"]}
+        elif "agent role: tester" in user:
+            payload = {"summary": "checked the generated static pages and links", "actions": [{
+                "tool": "run_tests",
+                "arguments": {"command": [sys.executable, "-c", "from pathlib import Path; pages=list(Path('.').glob('*.html')); assert pages; assert all(p.stat().st_size > 0 for p in pages)"]},
+            }], "done": True}
         else:
             payload = {"summary": "attempted an invalid browser action", "actions": [{"tool": "browser_inspect", "arguments": {}}], "done": True}
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
@@ -223,6 +239,7 @@ class TitleDependencyPageUpdateGateway(FakeGateway):
 
     def complete(self, messages, **kwargs):
         system = messages[0]["content"].lower()
+        user = messages[-1]["content"].lower()
         if "project manager" in system:
             payload = {
                 "tasks": [
@@ -235,7 +252,13 @@ class TitleDependencyPageUpdateGateway(FakeGateway):
             payload = {"status": "passed", "findings": []}
         elif "final acceptance auditor" in system:
             payload = {"status": "passed", "missing_tasks": [], "evidence": ["page update and validation completed"]}
-        elif "agent role: tester" in messages[-1]["content"].lower():
+        elif "review existing pages" in user:
+            payload = {
+                "summary": "reviewed the existing page structure",
+                "actions": [{"tool": "project_map", "arguments": {}}],
+                "done": True,
+            }
+        elif "agent role: tester" in user:
             payload = {
                 "summary": "validated the updated page files",
                 "actions": [{"tool": "run_tests", "arguments": {"command": ["python", "-m", "compileall", "-q", "."]}}],
@@ -321,6 +344,11 @@ class NewPageGateway(FakeGateway):
             payload = {"status": "passed", "findings": []}
         elif "final acceptance auditor" in system:
             payload = {"status": "passed", "missing_tasks": [], "evidence": ["generated page was inspected"]}
+        elif "agent role: tester" in user:
+            payload = {"summary": "verified the generated page exists", "actions": [{
+                "tool": "run_tests",
+                "arguments": {"command": [sys.executable, "-c", "from pathlib import Path; assert any(Path('.').glob('new-page*.html'))"]},
+            }], "done": True}
         else:
             payload = {"summary": "model attempted a non-writing page action", "actions": [{"tool": "project_map", "arguments": {}}], "done": False}
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
@@ -337,6 +365,15 @@ class DependencyOnlyPlanGateway(FakeGateway):
                     {"id": "T1", "title": "Ensure all dependencies are installed and configured correctly", "agent": "tester", "depends_on": []},
                 ],
             }
+        elif "agent role: architect" in messages[-1]["content"].lower():
+            payload = {"summary": "identified the current repository structure", "actions": [{"tool": "project_map", "arguments": {}}], "done": True}
+        elif "agent role: reviewer" in messages[-1]["content"].lower():
+            payload = {"summary": "reviewed the local change diff", "actions": [{"tool": "git_diff", "arguments": {}}], "done": True}
+        elif "agent role: tester" in messages[-1]["content"].lower():
+            payload = {"summary": "ran a bounded Python syntax validation", "actions": [{
+                "tool": "run_tests",
+                "arguments": {"command": [sys.executable, "-m", "compileall", "-q", "."]},
+            }], "done": True}
         else:
             return super().complete(messages, **kwargs)
         return ModelResult("fake", "fake-code", json.dumps(payload), {})
@@ -345,8 +382,14 @@ class DependencyOnlyPlanGateway(FakeGateway):
 class RepositoryIntelligenceTests(unittest.TestCase):
     def test_task_classifier_keeps_validation_setup_out_of_file_edit_tasks(self) -> None:
         self.assertFalse(task_needs_file_change("Ensure all dependencies are installed and configured correctly", "tester"))
+        self.assertFalse(task_needs_file_change("Review existing pages for updates", "programmer"))
+        self.assertTrue(task_needs_file_change("Review existing pages and update their content", "programmer"))
+        self.assertTrue(task_needs_file_change("Review source files and edit the email validator", "programmer"))
         self.assertTrue(task_needs_file_change("Update templates and content for each page", "programmer"))
         self.assertTrue(task_needs_file_change("Implement frontend module", "frontend"))
+        for verb in ("Modify", "Change", "Edit", "Rewrite"):
+            with self.subTest(verb=verb):
+                self.assertTrue(task_needs_file_change(f"{verb} is_valid_email in validators.py", "programmer"))
 
     def test_scan_context_and_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -448,9 +491,11 @@ class SandboxAndPolicyTests(unittest.TestCase):
                     "path": "calc.py", "search": "return a - b", "replace": "return a + b",
                 })
             self.assertIn("def add(a, b):", str(mismatch.exception))
-            tools.execute("patch_file", {
-                "path": "calc.py", "search": "    return a + b\n", "replace": "",
-            })
+            with self.assertRaisesRegex(ValueError, "refused"):
+                tools.execute("patch_file", {
+                    "path": "calc.py", "search": "    return a + b\n", "replace": "",
+                })
+            tools.execute("write_file", {"path": "calc.py", "content": "def add(a, b):\n"})
             self.assertEqual("def add(a, b):\n", (manager.path("workspace-1") / "calc.py").read_text(encoding="utf-8"))
             self.assertIn("return a + b", (source / "calc.py").read_text(encoding="utf-8"))
 
@@ -597,6 +642,15 @@ class SandboxAndPolicyTests(unittest.TestCase):
             self.assertTrue(references["matches"])
             result = tools.execute("write_file", {"filename": "created.py", "code": "VALUE = 1\n"})
             self.assertEqual("created.py", result["path"])
+            self.assertEqual("alias.py", tools.execute("write_file", {"file_path": "alias.py", "content": "VALUE = 2\n"})["path"])
+            self.assertEqual("empty.py", tools.execute("write_file", {"path": "empty.py", "contents": ""})["path"])
+            patched = tools.execute("patch_file", {"path": "module.py", "pattern": "return 1", "replacement": "return 2"})
+            self.assertEqual("module.py", patched["path"])
+            self.assertIn("return 2", tools.tool_read_file("module.py")["content"])
+            self.assertEqual(
+                {"path": "module.py", "search": "return 2", "replace": "return 3"},
+                tools._normalize_arguments("patch_file", {"path": "module.py", "search": "return 2", "pattern": "ignored", "replace": "return 3"}),
+            )
             test_result = tools.execute("run_tests", {"files": ["created.py"]})
             self.assertTrue(test_result["skipped"])
 
@@ -727,9 +781,402 @@ class SandboxAndPolicyTests(unittest.TestCase):
 
 
 class CodebaseServiceTests(unittest.TestCase):
+    def test_finalization_timeout_preserves_checkpoint_and_retries_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            store = OpenAgentStore(base / "data")
+            service = CodebaseService(store, FakeGateway())
+            project = service.create_project(name="Finalization", source_path=str(source))
+            service._execute_run = lambda _id: None
+            run = service.create_run(codebase_project_id=project["id"], prompt="Fix feature")
+            validation = MagicMock(return_value={"passed": True, "checks": []})
+            service._finalization_stage(run, "validation", validation)
+            audit = MagicMock(side_effect=TimeoutError("timed out"))
+            from openagent.codebase.service import FinalizationPending
+            with self.assertRaises(FinalizationPending):
+                service._finalization_stage(run, "acceptance_audit", audit)
+            self.assertEqual(2, audit.call_count)
+            self.assertEqual("blocked", service.get_run(run["id"])["status"])
+            restarted = CodebaseService(store, FakeGateway())
+            unnecessary = MagicMock(side_effect=AssertionError("validation replayed"))
+            restarted._finalization_stage(run, "validation", unnecessary)
+            unnecessary.assert_not_called()
+            recovered = MagicMock(return_value={"status": "passed", "missing_tasks": []})
+            restarted._finalization_stage(run, "acceptance_audit", recovered)
+            recovered.assert_called_once()
+            workspace = Path(project["workspace"]["workspace_path"])
+            (workspace / "feature.py").write_text("VALUE = 2\n", encoding="utf-8")
+            fresh = MagicMock(return_value={"passed": True, "checks": []})
+            restarted._finalization_stage(run, "validation", fresh)
+            fresh.assert_called_once()
+
+    def test_project_planner_receives_relevant_existing_source_and_tests(self) -> None:
+        class PlanCaptureGateway:
+            def __init__(self) -> None:
+                self.messages = []
+
+            def complete(self, messages, **kwargs):
+                self.messages.append(messages)
+                return ModelResult("fake", "fake-code", json.dumps({"tasks": [
+                    {"id": "T1", "title": "Implement missing slug normalization behavior", "agent": "programmer", "files": ["src/slug.js"]},
+                    {"id": "T2", "title": "Update normalizeProfileKey in src/profile.js to use the updated slugify function", "agent": "programmer", "files": ["src/profile.js"], "depends_on": ["T1"], "criterion_ids": ["profile-criterion"]},
+                    {"id": "T3", "title": "Run the Node tests", "agent": "tester", "depends_on": ["T2"]},
+                ]}), {})
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            (source / "src").mkdir(parents=True)
+            (source / "tests").mkdir()
+            (source / "package.json").write_text('{"name":"fixture","type":"module"}', encoding="utf-8")
+            (source / "src" / "profile.js").write_text(
+                'import { slugify } from "./slug.js";\n\nexport function normalizeProfileKey(value) {\n  return `profile-${slugify(value)}`;\n}\n',
+                encoding="utf-8",
+            )
+            (source / "src" / "slug.js").write_text(
+                'export function slugify(value) {\n  return String(value).toLowerCase();\n}\n',
+                encoding="utf-8",
+            )
+            (source / "tests" / "profile.test.js").write_text(
+                'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { slugify } from "../src/slug.js";\ntest("blank slug fails", () => assert.throws(() => slugify("  "), /blank/i));\n',
+                encoding="utf-8",
+            )
+            gateway = PlanCaptureGateway()
+            service = CodebaseService(OpenAgentStore(base / "data"), gateway)  # type: ignore[arg-type]
+            service._event = MagicMock()  # type: ignore[method-assign]
+            project = service.create_project(name="Plan context", source_path=str(source))
+            run = {
+                "id": "plan-context-run",
+                "codebase_project_id": project["id"],
+                "goal_id": "",
+                "user_prompt": "Make slugify reject blank input and normalize separators.",
+                "provider": "ollama",
+                "model": "qwen2.5-coder:7b",
+                "allow_external": False,
+                "role_models": {},
+            }
+            tasks = service._plan(run, service.get_project(project["id"]), RepositoryIntelligence(source).scan())
+            self.assertEqual(["T1", "T3"], [task["id"] for task in tasks])
+            self.assertEqual(["T1"], tasks[1]["depends_on"])
+            self.assertIn("profile-criterion", tasks[1]["criterion_ids"])
+            plan_prompt = gateway.messages[0][-1]["content"]
+            self.assertIn("Do not create implementation tasks for behavior that the source already provides", plan_prompt)
+            self.assertIn('return `profile-${slugify(value)}`;', plan_prompt)
+            self.assertIn("blank slug fails", plan_prompt)
+            self.assertIn("slugify(value)", plan_prompt)
+
+    def test_no_edit_retry_uses_focused_recovery_prompt_and_target_paths(self) -> None:
+        class NoEditThenPatchGateway:
+            def __init__(self) -> None:
+                self.messages = []
+
+            def complete(self, messages, **kwargs):
+                self.messages.append(messages)
+                if len(self.messages) == 1:
+                    payload = {
+                        "summary": "Need to inspect the file first.",
+                        "actions": [{"tool": "read_files", "arguments": {"paths": ["src/slug.js"]}}],
+                        "done": False,
+                    }
+                else:
+                    payload = {
+                        "summary": "Added the missing trim and blank-input handling.",
+                        "actions": [{
+                            "tool": "patch_file",
+                            "arguments": {
+                                "path": "src/slug.js",
+                                "search": 'return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");',
+                                "replace": 'const slug = String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");\n  if (!slug) throw new TypeError("slug cannot be blank");\n  return slug;',
+                            },
+                        }],
+                        "done": False,
+                    }
+                return ModelResult("fake", "fake-code", json.dumps(payload), {})
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            (source / "src").mkdir(parents=True)
+            (source / "tests").mkdir()
+            (source / "package.json").write_text('{"name":"fixture","type":"module"}', encoding="utf-8")
+            original = 'export function slugify(value) {\n  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");\n}\n'
+            (source / "src" / "slug.js").write_text(original, encoding="utf-8")
+            (source / "src" / "profile.js").write_text(
+                "export function normalizeProfileKey(value) { return `profile-${slugify(value)}`; }\n",
+                encoding="utf-8",
+            )
+            (source / "tests" / "profile.test.js").write_text(
+                'import test from "node:test";\nimport assert from "node:assert/strict";\n'
+                'import { slugify } from "../src/slug.js";\n'
+                'test("slug rejects blank values", () => assert.throws(() => slugify("  "), /blank/i));\n',
+                encoding="utf-8",
+            )
+            gateway = NoEditThenPatchGateway()
+            service = CodebaseService(OpenAgentStore(base / "data"), gateway)  # type: ignore[arg-type]
+            service._event = MagicMock()  # type: ignore[method-assign]
+            project = service.create_project(name="No-edit recovery", source_path=str(source))
+            project_map = RepositoryIntelligence(source).scan()
+            self.assertIn("tests/profile.test.js", project_map["test_files"])
+            run = {
+                "id": "recovery-run",
+                "codebase_project_id": project["id"],
+                "user_prompt": "Fix slug normalization in src/slug.js.",
+                "provider": "ollama",
+                "model": "qwen2.5-coder:7b",
+                "allow_external": False,
+                "role_models": {},
+            }
+            task = {
+                "id": "recovery-run:T1",
+                "title": "Implement slug normalization in src/slug.js",
+                "assigned_agent": "programmer",
+                "declared_files": ["src/slug.js"],
+                "code_paths": ["src/slug.js"],
+                "result": {},
+            }
+            context = RepositoryIntelligence(source).select_context("slug normalization", limit=6)
+            first = service._model_actions(run, project, project_map, context, task, "")
+            self.assertEqual(first["actions"][0]["tool"], "read_files")
+            second = service._model_actions(run, project, project_map, context, task, first["summary"])
+            self.assertEqual(second["actions"][0]["tool"], "patch_file")
+            retry_system = gateway.messages[1][0]["content"]
+            retry_user = gateway.messages[1][-1]["content"]
+            self.assertIn("NO-EDIT RECOVERY", retry_system)
+            self.assertIn("src/slug.js", retry_user)
+            self.assertNotIn("Inspect before editing", retry_system)
+            self.assertIn('"tool":"patch_file"', retry_system)
+            self.assertIn("patch_file only", retry_user)
+            self.assertIn('"path":"src/slug.js"', retry_user)
+            source_payload = retry_user.split("Current code context: ", 1)[1].split("\nPrevious no-op:", 1)[0]
+            recovery_context = json.loads(source_payload)
+            recovered_sources = {row["path"]: row["content"] for row in recovery_context}
+            self.assertEqual(recovered_sources["src/slug.js"], original)
+            self.assertIn("src/profile.js", recovered_sources)
+            self.assertIn("tests/profile.test.js", recovered_sources)
+
+            debugger_task = {
+                "id": "recovery-run:R1",
+                "title": "Repair failed completion checks",
+                "assigned_agent": "debugger",
+                "declared_files": ["src/profile.js"],
+                "code_paths": ["src/profile.js"],
+                "result": {},
+            }
+            programmer_repair_task = {**debugger_task, "assigned_agent": "programmer"}
+            service._model_actions(
+                run, project, project_map, context, programmer_repair_task,
+                "Completion validation failed:\ntest: exit 1\nReferenceError: slugify is not defined at src/profile.js:1",
+            )
+            validation_system = gateway.messages[2][0]["content"]
+            validation_user = gateway.messages[2][-1]["content"]
+            self.assertIn("VALIDATION REPAIR", validation_system)
+            self.assertIn("src/slug.js", validation_system)
+            self.assertIn("Preserve existing local imports", validation_system)
+            self.assertIn("existing in-repository definition", validation_system)
+            self.assertIn("do not invent or install", validation_system)
+            self.assertIn("slugify is indexed in current source at src/slug.js", validation_system)
+            self.assertIn('import { slugify } from "./slug.js";', validation_system)
+            self.assertIn("patch_file only", validation_user)
+            self.assertNotIn("run_tests", validation_user)
+
+            profile_path = Path(project["workspace"]["workspace_path"]) / "src" / "profile.js"
+            profile_path.write_text(
+                "import { slugify } from 'slugify';\n\n"
+                "export function normalizeProfileKey(value) { return `profile-${slugify(value)}`; }\n",
+                encoding="utf-8",
+            )
+            current_map = RepositoryIntelligence(source).scan()
+            local_repair = service._graph_verified_local_import_action(
+                project, current_map, debugger_task,
+                "ReferenceError: slugify is not defined at src/profile.js:2",
+            )
+            self.assertIsNotNone(local_repair)
+            self.assertEqual("import { slugify } from 'slugify';", local_repair["action"]["arguments"]["search"])
+            self.assertEqual("import { slugify } from './slug.js';", local_repair["action"]["arguments"]["replace"])
+            failure = "Tool patch_file failed: patch expected 1 occurrence(s), found 2"
+            write = {"tool": "write_file", "arguments": {"path": "src/slug.js", "content": original + "\n// repaired\n"}}
+            with patch.object(service, "_model_json", return_value={"actions": [write], "done": False}):
+                recovery = service._model_actions(run, project, project_map, context, task, failure)
+            self.assertEqual([write], recovery["actions"])
+            with patch.object(service, "_model_json", return_value={"actions": second["actions"], "done": True}):
+                rejected = service._model_actions(run, project, project_map, context, task, failure)
+            self.assertFalse(rejected["actions"])
+            self.assertTrue(rejected["blocked_reason"])
+
+    def test_validation_repair_paths_and_retry_metadata_are_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            (source / "src").mkdir(parents=True)
+            (source / "src" / "profile.js").write_text("export const value = 1;\n", encoding="utf-8")
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Validation repair", source_path=str(source))
+            # Keep this persistence test deterministic; the run worker itself is not under test here.
+            service._execute_run = lambda _run_id: None  # type: ignore[method-assign]
+            run = service.create_run(codebase_project_id=project["id"], prompt="Fix and validate the profile module")
+            service._store_tasks(run["id"], [
+                {"id": "T1", "title": "Update the profile module", "assigned_agent": "programmer", "files": ["src/profile.js"], "depends_on": []},
+                {"id": "T2", "title": "Run the tests", "assigned_agent": "tester", "files": [], "depends_on": ["T1"]},
+            ])
+            task_id = f"{run['id']}:T1"
+            service._set_task(task_id, "completed", {"summary": "edited profile"})
+            service._record_task_code(run["id"], task_id, ["src/profile.js"])
+            failure = "ReferenceError at D:\\workspace\\src\\profile.js:4:9"
+            implicated = service._tasks_implicated_by_failure(run["id"], failure)
+            self.assertEqual([task_id], implicated)
+            repair_paths = service._repair_paths_from_failure(run["id"], failure, implicated)
+            self.assertEqual(["src/profile.js"], repair_paths)
+            # Assertion summaries may omit implementation paths. Repairs still
+            # receive only source paths recorded as changed by this run.
+            self.assertEqual(
+                ["src/profile.js"],
+                service._repair_paths_from_failure(run["id"], "2 tests failed", []),
+            )
+            repair_id = service._add_repair_task(
+                run["id"], "Repair failed completion checks", failure,
+                assigned_agent="debugger", files=repair_paths,
+            )
+            service._set_task(f"{run['id']}:T2", "deferred", {
+                "feedback": "validation failed", "deferred": True,
+                "validation_repair_task_id": repair_id, "validation_repair_attempts": 1,
+            })
+
+            tasks_before = {item["id"]: item for item in service.get_run(run["id"])["tasks"]}
+            self.assertEqual(["src/profile.js"], tasks_before[repair_id]["declared_files"])
+            self.assertEqual([], tasks_before[repair_id]["code_paths"])
+            self.assertTrue(tasks_before[repair_id]["done_predicates"])
+            self.assertEqual(1, service._validation_repair_count(run["id"]))
+
+            self.assertTrue(service._requeue_deferred(run["id"]))
+            validator = next(item for item in service.get_run(run["id"])["tasks"] if item["id"] == f"{run['id']}:T2")
+            self.assertEqual("needs_fix", validator["status"])
+            self.assertEqual(repair_id, validator["result"]["validation_repair_task_id"])
+            self.assertEqual(1, validator["result"]["validation_repair_attempts"])
+
+    def test_test_assertion_symbol_resolves_to_its_changed_implementation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            (source / "src").mkdir(parents=True)
+            (source / "tests").mkdir()
+            (source / "src" / "slug.js").write_text(
+                "export function slugify(value) { return value.trim(); }\n",
+                encoding="utf-8",
+            )
+            (source / "tests" / "profile.test.js").write_text(
+                'import { slugify } from "../src/slug.js";\n'
+                'test("slugify rejects blank input", () => {\n'
+                '  assert.throws(() => slugify(""));\n'
+                "});\n",
+                encoding="utf-8",
+            )
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Symbol repair", source_path=str(source))
+            service._execute_run = lambda _run_id: None  # type: ignore[method-assign]
+            run = service.create_run(codebase_project_id=project["id"], prompt="Fix slugify and validate it")
+            service._store_tasks(run["id"], [
+                {"id": "T1", "title": "Modify slugify", "assigned_agent": "programmer", "files": ["src/slug.js"], "depends_on": []},
+                {"id": "T2", "title": "Run profile tests", "assigned_agent": "tester", "files": [], "depends_on": ["T1"]},
+            ])
+            task_id = f"{run['id']}:T1"
+            service._set_task(task_id, "completed", {"summary": "edited slugify"})
+            service._record_task_code(run["id"], task_id, ["src/slug.js"])
+
+            # Node reports the test location and assertion, but omits the
+            # implementation file whose behavior caused the assertion.
+            failure = (
+                "✖ slugify rejects blank input\n"
+                "AssertionError [ERR_ASSERTION]: Missing expected exception.\n"
+                f"at TestContext.<anonymous> (file:///{project['workspace']['workspace_path'].replace(chr(92), '/')}/tests/profile.test.js:3:10)"
+            )
+            implicated = service._tasks_implicated_by_failure(run["id"], failure)
+            self.assertEqual([task_id], implicated)
+            self.assertEqual(
+                ["src/slug.js"],
+                service._repair_paths_from_failure(run["id"], failure, implicated),
+            )
+
+    def test_failing_tester_task_routes_to_source_repair_and_revalidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            (source / "src").mkdir(parents=True)
+            (source / "tests").mkdir()
+            (source / "package.json").write_text('{"name":"repair-fixture","type":"module"}', encoding="utf-8")
+            (source / "src" / "slug.js").write_text("export function slugify(value) { return String(value); }\n", encoding="utf-8")
+            (source / "src" / "profile.js").write_text(
+                "export function normalizeProfileKey(value) { return `profile-${String(value).trim()}`; }\n",
+                encoding="utf-8",
+            )
+            (source / "tests" / "profile.test.js").write_text(
+                "import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
+                "import { normalizeProfileKey } from '../src/profile.js';\n"
+                "test('profile composes slug', () => assert.equal(normalizeProfileKey(' Sales Team '), 'profile-sales-team'));\n",
+                encoding="utf-8",
+            )
+            service = CodebaseService(OpenAgentStore(base / "data"), FakeGateway())  # type: ignore[arg-type]
+            project = service.create_project(name="Tester repair", source_path=str(source))
+            service._consult_specialists = lambda *_args, **_kwargs: {}  # type: ignore[method-assign]
+            service._plan = lambda *_args, **_kwargs: [  # type: ignore[method-assign]
+                {"id": "T1", "title": "Implement slug normalization", "assigned_agent": "programmer", "files": ["src/slug.js"], "depends_on": []},
+                {"id": "T2", "title": "Update normalizeProfileKey in src/profile.js to use slugify", "assigned_agent": "programmer", "files": ["src/profile.js"], "depends_on": ["T1"]},
+                # The planner has assigned validation to the generic coder;
+                # the persisted predicate should still dispatch the configured test.
+                {"id": "T3", "title": "Run Node tests", "assigned_agent": "programmer", "files": [], "depends_on": ["T2"]},
+            ]
+
+            def model_actions(_run, _project, _project_map, _context, task, _feedback, _architecture=None):
+                if task["id"].endswith(":T1"):
+                    return {"summary": "implemented slug helper", "actions": [{
+                        "tool": "write_file", "arguments": {"path": "src/slug.js", "content":
+                            "export function slugify(value) {\n"
+                            "  const slug = String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n"
+                            "  if (!slug) throw new TypeError('blank');\n"
+                            "  return slug;\n}\n"},
+                    }], "done": True}
+                if task["id"].endswith(":T2"):
+                    # Deliberately reproduce the observed local-model omission.
+                    return {"summary": "connected profile to slugify", "actions": [{
+                        "tool": "write_file", "arguments": {"path": "src/profile.js", "content":
+                            "export function normalizeProfileKey(value) {\n  return `profile-${slugify(value)}`;\n}\n"},
+                    }], "done": True}
+                self.fail("A unique graph-verified local export should be repaired without another model turn")
+
+            service._model_actions = model_actions  # type: ignore[method-assign]
+            service._review = lambda *_args, **_kwargs: {"status": "passed", "blocking_findings": [], "evidence_id": "review-test"}  # type: ignore[method-assign]
+            service._completion_audit = lambda *_args, **_kwargs: {"missing_tasks": [], "evidence": ["test evidence"]}  # type: ignore[method-assign]
+            run = service.create_run(
+                codebase_project_id=project["id"],
+                prompt="Normalize profile keys with the existing slug helper and pass the Node tests.",
+                max_iterations=10,
+                completion={
+                    "test": {"enabled": True, "command": ["node", "--test"], "timeout_seconds": 20},
+                    "runtime": {"enabled": True, "command": ["node", "--check", "src/profile.js"], "timeout_seconds": 20},
+                },
+            )
+            run = service.wait_for_run(run["id"], timeout=30)
+
+            self.assertEqual(
+                "completed", run["status"],
+                f"{run.get('error')} tasks={[(item['id'], item['status'], item.get('result')) for item in run['tasks']]} "
+                f"events={[(item['type'], item.get('payload', {})) for item in service.events(run['id']) if item['type'] in {'task.replanned', 'run.failed', 'repair.requested'}]}",
+            )
+            self.assertTrue(all(item["status"] == "completed" for item in run["tasks"]))
+            repair = next(item for item in run["tasks"] if item["assigned_agent"] == "debugger")
+            self.assertEqual(["src/profile.js"], repair["declared_files"])
+            self.assertIn("import { slugify } from './slug.js';", (source / "src" / "profile.js").read_text(encoding="utf-8"))
+            self.assertTrue(any(item["status"] == "passed" for item in run["validation"]))
+            event_rows = service.events(run["id"])
+            self.assertIn("tester.validation.started", {item["type"] for item in event_rows})
+            self.assertIn("repair.graph_local_import", {item["type"] for item in event_rows})
+            self.assertIn("task.replanned", {item["type"] for item in event_rows})
+
     def test_cpu_edit_proposal_is_reviewable_and_does_not_write(self) -> None:
         class ProposalGateway(FakeGateway):
-            routing_policy = "cpu-baseline"
+            routing_policy = "local-first"
 
             def complete(self, messages, **kwargs):
                 self.options = kwargs
@@ -818,18 +1265,21 @@ class CodebaseServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.ask_project(project["id"], "What?", paths=["hello.py"] * 5)
 
-    def test_cpu_baseline_autonomous_edit_fails_before_run_creation(self) -> None:
-        class BaselineGateway(FakeGateway):
-            routing_policy = "cpu-baseline"
+    def test_unavailable_local_model_fails_before_run_creation(self) -> None:
+        class UnavailableLocalGateway(FakeGateway):
+            routing_policy = "local-first"
+
+            def select_provider(self, _provider: str, *, allow_external: bool = False):
+                raise ProviderConfigurationError("The bounded local CPU model is unavailable")
 
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             source = base / "source"
             source.mkdir()
             (source / "hello.py").write_text("VALUE = 1\n", encoding="utf-8")
-            service = CodebaseService(OpenAgentStore(base / "data"), BaselineGateway())  # type: ignore[arg-type]
+            service = CodebaseService(OpenAgentStore(base / "data"), UnavailableLocalGateway())  # type: ignore[arg-type]
             project = service.create_project(name="CPU", source_path=str(source))
-            with self.assertRaisesRegex(ValueError, "not admitted"):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
                 service.create_run(codebase_project_id=project["id"], prompt="Edit hello.py")
             self.assertEqual(service.list_runs(project=project["project"]), [])
 
@@ -857,7 +1307,7 @@ class CodebaseServiceTests(unittest.TestCase):
             (source / "index.html").write_text("<h1>Home</h1>\n", encoding="utf-8")
             service = CodebaseService(OpenAgentStore(base / "data"), NewPageGateway())  # type: ignore[arg-type]
             project = service.create_project(name="Page builder", source_path=str(source))
-            run = service.create_run(codebase_project_id=project["id"], prompt="Implement a new page with dummy content", max_iterations=12)
+            run = service.create_run(codebase_project_id=project["id"], prompt="Implement a new page with dummy content", max_iterations=12, completion={"runtime": {"enabled": True, "command": [sys.executable, "-c", "print('verified')"]}})
             run = service.wait_for_run(run["id"], timeout=20)
 
             self.assertEqual("completed", run["status"], run.get("error"))
@@ -890,7 +1340,7 @@ class CodebaseServiceTests(unittest.TestCase):
             (source / "about.html").write_text("<h1>About</h1>\n", encoding="utf-8")
             service = CodebaseService(OpenAgentStore(base / "data"), TitleDependencyPageUpdateGateway())  # type: ignore[arg-type]
             project = service.create_project(name="Pages", source_path=str(source))
-            run = service.create_run(codebase_project_id=project["id"], prompt="Update pages with content and data", max_iterations=8)
+            run = service.create_run(codebase_project_id=project["id"], prompt="Update pages with content and data", max_iterations=8, completion={"runtime": {"enabled": True, "command": [sys.executable, "-c", "print('verified')"]}})
             run = service.wait_for_run(run["id"], timeout=20)
 
             self.assertEqual("completed", run["status"], run.get("error"))
@@ -1098,7 +1548,7 @@ class CodebaseServiceTests(unittest.TestCase):
             source.mkdir()
             service = CodebaseService(OpenAgentStore(base / "data"), ModelSelectedNodeGateway())  # type: ignore[arg-type]
             project = service.create_project(name="Inventory product", source_path=str(source))
-            run = service.create_run(codebase_project_id=project["id"], prompt="Build an inventory management product", max_iterations=10)
+            run = service.create_run(codebase_project_id=project["id"], prompt="Build an inventory management product", max_iterations=10, completion={"runtime": {"enabled": True, "command": [sys.executable, "-c", "print('verified')"]}})
             run = service.wait_for_run(run["id"], timeout=25)
 
             self.assertEqual("completed", run["status"], run.get("error"))
@@ -1147,10 +1597,17 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertTrue(run["validation"])
             self.assertGreaterEqual(len(run["snapshots"]), 2)
             self.assertTrue((Path(project["workspace"]["workspace_path"]) / "feature.py").is_file())
-            event_types = {event["type"] for event in service.events(run["id"])}
+            run_events = service.events(run["id"])
+            event_types = {event["type"] for event in run_events}
             self.assertIn("run.completed", event_types)
             self.assertIn("tool.completed", event_types)
             self.assertIn("agent.handoff", event_types)
+            graph_event = next(event for event in run_events if event["type"] == "context.graph.retrieved")
+            graph_payload = graph_event["payload"]
+            self.assertTrue(graph_payload["graph_revision_id"])
+            self.assertEqual(1, graph_payload["graph_refresh"]["added_count"])
+            self.assertIn("main.py", graph_payload["graph_refresh"]["added"])
+            self.assertEqual(0, graph_payload["graph_refresh"]["changed_count"])
             self.assertEqual("VALUE = 42\n", (source / "feature.py").read_text(encoding="utf-8"))
             self.assertIn("source.publish.completed", event_types)
 
@@ -1165,7 +1622,7 @@ class CodebaseServiceTests(unittest.TestCase):
             run = service.create_run(
                 codebase_project_id=project["id"], prompt="Add feature",
                 max_iterations=8,
-                completion={"runtime": {"enabled": True, "command": [sys.executable, "-m", "py_compile", "feature.py"]}},
+                completion={"runtime": {"enabled": True, "command": [sys.executable, "-c", "import sys; sys.exit(0 if 'VALUE = 42' in open('feature.py').read() else 1)"]}},
                 role_models={"programmer": {"model": "code-model"}, "reviewer": {"model": "review-model"}},
             )
             deadline = time.monotonic() + 20
@@ -1179,6 +1636,9 @@ class CodebaseServiceTests(unittest.TestCase):
             self.assertTrue(any(task["assigned_agent"] == "debugger" for task in run["tasks"]))
             self.assertTrue(any(item["status"] == "failed" for item in run["validation"]))
             self.assertEqual("VALUE = 42\n", (Path(project["workspace"]["workspace_path"]) / "feature.py").read_text(encoding="utf-8"))
+            graph_events = [event for event in service.events(run["id"]) if event["type"] == "context.graph.retrieved"]
+            self.assertGreaterEqual(len(graph_events), 2)
+            self.assertIn("feature.py", graph_events[-1]["payload"]["graph_refresh"]["added"])
 
     def test_iteration_limit_cannot_complete_unfinished_task(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1208,7 +1668,7 @@ class CodebaseServiceTests(unittest.TestCase):
             (source / "main.py").write_text("print('ready')\n", encoding="utf-8")
             service = CodebaseService(OpenAgentStore(base / "data"), WritesWithoutDoneGateway())  # type: ignore[arg-type]
             project = service.create_project(name="Evidence completion", source_path=str(source))
-            run = service.create_run(codebase_project_id=project["id"], prompt="Add a feature", max_iterations=4)
+            run = service.create_run(codebase_project_id=project["id"], prompt="Modify the feature", max_iterations=4)
             run = service.wait_for_run(run["id"], timeout=20)
 
             self.assertEqual("completed", run["status"], run.get("error"))
@@ -1267,7 +1727,7 @@ class CodebaseServiceTests(unittest.TestCase):
             source.mkdir()
             service = CodebaseService(OpenAgentStore(base / "data"), EmptyLoginPageGateway())  # type: ignore[arg-type]
             project = service.create_project(name="Login", source_path=str(source))
-            run = service.create_run(codebase_project_id=project["id"], prompt="make a login page responsive, with React", max_iterations=8)
+            run = service.create_run(codebase_project_id=project["id"], prompt="make a login page responsive, with React", max_iterations=8, completion={"runtime": {"enabled": True, "command": [sys.executable, "-c", "print('verified')"]}})
             run = service.wait_for_run(run["id"], timeout=15)
             self.assertEqual("completed", run["status"], run.get("error"))
             self.assertEqual([], run["approvals"])

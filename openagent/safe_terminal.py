@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import threading
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -35,11 +38,13 @@ class SafeTerminal:
         self._active_lock = threading.RLock()
         self._cancel_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
+        self.shell_sessions = ShellSessionManager()
         self.initialize()
         atexit.register(self.shutdown)
 
     def shutdown(self) -> None:
         """Stop supervised child processes when the local server exits cleanly."""
+        self.shell_sessions.close_all()
         with self._active_lock:
             workers = list(self._threads.values())
             for signal in self._cancel_events.values():
@@ -304,3 +309,207 @@ def log_row(row: Any) -> dict[str, Any]:
         "chunk": row["chunk"],
         "created_at": row["created_at"],
     }
+
+
+# Persistent interactive shell sessions (pseudo-terminal) --------------------------------
+SHELL_MAX_BUFFER_CHARS = 200_000
+SHELL_MAX_INPUT_CHARS = 4_000
+SHELL_MAX_SESSIONS = 4
+SHELL_IDLE_TIMEOUT_SECONDS = 900.0
+
+
+class ShellSessionError(RuntimeError):
+    pass
+
+
+def _default_shell() -> list[str]:
+    if os.name == "nt":
+        return [shutil.which("cmd.exe") or "cmd.exe"]
+    return [os.environ.get("SHELL") or "/bin/sh"]
+
+
+class ShellSession:
+    def __init__(self, session_id: str, owner: str, cwd: Path, process: Any, cols: int, rows: int, clock=time.time) -> None:
+        self._clock = clock
+        self.id = session_id
+        self.owner = owner
+        self.cwd = cwd
+        self.cols = cols
+        self.rows = rows
+        self._process = process
+        self._lock = threading.Lock()
+        self._buffer = ""
+        self._base = 0  # absolute offset of the first character still in the buffer
+        self._closed = False
+        self.created_at = self._clock()
+        self.last_activity = self.created_at
+        self._reader = threading.Thread(target=self._pump, name=f"shell-{session_id[:8]}", daemon=True)
+        self._reader.start()
+
+    def _pump(self) -> None:
+        while True:
+            try:
+                chunk = self._process.read(4096)
+            except EOFError:
+                break
+            except Exception:
+                break
+            if not chunk:
+                if not self._process.isalive():
+                    break
+                time.sleep(0.02)
+                continue
+            with self._lock:
+                self._buffer += chunk
+                overflow = len(self._buffer) - SHELL_MAX_BUFFER_CHARS
+                if overflow > 0:
+                    self._buffer = self._buffer[overflow:]
+                    self._base += overflow
+                self.last_activity = self._clock()
+
+    def write(self, text: str) -> None:
+        if self._closed:
+            raise ShellSessionError("session is closed")
+        if not isinstance(text, str) or len(text) > SHELL_MAX_INPUT_CHARS:
+            raise ShellSessionError(f"input must be text of at most {SHELL_MAX_INPUT_CHARS} characters")
+        self._process.write(text)
+        self.last_activity = self._clock()
+
+    def read_since(self, offset: int = 0) -> dict[str, Any]:
+        """Output produced after an absolute offset. Clients pass back ``next_offset``."""
+        with self._lock:
+            start = max(int(offset), self._base)
+            text = self._buffer[start - self._base:]
+            dropped = max(0, self._base - int(offset))
+            return {
+                "output": text,
+                "next_offset": self._base + len(self._buffer),
+                "dropped_chars": dropped,
+                "running": self.is_running(),
+            }
+
+    def resize(self, cols: int, rows: int) -> None:
+        if self._closed:
+            raise ShellSessionError("session is closed")
+        cols = max(10, min(int(cols), 400))
+        rows = max(4, min(int(rows), 200))
+        self._process.setwinsize(rows, cols)
+        self.cols, self.rows = cols, rows
+
+    def is_running(self) -> bool:
+        return not self._closed and bool(self._process.isalive())
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._process.isalive():
+                self._process.terminate(force=True)
+        except Exception:
+            pass
+        try:
+            self._process.close()
+        except Exception:
+            pass
+        self._reader.join(timeout=5)
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "owner": self.owner,
+            "cwd": str(self.cwd),
+            "cols": self.cols,
+            "rows": self.rows,
+            "running": self.is_running(),
+            "created_at": self.created_at,
+            "last_activity": self.last_activity,
+        }
+
+
+class ShellSessionManager:
+    """Owns every live session. Lookups are scoped to the owner; nothing is shared across owners."""
+
+    def __init__(self, *, clock=time.time, spawn=None) -> None:
+        self._clock = clock
+        self._spawn = spawn
+        self._sessions: dict[str, ShellSession] = {}
+        self._lock = threading.Lock()
+
+    def _spawn_process(self, argv: list[str], cwd: Path, cols: int, rows: int):
+        if self._spawn is not None:
+            return self._spawn(argv, cwd, cols, rows)
+        import winpty  # pywinpty: ConPTY on Windows
+        return winpty.PtyProcess.spawn(argv, cwd=str(cwd), dimensions=(rows, cols))
+
+    def create(self, *, owner: str, project_root: Path, cwd: str = "", approved: bool, cols: int = 120, rows: int = 30) -> dict[str, Any]:
+        if approved is not True:
+            raise PermissionError("starting a persistent shell requires explicit approval for this session")
+        if not str(owner).strip():
+            raise ShellSessionError("an owner is required")
+        root = Path(project_root).resolve()
+        target = (root / cwd).resolve() if cwd else root
+        if target != root and root not in target.parents:
+            raise PermissionError("shell working directory must stay inside the project")
+        if not target.is_dir():
+            raise ShellSessionError("shell working directory does not exist")
+        self.reap_idle()
+        with self._lock:
+            live = [s for s in self._sessions.values() if s.owner == owner and s.is_running()]
+            if len(live) >= SHELL_MAX_SESSIONS:
+                raise ShellSessionError(f"at most {SHELL_MAX_SESSIONS} live shell sessions per owner")
+        cols = max(10, min(int(cols), 400))
+        rows = max(4, min(int(rows), 200))
+        process = self._spawn_process(_default_shell(), target, cols, rows)
+        session = ShellSession(uuid4().hex, owner, target, process, cols, rows, clock=self._clock)
+        with self._lock:
+            self._sessions[session.id] = session
+        return session.describe()
+
+    def _get(self, owner: str, session_id: str) -> ShellSession:
+        with self._lock:
+            session = self._sessions.get(session_id)
+        if session is None or session.owner != owner:
+            # Same answer for "missing" and "someone else's": no existence oracle.
+            raise KeyError("shell session not found")
+        return session
+
+    def write(self, owner: str, session_id: str, text: str) -> None:
+        self._get(owner, session_id).write(text)
+
+    def read(self, owner: str, session_id: str, offset: int = 0) -> dict[str, Any]:
+        return self._get(owner, session_id).read_since(offset)
+
+    def resize(self, owner: str, session_id: str, cols: int, rows: int) -> dict[str, Any]:
+        session = self._get(owner, session_id)
+        session.resize(cols, rows)
+        return session.describe()
+
+    def describe(self, owner: str, session_id: str) -> dict[str, Any]:
+        return self._get(owner, session_id).describe()
+
+    def close(self, owner: str, session_id: str) -> dict[str, Any]:
+        session = self._get(owner, session_id)
+        session.close()
+        with self._lock:
+            self._sessions.pop(session_id, None)
+        return {"id": session_id, "running": False}
+
+    def reap_idle(self) -> int:
+        """Close sessions that exited or sat idle too long. Returns how many were closed."""
+        now = self._clock()
+        with self._lock:
+            stale = [s for s in self._sessions.values()
+                     if not s.is_running() or now - s.last_activity > SHELL_IDLE_TIMEOUT_SECONDS]
+            for session in stale:
+                self._sessions.pop(session.id, None)
+        for session in stale:
+            session.close()
+        return len(stale)
+
+    def close_all(self) -> None:
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            session.close()

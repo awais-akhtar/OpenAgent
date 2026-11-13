@@ -22,8 +22,11 @@ ROUTES = (
     ("GET", "/api/codebase/projects/{id}"),
     ("GET", "/api/codebase/projects/{id}/tree"),
     ("GET", "/api/codebase/projects/{id}/file"),
+    ("GET", "/api/codebase/projects/{id}/graph"),
     ("GET", "/api/codebase/runs"),
     ("GET", "/api/codebase/runs/{id}"),
+    ("GET", "/api/codebase/goals"),
+    ("GET", "/api/codebase/goals/{id}"),
     ("GET", "/api/codebase/runs/{id}/events"),
     ("GET", "/api/codebase/runs/{id}/events/stream"),
     ("POST", "/api/codebase/projects"),
@@ -36,6 +39,8 @@ ROUTES = (
     ("POST", "/api/codebase/projects/{id}/paths"),
     ("POST", "/api/codebase/projects/{id}/tools"),
     ("POST", "/api/codebase/runs"),
+    ("POST", "/api/codebase/goals"),
+    ("POST", "/api/codebase/goals/{id}/update"),
     ("POST", "/api/codebase/runs/{id}/cancel"),
     ("POST", "/api/codebase/runs/{id}/resume"),
     ("POST", "/api/codebase/runs/{id}/tools"),
@@ -66,7 +71,7 @@ def handle_get(path: str, query: str, deps: CodebaseRouteDependencies) -> JsonRo
     owner = deps.query_owner(params) or "local"
     try:
         if path == "/api/codebase/run-admission":
-            return JsonRouteResult(deps.codebase.run_admission())
+            return JsonRouteResult(deps.codebase.run_admission(provider=str((params.get("provider") or ["auto"])[0]), model=str((params.get("model") or [""])[0])))
         if path == "/api/codebase/frameworks":
             return JsonRouteResult({"frameworks": deps.codebase.framework_catalog()})
         if path == "/api/codebase/project-identities":
@@ -79,12 +84,27 @@ def handle_get(path: str, query: str, deps: CodebaseRouteDependencies) -> JsonRo
             return JsonRouteResult({"projects": deps.codebase.list_projects(project=deps.first(params, "project") or "default", owner=owner)})
         if path == "/api/codebase/runs":
             return JsonRouteResult({"runs": deps.codebase.list_runs(project=deps.first(params, "project") or "default", owner=owner, limit=deps.parse_int(deps.first(params, "limit"), default=50))})
+        if path == "/api/codebase/goals":
+            return JsonRouteResult({"goals": deps.codebase.list_goals(
+                owner=owner,
+                codebase_project_id=deps.first(params, "codebase_project_id"),
+                limit=deps.parse_int(deps.first(params, "limit"), default=100),
+            )})
+        if path.startswith("/api/codebase/goals/"):
+            goal_id = unquote(path.removeprefix("/api/codebase/goals/")).strip("/")
+            if goal_id:
+                return JsonRouteResult({"goal": deps.codebase.get_goal(goal_id, owner=owner)})
         if path.startswith("/api/codebase/projects/"):
             remainder = unquote(path.removeprefix("/api/codebase/projects/")).strip("/")
             if remainder.endswith("/tree"):
                 return JsonRouteResult(deps.codebase.file_tree(remainder.removesuffix("/tree"), owner=owner))
             if remainder.endswith("/file"):
                 return JsonRouteResult({"file": deps.codebase.read_file(remainder.removesuffix("/file"), deps.first(params, "path"), owner=owner)})
+            if remainder.endswith("/graph"):
+                return JsonRouteResult(deps.codebase.project_work_graph(
+                    remainder.removesuffix("/graph"), owner=owner,
+                    limit=deps.parse_int(deps.first(params, "limit"), default=400),
+                ))
             return JsonRouteResult({"project": deps.codebase.get_project(remainder, owner=owner)})
         if path.startswith("/api/codebase/runs/"):
             remainder = unquote(path.removeprefix("/api/codebase/runs/")).strip("/")
@@ -128,17 +148,101 @@ def handle_post(path: str, deps: CodebaseRouteDependencies) -> JsonRouteResult |
                 backend=str(payload.get("backend", "local")).strip() or "local",
             )
             return JsonRouteResult({"project": project}, HTTPStatus.CREATED)
+        if path == "/api/codebase/goals":
+            criteria = payload.get("acceptance_criteria")
+            if criteria is not None and not isinstance(criteria, list):
+                raise ValueError("acceptance_criteria must be a list")
+            constraints = payload.get("constraints")
+            if constraints is not None and not isinstance(constraints, dict):
+                raise ValueError("constraints must be an object")
+            milestones = payload.get("milestones")
+            if milestones is not None and not isinstance(milestones, list):
+                raise ValueError("milestones must be a list")
+            criterion_milestones = payload.get("criterion_milestones")
+            if criterion_milestones is not None and not isinstance(criterion_milestones, dict):
+                raise ValueError("criterion_milestones must be an object")
+            role_models = payload.get("role_models")
+            if role_models is not None and not isinstance(role_models, dict):
+                raise ValueError("role_models must be an object")
+            goal = deps.codebase.create_goal(
+                codebase_project_id=str(payload.get("codebase_project_id", "")).strip(),
+                goal=str(payload.get("goal", "")),
+                owner=owner,
+                provider=str(payload.get("provider", "auto")),
+                model=str(payload.get("model", "")),
+                role_models=role_models,
+                allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
+                acceptance_criteria=criteria,
+                milestones=milestones,
+                criterion_milestones=criterion_milestones,
+                constraints=constraints,
+            )
+            return JsonRouteResult({"goal": goal}, HTTPStatus.CREATED)
+        if path.startswith("/api/codebase/goals/") and path.endswith("/update"):
+            goal_id = unquote(path.removeprefix("/api/codebase/goals/").removesuffix("/update")).strip("/")
+            if not goal_id:
+                raise ValueError("goal id is required")
+            criteria = payload.get("acceptance_criteria")
+            if criteria is not None and not isinstance(criteria, list):
+                raise ValueError("acceptance_criteria must be a list")
+            constraints = payload.get("constraints")
+            if constraints is not None and not isinstance(constraints, dict):
+                raise ValueError("constraints must be an object")
+            milestones = payload.get("milestones")
+            if milestones is not None and not isinstance(milestones, list):
+                raise ValueError("milestones must be a list")
+            criterion_milestones = payload.get("criterion_milestones")
+            if criterion_milestones is not None and not isinstance(criterion_milestones, dict):
+                raise ValueError("criterion_milestones must be an object")
+            role_models = payload.get("role_models")
+            if role_models is not None and not isinstance(role_models, dict):
+                raise ValueError("role_models must be an object")
+            goal = deps.codebase.update_goal(
+                goal_id,
+                owner=owner,
+                goal=str(payload["goal"]) if "goal" in payload else None,
+                provider=str(payload["provider"]) if "provider" in payload else None,
+                model=str(payload["model"]) if "model" in payload else None,
+                role_models=role_models,
+                allow_external=deps.parse_bool(payload["allow_external"], default=False) if "allow_external" in payload else None,
+                acceptance_criteria=criteria,
+                milestones=milestones,
+                criterion_milestones=criterion_milestones,
+                constraints=constraints,
+                expected_revision=deps.parse_int(payload["expected_revision"], default=-1) if "expected_revision" in payload else None,
+            )
+            return JsonRouteResult({"goal": goal})
         if path == "/api/codebase/runs":
+            criteria = payload.get("acceptance_criteria")
+            if criteria is not None and not isinstance(criteria, list):
+                raise ValueError("acceptance_criteria must be a list")
+            constraints = payload.get("constraints")
+            if constraints is not None and not isinstance(constraints, dict):
+                raise ValueError("constraints must be an object")
+            milestones = payload.get("milestones")
+            if milestones is not None and not isinstance(milestones, list):
+                raise ValueError("milestones must be a list")
+            criterion_milestones = payload.get("criterion_milestones")
+            if criterion_milestones is not None and not isinstance(criterion_milestones, dict):
+                raise ValueError("criterion_milestones must be an object")
+            role_models = payload.get("role_models")
+            if role_models is not None and not isinstance(role_models, dict):
+                raise ValueError("role_models must be an object")
             run = deps.codebase.create_run(
                 codebase_project_id=str(payload.get("codebase_project_id", "")).strip(),
                 prompt=str(payload.get("prompt", "")).strip(),
                 owner=owner,
-                provider=str(payload.get("provider", "auto")).strip() or "auto",
-                model=str(payload.get("model", "")).strip(),
-                role_models=payload.get("role_models") if isinstance(payload.get("role_models"), dict) else {},
-                allow_external=deps.parse_bool(payload.get("allow_external"), default=False),
+                provider=str(payload["provider"]).strip() if "provider" in payload else None,
+                model=str(payload["model"]).strip() if "model" in payload else None,
+                role_models=role_models,
+                allow_external=deps.parse_bool(payload["allow_external"], default=False) if "allow_external" in payload else None,
                 max_iterations=deps.parse_int(str(payload.get("max_iterations", "0")), default=0),
                 completion=payload.get("completion") if isinstance(payload.get("completion"), dict) else {},
+                goal_id=str(payload.get("goal_id", "")).strip(),
+                acceptance_criteria=criteria,
+                milestones=milestones,
+                criterion_milestones=criterion_milestones,
+                constraints=constraints,
             )
             return JsonRouteResult({"run": run}, HTTPStatus.ACCEPTED)
         if path.startswith("/api/codebase/projects/") and path.endswith("/scan"):

@@ -263,6 +263,21 @@ class VoiceWebSocketStreamManager:
 
         return result
 
+    def cancel(self, stream_id: str) -> dict[str, Any]:
+        """Interrupt a stream: discard its buffered audio and refuse further chunks."""
+        stream_id = str(stream_id or "").strip()
+        if not stream_id:
+            raise ValueError("stream_id is required.")
+
+        session = self.sessions.pop(stream_id, None)
+        if session is None:
+            raise ValueError("Stream session not found.")
+
+        session.status = "cancelled"
+        session.chunks = []
+        session.total_bytes = 0
+        return {"stream_id": stream_id, "status": "cancelled", "transcription": ""}
+
     def get_session_status(self, stream_id: str) -> dict[str, Any]:
         """Get current status of a streaming session."""
         stream_id = str(stream_id or "").strip()
